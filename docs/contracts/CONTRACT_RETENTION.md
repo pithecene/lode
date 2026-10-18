@@ -101,12 +101,21 @@ a set:
 - `IDs` — explicit snapshot IDs.
 - `Prefix` — a partition path prefix (Hive layouts only; see CONTRACT_LAYOUT).
   Resolves to every snapshot that has a partition manifest under
-  `partitions/<prefix>`.
+  `partitions/<prefix>`. It MUST be a canonical relative partition path
+  fragment — no leading `/`, no empty, `.` or `..` segment — exactly as
+  `PartitionListOptions.Prefix` requires (CONTRACT_READ_API §Partition
+  Prefix); otherwise `ErrInvalidPath` and nothing is resolved. Every manifest
+  path the prefix resolves to MUST lie beneath the selected dataset's
+  partitions directory before it is used.
 - `Before` — a UTC instant. Resolves to every snapshot whose
   `Manifest.CreatedAt` is strictly earlier.
 
-Selectors compose by intersection. A selector that resolves to zero snapshots
-is not an error.
+Selectors compose by intersection. A field at its zero value (`nil` or empty
+`IDs`, empty `Prefix`, zero `Before`) is **unset** and does not constrain the
+set. A selector with every field unset MUST return `ErrEmptySelector` and
+expire nothing: for a destructive operation the empty intersection is never
+the universe. A selector that is set but resolves to zero snapshots is not an
+error.
 
 ### Mixed snapshots
 
@@ -137,8 +146,14 @@ commits only ever advance the pointer to a newly created ID, so the recheck
 closes the race completely.
 
 A pointer MAY transiently name a snapshot whose manifest is not yet written,
-because `commitSnapshot` writes the pointer before the manifest; such an ID is
-still the head and MUST be protected even though no manifest exists for it yet.
+because `commitSnapshot` writes the pointer before the manifest. In that
+state the previous head is still the only readable committed state, and the
+pointer alone does not say which snapshot that is. Retention therefore MUST
+NOT proceed while the head is uncommitted: if the pointer names an ID whose
+canonical manifest is absent, `Expire` returns `ErrHeadUncommitted` and
+expires nothing (at preflight) or stops before step 2 (at the per-snapshot
+recheck), and `Sweep` MUST NOT settle any snapshot. Callers retry once the
+in-flight commit completes or is cleaned up.
 
 ### Order of operations (per snapshot)
 
@@ -181,9 +196,15 @@ and consistent (expiring). If it stops after step 2 or later the snapshot is
 expired and its remaining manifests and objects are reclaimed by `Sweep`
 (below) or by re-running `Expire` with the same ID.
 
-Manifests are deleted **before** data so that any manifest a reader can still
-load describes only objects that still exist. Readers never observe a
-manifest whose files have been partially removed.
+Manifests are deleted **before** data so that any manifest loaded **after**
+the manifest delete describes only objects that still exist. This does not
+protect a reader that loaded the manifest *before* expiry began and fetches
+its files afterwards: `Dataset.Read` loads the manifest and the files as
+separate store calls with no lease, so such a read MAY fail with
+`ErrNotFound` on a file. That is the documented consequence of expiring a
+snapshot a reader is concurrently using, in the same class as a reader holding
+an expired ID; Lode provides no read lease, and callers that need one
+coordinate retention with their readers.
 
 Rationale: tombstone-first makes expiry observable before anything is
 destroyed and makes a crashed expiry resumable rather than a silent orphan;
@@ -234,10 +255,13 @@ MUST run at most one retention operation per dataset at a time.
 
 `Sweep` performs, in order:
 
-1. **Complete expiries.** List tombstones under `expired/`. For every
-   tombstoned ID that is not the current head (re-read the pointer per
-   snapshot, as in §Head protection), perform steps 2–3 of §Order of
-   operations (manifest deletes). Only once **every** manifest of that snapshot is confirmed
+1. **Complete expiries.** List tombstones under `expired/`. Load each
+   tombstone and verify it is non-empty and records the snapshot ID in its
+   path; a tombstone that fails validation MUST be reported under
+   `Unparseable` and MUST NOT settle anything. For every valid tombstoned ID
+   that is not the current head (re-read the pointer per snapshot, as in
+   §Head protection; an uncommitted head stops the run), perform steps 2–3 of
+   §Order of operations (manifest deletes). Only once **every** manifest of that snapshot is confirmed
    absent is the snapshot *settled*; a settled snapshot's objects are deleted
    (step 4) without regard to the grace period.
    If any manifest delete fails, the snapshot is **not** settled: it remains
@@ -260,6 +284,10 @@ instant. This requires no `Stat` capability from the store.
 Rationale: an in-flight stream has written data objects but not yet its
 manifest. The grace period MUST exceed the longest expected write; the
 default MUST be conservative (proposed: 24h) and MUST be explicit in the call.
+
+`grace` MUST be strictly positive. A zero or negative `time.Duration` makes
+every unreferenced object immediately eligible, which is never intended;
+`Sweep` MUST return `ErrInvalidGracePeriod` before any listing or mutation.
 
 Objects whose path does not parse to a snapshot ID MUST be reported under
 `Unparseable` and MUST NOT be deleted.
@@ -305,7 +333,11 @@ as they would after step 1 of a real run. No write or delete is issued.
 | Error | Condition |
 |-------|-----------|
 | `ErrCannotExpireHead` | Selection includes the head snapshot |
-| `ErrSnapshotExpired` | `Snapshot(id)` for a tombstoned ID; also matches `ErrNotFound` |
+| `ErrHeadUncommitted` | Pointer names a snapshot whose canonical manifest is absent (commit in flight); nothing expired or settled |
+| `ErrEmptySelector` | Every `RetentionSelector` field is unset |
+| `ErrInvalidGracePeriod` | `Sweep` grace period is zero or negative |
+| `ErrInvalidPath` | `Prefix` is not a canonical relative partition path |
+| `ErrSnapshotExpired` | `Snapshot(id)` for a tombstoned ID **whose canonical manifest is absent**; also matches `ErrNotFound`. An expiring snapshot (tombstone present, canonical manifest present) is returned normally |
 | `ErrPrefixSelectorNotSupported` | `Prefix` selector on a layout without partitions (distinct from the `StreamWriteRecords` error `ErrPartitioningNotSupported`) |
 
 All deletes propagate store errors wrapped with the object path. A partial
@@ -318,7 +350,7 @@ failure leaves the dataset in a state the next `Sweep` or `Expire` completes.
 | Operation | Store Calls | Memory |
 |-----------|-------------|--------|
 | `Expire` (K snapshots) | 1 List + M Gets (resolution) + (K + 1) pointer Gets + K tombstone Puts + Σ(files + manifests) Deletes | O(N + M × manifest) |
-| `Sweep` (T tombstones) | 3 Lists (tombstones, manifests, objects) + M Gets (reference union) + T pointer Gets + D Deletes | O(N + T + Σ files) |
+| `Sweep` (T tombstones) | 3 Lists (tombstones, manifests, objects) + M Gets (reference union) + T tombstone Gets (validation) + T pointer Gets + D Deletes | O(N + T + Σ files) |
 | `Snapshot(id)` expired path | +1 Get (tombstone) | O(1) |
 
 Pointer Gets: one preflight read of `latest` plus one re-read immediately
