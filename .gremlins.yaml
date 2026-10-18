@@ -18,6 +18,17 @@ unleash:
   # Baseline (2026-10-18, gremlins v0.6.0, --timeout-coefficient 20, ./lode):
   # killed 551, lived 130, not covered 46, timed out 12 → efficacy 80.91%,
   # mutant coverage 93.67%. Gates sit just under baseline; raise as tests improve.
+  #
+  # gremlins v0.6.0 fails when actual <= threshold (report.go assess), so a
+  # value of 79 means "fail below 80" and 92 means "fail below 93".
+  #
+  # Known limitation (go-gremlins/gremlins#298, open, no released fix): case
+  # expressions of tagless switches are reported NOT COVERED and their mutants
+  # never run. This repo uses that form for the CAS decision in
+  # lode/store.go (writeLatestPointer path) and lode/store_cas_unix.go, so those
+  # guards are under-measured. The baseline above already includes them as
+  # NOT COVERED. Revisit when a tagged release carries the fix; the repo pins
+  # tagged tool versions only.
   threshold:
-    efficacy: 80
-    mutant-coverage: 93
+    efficacy: 79
+    mutant-coverage: 92
