@@ -583,7 +583,10 @@ type PartitionListOptions struct {
 	// string, for example "source=a/category=b" or "day=2026-10". It is a
 	// raw path prefix: no key/value boundary is implied. On partition-aware
 	// layouts it also narrows the storage listing to the matching subtree.
-	// Returns ErrPartitionPrefixNotSupported on layouts without partitions.
+	// Returns ErrPartitionPrefixNotSupported on layouts without partitions,
+	// and ErrInvalidPath if the prefix is not a canonical relative partition
+	// path (leading "/", or an empty, "." or ".." segment), since it is
+	// resolved beneath the dataset's partitions directory.
 	// When set, an empty result means no partitions under the prefix; the
 	// dataset's existence is not checked separately.
 	Prefix string

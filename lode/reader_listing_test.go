@@ -336,3 +336,58 @@ func TestDatasetReader_ListManifests_DefaultLayout_SortedByID(t *testing.T) {
 	}
 	_ = ids
 }
+
+// TestDatasetReader_ListPartitions_Prefix_RejectsNonCanonical verifies a
+// prefix cannot escape the dataset's partitions directory. The prefix is
+// concatenated under it, so "..", "." and empty segments are rejected before
+// any store call.
+func TestDatasetReader_ListPartitions_Prefix_RejectsNonCanonical(t *testing.T) {
+	store := NewMemory()
+	victim, err := NewDataset("victim", NewMemoryFactoryFrom(store),
+		WithCodec(NewJSONLCodec()),
+		WithHiveLayout("day"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := victim.Write(t.Context(), R(D{"id": 1, "day": "2024-01-15"}), Metadata{}); err != nil {
+		t.Fatal(err)
+	}
+	reader, err := NewDatasetReader(NewMemoryFactoryFrom(store), WithHiveLayout("day"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, prefix := range []string{
+		"../../victim/partitions/day=2024",
+		"../x",
+		"/day=2024",
+		"day=2024//x",
+		"./day=2024",
+		"day=2024/..",
+		`..\..\victim\partitions\day=2024`, // "\" is a separator for the fs store on Windows
+		`day=2024\x`,
+	} {
+		got, err := reader.ListPartitions(t.Context(), "test-ds", PartitionListOptions{Prefix: prefix})
+		if !errors.Is(err, ErrInvalidPath) {
+			t.Errorf("Prefix %q: expected ErrInvalidPath, got err=%v result=%v", prefix, err, partitionPaths(got))
+		}
+	}
+
+	// Canonical forms, including a trailing slash, are accepted.
+	for _, prefix := range []string{"day=2024", "day=2024-01-15/", "day=2024-01-15/region=x"} {
+		if _, err := reader.ListPartitions(t.Context(), "test-ds", PartitionListOptions{Prefix: prefix}); err != nil {
+			t.Errorf("Prefix %q: unexpected error %v", prefix, err)
+		}
+	}
+
+	// Malformed wins over unsupported: a partitionless layout still reports
+	// ErrInvalidPath for an escaping prefix, not ErrPartitionPrefixNotSupported.
+	plain, err := NewDatasetReader(NewMemoryFactoryFrom(store))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = plain.ListPartitions(t.Context(), "test-ds", PartitionListOptions{Prefix: "../x"})
+	if !errors.Is(err, ErrInvalidPath) {
+		t.Errorf("default layout, escaping prefix: expected ErrInvalidPath, got %v", err)
+	}
+}

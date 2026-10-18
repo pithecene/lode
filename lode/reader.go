@@ -108,6 +108,11 @@ func (r *reader) ListDatasets(ctx context.Context, opts DatasetListOptions) ([]D
 }
 
 func (r *reader) ListPartitions(ctx context.Context, dataset DatasetID, opts PartitionListOptions) ([]PartitionRef, error) {
+	// Malformed before unsupported: a prefix that could escape the dataset is
+	// rejected as such regardless of layout (CONTRACT_READ_API §Partition Prefix).
+	if !validPartitionPrefix(opts.Prefix) {
+		return nil, ErrInvalidPath
+	}
 	if opts.Prefix != "" && !r.layout.supportsPartitions() {
 		return nil, ErrPartitionPrefixNotSupported
 	}
@@ -242,6 +247,29 @@ func (r *reader) ListManifests(ctx context.Context, dataset DatasetID, partition
 
 	sort.Slice(refs, func(i, j int) bool { return manifestRefLess(refs[i], refs[j]) })
 	return cursorWindow(refs, func(ref ManifestRef) bool { return manifestRefLess(opts.StartAfter, ref) }, opts.Limit), nil
+}
+
+// validPartitionPrefix reports whether a PartitionListOptions.Prefix is a
+// canonical relative partition path fragment: no leading "/", no empty, "."
+// or ".." segments. The prefix is concatenated under the dataset's partitions
+// directory, so anything else could escape to another dataset's subtree.
+// Empty is valid (no filter); a trailing "/" is valid (names a partition
+// boundary).
+func validPartitionPrefix(prefix string) bool {
+	if prefix == "" {
+		return true
+	}
+	// Backslash is a separator for the filesystem store on Windows, so it
+	// could smuggle ".." past a "/"-only split; partition paths never contain it.
+	if strings.HasPrefix(prefix, "/") || strings.ContainsRune(prefix, '\\') {
+		return false
+	}
+	for seg := range strings.SplitSeq(strings.TrimSuffix(prefix, "/"), "/") {
+		if seg == "" || seg == "." || seg == ".." {
+			return false
+		}
+	}
+	return true
 }
 
 // manifestRefLess orders ManifestRefs by (Partition, ID), the order

@@ -228,6 +228,7 @@ All covered ✅
 | ListPartitions lexicographic order | `TestDatasetReader_ListPartitions_Sorted` |
 | ListPartitions Prefix (raw prefix, subtree) | `TestDatasetReader_ListPartitions_Prefix`, `TestDatasetReader_ListPartitions_Prefix_ExcludesOtherPartitionsOfSameSnapshot` |
 | ListPartitions Prefix empty subtree | `TestDatasetReader_ListPartitions_Prefix_NoMatch_ReturnsEmpty` |
+| ListPartitions Prefix canonical-only (no dataset escape) | `TestDatasetReader_ListPartitions_Prefix_RejectsNonCanonical` |
 | ListPartitions StartAfter / Limit | `TestDatasetReader_ListPartitions_StartAfter_Pages`, `TestDatasetReader_ListPartitions_StartAfter_Exclusive` |
 | ListManifests (Partition, ID) order, deterministic partition | `TestDatasetReader_ListManifests_SortedAndDeterministicPartition`, `TestDatasetReader_ListManifests_DefaultLayout_SortedByID` |
 | ListManifests StartAfter / Limit | `TestDatasetReader_ListManifests_StartAfter_Pages`, `TestDatasetReader_ListManifests_Limit_Boundary` |

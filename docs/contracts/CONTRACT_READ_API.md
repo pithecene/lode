@@ -142,6 +142,12 @@ key or value boundary is implied (`day=2026-10` matches `day=2026-10-18`).
   reserved for the no-prefix case where the dataset has no manifests at all.
 - On layouts without partitions a non-empty prefix MUST return
   `ErrPartitionPrefixNotSupported`.
+- The prefix MUST be a canonical relative partition path fragment: no leading
+  `/`, no `\` anywhere, no empty, `.` or `..` segment (a trailing `/` is
+  allowed). It is
+  resolved beneath the dataset's partitions directory, so anything else could
+  address another dataset; such a prefix MUST return `ErrInvalidPath` before
+  any store call.
 
 ---
 

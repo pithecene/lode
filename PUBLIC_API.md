@@ -393,7 +393,7 @@ Common errors when using streaming APIs:
 - `ListDatasets` returns `ErrNoManifests` when storage has objects but no manifests.
 - Layouts that do not model datasets (e.g., flat) return `ErrDatasetsNotModeled`.
 - `ListPartitions` results are lexicographic by `Path`; `ListManifests` results are ordered by `(Partition, ID)`. `StartAfter` resumes strictly after a previous result; `Limit` bounds results, not store calls.
-- `PartitionListOptions.Prefix` is a raw path prefix (`day=2026-10` matches `day=2026-10-18`) and requires a partition-aware layout (`ErrPartitionPrefixNotSupported` otherwise). An empty result under a prefix is not an error.
+- `PartitionListOptions.Prefix` is a raw path prefix (`day=2026-10` matches `day=2026-10-18`) and requires a partition-aware layout (`ErrPartitionPrefixNotSupported` otherwise). It must be a canonical relative fragment — no leading `/`, no `.`/`..`/empty segments — or `ErrInvalidPath` is returned. An empty result under a prefix is not an error.
 - `ReaderAt` may return an `io.ReaderAt` that also implements `io.Closer`; close it when done.
 - Checksums are computed and recorded in manifests only when configured.
 - Concurrent `Write`/`StreamWrite` calls to the same dataset are safe only with a CAS-capable store (`ConditionalWriter`). Without CAS, serialize writes externally. See `CONTRACT_WRITE_API.md` §Concurrent Blob Write Safety.
