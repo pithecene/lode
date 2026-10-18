@@ -13,6 +13,7 @@ type retryConfig struct {
 	baseDelay   time.Duration
 	maxDelay    time.Duration
 	jitter      float64 // 0.0 = deterministic, 1.0 = full jitter
+	observer    func(attempt int)
 }
 
 // defaultRetryConfig returns a retryConfig with sensible defaults.
@@ -52,9 +53,15 @@ func (c *retryConfig) jitteredBackoff(attempt int) time.Duration {
 	return deterministic
 }
 
-// retryBackoff sleeps for the jittered backoff duration, respecting context cancellation.
+// retryBackoff notifies the retry observer (if any), then sleeps for the
+// jittered backoff duration, respecting context cancellation.
+// Commit loops call it exactly once per retry, so the observer sees one
+// call per retry attempt.
 // Returns ctx.Err() if the context is canceled during the wait.
 func (c *retryConfig) retryBackoff(ctx context.Context, attempt int) error {
+	if c.observer != nil {
+		c.observer(attempt)
+	}
 	delay := c.jitteredBackoff(attempt)
 	select {
 	case <-ctx.Done():

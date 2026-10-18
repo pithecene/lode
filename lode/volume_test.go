@@ -2208,6 +2208,63 @@ func TestVolume_WithRetryCount_OptionValidation(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for negative retry count")
 	}
+
+	_, err = NewVolume("test", NewMemoryFactory(), 1024, WithRetryObserver(nil))
+	if err == nil {
+		t.Fatal("expected error for nil retry observer")
+	}
+}
+
+// TestVolume_Commit_WithRetryObserver_CalledPerRetry verifies the observer
+// is invoked once per Volume commit retry with 1-indexed attempt numbers.
+func TestVolume_Commit_WithRetryObserver_CalledPerRetry(t *testing.T) {
+	mem := NewMemory()
+	factory := NewMemoryFactoryFrom(mem)
+
+	var attempts []int
+	v1, err := NewVolume("shared", factory, 1024,
+		WithRetryCount(3),
+		WithRetryJitter(0.0),
+		WithRetryBaseDelay(time.Millisecond),
+		WithRetryObserver(func(attempt int) { attempts = append(attempts, attempt) }),
+	)
+	if err != nil {
+		t.Fatalf("NewVolume v1: %v", err)
+	}
+	v2, err := NewVolume("shared", factory, 1024)
+	if err != nil {
+		t.Fatalf("NewVolume v2: %v", err)
+	}
+
+	block1, err := v1.StageWriteAt(t.Context(), 0, bytes.NewReader([]byte("block-a")))
+	if err != nil {
+		t.Fatalf("v1 stage 1: %v", err)
+	}
+	if _, err := v1.Commit(t.Context(), []BlockRef{block1}, Metadata{}); err != nil {
+		t.Fatalf("v1 first commit: %v", err)
+	}
+	if len(attempts) != 0 {
+		t.Fatalf("expected no observer calls without conflict, got %v", attempts)
+	}
+
+	block2, err := v2.StageWriteAt(t.Context(), 100, bytes.NewReader([]byte("block-b")))
+	if err != nil {
+		t.Fatalf("v2 stage: %v", err)
+	}
+	if _, err := v2.Commit(t.Context(), []BlockRef{block2}, Metadata{}); err != nil {
+		t.Fatalf("v2 commit: %v", err)
+	}
+
+	block3, err := v1.StageWriteAt(t.Context(), 200, bytes.NewReader([]byte("block-c")))
+	if err != nil {
+		t.Fatalf("v1 stage 2: %v", err)
+	}
+	if _, err := v1.Commit(t.Context(), []BlockRef{block3}, Metadata{}); err != nil {
+		t.Fatalf("v1 commit with retry: %v", err)
+	}
+	if len(attempts) != 1 || attempts[0] != 1 {
+		t.Fatalf("expected observer calls [1], got %v", attempts)
+	}
 }
 
 // TestNewVolume_WithChecksum_UnifiedOption verifies that the unified

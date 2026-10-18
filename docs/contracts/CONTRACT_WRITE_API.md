@@ -150,8 +150,20 @@ Data files are written once; only the manifest and pointer are retried.
 If all retries are exhausted, `ErrSnapshotConflict` is returned as usual.
 
 Retry options: `WithRetryCount(n)`, `WithRetryBaseDelay(d)`,
-`WithRetryMaxDelay(d)`, `WithRetryJitter(j)`. Defaults: 0 retries,
-10ms base, 2s max, full jitter.
+`WithRetryMaxDelay(d)`, `WithRetryJitter(j)`, `WithRetryObserver(fn)`.
+Defaults: 0 retries, 10ms base, 2s max, full jitter, no observer.
+
+**Retry observer:**
+
+`WithRetryObserver(fn)` registers a callback for retry observability.
+- `fn` is called exactly once per retry attempt, after `ErrSnapshotConflict`
+  is observed and before the backoff sleep.
+- `fn` receives the 1-indexed retry attempt number.
+- `fn` is never called for the initial attempt; the number of calls equals
+  the number of retries performed.
+- `fn` is called synchronously on the committing goroutine; it must not block.
+- `fn` has no effect on retry decisions or results.
+- A nil `fn` is rejected at construction time.
 
 **Activation:**
 - Always-on when the adapter implements `ConditionalWriter`.

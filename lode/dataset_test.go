@@ -3129,3 +3129,92 @@ func TestDataset_Write_WithRetryCount_ReaderRejects(t *testing.T) {
 		t.Fatalf("expected ErrOptionNotValidForDatasetReader, got: %v", err)
 	}
 }
+
+// TestDataset_Write_WithRetryObserver_CalledPerRetry verifies the observer
+// is invoked once per retry with 1-indexed attempt numbers, and not for the
+// initial attempt.
+func TestDataset_Write_WithRetryObserver_CalledPerRetry(t *testing.T) {
+	mem := NewMemory()
+	factory := NewMemoryFactoryFrom(mem)
+
+	var attempts []int
+	ds1, err := NewDataset("shared", factory,
+		WithCodec(NewJSONLCodec()),
+		WithRetryCount(3),
+		WithRetryJitter(0.0),
+		WithRetryBaseDelay(time.Millisecond),
+		WithRetryObserver(func(attempt int) { attempts = append(attempts, attempt) }),
+	)
+	if err != nil {
+		t.Fatalf("NewDataset ds1: %v", err)
+	}
+	ds2, err := NewDataset("shared", factory, WithCodec(NewJSONLCodec()))
+	if err != nil {
+		t.Fatalf("NewDataset ds2: %v", err)
+	}
+
+	// Uncontended write: no retry, observer not called.
+	if _, err := ds1.Write(t.Context(), R(D{"seq": 1}), Metadata{}); err != nil {
+		t.Fatalf("ds1 first write: %v", err)
+	}
+	if len(attempts) != 0 {
+		t.Fatalf("expected no observer calls without conflict, got %v", attempts)
+	}
+
+	// ds2 advances the pointer; ds1's stale cache conflicts once, then retries.
+	if _, err := ds2.Write(t.Context(), R(D{"seq": 2}), Metadata{}); err != nil {
+		t.Fatalf("ds2 write: %v", err)
+	}
+	if _, err := ds1.Write(t.Context(), R(D{"seq": 3}), Metadata{}); err != nil {
+		t.Fatalf("ds1 write with retry: %v", err)
+	}
+	if len(attempts) != 1 || attempts[0] != 1 {
+		t.Fatalf("expected observer calls [1], got %v", attempts)
+	}
+}
+
+// TestDataset_Write_WithRetryObserver_NotCalledWithoutRetryCount verifies the
+// observer is inert when retries are disabled.
+func TestDataset_Write_WithRetryObserver_NotCalledWithoutRetryCount(t *testing.T) {
+	mem := NewMemory()
+	factory := NewMemoryFactoryFrom(mem)
+
+	calls := 0
+	ds1, err := NewDataset("shared", factory,
+		WithCodec(NewJSONLCodec()),
+		WithRetryObserver(func(int) { calls++ }),
+	)
+	if err != nil {
+		t.Fatalf("NewDataset ds1: %v", err)
+	}
+	ds2, err := NewDataset("shared", factory, WithCodec(NewJSONLCodec()))
+	if err != nil {
+		t.Fatalf("NewDataset ds2: %v", err)
+	}
+
+	if _, err := ds1.Write(t.Context(), R(D{"seq": 1}), Metadata{}); err != nil {
+		t.Fatalf("ds1 first write: %v", err)
+	}
+	if _, err := ds2.Write(t.Context(), R(D{"seq": 2}), Metadata{}); err != nil {
+		t.Fatalf("ds2 write: %v", err)
+	}
+	_, err = ds1.Write(t.Context(), R(D{"seq": 3}), Metadata{})
+	if !errors.Is(err, ErrSnapshotConflict) {
+		t.Fatalf("expected ErrSnapshotConflict, got: %v", err)
+	}
+	if calls != 0 {
+		t.Fatalf("expected no observer calls with retries=0, got %d", calls)
+	}
+}
+
+// TestDataset_WithRetryObserver_OptionValidation verifies nil is rejected
+// and the option is rejected by DatasetReader.
+func TestDataset_WithRetryObserver_OptionValidation(t *testing.T) {
+	if _, err := NewDataset("test", NewMemoryFactory(), WithRetryObserver(nil)); err == nil {
+		t.Fatal("expected error for nil retry observer")
+	}
+	_, err := NewDatasetReader(NewMemoryFactory(), WithRetryObserver(func(int) {}))
+	if !errors.Is(err, ErrOptionNotValidForDatasetReader) {
+		t.Fatalf("expected ErrOptionNotValidForDatasetReader, got: %v", err)
+	}
+}

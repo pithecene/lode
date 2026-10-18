@@ -125,6 +125,7 @@ not apply to the target (dataset vs reader) returns an error.
 | `WithRetryBaseDelay(d)` | ✅ | ❌ | ✅ | Backoff base delay (default: 10ms) |
 | `WithRetryMaxDelay(d)` | ✅ | ❌ | ✅ | Backoff cap (default: 2s) |
 | `WithRetryJitter(j)` | ✅ | ❌ | ✅ | Jitter factor 0.0–1.0 (default: 1.0) |
+| `WithRetryObserver(fn)` | ✅ | ❌ | ✅ | Per-retry callback for observability |
 
 Passing an inapplicable option to `NewDatasetReader` or `NewVolume` returns
 an error at construction time.
@@ -568,6 +569,9 @@ automatically refreshes state and re-parents the manifest on conflict,
 with jittered exponential backoff. Data files are written once — only
 the manifest and pointer CAS are retried. Customize backoff with
 `WithRetryBaseDelay`, `WithRetryMaxDelay`, and `WithRetryJitter`.
+Observe retries (e.g. for a retry counter metric) with
+`WithRetryObserver(fn)`: `fn(attempt)` is called synchronously once per
+retry, before the backoff sleep, with a 1-indexed attempt number.
 
 Data files are immutable and already persisted — retry cost is one manifest
 write plus one pointer swap.

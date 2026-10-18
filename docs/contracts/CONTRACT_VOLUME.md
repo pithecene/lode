@@ -219,6 +219,8 @@ Applicable options:
 - `WithRetryCount(n)` — bounded automatic CAS retry on commit conflict.
 - `WithRetryBaseDelay(d)`, `WithRetryMaxDelay(d)`, `WithRetryJitter(j)` —
   backoff tuning for CAS retry.
+- `WithRetryObserver(fn)` — per-retry callback for observability; same
+  semantics as Dataset (see `CONTRACT_WRITE_API.md` §Retry observer).
 
 Options that only apply to Dataset or DatasetReader return an error at
 construction time.
@@ -290,6 +292,8 @@ On `ErrSnapshotConflict`, the commit:
 5. Retries the pointer CAS with a fresh snapshot ID.
 
 `ErrOverlappingBlocks` terminates the retry loop immediately (non-retryable).
+If `WithRetryObserver(fn)` is configured, `fn` is called once per retry
+before step 1.
 If all retries are exhausted, `ErrSnapshotConflict` is returned as usual.
 
 **Single-writer compatibility:**
