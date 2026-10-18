@@ -454,6 +454,10 @@ var (
 	// ErrPartitioningNotSupported indicates StreamWriteRecords was called with partitioning configured.
 	ErrPartitioningNotSupported = errPartitioningNotSupported{}
 
+	// ErrPartitionPrefixNotSupported indicates PartitionListOptions.Prefix was
+	// set on a layout that does not model partitions.
+	ErrPartitionPrefixNotSupported = errPartitionPrefixNotSupported{}
+
 	// ErrSchemaViolation indicates a record does not conform to the Parquet schema.
 	// Returned when: missing required field, type mismatch, nil for non-nullable field,
 	// or invalid timestamp string.
@@ -497,6 +501,12 @@ func (errCodecConfigured) Error() string {
 type errCodecNotStreamable struct{}
 
 func (errCodecNotStreamable) Error() string { return "codec does not support streaming" }
+
+type errPartitionPrefixNotSupported struct{}
+
+func (errPartitionPrefixNotSupported) Error() string {
+	return "partition prefix requires a partition-aware layout"
+}
 
 type errNilIterator struct{}
 
@@ -561,17 +571,45 @@ type DatasetListOptions struct {
 }
 
 // PartitionListOptions controls partition listing.
+//
+// Results are returned in lexicographic order of PartitionRef.Path. Limit
+// bounds the result set, not the number of store calls.
 type PartitionListOptions struct {
 	// Limit is the maximum number of results to return.
 	// Zero means no limit.
 	Limit int
+
+	// Prefix restricts results to partition paths that start with this
+	// string, for example "source=a/category=b" or "day=2026-10". It is a
+	// raw path prefix: no key/value boundary is implied. On partition-aware
+	// layouts it also narrows the storage listing to the matching subtree.
+	// Returns ErrPartitionPrefixNotSupported on layouts without partitions,
+	// and ErrInvalidPath if the prefix is not a canonical relative partition
+	// path (leading "/", or an empty, "." or ".." segment), since it is
+	// resolved beneath the dataset's partitions directory.
+	// When set, an empty result means no partitions under the prefix; the
+	// dataset's existence is not checked separately.
+	Prefix string
+
+	// StartAfter resumes listing after this partition path (exclusive).
+	// The Path of the last result from a previous call is a valid cursor.
+	// Empty disables the cursor.
+	StartAfter string
 }
 
 // ManifestListOptions controls manifest listing.
+//
+// Results are ordered by (Partition, ID) lexicographically. Limit bounds the
+// result set, not the number of store calls.
 type ManifestListOptions struct {
 	// Limit is the maximum number of results to return.
 	// Zero means no limit.
 	Limit int
+
+	// StartAfter resumes listing after this reference (exclusive). The last
+	// ManifestRef from a previous call is a valid cursor. The zero value
+	// disables the cursor.
+	StartAfter ManifestRef
 }
 
 // DatasetReader provides read operations over stored datasets.

@@ -225,6 +225,13 @@ All covered ✅
 | ListDatasets empty storage | `TestDatasetReader_ListDatasets_EmptyStorage` |
 | ErrNoManifests | `TestDatasetReader_ListDatasets_ErrNoManifests` |
 | Manifest validation errors | Multiple `TestDatasetReader_GetManifest_InvalidManifest_*` tests |
+| ListPartitions lexicographic order | `TestDatasetReader_ListPartitions_Sorted` |
+| ListPartitions Prefix (raw prefix, subtree) | `TestDatasetReader_ListPartitions_Prefix`, `TestDatasetReader_ListPartitions_Prefix_ExcludesOtherPartitionsOfSameSnapshot` |
+| ListPartitions Prefix empty subtree | `TestDatasetReader_ListPartitions_Prefix_NoMatch_ReturnsEmpty` |
+| ListPartitions Prefix canonical-only (no dataset escape) | `TestDatasetReader_ListPartitions_Prefix_RejectsNonCanonical` |
+| ListPartitions StartAfter / Limit | `TestDatasetReader_ListPartitions_StartAfter_Pages`, `TestDatasetReader_ListPartitions_StartAfter_Exclusive` |
+| ListManifests (Partition, ID) order, deterministic partition | `TestDatasetReader_ListManifests_SortedAndDeterministicPartition`, `TestDatasetReader_ListManifests_DefaultLayout_SortedByID` |
+| ListManifests StartAfter / Limit | `TestDatasetReader_ListManifests_StartAfter_Pages`, `TestDatasetReader_ListManifests_Limit_Boundary` |
 
 ---
 
@@ -240,6 +247,7 @@ All error sentinels covered ✅
 | ErrPathExists | Multiple store tests |
 | ErrInvalidPath | Multiple store tests |
 | ErrDatasetsNotModeled | `TestDatasetReader_ListDatasets_FlatLayout_ReturnsErrDatasetsNotModeled` |
+| ErrPartitionPrefixNotSupported | `TestDatasetReader_ListPartitions_Prefix_DefaultLayout_Rejected` |
 | ErrManifestInvalid | Multiple validation tests |
 | ErrCodecConfigured | `TestDataset_StreamWrite_WithCodec_ReturnsError` |
 | ErrCodecNotStreamable | `TestDataset_StreamWriteRecords_NonStreamingCodec_ReturnsError` |

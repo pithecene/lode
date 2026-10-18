@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 )
 
@@ -107,13 +108,30 @@ func (r *reader) ListDatasets(ctx context.Context, opts DatasetListOptions) ([]D
 }
 
 func (r *reader) ListPartitions(ctx context.Context, dataset DatasetID, opts PartitionListOptions) ([]PartitionRef, error) {
+	// Malformed before unsupported: a prefix that could escape the dataset is
+	// rejected as such regardless of layout (CONTRACT_READ_API §Partition Prefix).
+	if !validPartitionPrefix(opts.Prefix) {
+		return nil, ErrInvalidPath
+	}
+	if opts.Prefix != "" && !r.layout.supportsPartitions() {
+		return nil, ErrPartitionPrefixNotSupported
+	}
+
 	// Single-pass: list paths, load each manifest once, extract partitions.
 	// Eliminates the double-deserialization of ListManifests + GetManifest (CX-3).
 	prefix := r.layout.segmentsPrefixForPartition(dataset, "")
+	if opts.Prefix != "" {
+		// Partition-first layouts put every segment under its partition, so a
+		// partition prefix is a storage prefix (CONTRACT_LAYOUT §Hive-style).
+		prefix = r.layout.partitionsPrefix(dataset, opts.Prefix)
+	}
 	paths, err := r.store.List(ctx, prefix)
 	if err != nil {
 		return nil, err
 	}
+	// Store.List ordering is unspecified (CONTRACT_STORAGE §List); sort so
+	// the result is deterministic regardless of backend.
+	sort.Strings(paths)
 
 	seenSnap := make(map[DatasetSnapshotID]bool)
 	seenPart := make(map[string]bool)
@@ -148,23 +166,23 @@ func (r *reader) ListPartitions(ctx context.Context, dataset DatasetID, opts Par
 
 		for _, f := range manifest.Files {
 			partPath := r.layout.extractPartitionPath(f.Path)
-			if partPath == "" || seenPart[partPath] {
+			// A snapshot found under the prefix may also carry files for
+			// partitions outside it; those are not part of this listing.
+			if partPath == "" || seenPart[partPath] || !strings.HasPrefix(partPath, opts.Prefix) {
 				continue
 			}
 			seenPart[partPath] = true
 			partitions = append(partitions, PartitionRef{Path: partPath})
-
-			if opts.Limit > 0 && len(partitions) >= opts.Limit {
-				return partitions, nil
-			}
 		}
 	}
 
-	if !hasAnyManifest {
+	// With a prefix, an empty subtree is a valid answer, not a missing dataset.
+	if !hasAnyManifest && opts.Prefix == "" {
 		return nil, ErrNotFound
 	}
 
-	return partitions, nil
+	sort.Slice(partitions, func(i, j int) bool { return partitions[i].Path < partitions[j].Path })
+	return cursorWindow(partitions, func(p PartitionRef) bool { return p.Path > opts.StartAfter }, opts.Limit), nil
 }
 
 func (r *reader) ListManifests(ctx context.Context, dataset DatasetID, partition string, opts ManifestListOptions) ([]ManifestRef, error) {
@@ -173,6 +191,18 @@ func (r *reader) ListManifests(ctx context.Context, dataset DatasetID, partition
 	if err != nil {
 		return nil, err
 	}
+	// Store.List ordering is unspecified (CONTRACT_STORAGE §List). Sort by
+	// (parsed partition, path) so the first manifest seen for a snapshot is its
+	// lexicographically smallest partition — which is then the one loaded and
+	// validated. Path order alone is not partition order when one partition
+	// name prefixes another ("day=a-b/..." sorts before "day=a/...").
+	sort.Slice(paths, func(i, j int) bool {
+		pi, pj := r.layout.parsePartitionFromManifest(paths[i]), r.layout.parsePartitionFromManifest(paths[j])
+		if pi != pj {
+			return pi < pj
+		}
+		return paths[i] < paths[j]
+	})
 
 	var refs []ManifestRef
 	seen := make(map[DatasetSnapshotID]bool)
@@ -193,13 +223,13 @@ func (r *reader) ListManifests(ctx context.Context, dataset DatasetID, partition
 
 		// Skip canonical manifests in partition-aware layouts. These exist
 		// only for O(1) Snapshot(ctx, id) lookups and must not appear in
-		// listing results (their empty Partition field is nondeterministic
-		// relative to partition-specific manifests in store listing order).
+		// listing results.
 		if r.layout.supportsPartitions() && manifestPartition == "" {
 			continue
 		}
 
-		// Always validate manifest per CONTRACT_READ_API.md
+		// Always validate manifest per CONTRACT_READ_API.md — once per snapshot,
+		// and it is the smallest-partition manifest thanks to the sort above.
 		manifest, err := r.loadManifest(ctx, p)
 		if err != nil {
 			return nil, fmt.Errorf("failed to load manifest %s: %w", p, err)
@@ -217,17 +247,62 @@ func (r *reader) ListManifests(ctx context.Context, dataset DatasetID, partition
 			ID:        snapshotID,
 			Partition: manifestPartition,
 		})
-
-		if opts.Limit > 0 && len(refs) >= opts.Limit {
-			break
-		}
 	}
 
 	if !hasAnyManifest {
 		return nil, ErrNotFound
 	}
 
-	return refs, nil
+	sort.Slice(refs, func(i, j int) bool { return manifestRefLess(refs[i], refs[j]) })
+	return cursorWindow(refs, func(ref ManifestRef) bool { return manifestRefLess(opts.StartAfter, ref) }, opts.Limit), nil
+}
+
+// validPartitionPrefix reports whether a PartitionListOptions.Prefix is a
+// canonical relative partition path fragment: no leading "/", no empty, "."
+// or ".." segments. The prefix is concatenated under the dataset's partitions
+// directory, so anything else could escape to another dataset's subtree.
+// Empty is valid (no filter); a trailing "/" is valid (names a partition
+// boundary).
+func validPartitionPrefix(prefix string) bool {
+	if prefix == "" {
+		return true
+	}
+	// Backslash is a separator for the filesystem store on Windows, so it
+	// could smuggle ".." past a "/"-only split; partition paths never contain it.
+	if strings.HasPrefix(prefix, "/") || strings.ContainsRune(prefix, '\\') {
+		return false
+	}
+	for seg := range strings.SplitSeq(strings.TrimSuffix(prefix, "/"), "/") {
+		if seg == "" || seg == "." || seg == ".." {
+			return false
+		}
+	}
+	return true
+}
+
+// manifestRefLess orders ManifestRefs by (Partition, ID), the order
+// ManifestListOptions promises and ManifestListOptions.StartAfter resumes in.
+func manifestRefLess(a, b ManifestRef) bool {
+	if a.Partition != b.Partition {
+		return a.Partition < b.Partition
+	}
+	return a.ID < b.ID
+}
+
+// cursorWindow returns the items strictly after a cursor, capped at limit
+// (zero means no cap). items must already be sorted in the order that
+// after() tests against; the cursor position is the first item for which
+// after() holds.
+func cursorWindow[T any](items []T, after func(T) bool, limit int) []T {
+	start := 0
+	for start < len(items) && !after(items[start]) {
+		start++
+	}
+	items = items[start:]
+	if limit > 0 && len(items) > limit {
+		items = items[:limit]
+	}
+	return items
 }
 
 func (r *reader) GetManifest(ctx context.Context, dataset DatasetID, ref ManifestRef) (*Manifest, error) {

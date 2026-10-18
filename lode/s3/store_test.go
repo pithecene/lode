@@ -784,6 +784,39 @@ func TestStore_List_WithPrefix(t *testing.T) {
 	}
 }
 
+// TestStore_List_StringPrefixSemantics verifies List is a string-prefix match
+// (CONTRACT_STORAGE §List): a trailing "/" is part of the prefix and excludes
+// siblings that share the bare name; a partial final token matches.
+func TestStore_List_StringPrefixSemantics(t *testing.T) {
+	ctx := t.Context()
+	store, _ := New(NewMockS3Client(), Config{Bucket: "test"})
+
+	_ = store.Put(ctx, "day=2024-01-15/1.txt", bytes.NewReader([]byte("1")))
+	_ = store.Put(ctx, "day=2024-01-150/2.txt", bytes.NewReader([]byte("2")))
+	_ = store.Put(ctx, "day=2024-02-01/3.txt", bytes.NewReader([]byte("3")))
+
+	cases := []struct {
+		prefix string
+		want   int
+	}{
+		{"day=2024-01-15/", 1}, // trailing slash excludes the "-150" sibling
+		{"day=2024-01-15", 2},  // bare string prefix includes it
+		{"day=2024-01", 2},     // partial final token
+		{"day=2030", 0},
+		{"/", 3}, // slash-only prefix is the store root, not the key "/"
+		{"", 3},
+	}
+	for _, tc := range cases {
+		keys, err := store.List(ctx, tc.prefix)
+		if err != nil {
+			t.Fatalf("List(%q): %v", tc.prefix, err)
+		}
+		if len(keys) != tc.want {
+			t.Errorf("List(%q) = %v, want %d keys", tc.prefix, keys, tc.want)
+		}
+	}
+}
+
 func TestStore_List_WithStorePrefix(t *testing.T) {
 	ctx := t.Context()
 	store, _ := New(NewMockS3Client(), Config{Bucket: "test", Prefix: "datasets/"})

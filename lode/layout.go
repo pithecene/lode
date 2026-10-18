@@ -15,6 +15,10 @@ type layout interface {
 	datasetsPrefix() string
 	segmentsPrefix(dataset DatasetID) string
 	segmentsPrefixForPartition(dataset DatasetID, partition string) string
+	// partitionsPrefix returns the storage prefix covering every segment whose
+	// partition path starts with partitionPrefix (a raw string prefix, no
+	// key boundary implied). Only meaningful when supportsPartitions().
+	partitionsPrefix(dataset DatasetID, partitionPrefix string) string
 	isManifest(p string) bool
 	parseDatasetID(manifestPath string) DatasetID
 	parseSegmentID(manifestPath string) DatasetSnapshotID
@@ -75,6 +79,10 @@ func (l *defaultLayout) segmentsPrefix(dataset DatasetID) string {
 
 func (l *defaultLayout) segmentsPrefixForPartition(dataset DatasetID, _ string) string {
 	return l.segmentsPrefix(dataset)
+}
+
+func (l *defaultLayout) partitionsPrefix(dataset DatasetID, _ string) string {
+	return l.segmentsPrefix(dataset) // no partitions: callers guard on supportsPartitions()
 }
 
 func (l *defaultLayout) manifestPath(dataset DatasetID, segment DatasetSnapshotID) string {
@@ -181,6 +189,12 @@ func (l *hiveLayout) segmentsPrefixForPartition(dataset DatasetID, partition str
 		return l.segmentsPrefix(dataset)
 	}
 	return path.Join(datasetsDir, string(dataset), partitionsDir, partition, segmentsDir) + "/"
+}
+
+func (l *hiveLayout) partitionsPrefix(dataset DatasetID, partitionPrefix string) string {
+	// Raw concatenation, not path.Join: a partial final token such as
+	// "day=2026-10" must stay a prefix of "day=2026-10-18".
+	return path.Join(datasetsDir, string(dataset), partitionsDir) + "/" + partitionPrefix
 }
 
 func (l *hiveLayout) manifestPath(dataset DatasetID, segment DatasetSnapshotID) string {
@@ -344,6 +358,10 @@ func (l *flatLayout) segmentsPrefix(dataset DatasetID) string {
 
 func (l *flatLayout) segmentsPrefixForPartition(dataset DatasetID, _ string) string {
 	return l.segmentsPrefix(dataset)
+}
+
+func (l *flatLayout) partitionsPrefix(dataset DatasetID, _ string) string {
+	return l.segmentsPrefix(dataset) // no partitions: callers guard on supportsPartitions()
 }
 
 func (l *flatLayout) manifestPath(dataset DatasetID, segment DatasetSnapshotID) string {

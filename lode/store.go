@@ -119,27 +119,49 @@ func (f *fsStore) List(_ context.Context, prefix string) ([]string, error) {
 		return nil, err
 	}
 
-	// Return empty list if prefix directory doesn't exist (empty dataset/prefix semantics)
-	if _, err := os.Stat(searchPath); os.IsNotExist(err) {
+	// List is a string-prefix match over paths (CONTRACT_STORAGE §List), not a
+	// directory listing: "a/b" matches both "a/b/x" and "a/bc", as it does on
+	// the memory and S3 stores. A prefix that is empty or ends in "/" names a
+	// directory and is walked directly; any other prefix is matched by walking
+	// its parent directory and filtering, so a partial final token such as
+	// "day=2026-10" works.
+	walkRoot, filter := searchPath, ""
+	if searchPath != f.root && !strings.HasSuffix(prefix, "/") {
+		// Prefixes that normalize to the root ("", ".", "a/..") are a direct
+		// root walk; never step above f.root to find a parent.
+		walkRoot = filepath.Dir(searchPath)
+		filter = filepath.ToSlash(filepath.Clean(prefix))
+	}
+
+	// Return empty list if the directory doesn't exist (empty dataset/prefix
+	// semantics). A directory walk root that is a regular file also matches
+	// nothing: the object "a" does not start with the prefix "a/".
+	info, err := os.Stat(walkRoot)
+	if os.IsNotExist(err) || (err == nil && !info.IsDir()) {
 		return nil, nil
 	}
 
 	var paths []string
 
-	err = filepath.WalkDir(searchPath, func(path string, d fs.DirEntry, err error) error {
+	err = filepath.WalkDir(walkRoot, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			if os.IsNotExist(err) {
 				return nil
 			}
 			return fmt.Errorf("lode: fs list: %w", err)
 		}
-		if !d.IsDir() {
-			relPath, err := filepath.Rel(f.root, path)
-			if err != nil {
-				return fmt.Errorf("lode: fs list: %w", err)
-			}
-			paths = append(paths, filepath.ToSlash(relPath))
+		if d.IsDir() {
+			return nil
 		}
+		relPath, err := filepath.Rel(f.root, path)
+		if err != nil {
+			return fmt.Errorf("lode: fs list: %w", err)
+		}
+		rel := filepath.ToSlash(relPath)
+		if filter != "" && !strings.HasPrefix(rel, filter) {
+			return nil
+		}
+		paths = append(paths, rel)
 		return nil
 	})
 	if err != nil {
@@ -348,6 +370,11 @@ func (m *memoryStore) List(_ context.Context, prefix string) ([]string, error) {
 	normalized, valid := normalizePathForPrefix(prefix)
 	if !valid {
 		return nil, ErrInvalidPath
+	}
+	// Clean strips a trailing "/", but "a/" and "a" are different string
+	// prefixes (CONTRACT_STORAGE §List): only the former excludes "a2/x".
+	if normalized != "" && strings.HasSuffix(prefix, "/") {
+		normalized += "/"
 	}
 
 	m.mu.RLock()

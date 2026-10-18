@@ -111,6 +111,44 @@ type ReadAPI interface {
 
 This layer understands Lode’s layout and semantics but performs **no interpretation**.
 
+### Listing Order and Cursors
+
+Store listing order is unspecified (CONTRACT_STORAGE §List), so the read API
+imposes its own:
+
+- `ListPartitions` MUST return results in lexicographic order of
+  `PartitionRef.Path`.
+- `ListManifests` MUST return results ordered by `(Partition, ID)`,
+  lexicographically. When a snapshot has several partition manifests, the
+  returned `ManifestRef` MUST carry the lexicographically smallest partition,
+  so the same storage state always yields the same refs.
+- `StartAfter` resumes strictly after the given cursor in that order. The last
+  element of a previous result is always a valid cursor. A cursor that matches
+  no element resumes at the next element greater than it.
+- `Limit` bounds the result set, not the number of store calls. Sorting and
+  the cursor are applied after enumeration.
+
+### Partition Prefix
+
+`PartitionListOptions.Prefix` is a raw string prefix over partition paths; no
+key or value boundary is implied (`day=2026-10` matches `day=2026-10-18`).
+
+- On layouts that model partitions, the prefix MUST also narrow the storage
+  listing to the matching subtree (CONTRACT_LAYOUT §Hive-style: manifests live
+  under partition prefixes, so no committed segment can be missed).
+- A snapshot found under the prefix MAY reference files in partitions outside
+  it; those partitions MUST NOT appear in the result.
+- An empty result under a prefix means no partitions match. `ErrNotFound` is
+  reserved for the no-prefix case where the dataset has no manifests at all.
+- On layouts without partitions a non-empty prefix MUST return
+  `ErrPartitionPrefixNotSupported`.
+- The prefix MUST be a canonical relative partition path fragment: no leading
+  `/`, no `\` anywhere, no empty, `.` or `..` segment (a trailing `/` is
+  allowed). It is
+  resolved beneath the dataset's partitions directory, so anything else could
+  address another dataset; such a prefix MUST return `ErrInvalidPath` before
+  any store call.
+
 ---
 
 ## Manifests

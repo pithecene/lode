@@ -338,7 +338,7 @@ as they would after step 1 of a real run. No write or delete is issued.
 | `ErrInvalidGracePeriod` | `Sweep` grace period is zero or negative |
 | `ErrInvalidPath` | `Prefix` is not a canonical relative partition path |
 | `ErrSnapshotExpired` | `Snapshot(id)` for a tombstoned ID **whose canonical manifest is absent**; also matches `ErrNotFound`. An expiring snapshot (tombstone present, canonical manifest present) is returned normally |
-| `ErrPrefixSelectorNotSupported` | `Prefix` selector on a layout without partitions (distinct from the `StreamWriteRecords` error `ErrPartitioningNotSupported`) |
+| `ErrPartitionPrefixNotSupported` | `Prefix` selector on a layout without partitions (shared with `PartitionListOptions.Prefix`; distinct from the `StreamWriteRecords` error `ErrPartitioningNotSupported`) |
 
 All deletes propagate store errors wrapped with the object path. A partial
 failure leaves the dataset in a state the next `Sweep` or `Expire` completes.

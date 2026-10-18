@@ -17,6 +17,7 @@ func TestSentinelErrors_ErrorMessages(t *testing.T) {
 		{"ErrCodecNotStreamable", ErrCodecNotStreamable, "codec does not support streaming"},
 		{"ErrNilIterator", ErrNilIterator, "records iterator must be non-nil"},
 		{"ErrPartitioningNotSupported", ErrPartitioningNotSupported, "StreamWriteRecords does not support partitioning; use Write for partitioned data"},
+		{"ErrPartitionPrefixNotSupported", ErrPartitionPrefixNotSupported, "partition prefix requires a partition-aware layout"},
 		{"ErrSchemaViolation", ErrSchemaViolation, "parquet: schema violation"},
 		{"ErrInvalidFormat", ErrInvalidFormat, "parquet: invalid format"},
 		{"ErrSnapshotConflict", ErrSnapshotConflict, "snapshot conflict: another writer committed"},
