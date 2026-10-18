@@ -9,9 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+---
+
+## [0.9.1] - 2026-10-18
+
 ### Added
 
-- **Retry observer**: `WithRetryObserver(fn)` registers a callback invoked synchronously once per CAS retry attempt (1-indexed, before backoff) for Dataset and Volume. Enables callers to populate retry metrics such as `lode_write_retry_total`. ([#169](https://github.com/pithecene-io/lode/issues/169))
+- **Retry observer**: `WithRetryObserver(fn)` registers a callback invoked synchronously once per CAS retry attempt (1-indexed, before backoff) for Dataset and Volume. Enables callers to populate retry metrics such as `lode_write_retry_total`. ([#171](https://github.com/pithecene-io/lode/pull/171), closes [#169](https://github.com/pithecene-io/lode/issues/169))
+
+### Security
+
+- **AWS SDK EventStream DoS**: Bump `github.com/aws/aws-sdk-go-v2/service/s3` to v1.97.3 and `aws/protocol/eventstream` to v1.7.8, the first patched versions for the EventStream decoder panic advisory. Transitive `aws-sdk-go-v2` and `smithy-go` patch bumps follow via MVS. ([#170](https://github.com/pithecene-io/lode/pull/170))
+
+### Upgrade Notes
+
+- **Additive only**: No API removals or behavior changes. `WithRetryObserver` is opt-in and inert unless `WithRetryCount(n > 0)` is configured.
+- **No data migration required**: Storage layout and manifest format are unchanged.
 
 ---
 
@@ -483,7 +496,8 @@ Post-v0.3.0 improvements planned:
 
 ---
 
-[Unreleased]: https://github.com/pithecene-io/lode/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/pithecene-io/lode/compare/v0.9.1...HEAD
+[0.9.1]: https://github.com/pithecene-io/lode/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/pithecene-io/lode/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/pithecene-io/lode/compare/v0.7.4...v0.8.0
 [0.7.4]: https://github.com/pithecene-io/lode/compare/v0.7.3...v0.7.4
