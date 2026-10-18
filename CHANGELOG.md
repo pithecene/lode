@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Retry observer**: `WithRetryObserver(fn)` registers a callback invoked synchronously once per CAS retry attempt (1-indexed, before backoff) for Dataset and Volume. Enables callers to populate retry metrics such as `lode_write_retry_total`. ([#169](https://github.com/pithecene-io/lode/issues/169))
+
 ---
 
 ## [0.9.0] - 2026-03-08

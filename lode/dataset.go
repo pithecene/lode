@@ -282,6 +282,27 @@ func WithRetryJitter(j float64) Option {
 	}
 }
 
+// WithRetryObserver registers a callback invoked once per CAS retry attempt.
+// The callback receives the 1-indexed retry attempt number and is called
+// synchronously on the committing goroutine after a snapshot conflict is
+// detected, before the backoff sleep. It is never called for the initial
+// attempt, so the number of calls equals the number of retries performed.
+// The callback must be fast and must not block; it is intended for
+// observability (e.g. incrementing a retry counter metric).
+// Has no effect unless WithRetryCount(n) is configured with n > 0.
+func WithRetryObserver(fn func(attempt int)) Option {
+	return &retryOption{
+		name: "WithRetryObserver",
+		apply: func(r *retryConfig) error {
+			if fn == nil {
+				return errors.New("WithRetryObserver: fn must not be nil")
+			}
+			r.observer = fn
+			return nil
+		},
+	}
+}
+
 // -----------------------------------------------------------------------------
 // Dataset Implementation
 // -----------------------------------------------------------------------------

@@ -90,7 +90,7 @@ as `(private)` instead of by number.
 > Summary: —
 > Issue: #___
 
-- [ ] Option surface has not expanded since v0.9.0 (freeze window reset: v0.9.0 added WithRetryCount/BaseDelay/MaxDelay/Jitter, ErrOptionNotValidForVolume; removed VolumeOption, WithVolumeChecksum)
+- [ ] Option surface has not expanded since v0.9.1 (freeze window reset: v0.9.1 added WithRetryObserver; v0.9.0 added WithRetryCount/BaseDelay/MaxDelay/Jitter, ErrOptionNotValidForVolume; removed VolumeOption, WithVolumeChecksum)
 
 > **Evidence:** _not yet recorded_
 > Date: — | Observer: — | Project: —
