@@ -1,0 +1,23 @@
+# yaml-language-server: $schema=https://gremlins.dev/0.6/schema/configuration.json
+#
+# Mutation testing configuration (task mutate / nightly 🧬 job).
+# Thresholds are quality gates: gremlins exits non-zero below them.
+# They are set just under the measured baseline so regressions fail the
+# nightly run while equivalent mutants do not.
+unleash:
+  # Bounded so workers × test CPUs fits a 4-vCPU CI runner. Unbounded workers
+  # each spawn a test process that uses every CPU; the resulting contention
+  # shows up as TIMED OUT mutants, which the thresholds below do not count.
+  workers: 2
+  test-cpu: 2
+  # The default timeout is a small multiple of the baseline test time (~0.1s),
+  # which times out most mutants instead of killing them. 20x gives a real verdict.
+  timeout-coefficient: 20
+  exclude-files:
+    - examples/
+  # Baseline (2026-10-18, gremlins v0.6.0, --timeout-coefficient 20, ./lode):
+  # killed 551, lived 130, not covered 46, timed out 12 → efficacy 80.91%,
+  # mutant coverage 93.67%. Gates sit just under baseline; raise as tests improve.
+  threshold:
+    efficacy: 80
+    mutant-coverage: 93
