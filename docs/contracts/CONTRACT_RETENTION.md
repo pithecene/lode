@@ -306,7 +306,7 @@ as they would after step 1 of a real run. No write or delete is issued.
 |-------|-----------|
 | `ErrCannotExpireHead` | Selection includes the head snapshot |
 | `ErrSnapshotExpired` | `Snapshot(id)` for a tombstoned ID; also matches `ErrNotFound` |
-| `ErrPrefixSelectorNotSupported` | `Prefix` selector on a layout without partitions (distinct from the `StreamWriteRecords` error `ErrPartitioningNotSupported`) |
+| `ErrPartitionPrefixNotSupported` | `Prefix` selector on a layout without partitions (shared with `PartitionListOptions.Prefix`; distinct from the `StreamWriteRecords` error `ErrPartitioningNotSupported`) |
 
 All deletes propagate store errors wrapped with the object path. A partial
 failure leaves the dataset in a state the next `Sweep` or `Expire` completes.

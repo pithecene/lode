@@ -143,6 +143,26 @@ func run() error {
 	for _, p := range partitions {
 		fmt.Printf("  - %s\n", p.Path)
 	}
+
+	// Narrow the listing to a partition-path prefix. On a Hive layout this is
+	// also a storage prefix, so only the matching subtree is listed.
+	january, err := reader.ListPartitions(ctx, "events", lode.PartitionListOptions{Prefix: "day=2024-01"})
+	if err != nil {
+		return fmt.Errorf("failed to list partitions by prefix: %w", err)
+	}
+	fmt.Printf("Partitions under 'day=2024-01': %d partition(s)\n", len(january))
+
+	// Resume after the last partition seen. Results are lexicographic by Path,
+	// so the previous page's last Path is the cursor for the next page.
+	page1, err := reader.ListPartitions(ctx, "events", lode.PartitionListOptions{Limit: 1})
+	if err != nil {
+		return fmt.Errorf("failed to list first page: %w", err)
+	}
+	page2, err := reader.ListPartitions(ctx, "events", lode.PartitionListOptions{Limit: 1, StartAfter: page1[0].Path})
+	if err != nil {
+		return fmt.Errorf("failed to list second page: %w", err)
+	}
+	fmt.Printf("Paged: %s, then %s\n", page1[0].Path, page2[0].Path)
 	fmt.Println()
 
 	// -------------------------------------------------------------------------

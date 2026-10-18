@@ -68,6 +68,8 @@ Adapters MUST document:
 
 ### List
 - MUST return all paths under the given prefix.
+- The prefix is a **string prefix over paths**, not a directory: `a/b` matches
+  `a/b/x` and `a/bc`. Callers that mean a directory end the prefix with `/`.
 - Ordering is unspecified.
 - Pagination behavior (if any) MUST be documented by the adapter.
 

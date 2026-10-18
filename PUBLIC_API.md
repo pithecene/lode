@@ -392,6 +392,8 @@ Common errors when using streaming APIs:
 - `WithHiveLayout` requires at least one partition key (validated on apply).
 - `ListDatasets` returns `ErrNoManifests` when storage has objects but no manifests.
 - Layouts that do not model datasets (e.g., flat) return `ErrDatasetsNotModeled`.
+- `ListPartitions` results are lexicographic by `Path`; `ListManifests` results are ordered by `(Partition, ID)`. `StartAfter` resumes strictly after a previous result; `Limit` bounds results, not store calls.
+- `PartitionListOptions.Prefix` is a raw path prefix (`day=2026-10` matches `day=2026-10-18`) and requires a partition-aware layout (`ErrPartitionPrefixNotSupported` otherwise). An empty result under a prefix is not an error.
 - `ReaderAt` may return an `io.ReaderAt` that also implements `io.Closer`; close it when done.
 - Checksums are computed and recorded in manifests only when configured.
 - Concurrent `Write`/`StreamWrite` calls to the same dataset are safe only with a CAS-capable store (`ConditionalWriter`). Without CAS, serialize writes externally. See `CONTRACT_WRITE_API.md` §Concurrent Blob Write Safety.
@@ -672,6 +674,7 @@ if errors.Is(err, lode.ErrNoSnapshots) {
 | `ErrPathExists` | Write to existing path (immutability violation) | Storage |
 | `ErrInvalidPath` | Path escapes root or has invalid parameters | Storage |
 | `ErrDatasetsNotModeled` | Layout doesn't support dataset enumeration | DatasetReader |
+| `ErrPartitionPrefixNotSupported` | `Prefix` set on a layout without partitions | DatasetReader |
 | `ErrManifestInvalid` | Manifest fails validation | DatasetReader |
 | `ErrCodecConfigured` | StreamWrite called with codec configured | Dataset |
 | `ErrCodecNotStreamable` | StreamWriteRecords with non-streaming codec | Dataset |

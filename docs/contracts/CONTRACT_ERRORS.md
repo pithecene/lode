@@ -42,9 +42,11 @@ These indicate semantic incompatibility between the layout and the requested ope
 | Error | Source | Meaning |
 |-------|--------|---------|
 | `lode.ErrDatasetsNotModeled` | Read API | Layout doesn't support dataset enumeration |
+| `lode.ErrPartitionPrefixNotSupported` | Read API | `PartitionListOptions.Prefix` set on a layout without partitions |
 
 **Behavior**:
 - `ListDatasets` returns `ErrDatasetsNotModeled` when `Layout.SupportsDatasetEnumeration()` is false.
+- `ListPartitions` returns `ErrPartitionPrefixNotSupported` when `Prefix` is set and the layout does not model partitions.
 - An empty list is returned **only** when storage is truly empty (not as a fallback for unsupported operations).
 
 **Layout-Specific Notes**:

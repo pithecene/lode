@@ -99,6 +99,9 @@ Parent resolution MUST NOT use List when a valid pointer exists.
 
 ListManifests MUST extract snapshot IDs from paths. Manifest validation is required per CONTRACT_ERRORS.md.
 ListPartitions MUST NOT double-deserialize manifests.
+`Prefix` narrows N and M to the matching subtree on partition-aware layouts.
+`StartAfter` and `Limit` are applied after enumeration: they bound the result
+set, not the store calls. Sorting adds O(N log N) CPU, no store calls.
 
 ---
 
