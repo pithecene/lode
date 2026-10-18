@@ -720,7 +720,8 @@ func (s *Store) validatePrefix(prefix string) (string, error) {
 	cleaned = strings.TrimPrefix(cleaned, "/")
 	// path.Clean strips a trailing "/", but "a/" and "a" are different string
 	// prefixes (CONTRACT_STORAGE §List): only the former excludes "a2/x".
-	if strings.HasSuffix(prefix, "/") {
+	// A prefix that reduces to the root ("/") stays the root.
+	if cleaned != "" && strings.HasSuffix(prefix, "/") {
 		cleaned += "/"
 	}
 

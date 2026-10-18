@@ -113,3 +113,22 @@ func TestFSStore_List_RootNormalizingPrefixes(t *testing.T) {
 		}
 	}
 }
+
+// TestFSStore_List_TrailingSlashOnRegularFile verifies List("a/") matches
+// nothing when "a" is an object, not a directory: "a" does not start with "a/".
+func TestFSStore_List_TrailingSlashOnRegularFile(t *testing.T) {
+	store, err := NewFS(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := t.Context()
+	if err := store.Put(ctx, "a", bytes.NewReader([]byte("x"))); err != nil {
+		t.Fatal(err)
+	}
+	if got := listSorted(ctx, t, store, "a/"); len(got) != 0 {
+		t.Fatalf("List(\"a/\") over a regular file: got %v, want empty", got)
+	}
+	if got := listSorted(ctx, t, store, "a"); len(got) != 1 {
+		t.Fatalf("List(\"a\"): got %v, want the object itself", got)
+	}
+}

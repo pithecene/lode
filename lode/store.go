@@ -133,8 +133,11 @@ func (f *fsStore) List(_ context.Context, prefix string) ([]string, error) {
 		filter = filepath.ToSlash(filepath.Clean(prefix))
 	}
 
-	// Return empty list if the directory doesn't exist (empty dataset/prefix semantics)
-	if _, err := os.Stat(walkRoot); os.IsNotExist(err) {
+	// Return empty list if the directory doesn't exist (empty dataset/prefix
+	// semantics). A directory walk root that is a regular file also matches
+	// nothing: the object "a" does not start with the prefix "a/".
+	info, err := os.Stat(walkRoot)
+	if os.IsNotExist(err) || (err == nil && !info.IsDir()) {
 		return nil, nil
 	}
 

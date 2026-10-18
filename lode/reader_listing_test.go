@@ -391,3 +391,38 @@ func TestDatasetReader_ListPartitions_Prefix_RejectsNonCanonical(t *testing.T) {
 		t.Errorf("default layout, escaping prefix: expected ErrInvalidPath, got %v", err)
 	}
 }
+
+// TestDatasetReader_ListManifests_SmallestParsedPartition_NotPathOrder covers
+// a snapshot spanning partitions where one name prefixes another: "day=a-b/"
+// sorts before "day=a/" as a storage path ('-' < '/'), but "day=a" is the
+// smaller partition and is what the contract promises.
+func TestDatasetReader_ListManifests_SmallestParsedPartition_NotPathOrder(t *testing.T) {
+	store := NewMemory()
+	ds, err := NewDataset("test-ds", NewMemoryFactoryFrom(store),
+		WithCodec(NewJSONLCodec()),
+		WithHiveLayout("day"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap, err := ds.Write(t.Context(), R(
+		D{"id": 1, "day": "a-b"},
+		D{"id": 2, "day": "a"},
+	), Metadata{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader, err := NewDatasetReader(NewMemoryFactoryFrom(store), WithHiveLayout("day"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 5 {
+		refs, err := reader.ListManifests(t.Context(), "test-ds", "", ManifestListOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := ManifestRef{ID: snap.ID, Partition: "day=a"}
+		if len(refs) != 1 || refs[0] != want {
+			t.Fatalf("refs = %v, want [%v]", refs, want)
+		}
+	}
+}

@@ -191,10 +191,18 @@ func (r *reader) ListManifests(ctx context.Context, dataset DatasetID, partition
 	if err != nil {
 		return nil, err
 	}
-	// Store.List ordering is unspecified (CONTRACT_STORAGE §List); sort so
-	// each snapshot resolves to its lexicographically smallest partition
-	// manifest regardless of backend.
-	sort.Strings(paths)
+	// Store.List ordering is unspecified (CONTRACT_STORAGE §List). Sort by
+	// (parsed partition, path) so the first manifest seen for a snapshot is its
+	// lexicographically smallest partition — which is then the one loaded and
+	// validated. Path order alone is not partition order when one partition
+	// name prefixes another ("day=a-b/..." sorts before "day=a/...").
+	sort.Slice(paths, func(i, j int) bool {
+		pi, pj := r.layout.parsePartitionFromManifest(paths[i]), r.layout.parsePartitionFromManifest(paths[j])
+		if pi != pj {
+			return pi < pj
+		}
+		return paths[i] < paths[j]
+	})
 
 	var refs []ManifestRef
 	seen := make(map[DatasetSnapshotID]bool)
@@ -215,13 +223,13 @@ func (r *reader) ListManifests(ctx context.Context, dataset DatasetID, partition
 
 		// Skip canonical manifests in partition-aware layouts. These exist
 		// only for O(1) Snapshot(ctx, id) lookups and must not appear in
-		// listing results (their empty Partition field is nondeterministic
-		// relative to partition-specific manifests in store listing order).
+		// listing results.
 		if r.layout.supportsPartitions() && manifestPartition == "" {
 			continue
 		}
 
-		// Always validate manifest per CONTRACT_READ_API.md
+		// Always validate manifest per CONTRACT_READ_API.md — once per snapshot,
+		// and it is the smallest-partition manifest thanks to the sort above.
 		manifest, err := r.loadManifest(ctx, p)
 		if err != nil {
 			return nil, fmt.Errorf("failed to load manifest %s: %w", p, err)

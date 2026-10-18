@@ -803,6 +803,8 @@ func TestStore_List_StringPrefixSemantics(t *testing.T) {
 		{"day=2024-01-15", 2},  // bare string prefix includes it
 		{"day=2024-01", 2},     // partial final token
 		{"day=2030", 0},
+		{"/", 3}, // slash-only prefix is the store root, not the key "/"
+		{"", 3},
 	}
 	for _, tc := range cases {
 		keys, err := store.List(ctx, tc.prefix)
