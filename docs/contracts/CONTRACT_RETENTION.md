@@ -151,6 +151,11 @@ still the head and MUST be protected even though no manifest exists for it yet.
    MUST be read back and, if it names this snapshot ID, treated as success:
    the same expiry is already recorded. A tombstone naming a different ID is
    corruption and MUST fail the operation.
+   Tombstone content is never empty. `CompareAndSwap` with `expected == ""`
+   also matches an existing zero-length object (CONTRACT_STORAGE
+   §ConditionalWriter); replacing one is acceptable because a zero-length
+   tombstone carries no information, and every non-empty existing tombstone
+   goes through the read-back validation above.
 2. Re-read the `latest` pointer. If it names this snapshot, stop with
    `ErrCannotExpireHead` for this snapshot (the tombstone written in step 1 is
    left in place and is harmless: a tombstone whose canonical manifest still
@@ -161,11 +166,14 @@ still the head and MUST be protected even though no manifest exists for it yet.
 3. Delete every partition manifest for the snapshot. From this point the
    snapshot is absent from enumeration.
 4. Delete every data object listed in the snapshot's `Files[]` whose path
-   parses to this snapshot's ID. Layouts place every data object under its
-   own snapshot's segment directory (CONTRACT_LAYOUT §Path topology;
-   `dataFilePath` in every layout), so manifests never share objects and the
-   check is a guard, not a lookup. An object whose path parses to a different
-   snapshot ID MUST be left in place and reported under `Unparseable`.
+   is canonical, lies under this dataset's data prefixes for the current
+   layout, and parses to this snapshot's ID. Layouts place every data object
+   under its own snapshot's segment directory (CONTRACT_LAYOUT §Path
+   topology; `dataFilePath` in every layout), so manifests never share
+   objects and the check is a guard, not a lookup. Any `FileRef.Path` that
+   fails the guard (foreign dataset, different snapshot ID, legacy or
+   malformed path) MUST be left in place and reported under `Skipped`; the
+   expiry still completes for the remaining objects.
 
 Each step MUST be idempotent; a step that finds its target already absent
 succeeds. If the process stops after step 1 the snapshot is still readable
@@ -275,14 +283,20 @@ shape as a real run:
 
 | Field | Expiry | Sweep |
 |-------|:------:|:-----:|
-| `Snapshots []DatasetSnapshotID` | ✅ | — |
+| `Snapshots []DatasetSnapshotID` | ✅ | ✅ (settled this run) |
 | `Mixed []DatasetSnapshotID` | ✅ | — |
 | `Objects int` | ✅ | ✅ |
 | `Bytes int64` | ✅ (from `FileRef.SizeBytes`) | ⚠️ unknown for orphans |
-| `Unparseable []string` | — | ✅ |
+| `Skipped []string` | ✅ (paths failing the step-4 guard) | — |
+| `Unparseable []string` | — | ✅ (paths without a snapshot ID) |
 
 `Bytes` for orphans is reported as `-1` (unknown). The `Store` interface has
 no size query, and adding one for this purpose is out of scope.
+
+A dry-run `Sweep` MUST report what the real run would do: tombstoned
+snapshots that are not the head are treated as **virtually settled** when
+building the reference union, so their objects count as reclaimable exactly
+as they would after step 1 of a real run. No write or delete is issued.
 
 ---
 
@@ -292,7 +306,7 @@ no size query, and adding one for this purpose is out of scope.
 |-------|-----------|
 | `ErrCannotExpireHead` | Selection includes the head snapshot |
 | `ErrSnapshotExpired` | `Snapshot(id)` for a tombstoned ID; also matches `ErrNotFound` |
-| `ErrPartitioningNotSupported` | `Prefix` selector on a layout without partitions |
+| `ErrPrefixSelectorNotSupported` | `Prefix` selector on a layout without partitions (distinct from the `StreamWriteRecords` error `ErrPartitioningNotSupported`) |
 
 All deletes propagate store errors wrapped with the object path. A partial
 failure leaves the dataset in a state the next `Sweep` or `Expire` completes.
