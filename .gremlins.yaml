@@ -5,11 +5,16 @@
 # They are set just under the measured baseline so regressions fail the
 # nightly run while equivalent mutants do not.
 unleash:
-  # Bounded so workers × test CPUs fits a 4-vCPU CI runner. Unbounded workers
-  # each spawn a test process that uses every CPU; the resulting contention
-  # shows up as TIMED OUT mutants, which the thresholds below do not count.
+  # Bounded so concurrent test processes fit a 4-vCPU CI runner. Unbounded
+  # workers each spawn a test process that uses every CPU; the resulting
+  # contention shows up as TIMED OUT mutants, which the thresholds below do
+  # not count.
+  #
+  # Do not set test-cpu. gremlins v0.6.0 passes it to go test as the single
+  # argument "-cpu N" (go-gremlins/gremlins#272); go test then exits 1 for
+  # every mutant, which gremlins records as KILLED, and the run reports 100%
+  # efficacy without testing anything. Fixed upstream in #273, unreleased.
   workers: 2
-  test-cpu: 2
   # The default timeout is a small multiple of the baseline test time (~0.1s),
   # which times out most mutants instead of killing them. 20x gives a real verdict.
   timeout-coefficient: 20
