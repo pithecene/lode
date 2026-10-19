@@ -85,14 +85,6 @@ func NewVolume(id VolumeID, storeFactory StoreFactory, totalLength int64, opts .
 		return nil, invalidArgument("total length must be positive")
 	}
 
-	store, err := storeFactory()
-	if err != nil {
-		return nil, fmt.Errorf("lode: failed to create store: %w", err)
-	}
-	if store == nil {
-		return nil, invalidArgument("store factory returned nil store")
-	}
-
 	cfg := &volumeConfig{
 		retry: defaultRetryConfig(),
 	}
@@ -100,6 +92,15 @@ func NewVolume(id VolumeID, storeFactory StoreFactory, totalLength int64, opts .
 		if err := opt.applyVolume(cfg); err != nil {
 			return nil, err // option errors carry the lode: prefix
 		}
+	}
+
+	// Arguments are checked before any store work (CONTRACT_ERRORS §5).
+	store, err := storeFactory()
+	if err != nil {
+		return nil, fmt.Errorf("lode: failed to create store: %w", err)
+	}
+	if store == nil {
+		return nil, invalidArgument("store factory returned nil store")
 	}
 
 	return &volume{

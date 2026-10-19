@@ -40,14 +40,6 @@ func NewDatasetReader(factory StoreFactory, opts ...Option) (DatasetReader, erro
 		return nil, invalidArgument("store factory is required")
 	}
 
-	store, err := factory()
-	if err != nil {
-		return nil, fmt.Errorf("lode: store factory failed: %w", err)
-	}
-	if store == nil {
-		return nil, invalidArgument("store factory returned nil store")
-	}
-
 	cfg := &readerConfig{
 		layout: NewDefaultLayout(),
 	}
@@ -60,6 +52,15 @@ func NewDatasetReader(factory StoreFactory, opts ...Option) (DatasetReader, erro
 
 	if cfg.layout == nil {
 		return nil, invalidArgument("layout must not be nil")
+	}
+
+	// Arguments are checked before any store work (CONTRACT_ERRORS §5).
+	store, err := factory()
+	if err != nil {
+		return nil, fmt.Errorf("lode: store factory failed: %w", err)
+	}
+	if store == nil {
+		return nil, invalidArgument("store factory returned nil store")
 	}
 
 	return &reader{
