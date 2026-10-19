@@ -49,6 +49,7 @@ Plans, contracts, and research notes. Contracts define **system behavior**.
 - `BENCHMARKS.md` — benchmark results and performance baselines
 - `DESIGN_SCOPED_CONCURRENCY.md` — scoped concurrency design for non-overlapping writers
 - `SNIPPET_POLICY.md` — markdown code fence conventions
+- `assets/` — README splash and mark (SVG, light and dark), generated from one seam geometry
 
 Contracts are authoritative over code.
 

@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="Lode">
+<rect width="512" height="512" rx="61" fill="#F2EFE7"/>
+<clipPath id="sq"><rect width="512" height="512" rx="61"/></clipPath><g clip-path="url(#sq)">
+<polygon points="-102.4,227.8 249.0,174.1 262.8,206.8 -102.4,260.6" fill="#2E5A7A"/>
+<polygon points="-102.4,260.6 262.8,206.8 285.1,260.1 -102.4,313.9" fill="#4A7A9B"/>
+<line x1="-102.4" y1="260.6" x2="262.8" y2="206.8" stroke="#F2EFE7" stroke-opacity="0.5" stroke-width="1.2"/>
+<polygon points="31.1,267.2 77.1,260.3 71.1,276.3 25.1,283.2" fill="#B5692E"/>
+<polygon points="-102.4,313.9 285.1,260.1 300.6,297.0 -102.4,350.7" fill="#8AAFC4"/>
+<line x1="-102.4" y1="313.9" x2="285.1" y2="260.1" stroke="#F2EFE7" stroke-opacity="0.5" stroke-width="1.2"/>
+<line x1="-102.4" y1="227.8" x2="249.0" y2="174.1" stroke="#1C1A16" stroke-width="10" stroke-linecap="butt"/>
+<polygon points="263.0,215.0 614.4,161.3 614.4,199.9 279.2,253.7" fill="#2E5A7A"/>
+<polygon points="279.2,253.7 614.4,199.9 614.4,262.8 305.6,316.5" fill="#4A7A9B"/>
+<line x1="279.2" y1="253.7" x2="614.4" y2="199.9" stroke="#F2EFE7" stroke-opacity="0.5" stroke-width="1.2"/>
+<polygon points="340.0,272.5 386.0,265.6 380.0,284.5 334.0,291.4" fill="#B5692E"/>
+<polygon points="482.7,251.1 522.7,245.1 516.7,264.0 476.7,270.0" fill="#B5692E"/>
+<polygon points="305.6,316.5 614.4,262.8 614.4,306.3 323.9,360.0" fill="#8AAFC4"/>
+<line x1="305.6" y1="316.5" x2="614.4" y2="262.8" stroke="#F2EFE7" stroke-opacity="0.5" stroke-width="1.2"/>
+<line x1="263.0" y1="215.0" x2="614.4" y2="161.3" stroke="#1C1A16" stroke-width="10" stroke-linecap="butt"/>
+</g></svg>

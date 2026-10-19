@@ -1,6 +1,16 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/lode-splash-dark.svg">
+  <img alt="Lode — a layered seam of ore running through rock: the strata are immutable snapshots, the breaks are partitions, the bright line is the latest pointer" src="docs/assets/lode-splash-light.svg" width="100%">
+</picture>
+
 # Lode
 
 **Structured persistence for object storage.**
+
+[![Go Reference](https://pkg.go.dev/badge/github.com/pithecene-io/lode.svg)](https://pkg.go.dev/github.com/pithecene-io/lode)
+[![Release](https://img.shields.io/github/v/release/pithecene/lode?sort=semver)](https://github.com/pithecene/lode/releases/latest)
+[![CI](https://github.com/pithecene/lode/actions/workflows/ci.yml/badge.svg)](https://github.com/pithecene/lode/actions/workflows/ci.yml)
+[![License](https://img.shields.io/github/license/pithecene/lode)](LICENSE)
 
 Lode is an embeddable Go persistence framework that brings snapshots,
 metadata, and safe write semantics to object storage—without running a
@@ -311,10 +321,16 @@ Each example is self-contained and runnable. See the example source for detailed
 
 ## Status
 
-Lode is at **v0.8.0** and under active development.
-APIs are stabilizing; some changes are possible before v1.0.
+Lode is at **v0.10.0** and under active development.
+APIs are stabilizing; the breaking changes still under consideration for v1.0 are
+listed once, with their blast radius, in [`docs/V1_API_DECISIONS.md`](docs/V1_API_DECISIONS.md).
 
-v0.8.0 adds CAS optimistic concurrency for safe concurrent writes without external coordination, plus quality hardening across code, tests, CI, and docs. Built-in Memory and S3 adapters support CAS; FS supports CAS on Unix (non-Unix falls back to single-writer). No migration required.
+v0.10.0 adds nightly mutation-testing gates and the fixes they surfaced (all-or-nothing `Put`,
+stream writes that fail fast, bounded `ReadRange`), completes the listing API with cursors
+and deterministic order, classifies every refused argument under `ErrInvalidArgument`, and
+restructures the internals around one head-pointer protocol, one path grammar and one
+write pipeline — with no change on disk and benchmarks at parity. CAS-capable stores
+(Memory, S3, FS on Unix) detect concurrent writers; others require single-writer discipline.
 
 If you are evaluating Lode, focus on:
 - snapshot semantics (Dataset and Volume)
