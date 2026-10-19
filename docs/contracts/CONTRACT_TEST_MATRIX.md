@@ -159,6 +159,7 @@ Gaps are tracked with codes indicating category and priority:
 | Requirement | Test |
 |-------------|------|
 | ErrPathExists on duplicate (atomic) | `TestStore_Put_Atomic_Duplicate_ReturnsErrPathExists` |
+| All-or-nothing on reader failure | `TestFSStore_Put_AllOrNothing`, `TestMemoryStore_Put_AllOrNothing`, `TestStore_Put_AllOrNothing` |
 | Multipart preflight check | `TestStore_PutMultipartFromFile_PreExisting_ReturnsErrPathExists` |
 | Multipart conditional completion | `TestStore_PutMultipartFromFile_ConditionalCompletion_ReturnsErrPathExists` |
 | Conditional completion documented | `TestStore_Multipart_ConditionalCompletion` |
