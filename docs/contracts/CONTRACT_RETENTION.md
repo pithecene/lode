@@ -394,6 +394,17 @@ contract above is agnostic.
 3. Tombstone retention: tombstones are tiny but unbounded. Proposed: callers
    may `Sweep` tombstones older than a second, longer grace period in a later
    revision.
+4. Caller-owned sidecar objects. A consumer (quarry) writes auxiliary objects
+   under a partition prefix via `Store.Put`, outside `Manifest.Files`, tracked
+   only in `Manifest.Metadata`. Under this draft they are never references:
+   with no snapshot ID in the path they land in `Unparseable` (reported, never
+   reclaimed); with one, they are reclaimed as orphans after the grace period.
+   Recording them in `Manifest.Files` at flush time is insufficient because
+   objects written before a run's first flush are tracked nowhere, so a run
+   killed pre-flush orphans them. Options requested: (a) a metadata-declared
+   reference list that joins the reference union, or (b) a preserve/reclaim
+   prefix option on `Sweep`. Proposed: out of scope for the first revision;
+   tracked in a separate issue once the consumer picks between (a) and (b).
 
 ---
 
