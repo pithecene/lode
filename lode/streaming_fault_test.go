@@ -570,3 +570,65 @@ func TestStreamWriteRecords_PutPathExists_DoesNotDeleteForeignObject(t *testing.
 	}
 	assertNoDataDelete(t, fs)
 }
+
+// Once Put has returned an error, Write must report it even when the
+// compressor would happily buffer the bytes without touching the pipe.
+func TestStreamWrite_BufferedCompressor_WriteFailsOncePutReturned(t *testing.T) {
+	fs := newFaultStore(NewMemory())
+	fs.SetPutError(ErrPathExists, "/data/")
+	putReturned := make(chan struct{})
+	fs.SetAfterPut(func(path string, _ error) {
+		if strings.Contains(path, "/data/") {
+			close(putReturned)
+		}
+	})
+	ds, err := NewDataset("test-ds", newFaultStoreFactory(fs), WithCompressor(NewZstdCompressor()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sw, err := ds.StreamWrite(t.Context(), Metadata{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-putReturned
+
+	// The Put goroutine publishes its result just after the hook fires; a
+	// few small writes bound the wait without relying on compressor flushes.
+	var werr error
+	for range 200 {
+		if _, werr = sw.Write([]byte("x")); werr != nil {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if !errors.Is(werr, ErrPathExists) {
+		t.Fatalf("Write after Put returned: got %v, want ErrPathExists", werr)
+	}
+	_ = sw.Abort(t.Context())
+	assertNoDataDelete(t, fs)
+}
+
+// An ErrPathExists that the stream itself produced (here, the iterator) is
+// wrapped by the store after it has read from the pipe; it is not the
+// store's verdict, so the partial object is still ours to clean up.
+func TestStreamWriteRecords_PropagatedErrPathExists_StillCleansUp(t *testing.T) {
+	fs := newFaultStore(NewMemory())
+	ds, err := NewDataset("test-ds", newFaultStoreFactory(fs), WithCodec(NewJSONLCodec()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	iter := &failingIterator{records: []any{D{"id": "1"}, D{"id": "2"}}, failAfter: 1, err: ErrPathExists}
+	_, err = ds.StreamWriteRecords(t.Context(), iter, Metadata{})
+	if !errors.Is(err, ErrPathExists) {
+		t.Fatalf("got %v, want the propagated ErrPathExists", err)
+	}
+	deleted := false
+	for _, p := range fs.DeleteCalls() {
+		if strings.Contains(p, "/data/") {
+			deleted = true
+		}
+	}
+	if !deleted {
+		t.Fatalf("partial object not cleaned up; deletes: %v", fs.DeleteCalls())
+	}
+}
