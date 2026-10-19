@@ -870,17 +870,17 @@ func (d *dataset) StreamWriteRecords(ctx context.Context, records RecordIterator
 		}
 	}
 
-	// A Put that failed while the iterator was finishing is the root cause
-	// and takes precedence over whatever the iterator reports.
+	// A Put that failed while the iterator was finishing is the root cause and
+	// takes precedence over whatever the iterator reports. The check runs
+	// after records.Err() too: Err may do work, and Put may complete during it.
+	iterErr := records.Err()
 	if finished, putErr := put.poll(); finished && putErr != nil {
 		cleanupStreamWrite(encoder, compWriter, pw, put, putErr)
 		return nil, fmt.Errorf("lode: failed to write data: %w", putErr)
 	}
-
-	// Check for iterator errors
-	if err := records.Err(); err != nil {
-		cleanupStreamWrite(encoder, compWriter, pw, put, err)
-		return nil, fmt.Errorf("lode: record iterator error: %w", err)
+	if iterErr != nil {
+		cleanupStreamWrite(encoder, compWriter, pw, put, iterErr)
+		return nil, fmt.Errorf("lode: record iterator error: %w", iterErr)
 	}
 
 	// Close encoder (finalizes format)
