@@ -717,3 +717,46 @@ func TestStreamWriteRecords_BufferedCompressor_StopsOncePutReturned(t *testing.T
 	}
 	assertNoDataDelete(t, fs)
 }
+
+// failAfterGateIterator yields one record, then waits for the gate and ends
+// with its own error.
+type failAfterGateIterator struct {
+	gate <-chan struct{}
+	n    int
+}
+
+func (f *failAfterGateIterator) Next() bool {
+	if f.n == 0 {
+		f.n++
+		return true
+	}
+	<-f.gate
+	return false
+}
+func (f *failAfterGateIterator) Record() any { return D{"id": f.n} }
+func (f *failAfterGateIterator) Err() error  { return errors.New("iterator failure") }
+
+// When Put has already failed and the iterator then ends with its own error,
+// the storage failure is the root cause and is the error reported.
+func TestStreamWriteRecords_PutFailureTakesPrecedenceOverIteratorError(t *testing.T) {
+	fs := newFaultStore(NewMemory())
+	fs.SetPutError(ErrPathExists, "/data/")
+	putReturned := make(chan struct{})
+	fs.SetAfterPut(func(path string, _ error) {
+		if strings.Contains(path, "/data/") {
+			close(putReturned)
+		}
+	})
+	ds, err := NewDataset("test-ds", newFaultStoreFactory(fs), WithCodec(NewJSONLCodec()), WithCompressor(NewZstdCompressor()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = awaitOrFail(t, func() error {
+		_, werr := ds.StreamWriteRecords(t.Context(), &failAfterGateIterator{gate: putReturned}, Metadata{})
+		return werr
+	})
+	if !errors.Is(err, ErrPathExists) {
+		t.Fatalf("got %v, want ErrPathExists to take precedence", err)
+	}
+	assertNoDataDelete(t, fs)
+}
