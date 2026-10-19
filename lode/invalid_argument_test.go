@@ -144,3 +144,30 @@ func TestOptionErrors_SinglePrefix(t *testing.T) {
 		t.Errorf("got %q, want %q", got, want)
 	}
 }
+
+// Argument errors come before any store work: an invalid option is reported
+// even when the factory would fail, and the factory is not called.
+func TestErrInvalidArgument_BeforeStoreFactory(t *testing.T) {
+	calls := 0
+	failing := func() (Store, error) { calls++; return nil, errors.New("factory down") } //nolint:unparam // a factory that always fails is the point
+
+	cases := []struct {
+		name string
+		call func() error
+	}{
+		{"NewDataset", func() error { _, err := NewDataset("d", failing, WithRetryCount(-1)); return err }},
+		{"NewDatasetReader", func() error { _, err := NewDatasetReader(failing, WithLayout(nil)); return err }},
+		{"NewVolume", func() error { _, err := NewVolume("v", failing, 1, WithRetryCount(-1)); return err }},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			calls = 0
+			if err := c.call(); !errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("got %v, want ErrInvalidArgument", err)
+			}
+			if calls != 0 {
+				t.Errorf("store factory called %d times before argument validation", calls)
+			}
+		})
+	}
+}

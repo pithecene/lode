@@ -360,14 +360,6 @@ func NewDataset(id DatasetID, factory StoreFactory, opts ...Option) (Dataset, er
 		return nil, invalidArgument("store factory is required")
 	}
 
-	store, err := factory()
-	if err != nil {
-		return nil, fmt.Errorf("lode: store factory failed: %w", err)
-	}
-	if store == nil {
-		return nil, invalidArgument("store factory returned nil store")
-	}
-
 	cfg := &datasetConfig{
 		layout:     NewDefaultLayout(),
 		compressor: NewNoOpCompressor(),
@@ -390,6 +382,15 @@ func NewDataset(id DatasetID, factory StoreFactory, opts ...Option) (Dataset, er
 	// Raw blob mode (no codec) cannot use partitioning - there are no record fields to extract keys from
 	if cfg.codec == nil && !cfg.layout.partitioner().isNoop() {
 		return nil, invalidArgument("raw blob mode (no codec) requires a layout with noop partitioner")
+	}
+
+	// Arguments are checked before any store work (CONTRACT_ERRORS §5).
+	store, err := factory()
+	if err != nil {
+		return nil, fmt.Errorf("lode: store factory failed: %w", err)
+	}
+	if store == nil {
+		return nil, invalidArgument("store factory returned nil store")
 	}
 
 	return &dataset{
