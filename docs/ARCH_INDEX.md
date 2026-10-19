@@ -67,6 +67,7 @@ Public API surface.
 Internal implementations.
 
 - `testutil/` — internal test helpers
+- `storepath/` — key, prefix, and range rules shared by every Store adapter
 
 ---
 

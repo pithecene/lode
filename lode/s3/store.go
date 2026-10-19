@@ -47,16 +47,13 @@
 package s3
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"os"
-	"path"
+	"slices"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -64,6 +61,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
 
+	"github.com/pithecene-io/lode/internal/storepath"
 	"github.com/pithecene-io/lode/lode"
 )
 
@@ -89,10 +87,6 @@ const (
 // Set to 5GB (the S3 PutObject limit) to maximize atomic upload coverage.
 const maxAtomicPutSize = 5 * 1024 * 1024 * 1024 // 5GB
 
-// maxReadRangeLength is the maximum length for ReadRange to prevent overflow
-// when converting int64 to int on 32-bit platforms.
-const maxReadRangeLength = int64(math.MaxInt)
-
 // API defines the subset of the S3 client interface used by the store.
 // This enables testing with mock implementations.
 type API interface {
@@ -113,7 +107,10 @@ type Config struct {
 	Bucket string
 
 	// Prefix is an optional key prefix for all operations.
-	// If set, all keys are prefixed with this value (with a trailing slash added if missing).
+	// If set, all keys are prefixed with this value (with a trailing slash
+	// added if missing). It follows the key rules of CONTRACT_STORAGE §Put:
+	// New returns lode.ErrInvalidPath for a prefix that escapes the root or
+	// contains a backslash.
 	Prefix string
 }
 
@@ -143,7 +140,13 @@ func New(client API, cfg Config) (*Store, error) {
 		return nil, errors.New("s3: bucket is required")
 	}
 
-	prefix := cfg.Prefix
+	// The configured prefix becomes part of every key, so it obeys the same
+	// rules as a key (storepath): no escape, no backslash. It is normalized to
+	// end in "/" so callers' keys sit beneath it.
+	prefix, ok := storepath.Prefix(cfg.Prefix)
+	if !ok {
+		return nil, fmt.Errorf("s3: invalid prefix %q: %w", cfg.Prefix, lode.ErrInvalidPath)
+	}
 	if prefix != "" && !strings.HasSuffix(prefix, "/") {
 		prefix += "/"
 	}
@@ -223,13 +226,8 @@ func (s *Store) putAtomicFromFile(ctx context.Context, fullKey string, file io.R
 		IfNoneMatch:   aws.String("*"),
 	})
 	if err != nil {
-		// Check for PreconditionFailed (object already exists)
-		var apiErr smithy.APIError
-		if errors.As(err, &apiErr) {
-			code := apiErr.ErrorCode()
-			if code == "PreconditionFailed" || code == "412" {
-				return lode.ErrPathExists
-			}
+		if hasErrorCode(err, preconditionCodes...) {
+			return lode.ErrPathExists // object already exists
 		}
 		return fmt.Errorf("s3: put object: %w", err)
 	}
@@ -341,16 +339,8 @@ func (s *Store) putMultipartFromFile(ctx context.Context, fullKey string, file i
 	})
 	if err != nil {
 		abortUpload()
-		// Check for conditional write failures (object already exists)
-		var apiErr smithy.APIError
-		if errors.As(err, &apiErr) {
-			code := apiErr.ErrorCode()
-			// PreconditionFailed (412) - standard conditional failure
-			// ConditionalRequestConflict (409) - S3 conflict during conditional request
-			if code == "PreconditionFailed" || code == "412" ||
-				code == "ConditionalRequestConflict" || code == "409" {
-				return lode.ErrPathExists
-			}
+		if hasErrorCode(err, slices.Concat(preconditionCodes, conflictCodes)...) {
+			return lode.ErrPathExists // another writer completed first
 		}
 		return fmt.Errorf("s3: complete multipart upload: %w", err)
 	}
@@ -517,15 +507,10 @@ func (s *Store) CompareAndSwap(ctx context.Context, key, expected, replacement s
 	return nil
 }
 
-// mapCASError maps S3 precondition errors to ErrSnapshotConflict.
+// mapCASError maps S3 conditional-write refusals to ErrSnapshotConflict.
 func (s *Store) mapCASError(err error) error {
-	var apiErr smithy.APIError
-	if errors.As(err, &apiErr) {
-		code := apiErr.ErrorCode()
-		if code == "PreconditionFailed" || code == "412" ||
-			code == "ConditionalRequestConflict" || code == "409" {
-			return lode.ErrSnapshotConflict
-		}
+	if hasErrorCode(err, slices.Concat(preconditionCodes, conflictCodes)...) {
+		return lode.ErrSnapshotConflict
 	}
 	return fmt.Errorf("s3: CAS put: %w", err)
 }
@@ -537,11 +522,7 @@ func (s *Store) mapCASError(err error) error {
 // If range extends beyond EOF, returns available bytes.
 // If length is 0, returns empty slice without making a request.
 func (s *Store) ReadRange(ctx context.Context, key string, offset, length int64) ([]byte, error) {
-	// Validate offset and length per CONTRACT_STORAGE.md
-	if offset < 0 || length < 0 || length > maxReadRangeLength {
-		return nil, lode.ErrInvalidPath
-	}
-	if offset > math.MaxInt64-length {
+	if !storepath.RangeValid(offset, length) {
 		return nil, lode.ErrInvalidPath
 	}
 
@@ -683,349 +664,42 @@ func (s *Store) exists(ctx context.Context, fullKey string) (bool, error) {
 	return true, nil
 }
 
-// validateKey validates and returns the full key for file operations.
+// validateKey applies the shared key rules (storepath.Key) and returns the
+// full bucket key under the store prefix.
 func (s *Store) validateKey(key string) (string, error) {
-	if key == "" {
+	k, ok := storepath.Key(key)
+	if !ok {
 		return "", lode.ErrInvalidPath
 	}
-
-	// Normalize the key
-	cleaned := path.Clean(key)
-	if cleaned == "." || cleaned == ".." || strings.HasPrefix(cleaned, "../") {
-		return "", lode.ErrInvalidPath
-	}
-	// Remove leading slash
-	cleaned = strings.TrimPrefix(cleaned, "/")
-	if cleaned == "" {
-		return "", lode.ErrInvalidPath
-	}
-
-	return s.prefix + cleaned, nil
+	return s.prefix + k, nil
 }
 
-// validatePrefix validates and returns the full prefix for list operations.
+// validatePrefix applies the shared prefix rules (storepath.Prefix) and
+// returns the full bucket prefix for a listing.
 func (s *Store) validatePrefix(prefix string) (string, error) {
-	if prefix == "" {
-		return s.prefix, nil
-	}
-
-	cleaned := path.Clean(prefix)
-	if cleaned == ".." || strings.HasPrefix(cleaned, "../") {
+	p, ok := storepath.Prefix(prefix)
+	if !ok {
 		return "", lode.ErrInvalidPath
 	}
-	if cleaned == "." {
-		return s.prefix, nil
-	}
-	// Remove leading slash
-	cleaned = strings.TrimPrefix(cleaned, "/")
-	// path.Clean strips a trailing "/", but "a/" and "a" are different string
-	// prefixes (CONTRACT_STORAGE §List): only the former excludes "a2/x".
-	// A prefix that reduces to the root ("/") stays the root.
-	if cleaned != "" && strings.HasSuffix(prefix, "/") {
-		cleaned += "/"
-	}
+	return s.prefix + p, nil
+}
 
-	return s.prefix + cleaned, nil
+// S3 spells each conditional-write refusal two ways.
+var (
+	preconditionCodes = []string{"PreconditionFailed", "412"}         // If-Match / If-None-Match not satisfied
+	conflictCodes     = []string{"ConditionalRequestConflict", "409"} // concurrent conditional writers
+	notFoundCodes     = []string{"NotFound", "NoSuchKey", "404"}
+)
+
+// hasErrorCode reports whether err is an S3 API error carrying one of codes.
+func hasErrorCode(err error, codes ...string) bool {
+	var apiErr smithy.APIError
+	return errors.As(err, &apiErr) && slices.Contains(codes, apiErr.ErrorCode())
 }
 
 // isNotFound checks if an error indicates the object was not found.
 func isNotFound(err error) bool {
 	var nsk *types.NoSuchKey
-	if errors.As(err, &nsk) {
-		return true
-	}
 	var nsb *types.NoSuchBucket
-	if errors.As(err, &nsb) {
-		return true
-	}
-	var apiErr smithy.APIError
-	if errors.As(err, &apiErr) {
-		code := apiErr.ErrorCode()
-		return code == "NotFound" || code == "NoSuchKey" || code == "404"
-	}
-	return false
-}
-
-// -----------------------------------------------------------------------------
-// Mock S3 Client for Testing
-// -----------------------------------------------------------------------------
-
-// multipartUpload tracks an in-progress multipart upload.
-type multipartUpload struct {
-	parts map[int32][]byte
-}
-
-// MockS3Client is a test double for API.
-type MockS3Client struct {
-	mu       sync.RWMutex
-	objects  map[string][]byte
-	uploads  map[string]*multipartUpload // uploadID -> upload
-	uploadID int
-
-	// Call counters for test assertions
-	PutObjectCalls             int
-	CreateMultipartUploadCalls int
-	AbortMultipartUploadCalls  int
-
-	// UploadPartFailOnCall causes UploadPart to fail on the Nth call.
-	// Set to 0 to disable (default). Set to 1 to fail on first part, 2 for second, etc.
-	UploadPartFailOnCall int
-	uploadPartCalls      int
-}
-
-// NewMockS3Client creates a new mock S3 client for testing.
-func NewMockS3Client() *MockS3Client {
-	return &MockS3Client{
-		objects: make(map[string][]byte),
-		uploads: make(map[string]*multipartUpload),
-	}
-}
-
-// ResetCounts resets call counters for test isolation.
-func (m *MockS3Client) ResetCounts() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.PutObjectCalls = 0
-	m.CreateMultipartUploadCalls = 0
-	m.AbortMultipartUploadCalls = 0
-	m.uploadPartCalls = 0
-}
-
-// objectETag returns a deterministic ETag for the given data.
-func objectETag(data []byte) string {
-	return fmt.Sprintf("\"%x\"", len(data))
-}
-
-// PutObject implements API.PutObject for testing.
-func (m *MockS3Client) PutObject(_ context.Context, params *s3.PutObjectInput, _ ...func(*s3.Options)) (*s3.PutObjectOutput, error) {
-	key := aws.ToString(params.Key)
-	data, err := io.ReadAll(params.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	m.PutObjectCalls++
-
-	// Handle If-None-Match: "*" (conditional write for immutability)
-	if aws.ToString(params.IfNoneMatch) == "*" {
-		if _, exists := m.objects[key]; exists {
-			return nil, &smithyAPIError{code: "PreconditionFailed", message: "object already exists"}
-		}
-	}
-
-	// Handle If-Match: <etag> (conditional update for CAS)
-	if ifMatch := aws.ToString(params.IfMatch); ifMatch != "" {
-		existing, exists := m.objects[key]
-		if !exists {
-			return nil, &smithyAPIError{code: "PreconditionFailed", message: "object does not exist"}
-		}
-		if objectETag(existing) != ifMatch {
-			return nil, &smithyAPIError{code: "PreconditionFailed", message: "etag mismatch"}
-		}
-	}
-
-	m.objects[key] = data
-	return &s3.PutObjectOutput{}, nil
-}
-
-// GetObject implements API.GetObject for testing.
-func (m *MockS3Client) GetObject(_ context.Context, params *s3.GetObjectInput, _ ...func(*s3.Options)) (*s3.GetObjectOutput, error) {
-	key := aws.ToString(params.Key)
-
-	m.mu.RLock()
-	data, exists := m.objects[key]
-	m.mu.RUnlock()
-
-	if !exists {
-		return nil, &types.NoSuchKey{}
-	}
-
-	// Handle range requests
-	if params.Range != nil {
-		rangeStr := aws.ToString(params.Range)
-		var start, end int64
-		_, _ = fmt.Sscanf(rangeStr, "bytes=%d-%d", &start, &end)
-
-		if start >= int64(len(data)) {
-			return nil, &smithyAPIError{code: "InvalidRange"}
-		}
-
-		if end >= int64(len(data)) {
-			end = int64(len(data)) - 1
-		}
-
-		data = data[start : end+1]
-	}
-
-	return &s3.GetObjectOutput{
-		Body: io.NopCloser(bytes.NewReader(data)),
-		ETag: aws.String(objectETag(data)),
-	}, nil
-}
-
-// HeadObject implements API.HeadObject for testing.
-func (m *MockS3Client) HeadObject(_ context.Context, params *s3.HeadObjectInput, _ ...func(*s3.Options)) (*s3.HeadObjectOutput, error) {
-	key := aws.ToString(params.Key)
-
-	m.mu.RLock()
-	_, exists := m.objects[key]
-	m.mu.RUnlock()
-
-	if !exists {
-		return nil, &types.NoSuchKey{}
-	}
-
-	return &s3.HeadObjectOutput{}, nil
-}
-
-// CreateMultipartUpload implements API.CreateMultipartUpload for testing.
-func (m *MockS3Client) CreateMultipartUpload(_ context.Context, params *s3.CreateMultipartUploadInput, _ ...func(*s3.Options)) (*s3.CreateMultipartUploadOutput, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	m.CreateMultipartUploadCalls++
-	m.uploadID++
-	uploadID := fmt.Sprintf("upload-%d", m.uploadID)
-
-	m.uploads[uploadID] = &multipartUpload{
-		parts: make(map[int32][]byte),
-	}
-
-	return &s3.CreateMultipartUploadOutput{
-		Bucket:   params.Bucket,
-		Key:      params.Key,
-		UploadId: aws.String(uploadID),
-	}, nil
-}
-
-// UploadPart implements API.UploadPart for testing.
-func (m *MockS3Client) UploadPart(_ context.Context, params *s3.UploadPartInput, _ ...func(*s3.Options)) (*s3.UploadPartOutput, error) {
-	uploadID := aws.ToString(params.UploadId)
-	partNum := aws.ToInt32(params.PartNumber)
-
-	data, err := io.ReadAll(params.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	// Simulate failure on Nth call (for testing abort path)
-	m.uploadPartCalls++
-	if m.UploadPartFailOnCall > 0 && m.uploadPartCalls >= m.UploadPartFailOnCall {
-		return nil, &smithyAPIError{code: "InternalError", message: "simulated upload part failure"}
-	}
-
-	upload, exists := m.uploads[uploadID]
-	if !exists {
-		return nil, &smithyAPIError{code: "NoSuchUpload", message: "upload not found"}
-	}
-
-	upload.parts[partNum] = data
-
-	// Generate a fake ETag
-	etag := fmt.Sprintf("\"%d-%d\"", partNum, len(data))
-	return &s3.UploadPartOutput{ETag: aws.String(etag)}, nil
-}
-
-// CompleteMultipartUpload implements API.CompleteMultipartUpload for testing.
-func (m *MockS3Client) CompleteMultipartUpload(_ context.Context, params *s3.CompleteMultipartUploadInput, _ ...func(*s3.Options)) (*s3.CompleteMultipartUploadOutput, error) {
-	uploadID := aws.ToString(params.UploadId)
-	key := aws.ToString(params.Key)
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	// Handle If-None-Match: "*" (conditional write for immutability)
-	if aws.ToString(params.IfNoneMatch) == "*" {
-		if _, exists := m.objects[key]; exists {
-			return nil, &smithyAPIError{code: "PreconditionFailed", message: "object already exists"}
-		}
-	}
-
-	upload, exists := m.uploads[uploadID]
-	if !exists {
-		return nil, &smithyAPIError{code: "NoSuchUpload", message: "upload not found"}
-	}
-
-	// Assemble parts in order
-	var assembled []byte
-	for i := int32(1); i <= int32(len(upload.parts)); i++ {
-		assembled = append(assembled, upload.parts[i]...)
-	}
-
-	m.objects[key] = assembled
-	delete(m.uploads, uploadID)
-
-	return &s3.CompleteMultipartUploadOutput{}, nil
-}
-
-// AbortMultipartUpload implements API.AbortMultipartUpload for testing.
-func (m *MockS3Client) AbortMultipartUpload(_ context.Context, params *s3.AbortMultipartUploadInput, _ ...func(*s3.Options)) (*s3.AbortMultipartUploadOutput, error) {
-	uploadID := aws.ToString(params.UploadId)
-
-	m.mu.Lock()
-	m.AbortMultipartUploadCalls++
-	delete(m.uploads, uploadID)
-	m.mu.Unlock()
-
-	return &s3.AbortMultipartUploadOutput{}, nil
-}
-
-// DeleteObject implements API.DeleteObject for testing.
-func (m *MockS3Client) DeleteObject(_ context.Context, params *s3.DeleteObjectInput, _ ...func(*s3.Options)) (*s3.DeleteObjectOutput, error) {
-	key := aws.ToString(params.Key)
-
-	m.mu.Lock()
-	delete(m.objects, key)
-	m.mu.Unlock()
-
-	return &s3.DeleteObjectOutput{}, nil
-}
-
-// ListObjectsV2 implements API.ListObjectsV2 for testing.
-func (m *MockS3Client) ListObjectsV2(_ context.Context, params *s3.ListObjectsV2Input, _ ...func(*s3.Options)) (*s3.ListObjectsV2Output, error) {
-	prefix := aws.ToString(params.Prefix)
-
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	var contents []types.Object
-	for key := range m.objects {
-		if strings.HasPrefix(key, prefix) {
-			k := key
-			contents = append(contents, types.Object{Key: &k})
-		}
-	}
-
-	return &s3.ListObjectsV2Output{
-		Contents:    contents,
-		IsTruncated: aws.Bool(false),
-	}, nil
-}
-
-// smithyAPIError implements smithy.APIError for testing.
-type smithyAPIError struct {
-	code    string
-	message string
-}
-
-func (e *smithyAPIError) Error() string {
-	return e.message
-}
-
-func (e *smithyAPIError) ErrorCode() string {
-	return e.code
-}
-
-func (e *smithyAPIError) ErrorMessage() string {
-	return e.message
-}
-
-func (e *smithyAPIError) ErrorFault() smithy.ErrorFault {
-	return smithy.FaultUnknown
+	return errors.As(err, &nsk) || errors.As(err, &nsb) || hasErrorCode(err, notFoundCodes...)
 }

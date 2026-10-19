@@ -7,19 +7,20 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"math"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/pithecene-io/lode/internal/storepath"
 )
 
 // ErrInvalidPath indicates a path that would escape the storage root.
 var ErrInvalidPath = errors.New("invalid path: escapes storage root")
 
-// maxReadRangeLength is the maximum length for ReadRange to prevent overflow
-// when converting int64 to int on 32-bit platforms.
-const maxReadRangeLength = int64(math.MaxInt)
+// maxReadRangeLength is the largest ReadRange length a store accepts
+// (storepath.MaxRangeLength): what a []byte can address on this platform.
+const maxReadRangeLength = storepath.MaxRangeLength
 
 // -----------------------------------------------------------------------------
 // Filesystem Store
@@ -143,6 +144,7 @@ func (f *fsStore) List(_ context.Context, prefix string) ([]string, error) {
 	// "day=2026-10" works.
 	walkRoot, filter := searchPath, ""
 	if searchPath != f.root && !strings.HasSuffix(prefix, "/") {
+		// A partial final token: walk the parent and keep string-prefix matches.
 		// Prefixes that normalize to the root ("", ".", "a/..") are a direct
 		// root walk; never step above f.root to find a parent.
 		walkRoot = filepath.Dir(searchPath)
@@ -202,11 +204,7 @@ func (f *fsStore) Delete(_ context.Context, path string) error {
 }
 
 func (f *fsStore) ReadRange(_ context.Context, path string, offset, length int64) ([]byte, error) {
-	if offset < 0 || length < 0 || length > maxReadRangeLength {
-		return nil, ErrInvalidPath
-	}
-	// Check for offset+length overflow
-	if offset > math.MaxInt64-length {
+	if !storepath.RangeValid(offset, length) {
 		return nil, ErrInvalidPath
 	}
 
@@ -265,53 +263,51 @@ func (f *fsStore) ReaderAt(_ context.Context, path string) (io.ReaderAt, error) 
 	return file, nil
 }
 
+// safePathForFile resolves an object key to a filesystem path inside root.
+// The key rules are the shared ones (storepath.Key); an absolute key is
+// refused outright rather than re-rooted, and the result must lie under root.
 func (f *fsStore) safePathForFile(path string) (string, error) {
-	cleaned := filepath.Clean(path)
-	if cleaned == "." || path == "" {
+	key, ok := storepath.Key(path)
+	if !ok || filepath.IsAbs(path) {
 		return "", ErrInvalidPath
 	}
-	if filepath.IsAbs(cleaned) {
-		return "", ErrInvalidPath
-	}
-	if cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
-		return "", ErrInvalidPath
-	}
+	return f.resolve(key, false)
+}
 
-	fullPath := filepath.Join(f.root, cleaned)
+// safePathForPrefix resolves a listing prefix to the directory to walk; the
+// root itself for an empty or root-equivalent prefix.
+func (f *fsStore) safePathForPrefix(prefix string) (string, error) {
+	rel, ok := storepath.Prefix(prefix)
+	if !ok || filepath.IsAbs(prefix) {
+		return "", ErrInvalidPath
+	}
+	return f.resolve(rel, true)
+}
 
+// resolve joins rel beneath root and refuses anything that resolves outside
+// it. The shared rules clean "/"-separated keys; this check is the
+// filesystem's own defense, catching a traversal spelled with the platform
+// separator. allowRoot admits rel "" (a listing of everything).
+func (f *fsStore) resolve(rel string, allowRoot bool) (string, error) {
+	full := filepath.Join(f.root, filepath.FromSlash(rel))
 	absRoot, err := filepath.Abs(f.root)
 	if err != nil {
 		return "", err
 	}
-	absPath, err := filepath.Abs(fullPath)
+	absFull, err := filepath.Abs(full)
 	if err != nil {
 		return "", err
 	}
-
-	if !strings.HasPrefix(absPath, absRoot+string(filepath.Separator)) {
-		return "", ErrInvalidPath
-	}
-
-	return fullPath, nil
-}
-
-func (f *fsStore) safePathForPrefix(path string) (string, error) {
-	if path == "" {
+	if absFull == absRoot {
+		if !allowRoot {
+			return "", ErrInvalidPath
+		}
 		return f.root, nil
 	}
-
-	cleaned := filepath.Clean(path)
-	if cleaned == "." {
-		return f.root, nil
-	}
-	if filepath.IsAbs(cleaned) {
+	if !strings.HasPrefix(absFull, absRoot+string(filepath.Separator)) {
 		return "", ErrInvalidPath
 	}
-	if cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
-		return "", ErrInvalidPath
-	}
-
-	return filepath.Join(f.root, cleaned), nil
+	return full, nil
 }
 
 // -----------------------------------------------------------------------------
@@ -342,7 +338,7 @@ func NewMemory() Store {
 }
 
 func (m *memoryStore) Put(_ context.Context, path string, r io.Reader) error {
-	normalized, valid := normalizePathForFile(path)
+	normalized, valid := storepath.Key(path)
 	if !valid {
 		return ErrInvalidPath
 	}
@@ -364,7 +360,7 @@ func (m *memoryStore) Put(_ context.Context, path string, r io.Reader) error {
 }
 
 func (m *memoryStore) Get(_ context.Context, path string) (io.ReadCloser, error) {
-	normalized, valid := normalizePathForFile(path)
+	normalized, valid := storepath.Key(path)
 	if !valid {
 		return nil, ErrInvalidPath
 	}
@@ -383,7 +379,7 @@ func (m *memoryStore) Get(_ context.Context, path string) (io.ReadCloser, error)
 }
 
 func (m *memoryStore) Exists(_ context.Context, path string) (bool, error) {
-	normalized, valid := normalizePathForFile(path)
+	normalized, valid := storepath.Key(path)
 	if !valid {
 		return false, ErrInvalidPath
 	}
@@ -396,14 +392,9 @@ func (m *memoryStore) Exists(_ context.Context, path string) (bool, error) {
 }
 
 func (m *memoryStore) List(_ context.Context, prefix string) ([]string, error) {
-	normalized, valid := normalizePathForPrefix(prefix)
+	normalized, valid := storepath.Prefix(prefix)
 	if !valid {
 		return nil, ErrInvalidPath
-	}
-	// Clean strips a trailing "/", but "a/" and "a" are different string
-	// prefixes (CONTRACT_STORAGE §List): only the former excludes "a2/x".
-	if normalized != "" && strings.HasSuffix(prefix, "/") {
-		normalized += "/"
 	}
 
 	m.mu.RLock()
@@ -420,7 +411,7 @@ func (m *memoryStore) List(_ context.Context, prefix string) ([]string, error) {
 }
 
 func (m *memoryStore) Delete(_ context.Context, path string) error {
-	normalized, valid := normalizePathForFile(path)
+	normalized, valid := storepath.Key(path)
 	if !valid {
 		return ErrInvalidPath
 	}
@@ -435,7 +426,7 @@ func (m *memoryStore) Delete(_ context.Context, path string) error {
 // CompareAndSwap atomically replaces the content at path if and only if
 // the current content matches expected. See ConditionalWriter for semantics.
 func (m *memoryStore) CompareAndSwap(_ context.Context, path, expected, replacement string) error {
-	normalized, valid := normalizePathForFile(path)
+	normalized, valid := storepath.Key(path)
 	if !valid {
 		return ErrInvalidPath
 	}
@@ -459,15 +450,11 @@ func (m *memoryStore) CompareAndSwap(_ context.Context, path, expected, replacem
 }
 
 func (m *memoryStore) ReadRange(_ context.Context, path string, offset, length int64) ([]byte, error) {
-	if offset < 0 || length < 0 || length > maxReadRangeLength {
-		return nil, ErrInvalidPath
-	}
-	// Check for offset+length overflow
-	if offset > math.MaxInt64-length {
+	if !storepath.RangeValid(offset, length) {
 		return nil, ErrInvalidPath
 	}
 
-	normalized, valid := normalizePathForFile(path)
+	normalized, valid := storepath.Key(path)
 	if !valid {
 		return nil, ErrInvalidPath
 	}
@@ -496,7 +483,7 @@ func (m *memoryStore) ReadRange(_ context.Context, path string, offset, length i
 }
 
 func (m *memoryStore) ReaderAt(_ context.Context, path string) (io.ReaderAt, error) {
-	normalized, valid := normalizePathForFile(path)
+	normalized, valid := storepath.Key(path)
 	if !valid {
 		return nil, ErrInvalidPath
 	}
@@ -513,40 +500,4 @@ func (m *memoryStore) ReaderAt(_ context.Context, path string) (io.ReaderAt, err
 	dataCopy := make([]byte, len(data))
 	copy(dataCopy, data)
 	return bytes.NewReader(dataCopy), nil
-}
-
-func normalizePathForFile(path string) (string, bool) {
-	if path == "" {
-		return "", false
-	}
-
-	cleaned := filepath.Clean(path)
-	cleaned = filepath.ToSlash(cleaned)
-	cleaned = strings.TrimPrefix(cleaned, "/")
-
-	if cleaned == ".." || strings.HasPrefix(cleaned, "../") || cleaned == "." {
-		return "", false
-	}
-
-	return cleaned, true
-}
-
-func normalizePathForPrefix(path string) (string, bool) {
-	if path == "" {
-		return "", true
-	}
-
-	cleaned := filepath.Clean(path)
-	cleaned = filepath.ToSlash(cleaned)
-	cleaned = strings.TrimPrefix(cleaned, "/")
-
-	if cleaned == "." {
-		return "", true
-	}
-
-	if cleaned == ".." || strings.HasPrefix(cleaned, "../") {
-		return "", false
-	}
-
-	return cleaned, true
 }
