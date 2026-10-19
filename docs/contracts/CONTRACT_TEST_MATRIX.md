@@ -184,6 +184,7 @@ Gaps are tracked with codes indicating category and priority:
 | ErrNotFound | `TestStore_ReadRange_NotFound` |
 | Invalid params | `TestStore_ReadRange_NegativeOffset`, `TestStore_ReadRange_NegativeLength`, etc. |
 | Beyond EOF | `TestStore_ReadRange_BeyondEOF`, `TestStore_ReadRange_OffsetBeyondEOF` |
+| Exact bounds; allocation bounded by available bytes | `TestFSStore_ReadRange_Bounds`, `TestMemoryStore_ReadRange_Bounds` |
 
 **ReaderAt**: All covered ✅
 

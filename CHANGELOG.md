@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Filesystem `List` prefix semantics**: `NewFS` treated the prefix as a directory, so a partial final token (`day=2024-01`) listed nothing while the memory and S3 stores matched it as a string prefix. All stores now agree; `CONTRACT_STORAGE.md` §List states the string-prefix rule.
 - **`Put` is all-or-nothing**: `NewFS` left a partial object behind when the supplied reader failed mid-copy; it now removes what it created. `CONTRACT_STORAGE.md` §Put makes the rule normative for every adapter: on error the path is left as it was, callers never clean up after a failed `Put`, and a path whose `Put` returned `ErrPathExists` belongs to another writer.
 - **Stream writes no longer block on a fast `Put` failure**: when the store's `Put` returned before draining the stream (for example `ErrPathExists`), `StreamWrite` and `StreamWriteRecords` blocked forever on the pipe. The read end is now closed with `Put`'s error, so `Write`, `Commit`, and `StreamWriteRecords` fail with it instead. The writer never deletes after a failed `Put` — `Put` is all-or-nothing (above), so there is nothing of its own to remove and a path that returned `ErrPathExists` belongs to another writer. Found by mutation testing.
+- **Filesystem `ReadRange` allocation**: `NewFS` allocated the full requested `length` before reading, so a valid range far beyond EOF (which the contract says returns the available bytes) could exhaust memory. The buffer is now bounded by the bytes the file can supply.
 
 ---
 

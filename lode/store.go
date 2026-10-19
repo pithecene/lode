@@ -224,6 +224,19 @@ func (f *fsStore) ReadRange(_ context.Context, path string, offset, length int64
 	}
 	defer closer(file)()
 
+	// Bound the buffer by what the file can supply: a range past EOF returns
+	// the available bytes (CONTRACT_STORAGE §ReadRange), so a large valid
+	// length must not allocate memory the read can never fill.
+	info, err := file.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("lode: fs read range: %w", err)
+	}
+	available := info.Size() - offset
+	if available <= 0 {
+		return []byte{}, nil
+	}
+	length = min(length, available)
+
 	data := make([]byte, int(length))
 	n, err := file.ReadAt(data, offset)
 	if err != nil && !errors.Is(err, io.EOF) {

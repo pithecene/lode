@@ -99,6 +99,8 @@ Adapters MUST document:
 - If offset+length would overflow, MUST return `ErrInvalidPath`.
 - If the range extends beyond EOF, MUST return available bytes (not an error).
 - If offset is beyond EOF, MUST return an empty slice.
+- Buffer allocation MUST be bounded by the bytes available, not by the
+  requested length; a large valid length past EOF MUST NOT exhaust memory.
 - MUST use true range reads (not whole-file read) where the backend supports it.
 
 ### ReaderAt
