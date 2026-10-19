@@ -78,6 +78,10 @@ func (f *fsStore) Put(_ context.Context, path string, r io.Reader) error {
 	defer closer(file)()
 
 	if _, err = io.Copy(file, r); err != nil {
+		// Put is all-or-nothing (CONTRACT_STORAGE §Put): this call created the
+		// file, so this call removes it. The caller never has to guess whether
+		// a failed Put left an object behind, or whose it is.
+		_ = os.Remove(fullPath)
 		return fmt.Errorf("lode: fs put: %w", err)
 	}
 	return nil
