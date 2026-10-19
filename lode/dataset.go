@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 )
@@ -317,18 +316,44 @@ type dataset struct {
 	checksum   Checksum
 	retry      retryConfig
 
-	// lastSnapshotID is set after each successful commit. It guards against
-	// stale-but-existing pointers: if the pointer write fails after a commit,
-	// the pointer still references an older (existing) snapshot. Without this
-	// field, the next write would trust the stale pointer and break linear
-	// history. Single-writer constraint means no mutex is required.
-	lastSnapshotID DatasetSnapshotID
+	// history owns the snapshot sequence and its head pointer (history.go).
+	history history[DatasetSnapshotID, Manifest]
+}
 
-	// lastWrittenPointer tracks what we last successfully wrote to the pointer
-	// file. This may differ from lastSnapshotID when a pointer write fails
-	// (the snapshot was committed but the pointer wasn't updated). Used as
-	// the CAS expected value when the store implements ConditionalWriter.
-	lastWrittenPointer string
+// datasetKind is the dataset's snapshot grammar for history: paths come from
+// the layout, manifests are read without validation (the reader validates).
+type datasetKind struct {
+	id     DatasetID
+	layout layout
+}
+
+func (k datasetKind) snapshotsPrefix() string { return k.layout.segmentsPrefix(k.id) }
+func (k datasetKind) pointerPath() string     { return k.layout.latestPointerPath(k.id) }
+func (k datasetKind) manifestPath(id DatasetSnapshotID) string {
+	return k.layout.manifestPath(k.id, id)
+}
+
+func (k datasetKind) parseManifest(p string) (DatasetSnapshotID, bool) {
+	if !k.layout.isManifest(p) {
+		return "", false
+	}
+	id := k.layout.parseSegmentID(p)
+	return id, id != ""
+}
+
+func (k datasetKind) decode(r io.Reader) (*Manifest, error) {
+	var m Manifest
+	if err := json.NewDecoder(r).Decode(&m); err != nil {
+		return nil, fmt.Errorf("lode: failed to decode manifest: %w", err)
+	}
+	return &m, nil
+}
+
+// datasetKind is a snapshotKind; stated so the methods are visibly used.
+var _ snapshotKind[DatasetSnapshotID, Manifest] = datasetKind{}
+
+func toDatasetSnapshot(s *snapshot[DatasetSnapshotID, Manifest]) *DatasetSnapshot {
+	return &DatasetSnapshot{ID: s.ID, Manifest: s.Manifest}
 }
 
 // NewDataset creates a dataset with documented defaults.
@@ -388,116 +413,12 @@ func NewDataset(id DatasetID, factory StoreFactory, opts ...Option) (Dataset, er
 		codec:      cfg.codec,
 		checksum:   cfg.checksum,
 		retry:      cfg.retry,
+		history:    newHistory(store, datasetKind{id: id, layout: cfg.layout}),
 	}, nil
 }
 
 func (d *dataset) ID() DatasetID {
 	return d.id
-}
-
-// resolveParent resolves the most recent snapshot ID for parent linking
-// and the expected pointer content for CAS writes.
-//
-// Returns:
-//   - parentID: the snapshot ID for the manifest's ParentSnapshotID
-//   - expectedPointer: what the pointer file currently contains (for CAS)
-//
-// Resolution order:
-//  1. In-memory cache (always correct within a process; guards against stale pointers)
-//  2. Persistent pointer + Exists verification (O(1) cold start)
-//  3. Full scan fallback (backward compat for pre-pointer datasets)
-func (d *dataset) resolveParent(ctx context.Context) (parentID DatasetSnapshotID, expectedPointer string, err error) {
-	// In-memory cache is authoritative within this process.
-	// lastWrittenPointer tracks what the pointer should contain for CAS.
-	if d.lastSnapshotID != "" {
-		return d.lastSnapshotID, d.lastWrittenPointer, nil
-	}
-
-	id, pointerErr := d.readLatestPointer(ctx)
-	if pointerErr == nil {
-		// Verify the referenced snapshot exists (1 Exists call).
-		manifestPath := d.layout.manifestPath(d.id, id)
-		exists, existsErr := d.store.Exists(ctx, manifestPath)
-		if existsErr == nil && exists {
-			return id, string(id), nil
-		}
-		// Pointer is stale or corrupt — fall through to scan.
-		// Remember the actual content for CAS.
-	}
-
-	// Track what the pointer currently contains for CAS.
-	var currentPointer string
-	if pointerErr == nil {
-		currentPointer = string(id) // stale/corrupt content
-	}
-	// If pointerErr != nil (ErrNotFound), currentPointer = "" (pointer missing)
-
-	// Pointer missing or stale: fall back to scan for backward compat.
-	latest, scanErr := d.latestByScan(ctx)
-	if scanErr != nil {
-		if errors.Is(scanErr, ErrNoSnapshots) {
-			return "", currentPointer, nil
-		}
-		return "", "", fmt.Errorf("lode: failed to get latest snapshot: %w", scanErr)
-	}
-	return latest.ID, currentPointer, nil
-}
-
-// readLatestPointer reads the persistent latest-snapshot pointer file.
-// Returns the snapshot ID or ErrNotFound if the pointer does not exist.
-func (d *dataset) readLatestPointer(ctx context.Context) (DatasetSnapshotID, error) {
-	pointerPath := d.layout.latestPointerPath(d.id)
-	rc, err := d.store.Get(ctx, pointerPath)
-	if err != nil {
-		return "", err
-	}
-	defer closer(rc)()
-
-	data, err := io.ReadAll(rc)
-	if err != nil {
-		return "", fmt.Errorf("lode: failed to read latest pointer: %w", err)
-	}
-
-	id := DatasetSnapshotID(strings.TrimSpace(string(data)))
-	if id == "" {
-		return "", ErrNotFound
-	}
-	return id, nil
-}
-
-// writeLatestPointer persists the snapshot ID as the latest pointer.
-// When the store implements ConditionalWriter, uses CompareAndSwap for
-// optimistic concurrency. Falls back to Delete+Put (single-writer assumption).
-//
-// expected is the current pointer content for CAS (may differ from parentID
-// when the pointer is stale or a previous pointer write failed).
-func (d *dataset) writeLatestPointer(ctx context.Context, expected string, newID DatasetSnapshotID) error {
-	pointerPath := d.layout.latestPointerPath(d.id)
-	if cw, ok := d.store.(ConditionalWriter); ok {
-		return cw.CompareAndSwap(ctx, pointerPath, expected, string(newID))
-	}
-	// Fallback: Delete+Put (single-writer assumption)
-	_ = d.store.Delete(ctx, pointerPath) // ignore error; path may not exist
-	return d.store.Put(ctx, pointerPath, strings.NewReader(string(newID)))
-}
-
-// selfHealPointer attempts to write the pointer for scan-fallback recovery.
-// When the store supports CAS, uses CompareAndSwap with the observed pointer
-// content. CAS failure (ErrSnapshotConflict) is swallowed — it means a
-// concurrent commit already advanced the pointer, which is the desired state.
-// Falls back to Delete+Put only when CAS is not available.
-func (d *dataset) selfHealPointer(ctx context.Context, observed string, id DatasetSnapshotID) error {
-	pointerPath := d.layout.latestPointerPath(d.id)
-	if cw, ok := d.store.(ConditionalWriter); ok {
-		err := cw.CompareAndSwap(ctx, pointerPath, observed, string(id))
-		if errors.Is(err, ErrSnapshotConflict) {
-			return nil // concurrent commit advanced pointer; self-heal unnecessary
-		}
-		return err
-	}
-	// Fallback: Delete+Put (single-writer assumption, no CAS available)
-	_ = d.store.Delete(ctx, pointerPath)
-	return d.store.Put(ctx, pointerPath, strings.NewReader(string(id)))
 }
 
 func (d *dataset) Write(ctx context.Context, data []any, metadata Metadata) (*DatasetSnapshot, error) {
@@ -564,59 +485,35 @@ func (d *dataset) Write(ctx context.Context, data []any, metadata Metadata) (*Da
 	return d.commitWithRetry(ctx, snapshotID, files, partitionKeys, metadata, rowCount, codecName, minTs, maxTs, "")
 }
 
+// Snapshot loads a snapshot by ID. A dataset written before canonical
+// manifests existed is found by scan when the canonical path is absent.
 func (d *dataset) Snapshot(ctx context.Context, id DatasetSnapshotID) (*DatasetSnapshot, error) {
-	manifestPath := d.layout.manifestPath(d.id, id)
-
-	rc, err := d.store.Get(ctx, manifestPath)
+	s, err := d.history.Snapshot(ctx, id)
+	if errors.Is(err, ErrNotFound) {
+		s, err = d.history.find(ctx, id)
+	}
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
-			return d.findSnapshotByID(ctx, id)
+			return nil, err
 		}
 		return nil, fmt.Errorf("lode: failed to get manifest: %w", err)
 	}
-	defer closer(rc)()
-
-	var manifest Manifest
-	if err := json.NewDecoder(rc).Decode(&manifest); err != nil {
-		return nil, fmt.Errorf("lode: failed to decode manifest: %w", err)
-	}
-
-	return &DatasetSnapshot{ID: id, Manifest: &manifest}, nil
+	return toDatasetSnapshot(s), nil
 }
 
+// Snapshots lists every snapshot, oldest first.
 func (d *dataset) Snapshots(ctx context.Context) ([]*DatasetSnapshot, error) {
-	prefix := d.layout.segmentsPrefix(d.id)
-
-	paths, err := d.store.List(ctx, prefix)
+	all, err := d.history.Snapshots(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("lode: failed to list snapshots: %w", err)
+		return nil, err
 	}
-
-	seen := make(map[DatasetSnapshotID]bool)
-	var snapshots []*DatasetSnapshot
-
-	for _, p := range paths {
-		if !d.layout.isManifest(p) {
-			continue
-		}
-
-		snapshotID := d.layout.parseSegmentID(p)
-		if snapshotID == "" || seen[snapshotID] {
-			continue
-		}
-		seen[snapshotID] = true
-
-		snapshot, err := d.loadSnapshotFromPath(ctx, snapshotID, p)
-		if err != nil {
-			return nil, fmt.Errorf("lode: failed to load snapshot %s: %w", snapshotID, err)
-		}
-		snapshots = append(snapshots, snapshot)
+	snapshots := make([]*DatasetSnapshot, len(all))
+	for i, s := range all {
+		snapshots[i] = toDatasetSnapshot(s)
 	}
-
 	sort.Slice(snapshots, func(i, j int) bool {
 		return snapshots[i].Manifest.CreatedAt.Before(snapshots[j].Manifest.CreatedAt)
 	})
-
 	return snapshots, nil
 }
 
@@ -653,76 +550,13 @@ func (d *dataset) Read(ctx context.Context, id DatasetSnapshotID) ([]any, error)
 	return allRecords, nil
 }
 
+// Latest returns the head snapshot.
 func (d *dataset) Latest(ctx context.Context) (*DatasetSnapshot, error) {
-	// Pointer-first: O(1) via persistent latest file.
-	// Track observed pointer content for CAS-safe self-heal.
-	var observedPointer string
-	id, err := d.readLatestPointer(ctx)
-	if err == nil {
-		snap, snapErr := d.Snapshot(ctx, id)
-		if snapErr == nil {
-			// Refresh CAS cache so retries after ErrSnapshotConflict
-			// use the current pointer content, not stale cached values.
-			d.lastSnapshotID = snap.ID
-			d.lastWrittenPointer = string(id)
-			return snap, nil
-		}
-		// Pointer references a nonexistent snapshot — fall through to scan.
-		observedPointer = string(id)
-	}
-
-	snap, err := d.latestByScan(ctx)
+	s, err := d.history.Latest(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	// Self-heal: write the pointer so subsequent calls are O(1).
-	// Uses CAS when available to avoid rewinding a concurrently advanced pointer.
-	_ = d.selfHealPointer(ctx, observedPointer, snap.ID)
-
-	// Refresh CAS cache. After self-heal the pointer contains snap.ID.
-	d.lastSnapshotID = snap.ID
-	d.lastWrittenPointer = string(snap.ID)
-
-	return snap, nil
-}
-
-// latestByScan finds the latest snapshot via a single List + single Get.
-// Snapshot IDs are nanosecond timestamps, so the lexicographically largest
-// manifest path contains the latest snapshot.
-func (d *dataset) latestByScan(ctx context.Context) (*DatasetSnapshot, error) {
-	prefix := d.layout.segmentsPrefix(d.id)
-	paths, err := d.store.List(ctx, prefix)
-	if err != nil {
-		return nil, fmt.Errorf("lode: failed to list snapshots: %w", err)
-	}
-
-	// Find the lexicographically largest snapshot ID from manifest paths.
-	var latestID DatasetSnapshotID
-	var latestPath string
-	for _, p := range paths {
-		if !d.layout.isManifest(p) {
-			continue
-		}
-		id := d.layout.parseSegmentID(p)
-		if id == "" {
-			continue
-		}
-		if string(id) > string(latestID) {
-			latestID = id
-			latestPath = p
-		}
-	}
-	if latestID == "" {
-		return nil, ErrNoSnapshots
-	}
-
-	snap, err := d.loadSnapshotFromPath(ctx, latestID, latestPath)
-	if err != nil {
-		return nil, fmt.Errorf("lode: failed to load latest snapshot: %w", err)
-	}
-
-	return snap, nil
+	return toDatasetSnapshot(s), nil
 }
 
 func (d *dataset) StreamWrite(ctx context.Context, metadata Metadata) (StreamWriter, error) {
@@ -733,7 +567,7 @@ func (d *dataset) StreamWrite(ctx context.Context, metadata Metadata) (StreamWri
 		return nil, ErrCodecConfigured
 	}
 
-	parentID, expectedPointer, err := d.resolveParent(ctx)
+	parentID, expectedPointer, err := d.history.Resolve(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -1049,39 +883,20 @@ func (d *dataset) commitWithRetry(
 	minTs, maxTs *time.Time,
 	cleanupPath string,
 ) (*DatasetSnapshot, error) {
-	var lastErr error
-	for attempt := range d.retry.maxAttempts + 1 {
-		if attempt > 0 {
-			if err := d.retry.retryBackoff(ctx, attempt); err != nil {
-				d.cleanupDataFile(ctx, cleanupPath)
-				return nil, err
-			}
-			if _, err := d.Latest(ctx); err != nil && !errors.Is(err, ErrNoSnapshots) {
-				d.cleanupDataFile(ctx, cleanupPath)
-				return nil, err
-			}
-		}
-
-		parentID, expectedPointer, err := d.resolveParent(ctx)
+	var manifest *Manifest
+	err := d.history.CommitLoop(ctx, &d.retry, func() error {
+		parentID, expectedPointer, err := d.history.Resolve(ctx)
 		if err != nil {
-			d.cleanupDataFile(ctx, cleanupPath)
-			return nil, err
+			return err
 		}
-
-		manifest := d.buildManifest(snapshotID, parentID, metadata, files, rowCount, codec, minTs, maxTs)
-
-		result, err := d.commitSnapshot(ctx, expectedPointer, snapshotID, manifest, partitionKeys)
-		if err == nil {
-			return result, nil
-		}
-		if !errors.Is(err, ErrSnapshotConflict) {
-			d.cleanupDataFile(ctx, cleanupPath)
-			return nil, err
-		}
-		lastErr = err
+		manifest = d.buildManifest(snapshotID, parentID, metadata, files, rowCount, codec, minTs, maxTs)
+		return d.history.Advance(ctx, expectedPointer, snapshotID, manifest, d.manifestPaths(snapshotID, partitionKeys))
+	})
+	if err != nil {
+		d.cleanupDataFile(ctx, cleanupPath)
+		return nil, err
 	}
-	d.cleanupDataFile(ctx, cleanupPath)
-	return nil, lastErr
+	return &DatasetSnapshot{ID: snapshotID, Manifest: manifest}, nil
 }
 
 // cleanupDataFile deletes a data file on commit failure. No-op if path is empty.
@@ -1104,30 +919,6 @@ func (d *dataset) partitionRecords(records []any) (map[string][]any, error) {
 	}
 
 	return partitions, nil
-}
-
-// commitSnapshot writes the latest pointer and manifest, updates in-memory
-// state, and returns the completed snapshot. Data-file cleanup on failure is
-// the caller's responsibility (see cleanupDataFile in the Write retry loop).
-func (d *dataset) commitSnapshot(ctx context.Context, expectedPointer string, snapshotID DatasetSnapshotID, manifest *Manifest, partitionKeys []string) (*DatasetSnapshot, error) {
-	// Pointer must be written before manifest to prevent stale-but-existing
-	// pointers on cold start. If this fails, no manifest is written and the
-	// commit is aborted. A pointer referencing a not-yet-existing snapshot is
-	// harmless (Exists check falls through to scan on the next cold start).
-	if err := d.writeLatestPointer(ctx, expectedPointer, snapshotID); err != nil {
-		return nil, fmt.Errorf("lode: failed to update latest pointer: %w", err)
-	}
-
-	if err := d.writeManifests(ctx, snapshotID, manifest, partitionKeys); err != nil {
-		return nil, fmt.Errorf("lode: failed to write manifest: %w", err)
-	}
-	d.lastSnapshotID = snapshotID
-	d.lastWrittenPointer = string(snapshotID)
-
-	return &DatasetSnapshot{
-		ID:       snapshotID,
-		Manifest: manifest,
-	}, nil
 }
 
 // buildManifest constructs a Manifest with common fields derived from the
@@ -1283,66 +1074,28 @@ func (d *dataset) readDataFile(ctx context.Context, filePath string) ([]any, err
 	return d.codec.Decode(decompReader)
 }
 
-func (d *dataset) writeManifests(ctx context.Context, snapshotID DatasetSnapshotID, manifest *Manifest, partitionKeys []string) error {
-	data, err := json.MarshalIndent(manifest, "", "  ")
-	if err != nil {
-		return err
+// manifestPaths returns where a snapshot's manifest is written: always the
+// canonical path (O(1) Snapshot lookup) and, on layouts that place segments
+// under partitions, one copy per partition the snapshot touches so partition
+// listings can find it. Partitionless layouts have only the canonical path.
+func (d *dataset) manifestPaths(snapshotID DatasetSnapshotID, partitionKeys []string) []string {
+	canonical := d.layout.manifestPath(d.id, snapshotID)
+	paths := []string{canonical}
+	if !d.layout.supportsPartitions() {
+		return paths
 	}
-
-	pathSet := make(map[string]bool)
-	var manifestPaths []string
-
-	hasPartitions := false
+	seen := map[string]bool{canonical: true}
 	for _, pk := range partitionKeys {
-		if pk != "" {
-			hasPartitions = true
-			break
+		if pk == "" {
+			continue
+		}
+		p := d.layout.manifestPathInPartition(d.id, snapshotID, pk)
+		if !seen[p] {
+			seen[p] = true
+			paths = append(paths, p)
 		}
 	}
-
-	if hasPartitions && d.layout.supportsPartitions() {
-		canonicalPath := d.layout.manifestPath(d.id, snapshotID)
-
-		var firstNonEmptyPart string
-		for _, pk := range partitionKeys {
-			if pk != "" {
-				firstNonEmptyPart = pk
-				break
-			}
-		}
-
-		if firstNonEmptyPart != "" {
-			firstPartPath := d.layout.manifestPathInPartition(d.id, snapshotID, firstNonEmptyPart)
-
-			if firstPartPath != canonicalPath {
-				// Always write canonical manifest for O(1) Snapshot(ctx, id) lookup.
-				pathSet[canonicalPath] = true
-				manifestPaths = append(manifestPaths, canonicalPath)
-
-				for _, pk := range partitionKeys {
-					if pk != "" {
-						partPath := d.layout.manifestPathInPartition(d.id, snapshotID, pk)
-						if !pathSet[partPath] {
-							pathSet[partPath] = true
-							manifestPaths = append(manifestPaths, partPath)
-						}
-					}
-				}
-			}
-		}
-	}
-
-	if len(manifestPaths) == 0 {
-		manifestPaths = []string{d.layout.manifestPath(d.id, snapshotID)}
-	}
-
-	for _, path := range manifestPaths {
-		if err := d.store.Put(ctx, path, bytes.NewReader(data)); err != nil {
-			return err
-		}
-	}
-
-	return nil
+	return paths
 }
 
 func (d *dataset) validateComponentsMatch(m *Manifest) error {
@@ -1359,41 +1112,6 @@ func (d *dataset) validateComponentsMatch(m *Manifest) error {
 			m.Compressor, d.compressor.Name())
 	}
 	return nil
-}
-
-func (d *dataset) loadSnapshotFromPath(ctx context.Context, id DatasetSnapshotID, manifestPath string) (*DatasetSnapshot, error) {
-	rc, err := d.store.Get(ctx, manifestPath)
-	if err != nil {
-		return nil, err
-	}
-	defer closer(rc)()
-
-	var manifest Manifest
-	if err := json.NewDecoder(rc).Decode(&manifest); err != nil {
-		return nil, fmt.Errorf("failed to decode manifest: %w", err)
-	}
-
-	return &DatasetSnapshot{ID: id, Manifest: &manifest}, nil
-}
-
-func (d *dataset) findSnapshotByID(ctx context.Context, id DatasetSnapshotID) (*DatasetSnapshot, error) {
-	prefix := d.layout.segmentsPrefix(d.id)
-	paths, err := d.store.List(ctx, prefix)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list for snapshot search: %w", err)
-	}
-
-	for _, p := range paths {
-		if !d.layout.isManifest(p) {
-			continue
-		}
-		foundID := d.layout.parseSegmentID(p)
-		if foundID == id {
-			return d.loadSnapshotFromPath(ctx, id, p)
-		}
-	}
-
-	return nil, ErrNotFound
 }
 
 func generateID() string {
