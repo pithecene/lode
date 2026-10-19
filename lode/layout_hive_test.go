@@ -7,25 +7,23 @@ import "testing"
 // the index arithmetic (loop starts, -1 sentinels, boundary checks) was not
 // observed by any test. These pin the edges directly.
 //
-// Known equivalent mutants, left alive: `len(parts) < 4` → `<=` (a 4-part
-// path can never be a manifest); the `-1` sentinel inversions and `< 0`
-// → `<= 0` checks on partitionsIdx/segmentsIdx (indices are never 0 or 1);
-// the loop upper bounds in isManifest/parseSegmentID (the isManifest guard
-// proves a segments marker exists before the loop could overrun); and
-// `segmentsIdx <= partitionsIdx+1` → `<` (segments directly after partitions
-// yields an empty join either way).
+// Known equivalent mutant, left alive: indexOf's `-1` sentinel (→ `1`):
+// a path whose partition segments are not followed by the snapshot directory
+// is rejected one step later by the snapshotDir check, whatever indexOf
+// returns. The other grammar edges — nothing after the dataset, and
+// partitions/ immediately followed by the snapshot directory — are pinned in
+// TestHiveLayout_IsManifest_GrammarEdges.
 //
-// The loop starts are not equivalent: scanning from index 1 would mistake a
-// dataset named "segments" or "partitions" for the marker. Those names are
-// covered below as reserved-name cases.
+// Dataset names "segments" and "partitions" are reserved-name cases below:
+// the grammar must read them as dataset IDs, not markers.
 
-func hiveForTest(t *testing.T) *hiveLayout {
+func hiveForTest(t *testing.T) layout {
 	t.Helper()
 	l, err := NewHiveLayout("day")
 	if err != nil {
 		t.Fatal(err)
 	}
-	return l.(*hiveLayout)
+	return l
 }
 
 func TestHiveLayout_IsManifest(t *testing.T) {
@@ -130,8 +128,9 @@ func TestHiveLayout_ExtractPartitionPath(t *testing.T) {
 		{"datasets/ds/partitions/day=1/data/f.jsonl", ""},
 		// partitions immediately followed by segments.
 		{"datasets/ds/partitions/segments/1/data/f.jsonl", ""},
-		// Marker deeper than index 2 is still found.
-		{"datasets/ds/x/partitions/day=1/segments/1/data/f.jsonl", "day=1"},
+		// A stray directory between the dataset and the partitions marker is
+		// not a path of this layout; nothing is guessed from it.
+		{"datasets/ds/x/partitions/day=1/segments/1/data/f.jsonl", ""},
 		// A dataset literally named "segments" sits before the partitions
 		// marker and must not terminate the scan.
 		{"datasets/segments/partitions/day=1/segments/1/data/f.jsonl", "day=1"},
@@ -167,6 +166,27 @@ func TestHiveLayout_Prefixes(t *testing.T) {
 	for _, c := range cases {
 		if c.got != c.want {
 			t.Errorf("%s: got %q, want %q", c.name, c.got, c.want)
+		}
+	}
+}
+
+// TestHiveLayout_IsManifest_GrammarEdges pins the boundaries of the grammar
+// walk: a path that ends at the dataset, and a partitions/ directory with no
+// partition between it and the snapshot directory.
+func TestHiveLayout_IsManifest_GrammarEdges(t *testing.T) {
+	l := hiveForTest(t)
+	for _, p := range []string{
+		"datasets/ds",
+		"datasets/ds/",
+		"datasets/ds/partitions",
+		"datasets/ds/partitions/segments/s1/manifest.json",
+		"datasets/ds/partitions/day=1/manifest.json",
+	} {
+		if l.isManifest(p) {
+			t.Errorf("isManifest(%q) = true, want false", p)
+		}
+		if id := l.parseSegmentID(p); id != "" {
+			t.Errorf("parseSegmentID(%q) = %q, want empty", p, id)
 		}
 	}
 }
