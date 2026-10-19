@@ -3,6 +3,7 @@ package lode
 import (
 	"context"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -817,5 +818,113 @@ func TestStreamWriteRecords_PutFailureDuringIteratorErr_TakesPrecedence(t *testi
 	})
 	if !errors.Is(err, ErrPathExists) {
 		t.Fatalf("got %v, want ErrPathExists to take precedence", err)
+	}
+}
+
+// blockingErrIterator yields one record, ends once the gate opens, and then
+// blocks forever in Err. A Put that has already failed must be reported
+// without ever calling Err.
+type blockingErrIterator struct {
+	gate <-chan struct{}
+	n    int
+}
+
+func (b *blockingErrIterator) Next() bool {
+	if b.n == 0 {
+		b.n++
+		return true
+	}
+	<-b.gate
+	return false
+}
+func (b *blockingErrIterator) Record() any { return D{"id": b.n} }
+func (b *blockingErrIterator) Err() error  { select {} }
+
+// afterPutPublished returns a channel closed shortly after the data-path Put
+// has returned, so the test observes the published result, not the hook.
+func afterPutPublished(fs *faultStore) <-chan struct{} {
+	putReturned := make(chan struct{})
+	fs.SetAfterPut(func(path string, _ error) {
+		if strings.Contains(path, "/data/") {
+			close(putReturned)
+		}
+	})
+	gate := make(chan struct{})
+	go func() {
+		<-putReturned
+		time.Sleep(10 * time.Millisecond)
+		close(gate)
+	}()
+	return gate
+}
+
+func TestStreamWriteRecords_PutFailure_ReportedWithoutCallingBlockingErr(t *testing.T) {
+	fs := newFaultStore(NewMemory())
+	fs.SetPutError(ErrPathExists, "/data/")
+	gate := afterPutPublished(fs)
+	ds, err := NewDataset("test-ds", newFaultStoreFactory(fs), WithCodec(NewJSONLCodec()), WithCompressor(NewZstdCompressor()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = awaitOrFail(t, func() error {
+		_, werr := ds.StreamWriteRecords(t.Context(), &blockingErrIterator{gate: gate}, Metadata{})
+		return werr
+	})
+	if !errors.Is(err, ErrPathExists) {
+		t.Fatalf("got %v, want ErrPathExists", err)
+	}
+}
+
+var errCloseBoom = errors.New("compressor close failure")
+
+// closeFailCompressor wraps a compressor so that Close always fails.
+type closeFailCompressor struct{ Compressor }
+
+func (c closeFailCompressor) Compress(w io.Writer) (io.WriteCloser, error) {
+	wc, err := c.Compressor.Compress(w)
+	if err != nil {
+		return nil, err
+	}
+	return &closeFailWriter{wc}, nil
+}
+
+type closeFailWriter struct{ io.WriteCloser }
+
+func (c *closeFailWriter) Close() error {
+	_ = c.WriteCloser.Close()
+	return errCloseBoom
+}
+
+// A compressor whose Close fails after Put has already failed must not mask
+// the Put error at Commit.
+func TestStreamWrite_Commit_PutFailurePrecedesCompressorCloseError(t *testing.T) {
+	fs := newFaultStore(NewMemory())
+	fs.SetPutError(ErrPathExists, "/data/")
+	gate := afterPutPublished(fs)
+	ds, err := NewDataset("test-ds", newFaultStoreFactory(fs), WithCompressor(closeFailCompressor{NewZstdCompressor()}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sw, err := ds.StreamWrite(t.Context(), Metadata{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-gate
+	_, err = sw.Commit(t.Context())
+	if !errors.Is(err, ErrPathExists) {
+		t.Fatalf("Commit: got %v, want ErrPathExists", err)
+	}
+	// Without a Put failure the close error itself surfaces.
+	fs2 := newFaultStore(NewMemory())
+	ds2, err := NewDataset("test-ds", newFaultStoreFactory(fs2), WithCompressor(closeFailCompressor{NewZstdCompressor()}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sw2, err := ds2.StreamWrite(t.Context(), Metadata{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sw2.Commit(t.Context()); !errors.Is(err, errCloseBoom) {
+		t.Fatalf("Commit without Put failure: got %v, want errCloseBoom", err)
 	}
 }
