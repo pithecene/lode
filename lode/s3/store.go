@@ -107,7 +107,10 @@ type Config struct {
 	Bucket string
 
 	// Prefix is an optional key prefix for all operations.
-	// If set, all keys are prefixed with this value (with a trailing slash added if missing).
+	// If set, all keys are prefixed with this value (with a trailing slash
+	// added if missing). It follows the key rules of CONTRACT_STORAGE §Put:
+	// New returns lode.ErrInvalidPath for a prefix that escapes the root or
+	// contains a backslash.
 	Prefix string
 }
 
@@ -137,7 +140,13 @@ func New(client API, cfg Config) (*Store, error) {
 		return nil, errors.New("s3: bucket is required")
 	}
 
-	prefix := cfg.Prefix
+	// The configured prefix becomes part of every key, so it obeys the same
+	// rules as a key (storepath): no escape, no backslash. It is normalized to
+	// end in "/" so callers' keys sit beneath it.
+	prefix, ok := storepath.Prefix(cfg.Prefix)
+	if !ok {
+		return nil, fmt.Errorf("s3: invalid prefix %q: %w", cfg.Prefix, lode.ErrInvalidPath)
+	}
 	if prefix != "" && !strings.HasSuffix(prefix, "/") {
 		prefix += "/"
 	}
