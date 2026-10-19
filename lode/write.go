@@ -202,8 +202,17 @@ func (d *dataset) filePath(id DatasetSnapshotID, partition, role string) string 
 }
 
 // putFile compresses content into memory and stores it as one immutable
-// object, returning a reference that describes the stored bytes.
+// object, returning a reference that describes the stored bytes. Errors are
+// wrapped with the content's operation, keeping the established messages.
 func (d *dataset) putFile(ctx context.Context, path string, content fileContent) (FileRef, error) {
+	ref, err := d.storeFile(ctx, path, content)
+	if err != nil {
+		return FileRef{}, fmt.Errorf("lode: %s: %w", content.op(), err)
+	}
+	return ref, nil
+}
+
+func (d *dataset) storeFile(ctx context.Context, path string, content fileContent) (FileRef, error) {
 	var buf bytes.Buffer
 	comp, err := d.compressor.Compress(&buf)
 	if err != nil {
@@ -236,9 +245,11 @@ func (d *dataset) checksumBytes(data []byte) string {
 }
 
 // fileContent is what a buffered data file holds before compression: a raw
-// blob, or a record batch that encodes through the codec on demand.
+// blob, or a record batch that encodes through the codec on demand. op names
+// the operation in errors ("write blob", "write data file"), as before.
 type fileContent interface {
 	writeTo(w io.Writer) error
+	op() string
 }
 
 type blobContent []byte
@@ -248,12 +259,15 @@ func (b blobContent) writeTo(w io.Writer) error {
 	return err
 }
 
+func (blobContent) op() string { return "write blob" }
+
 type encodedRecords struct {
 	codec   Codec
 	records []any
 }
 
 func (e encodedRecords) writeTo(w io.Writer) error { return e.codec.Encode(w, e.records) }
+func (encodedRecords) op() string                  { return "write data file" }
 
 // fileStats returns per-file statistics when the encoder reports them
 // (StatisticalCodec, StatisticalStreamEncoder), nil otherwise.
