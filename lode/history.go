@@ -45,6 +45,7 @@ type snapshot[ID ~string, M any] struct {
 }
 
 type history[ID ~string, M any] struct {
+	noun  string // what the kind calls its manifest in errors ("manifest", "volume manifest")
 	store Store
 	kind  snapshotKind[ID, M]
 
@@ -56,8 +57,10 @@ type history[ID ~string, M any] struct {
 	pointer string
 }
 
-func newHistory[ID ~string, M any](store Store, kind snapshotKind[ID, M]) history[ID, M] {
-	return history[ID, M]{store: store, kind: kind}
+// noun is what the kind calls its manifest in error messages, so a Volume
+// failure still reads "volume manifest" after the protocol was shared.
+func newHistory[ID ~string, M any](store Store, kind snapshotKind[ID, M], noun string) history[ID, M] {
+	return history[ID, M]{noun: noun, store: store, kind: kind}
 }
 
 // -----------------------------------------------------------------------------
@@ -337,14 +340,14 @@ func (h *history[ID, M]) verifyLoad(ctx context.Context, id ID) (*snapshot[ID, M
 func (h *history[ID, M]) Advance(ctx context.Context, expected string, id ID, manifest *M, paths []string) error {
 	data, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
-		return fmt.Errorf("lode: failed to marshal manifest: %w", err)
+		return fmt.Errorf("lode: failed to marshal %s: %w", h.noun, err)
 	}
 	if err := h.writePointer(ctx, expected, id); err != nil {
 		return fmt.Errorf("lode: failed to update latest pointer: %w", err)
 	}
 	for _, p := range paths {
 		if err := h.store.Put(ctx, p, bytes.NewReader(data)); err != nil {
-			return fmt.Errorf("lode: failed to write manifest: %w", err)
+			return fmt.Errorf("lode: failed to write %s: %w", h.noun, err)
 		}
 	}
 	h.remember(id, string(id))

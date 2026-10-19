@@ -61,7 +61,7 @@ func (o *layoutOption) applyReader(cfg *readerConfig) error {
 }
 
 func (o *layoutOption) applyVolume(*volumeConfig) error {
-	return fmt.Errorf("WithLayout: %w", ErrOptionNotValidForVolume)
+	return fmt.Errorf("lode: WithLayout: %w", ErrOptionNotValidForVolume)
 }
 
 // hiveLayoutOption implements Option for WithHiveLayout.
@@ -103,7 +103,7 @@ func (o *hiveLayoutOption) applyReader(cfg *readerConfig) error {
 }
 
 func (o *hiveLayoutOption) applyVolume(*volumeConfig) error {
-	return fmt.Errorf("WithHiveLayout: %w", ErrOptionNotValidForVolume)
+	return fmt.Errorf("lode: WithHiveLayout: %w", ErrOptionNotValidForVolume)
 }
 
 // compressorOption implements Option for WithCompressor (dataset-only).
@@ -124,11 +124,11 @@ func (o *compressorOption) applyDataset(cfg *datasetConfig) error {
 }
 
 func (o *compressorOption) applyReader(*readerConfig) error {
-	return fmt.Errorf("WithCompressor: %w", ErrOptionNotValidForDatasetReader)
+	return fmt.Errorf("lode: WithCompressor: %w", ErrOptionNotValidForDatasetReader)
 }
 
 func (o *compressorOption) applyVolume(*volumeConfig) error {
-	return fmt.Errorf("WithCompressor: %w", ErrOptionNotValidForVolume)
+	return fmt.Errorf("lode: WithCompressor: %w", ErrOptionNotValidForVolume)
 }
 
 // codecOption implements Option for WithCodec (dataset-only).
@@ -153,11 +153,11 @@ func (o *codecOption) applyDataset(cfg *datasetConfig) error {
 }
 
 func (o *codecOption) applyReader(*readerConfig) error {
-	return fmt.Errorf("WithCodec: %w", ErrOptionNotValidForDatasetReader)
+	return fmt.Errorf("lode: WithCodec: %w", ErrOptionNotValidForDatasetReader)
 }
 
 func (o *codecOption) applyVolume(*volumeConfig) error {
-	return fmt.Errorf("WithCodec: %w", ErrOptionNotValidForVolume)
+	return fmt.Errorf("lode: WithCodec: %w", ErrOptionNotValidForVolume)
 }
 
 // checksumOption implements Option for WithChecksum (dataset-only).
@@ -181,7 +181,7 @@ func (o *checksumOption) applyDataset(cfg *datasetConfig) error {
 }
 
 func (o *checksumOption) applyReader(*readerConfig) error {
-	return fmt.Errorf("WithChecksum: %w", ErrOptionNotValidForDatasetReader)
+	return fmt.Errorf("lode: WithChecksum: %w", ErrOptionNotValidForDatasetReader)
 }
 
 func (o *checksumOption) applyVolume(cfg *volumeConfig) error {
@@ -201,7 +201,7 @@ func (o *retryOption) applyDataset(cfg *datasetConfig) error { return o.apply(&c
 func (o *retryOption) applyVolume(cfg *volumeConfig) error   { return o.apply(&cfg.retry) }
 
 func (o *retryOption) applyReader(*readerConfig) error {
-	return fmt.Errorf("%s: %w", o.name, ErrOptionNotValidForDatasetReader)
+	return fmt.Errorf("lode: %s: %w", o.name, ErrOptionNotValidForDatasetReader)
 }
 
 // WithRetryCount enables automatic CAS retry on snapshot conflict.
@@ -377,7 +377,7 @@ func NewDataset(id DatasetID, factory StoreFactory, opts ...Option) (Dataset, er
 
 	for _, opt := range opts {
 		if err := opt.applyDataset(cfg); err != nil {
-			return nil, fmt.Errorf("lode: %w", err)
+			return nil, err // option errors carry the lode: prefix
 		}
 	}
 
@@ -400,7 +400,7 @@ func NewDataset(id DatasetID, factory StoreFactory, opts ...Option) (Dataset, er
 		codec:      cfg.codec,
 		checksum:   cfg.checksum,
 		retry:      cfg.retry,
-		history:    newHistory(store, datasetKind{id: id, layout: cfg.layout}),
+		history:    newHistory(store, datasetKind{id: id, layout: cfg.layout}, "manifest"),
 	}, nil
 }
 

@@ -100,6 +100,9 @@ func TestErrInvalidArgument_Classification(t *testing.T) {
 			if !strings.Contains(err.Error(), c.want) {
 				t.Errorf("message %q does not name the value (%q)", err, c.want)
 			}
+			if !strings.HasPrefix(err.Error(), "lode: ") || strings.Contains(err.Error(), "lode: lode:") {
+				t.Errorf("message %q must carry exactly one lode: prefix", err)
+			}
 		})
 	}
 }
@@ -122,5 +125,22 @@ func TestSentinels_Messages(t *testing.T) {
 		if c.err.Error() != c.want {
 			t.Errorf("%T: got %q, want %q", c.err, c.err.Error(), c.want)
 		}
+	}
+}
+
+// Option errors carry the lode: prefix themselves; constructors must not add
+// a second one.
+func TestOptionErrors_SinglePrefix(t *testing.T) {
+	factory := NewMemoryFactoryFrom(NewMemory())
+	_, err := NewDatasetReader(factory, WithCodec(NewJSONLCodec()))
+	if !errors.Is(err, ErrOptionNotValidForDatasetReader) {
+		t.Fatalf("got %v, want ErrOptionNotValidForDatasetReader", err)
+	}
+	if got, want := err.Error(), "lode: WithCodec: option not valid for reader"; got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+	_, err = NewVolume("v", factory, 1, WithCodec(NewJSONLCodec()))
+	if got, want := err.Error(), "lode: WithCodec: option not valid for volume"; got != want {
+		t.Errorf("got %q, want %q", got, want)
 	}
 }
