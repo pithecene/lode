@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Renders the README splash and mark from splash.html (a WebGL fragment shader
-# plus EB Garamond type) with headless Chromium, then encodes them as JPEG.
+# Renders the README splash from splash.html (HTML/CSS set in EB Garamond)
+# with headless Chromium at 2x, light and dark.
 #
 #   docs/assets/source/render.sh [path-to-chrome-or-chrome-headless-shell]
 #
@@ -15,13 +15,9 @@ cp "$here/splash.html" "$work/"
 mkdir -p "$work/fonts"
 curl -sfL -o "$work/fonts/EBGaramond.ttf" "https://github.com/google/fonts/raw/main/ofl/ebgaramond/EBGaramond%5Bwght%5D.ttf"
 curl -sfL -o "$work/fonts/EBGaramond-Italic.ttf" "https://github.com/google/fonts/raw/main/ofl/ebgaramond/EBGaramond-Italic%5Bwght%5D.ttf"
-shot() { # mode width height output
-  "$chrome" --headless --use-angle=swiftshader --enable-unsafe-swiftshader --allow-file-access-from-files \
-    --hide-scrollbars --virtual-time-budget=8000 --window-size="$2,$3" --screenshot="$work/$1.png" "file://$work/splash.html#$1" >/dev/null 2>&1
-  magick "$work/$1.png" -strip -quality 88 -sampling-factor 4:4:4 "$out/$4"
-}
-shot dark 2560 1040 lode-splash-dark.jpg
-shot light 2560 1040 lode-splash-light.jpg
-shot mark-dark 1024 1024 lode-mark-dark.jpg
-shot mark-light 1024 1024 lode-mark-light.jpg
+for mode in light dark; do
+  "$chrome" --headless --allow-file-access-from-files --hide-scrollbars --force-device-scale-factor=2 \
+    --virtual-time-budget=5000 --window-size=1280,400 --screenshot="$work/$mode.png" "file://$work/splash.html#$mode" >/dev/null 2>&1
+  magick "$work/$mode.png" -strip -define png:compression-level=9 "$out/lode-splash-$mode.png"
+done
 echo "rendered into $out"

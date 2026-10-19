@@ -49,7 +49,7 @@ Plans, contracts, and research notes. Contracts define **system behavior**.
 - `BENCHMARKS.md` — benchmark results and performance baselines
 - `DESIGN_SCOPED_CONCURRENCY.md` — scoped concurrency design for non-overlapping writers
 - `SNIPPET_POLICY.md` — markdown code fence conventions
-- `assets/` — README splash and mark (light and dark JPEG); `assets/source/` holds the WebGL shader page and `render.sh` that regenerate them
+- `assets/` — README splash (light and dark PNG); `assets/source/` holds the HTML plate and `render.sh` that regenerate it
 
 Contracts are authoritative over code.
 

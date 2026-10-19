@@ -1,6 +1,6 @@
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/lode-splash-dark.jpg">
-  <img alt="Lode — a geological cross-section: folded strata cut by two faults, with a vein of copper ore running along the crest of the fold" src="docs/assets/lode-splash-light.jpg" width="100%">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/lode-splash-dark.png">
+  <img alt="Lode — structured persistence for object storage" src="docs/assets/lode-splash-light.png" width="100%">
 </picture>
 
 # Lode
