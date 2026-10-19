@@ -838,7 +838,7 @@ func (d *dataset) StreamWriteRecords(ctx context.Context, records RecordIterator
 
 	// Stream records through encoder, tracking count and timestamps
 	var rowCount int64
-	var minTs, maxTs *time.Time
+	var ts timestampRange
 
 	// A buffering compressor can absorb records without touching the pipe, so a
 	// Put that has already failed must be noticed before every iterator call
@@ -870,17 +870,7 @@ func (d *dataset) StreamWriteRecords(ctx context.Context, records RecordIterator
 		}
 
 		rowCount++
-
-		// Track timestamps from Timestamped records
-		if ts, ok := record.(Timestamped); ok {
-			t := ts.Timestamp()
-			if minTs == nil || t.Before(*minTs) {
-				minTs = &t
-			}
-			if maxTs == nil || t.After(*maxTs) {
-				maxTs = &t
-			}
-		}
+		ts.observe(record)
 
 		// Before the next (possibly blocking) call into the iterator.
 		if err := putFailed(); err != nil {
@@ -946,7 +936,7 @@ func (d *dataset) StreamWriteRecords(ctx context.Context, records RecordIterator
 
 	// Commit with retry. Data file is already persisted; on conflict we
 	// only re-parent the manifest and retry the pointer CAS.
-	return d.commitWithRetry(ctx, snapshotID, []FileRef{fileRef}, []string{""}, metadata, rowCount, d.codec.Name(), minTs, maxTs, filePath)
+	return d.commitWithRetry(ctx, snapshotID, []FileRef{fileRef}, []string{""}, metadata, rowCount, d.codec.Name(), ts.min, ts.max, filePath)
 }
 
 // cleanupStreamWrite tears down the streaming write pipeline on error and
@@ -1611,4 +1601,24 @@ func (cw *countingWriter) Write(p []byte) (n int, err error) {
 	n, err = cw.w.Write(p)
 	cw.n += int64(n)
 	return n, err
+}
+
+// timestampRange accumulates the earliest and latest Timestamp over the
+// records it observes; records that are not Timestamped are ignored.
+type timestampRange struct {
+	min, max *time.Time
+}
+
+func (r *timestampRange) observe(record any) {
+	ts, ok := record.(Timestamped)
+	if !ok {
+		return
+	}
+	t := ts.Timestamp()
+	if r.min == nil || t.Before(*r.min) {
+		r.min = &t
+	}
+	if r.max == nil || t.After(*r.max) {
+		r.max = &t
+	}
 }
