@@ -855,11 +855,11 @@ func (d *dataset) StreamWriteRecords(ctx context.Context, records RecordIterator
 		return nil, err
 	}
 	for records.Next() {
-		record := records.Record()
-
+		// Before Record(), which a producer-backed iterator may block in.
 		if err := putFailed(); err != nil {
 			return nil, err
 		}
+		record := records.Record()
 
 		if err := encoder.WriteRecord(record); err != nil {
 			cleanupStreamWrite(encoder, compWriter, pw, put, err)
