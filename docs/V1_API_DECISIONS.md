@@ -24,15 +24,21 @@ construction by whether `WithCodec` was given; in blob mode the call then
 checks `len(data) == 1` and `data[0].([]byte)` at runtime, with two
 `ErrInvalidArgument` messages for the two ways to get it wrong.
 
-**Problem.** The mode is known statically (a dataset is built with or without
-a codec) but the signature erases it: a blob dataset accepts any `[]any` and
-rejects almost all of them at runtime, and a records dataset accepts a bare
-`[]byte` it will try to encode as a record.
+**Problem.** The payload type is erased: a blob dataset accepts any `[]any`
+and rejects almost all of them at runtime, and a records dataset accepts a
+bare `[]byte` it will try to encode as a record. The mode itself is a runtime
+property — `WithCodec` is an `Option` and `NewDataset` returns the same
+`Dataset` either way — so the signature cannot carry it; it can carry the
+payload shape.
 
 **Proposed.** `WriteBlob(ctx, blob []byte, metadata)` for datasets without a
 codec and `Write(ctx, records []any, metadata)` for datasets with one.
 Calling the wrong one returns `ErrCodecConfigured` / a new sentinel, as
-`StreamWrite` already does.
+`StreamWrite` already does. This fixes the payload typing, not mode
+selection: a wrong-mode call still fails at runtime. Compile-time mode
+selection would need distinct constructors returning distinct interfaces
+(`NewBlobDataset` / `NewRecordDataset`), a larger surface change recorded
+here as the alternative, not the proposal.
 
 **Breaks.** Every blob-mode `Write` caller: `examples/blob_upload`,
 `examples/vector_artifacts` (the embedding blobs; its index blobs go through
@@ -57,13 +63,17 @@ spellings exist for Hive (`WithLayout(NewHiveLayout(...))` cannot even be
 written because of the error return), one for the others.
 
 **Proposed.** Export `Layout` as an opaque interface (no methods callers can
-implement), keep the constructors, and drop `WithHiveLayout` in favor of
-`WithLayout(lode.MustHiveLayout(keys...))` or make `NewHiveLayout` panic on
-no keys like a constructor with a programmer-error precondition. Alternatively
-keep `WithHiveLayout` and remove `NewHiveLayout` from the public surface.
+implement) and keep the constructors. For Hive, either keep `WithHiveLayout`
+and remove `NewHiveLayout` from the public surface, or keep `NewHiveLayout`
+as is and add `MustHiveLayout(keys...)` (panics on no keys) so
+`WithLayout(lode.MustHiveLayout(...))` is writable. Changing `NewHiveLayout`
+itself to panic is not an option: it would drop the error result, so every
+`l, err := NewHiveLayout(...)` stops compiling, and it would replace a
+classified `ErrInvalidArgument` with a panic.
 
 **Breaks.** Nothing that compiles today if `Layout` is added and `layout`
-removed in the same release; removing either Hive spelling breaks its users.
+removed in the same release; removing either Hive spelling breaks its users;
+`MustHiveLayout` is additive.
 
 **Status.** Open. Decide which Hive spelling survives.
 
@@ -110,7 +120,13 @@ strings are partition paths.
 **Proposed.** An opaque `PartitionPath` (struct with an unexported field)
 built only by `ParsePartitionPath(string) (PartitionPath, error)`, which
 returns `ErrInvalidPath`, with `String()` for display; the zero value is the
-root (no partition). Used in all five places. A plain `type PartitionPath
+root (no partition). Used for the `ListManifests` parameter, `PartitionRef.Path`,
+`ManifestRef.Partition` and `PartitionListOptions.StartAfter` — four of the
+five. `PartitionListOptions.Prefix` stays a raw `string`: it is a string
+prefix, not a path, and the distinction matters (`day=a/` ends at a segment
+boundary, `day=a` also matches `day=a-b`); a path grammar that forbids empty
+segments would have to reject or strip that trailing slash and silently
+change the listing. A plain `type PartitionPath
 string` is not enough: `PartitionPath("../x")` is a legal conversion, so the
 type would document the grammar without enforcing it. This was scoped for the
 additive slice of v0.10.0 and found not to be additive: changing parameter
@@ -141,13 +157,16 @@ they find out per call.
 
 **Proposed.** Move `ReadRange` and `ReaderAt` out of `Store` into an optional
 `RangeReader` interface. `DatasetReader.ReaderAt` returns
-`ErrRangeReadNotSupported` when the store does not implement it — the
-sentinel stays, with one producer and one meaning. `Volume` requires range
-reads (`Volume.ReadAt` is built on `ReadRange`; `CONTRACT_VOLUME.md`), so
-`NewVolume` checks the capability once and returns `ErrInvalidArgument`
-naming the store when it is absent, instead of every `ReadAt` failing later.
-Adapters that only implement `Store` lose two methods they could only ever
-stub.
+`ErrRangeReadNotSupported` when the store does not implement it. `Volume`
+requires range reads (`Volume.ReadAt` is built on `ReadRange`;
+`CONTRACT_VOLUME.md`), so `NewVolume` checks the capability once and returns
+`ErrInvalidArgument` naming the store when it is absent. A type assertion
+cannot see through a legacy adapter whose `ReadRange` / `ReaderAt` still
+exist only to return the sentinel, so the migration note for adapters is:
+remove those stubs (a store that cannot range-read must not look like one
+that can), and the per-call `ErrRangeReadNotSupported` stays as the backstop
+for adapters that do not. Adapters that only implement `Store` lose two
+methods they could only ever stub.
 
 **Breaks.** Code that calls `ReadRange` / `ReaderAt` on a value typed as
 `Store` (type-assert to `RangeReader` instead); `NewVolume` over a store
@@ -178,7 +197,28 @@ rest rather than drifting.
 
 ---
 
-## D7 — On-disk path compatibility has no stated policy
+## D7 — The S3 test double is compiled into the adapter
+
+**Current.** `s3.MockS3Client` / `s3.NewMockS3Client` are exported from the
+built `lode/s3` package: an in-memory `API` implementation that only Lode's
+own tests use. The hygiene pass moved it into a `_test.go` file and had to
+move it back: the symbols are exported, so removing them from the compiled
+package is an API removal, not a refactor.
+
+**Problem.** ~250 lines of test scaffolding ship in the adapter, are measured
+as production code, and are a public surface nobody has committed to.
+
+**Proposed.** Move the mock to `lode/s3/mock_test.go` (unexported from the
+built package). Downstream tests that want an in-memory `API` can vendor it
+or use a real emulator (`examples/s3` already targets LocalStack and MinIO).
+
+**Breaks.** Any downstream test importing the mock. Quarry does not.
+
+**Status.** Open. Recommended accept.
+
+---
+
+## D8 — On-disk path compatibility has no stated policy
 
 **Current.** `V1_READINESS.md` §2 freezes manifest *fields*; nothing freezes
 the directory names a layout writes (`datasets/`, `partitions/`, `segments/`
