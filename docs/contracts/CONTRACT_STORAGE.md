@@ -24,6 +24,11 @@ It is authoritative for any implementation of the `Store` interface.
 - If an existing path is detected, MUST return `ErrPathExists`.
 - Detection mechanism and guarantee vary by upload path (see table below).
 - On paths with TOCTOU windows, existence may not be detected under concurrent writers.
+- MUST be all-or-nothing: on any error (including an error from the supplied
+  reader) the path MUST be left as it was before the call. A Put that created
+  an object and then failed MUST remove it. Callers never clean up after a
+  failed Put, and MUST NOT touch a path whose Put returned `ErrPathExists` —
+  that object belongs to another writer.
 
 #### Put Upload Paths
 
