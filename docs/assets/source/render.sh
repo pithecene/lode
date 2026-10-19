@@ -18,6 +18,6 @@ curl -sfL -o "$work/fonts/EBGaramond-Italic.ttf" "https://github.com/google/font
 for mode in light dark; do
   "$chrome" --headless --allow-file-access-from-files --hide-scrollbars --force-device-scale-factor=2 \
     --virtual-time-budget=5000 --window-size=1280,560 --screenshot="$work/$mode.png" "file://$work/splash.html#$mode" >/dev/null 2>&1
-  magick "$work/$mode.png" -strip -define png:compression-level=9 "$out/lode-splash-$mode.png"
+  magick "$work/$mode.png" -strip -quality 90 -sampling-factor 4:4:4 "$out/lode-splash-$mode.jpg"
 done
 echo "rendered into $out"
