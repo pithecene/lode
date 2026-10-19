@@ -20,13 +20,17 @@ unleash:
   timeout-coefficient: 20
   exclude-files:
     - examples/
-  # Baseline (2026-10-18, gremlins v0.6.0, ./lode incl. s3, after the v0.10.0
-  # hardening pass): killed 660, lived 77, not covered 29, timed out 3 →
-  # efficacy 89.55%, mutant coverage 96.21%. The pre-hardening baseline was
-  # 80.91% / 93.67%. Every remaining LIVED mutant is either documented as
-  # equivalent in the test file header next to the code it mutates, or needs
-  # multi-TB inputs (S3 object-size and part-scaling bounds). Gates sit one
-  # point under baseline; raise as tests improve.
+  # Baseline (2026-10-19, gremlins v0.6.0, ./lode incl. s3, v0.10.0 at
+  # 99cb592): killed 555, lived 49, not covered 26, timed out 4 → efficacy
+  # 91.89%, mutant coverage 95.87%. The mutant count fell from 769 to 634 with
+  # the hygiene restructuring (less code, same behavior); the hardening pass
+  # before it had taken efficacy from 80.91% / 93.67% to 89.55% / 96.21%.
+  # Every remaining LIVED mutant is either documented as equivalent in the
+  # test file header next to the code it mutates, needs multi-TB inputs (S3
+  # object-size and part-scaling bounds), or sits in lode/s3/mock.go — the
+  # S3 test double, exported from the built package for compatibility
+  # (docs/V1_API_DECISIONS.md D7) and not chased. Gates sit under baseline;
+  # raise as tests improve.
   #
   # gremlins v0.6.0 fails when actual <= threshold (report.go assess), so a
   # value of 88 means "fail below 89" and 95 means "fail below 96".

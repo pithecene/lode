@@ -9,18 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+---
+
+## [0.10.0] - 2026-10-19
+
 ### Added
 
 - **Listing filters and cursors**: `PartitionListOptions.Prefix` narrows `ListPartitions` to a partition-path prefix (a storage prefix on Hive layouts); `PartitionListOptions.StartAfter` and `ManifestListOptions.StartAfter` resume a listing after a previous result. ([#175](https://github.com/pithecene-io/lode/issues/175))
 - **`ErrPartitionPrefixNotSupported`**: Sentinel for `Prefix` on a layout without partitions.
 - **`ErrInvalidArgument`**: One sentinel for every caller-supplied value Lode refuses — nil factories, nil layouts or compressors, out-of-range retry options, blob writes without exactly one `[]byte`, Volume offsets, lengths, blocks and commits. Previously these were ad-hoc errors matchable only by message; `errors.Is(err, lode.ErrInvalidArgument)` now classifies them and the message still names the value.
 - **`DatasetListOptions.StartAfter`**: `ListDatasets` gains the cursor the other listings have; the last ID from a previous call resumes after it.
+- **Mutation testing**: a nightly gremlins job gates `./lode` on test efficacy ≥ 88% and mutant coverage ≥ 95% (`.gremlins.yaml`; `task mutate` locally). The test hardening it drove is what surfaced the `Put`, stream-write and `ReadRange` fixes below.
+- **`docs/V1_API_DECISIONS.md`**: the breaking API candidates held for v1.0 (`Write`/`WriteBlob` split, exported `Layout`, option applicability, opaque `PartitionPath`, optional `RangeReader`, error-prefix rule, the exported S3 mock, on-disk path policy), each recorded once with blast radius and a status. `V1_READINESS.md` §1 requires every one decided before the surface freeze.
 
 ### Changed
 
 - **Deterministic listing order**: `ListDatasets` returns lexicographic ID order, `ListPartitions` returns lexicographic `Path` order and `ListManifests` returns `(Partition, ID)` order on every store. Previously both followed the store's unspecified `List` order, and a multi-partition snapshot's `ManifestRef.Partition` could differ between calls. `Limit` now bounds the result set after sorting rather than stopping enumeration early; store-call bounds are unchanged.
 - **Argument error messages**: errors that now match `ErrInvalidArgument` read `lode: invalid argument: <value>`; the value text is unchanged, so substring checks keep working. `ErrInvalidPath`'s message is now `invalid path` — it was `invalid path: escapes storage root`, which was wrong for the `ReadRange` bounds and partition-prefix cases that return it.
 - **Sentinel homes**: `ErrInvalidPath`, `ErrManifestInvalid` and the `ErrOptionNotValidFor*` sentinels are declared in `api.go` with the others. Identity under `errors.Is` and messages are unchanged.
+- **Argument errors before store work**: `NewDataset`, `NewDatasetReader` and `NewVolume` validate their options before calling the store factory, so an invalid option is reported as `ErrInvalidArgument` even when the factory would fail; `Volume.ReadAt` checks every bound before loading the snapshot.
+- **Internal restructuring (no API change)**: Dataset and Volume share one head-pointer protocol (`history`); the three layouts are one path grammar; every store adapter validates keys, prefixes and ranges through `internal/storepath`; the write paths stage into a `pendingSnapshot` and stream through one pipeline type. `dataset.go` is half its size. Behavior, error text, on-disk paths and benchmarks are unchanged (allocations within +2 per write of the previous release; see `docs/BENCHMARKS.md`).
 
 ### Fixed
 
@@ -29,6 +37,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`Put` is all-or-nothing**: `NewFS` left a partial object behind when the supplied reader failed mid-copy; it now removes what it created. `CONTRACT_STORAGE.md` §Put makes the rule normative for every adapter: on error the path is left as it was, callers never clean up after a failed `Put`, and a path whose `Put` returned `ErrPathExists` belongs to another writer.
 - **Stream writes no longer block on a fast `Put` failure**: when the store's `Put` returned before draining the stream (for example `ErrPathExists`), `StreamWrite` and `StreamWriteRecords` blocked forever on the pipe. The read end is now closed with `Put`'s error, so `Write`, `Commit`, and `StreamWriteRecords` fail with it instead. The writer never deletes after a failed `Put` — `Put` is all-or-nothing (above), so there is nothing of its own to remove and a path that returned `ErrPathExists` belongs to another writer. Found by mutation testing.
 - **Filesystem `ReadRange` allocation**: `NewFS` allocated the full requested `length` before reading, so a valid range far beyond EOF (which the contract says returns the available bytes) could exhaust memory. The buffer is now bounded by the bytes the file can supply.
+
+### Upgrade Notes
+
+- **Additive API**: `ErrInvalidArgument`, `DatasetListOptions.StartAfter`, `ErrPartitionPrefixNotSupported`, `PartitionListOptions.Prefix`/`StartAfter`, `ManifestListOptions.StartAfter`. No removals; no new options (the option-surface freeze window is unaffected; the sentinel freeze window resets).
+- **Message text**: errors classified as `ErrInvalidArgument` now begin `lode: invalid argument:`; `ErrInvalidPath` reads `invalid path`. Code matching with `errors.Is` is unaffected; substring matches on the value text still hold.
+- **Listing order**: `ListDatasets`, `ListPartitions` and `ListManifests` are now sorted; `Limit` applies after sorting. Callers that depended on store order (undefined by contract) should re-check pagination.
+- **Keys with backslashes** are now `ErrInvalidPath` on every store and in `s3.Config.Prefix`.
+- **No data migration required**: storage layout and manifest format are unchanged.
 
 ---
 
@@ -517,7 +533,8 @@ Post-v0.3.0 improvements planned:
 
 ---
 
-[Unreleased]: https://github.com/pithecene-io/lode/compare/v0.9.1...HEAD
+[Unreleased]: https://github.com/pithecene-io/lode/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/pithecene-io/lode/compare/v0.9.1...v0.10.0
 [0.9.1]: https://github.com/pithecene-io/lode/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/pithecene-io/lode/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/pithecene-io/lode/compare/v0.7.4...v0.8.0
