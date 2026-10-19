@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"sort"
-	"sync"
 	"time"
 )
 
@@ -422,67 +421,13 @@ func (d *dataset) ID() DatasetID {
 }
 
 func (d *dataset) Write(ctx context.Context, data []any, metadata Metadata) (*DatasetSnapshot, error) {
-	if metadata == nil {
-		metadata = Metadata{}
+	// Data files are written once; on a commit conflict only the manifest is
+	// re-parented, never the data re-uploaded.
+	pending := d.newPending(metadata)
+	if err := d.stage(ctx, &pending, data); err != nil {
+		return nil, err
 	}
-
-	// Phase 1: Write data files once. File paths include the snapshot ID but
-	// data is immutable — on retry we re-parent the manifest, not re-upload.
-	snapshotID := DatasetSnapshotID(generateID())
-
-	var files []FileRef
-	var rowCount int64
-	var partitionKeys []string
-	var codecName string
-
-	if d.codec == nil {
-		// Raw blob mode
-		if len(data) != 1 {
-			return nil, errors.New("lode: raw blob mode requires exactly one data element")
-		}
-		blob, ok := data[0].([]byte)
-		if !ok {
-			return nil, fmt.Errorf("lode: raw blob mode requires []byte, got %T", data[0])
-		}
-
-		fileRef, err := d.writeRawBlob(ctx, snapshotID, blob)
-		if err != nil {
-			return nil, fmt.Errorf("lode: failed to write blob: %w", err)
-		}
-		files = []FileRef{fileRef}
-		rowCount = 1
-		partitionKeys = []string{""}
-		codecName = ""
-	} else {
-		// Structured records mode
-		partitions, err := d.partitionRecords(data)
-		if err != nil {
-			return nil, fmt.Errorf("lode: partitioning failed: %w", err)
-		}
-
-		for partKey, partRecords := range partitions {
-			fileRef, err := d.writeDataFile(ctx, snapshotID, partKey, partRecords)
-			if err != nil {
-				return nil, fmt.Errorf("lode: failed to write data file: %w", err)
-			}
-			files = append(files, fileRef)
-			partitionKeys = append(partitionKeys, partKey)
-		}
-
-		rowCount = int64(len(data))
-		codecName = d.codec.Name()
-	}
-
-	// Extract timestamps from records that implement Timestamped
-	minTs, maxTs := extractTimestamps(data)
-
-	sort.Slice(files, func(i, j int) bool {
-		return files[i].Path < files[j].Path
-	})
-
-	// Phase 2: Resolve parent and commit. On CAS conflict, retry by
-	// refreshing state and re-parenting the manifest.
-	return d.commitWithRetry(ctx, snapshotID, files, partitionKeys, metadata, rowCount, codecName, minTs, maxTs, "")
+	return d.commit(ctx, &pending)
 }
 
 // Snapshot loads a snapshot by ID. A dataset written before canonical
@@ -560,65 +505,23 @@ func (d *dataset) Latest(ctx context.Context) (*DatasetSnapshot, error) {
 }
 
 func (d *dataset) StreamWrite(ctx context.Context, metadata Metadata) (StreamWriter, error) {
-	if metadata == nil {
-		metadata = Metadata{}
-	}
 	if d.codec != nil {
 		return nil, ErrCodecConfigured
 	}
-
-	parentID, expectedPointer, err := d.history.Resolve(ctx)
-	if err != nil {
+	// Surface an unreadable head now rather than at Commit.
+	if _, _, err := d.history.Resolve(ctx); err != nil {
 		return nil, err
 	}
 
-	snapshotID := DatasetSnapshotID(generateID())
-	fileName := "blob" + d.compressor.Extension()
-	filePath := d.layout.dataFilePath(d.id, snapshotID, "", fileName)
-
-	// Create pipe for streaming to store
-	pr, pw := io.Pipe()
-
-	// Wrap with counting writer to track compressed size
-	cw := &countingWriter{w: pw}
-
-	// Set up base writer, optionally with checksum
-	var baseWriter io.Writer = cw
-	var hasher HashWriter
-	if d.checksum != nil {
-		hasher = d.checksum.NewHasher()
-		baseWriter = io.MultiWriter(cw, hasher)
-	}
-
-	// Wrap with compression
-	compWriter, err := d.compressor.Compress(baseWriter)
+	pending := d.newPending(metadata)
+	stream, err := d.openStream(ctx, pending.id, blobFile)
 	if err != nil {
-		_ = pw.Close()
-		return nil, fmt.Errorf("lode: failed to create compressor: %w", err)
+		return nil, err
 	}
-
-	put := startPut(ctx, d.store, filePath, pr)
-
-	return &streamWriter{
-		ds:              d,
-		ctx:             ctx,
-		metadata:        metadata,
-		snapshotID:      snapshotID,
-		parentID:        parentID,
-		expectedPointer: expectedPointer,
-		filePath:        filePath,
-		pipeWriter:      pw,
-		compWriter:      compWriter,
-		countWriter:     cw,
-		hasher:          hasher,
-		put:             put,
-	}, nil
+	return &streamWriter{ds: d, ctx: ctx, pending: pending, stream: stream}, nil
 }
 
 func (d *dataset) StreamWriteRecords(ctx context.Context, records RecordIterator, metadata Metadata) (*DatasetSnapshot, error) {
-	if metadata == nil {
-		metadata = Metadata{}
-	}
 	if records == nil {
 		return nil, ErrNilIterator
 	}
@@ -629,413 +532,31 @@ func (d *dataset) StreamWriteRecords(ctx context.Context, records RecordIterator
 	if !ok {
 		return nil, ErrCodecNotStreamable
 	}
-	// StreamWriteRecords writes to a single file and cannot partition records
-	// since that would require buffering to determine partition keys
+	// A single streamed file cannot be partitioned: that would require
+	// buffering the records to determine their keys.
 	if !d.layout.partitioner().isNoop() {
 		return nil, ErrPartitioningNotSupported
 	}
 
-	snapshotID := DatasetSnapshotID(generateID())
-	fileName := "data" + d.compressor.Extension()
-	filePath := d.layout.dataFilePath(d.id, snapshotID, "", fileName)
-
-	// Create pipe for streaming to store
-	pr, pw := io.Pipe()
-
-	// Wrap with counting writer to track compressed size
-	cw := &countingWriter{w: pw}
-
-	// Set up base writer, optionally with checksum
-	var baseWriter io.Writer = cw
-	var hasher HashWriter
-	if d.checksum != nil {
-		hasher = d.checksum.NewHasher()
-		baseWriter = io.MultiWriter(cw, hasher)
-	}
-
-	// Wrap with compression
-	compWriter, err := d.compressor.Compress(baseWriter)
+	pending := d.newPending(metadata)
+	stream, err := d.openRecordStream(ctx, pending.id, streamCodec)
 	if err != nil {
-		_ = pw.Close()
-		return nil, fmt.Errorf("lode: failed to create compressor: %w", err)
-	}
-
-	// Create streaming encoder
-	encoder, err := streamCodec.NewStreamEncoder(compWriter)
-	if err != nil {
-		_ = compWriter.Close()
-		_ = pw.Close()
-		return nil, fmt.Errorf("lode: failed to create stream encoder: %w", err)
-	}
-
-	put := startPut(ctx, d.store, filePath, pr)
-
-	// Stream records through encoder, tracking count and timestamps
-	var rowCount int64
-	var ts timestampRange
-
-	// A buffering compressor can absorb records without touching the pipe, so a
-	// Put that has already failed must be noticed before every iterator call
-	// (which may block) and before accepting each record — never only after an
-	// iterator that may never end.
-	putFailed := func() error {
-		if finished, putErr := put.poll(); finished && putErr != nil {
-			cleanupStreamWrite(encoder, compWriter, pw, put, putErr)
-			return fmt.Errorf("lode: failed to write data: %w", putErr)
-		}
-		return nil
-	}
-	if err := putFailed(); err != nil {
 		return nil, err
 	}
-	for records.Next() {
-		// Before and after Record(), which a producer-backed iterator may block in.
-		if err := putFailed(); err != nil {
-			return nil, err
-		}
-		record := records.Record()
-		if err := putFailed(); err != nil {
-			return nil, err
-		}
-
-		if err := encoder.WriteRecord(record); err != nil {
-			cleanupStreamWrite(encoder, compWriter, pw, put, err)
-			return nil, fmt.Errorf("lode: failed to write record: %w", err)
-		}
-
-		rowCount++
-		ts.observe(record)
-
-		// Before the next (possibly blocking) call into the iterator.
-		if err := putFailed(); err != nil {
-			return nil, err
-		}
-	}
-
-	// A Put that failed while the iterator was finishing is the root cause and
-	// takes precedence over whatever the iterator reports. Check before calling
-	// Err, which may block, and again after, since Put may complete during it.
-	if err := putFailed(); err != nil {
+	if err := stream.encode(records); err != nil {
 		return nil, err
 	}
-	iterErr := records.Err()
-	if err := putFailed(); err != nil {
+	ref, err := stream.finish()
+	if err != nil {
 		return nil, err
 	}
-	if iterErr != nil {
-		cleanupStreamWrite(encoder, compWriter, pw, put, iterErr)
-		return nil, fmt.Errorf("lode: record iterator error: %w", iterErr)
-	}
 
-	// Close encoder (finalizes format)
-	if err := encoder.Close(); err != nil {
-		return nil, finalizeError(put, "encoder", err, func(cause error) {
-			cleanupStreamWrite(nil, compWriter, pw, put, cause)
-		})
-	}
-
-	// Collect per-file stats if the stream encoder supports it
-	var fileStats *FileStats
-	if se, ok := encoder.(StatisticalStreamEncoder); ok {
-		fileStats = se.FileStats()
-	}
-
-	// Close compression (flushes final data)
-	if err := compWriter.Close(); err != nil {
-		return nil, finalizeError(put, "compressor", err, func(cause error) {
-			cleanupStreamWrite(nil, nil, pw, put, cause)
-		})
-	}
-
-	// Close pipe (signals EOF to store.Put)
-	if err := pw.Close(); err != nil {
-		return nil, finalizeError(put, "pipe", err, func(error) { _ = put.wait() })
-	}
-
-	// Wait for store.Put to complete. A failed Put leaves nothing behind
-	// (CONTRACT_STORAGE §Put), so there is nothing for the writer to clean up.
-	if err := put.wait(); err != nil {
-		return nil, fmt.Errorf("lode: failed to write data: %w", err)
-	}
-
-	// Build file reference with optional checksum and stats
-	fileRef := FileRef{
-		Path:      filePath,
-		SizeBytes: cw.n,
-		Stats:     fileStats,
-	}
-	if hasher != nil {
-		fileRef.Checksum = hasher.Sum()
-	}
-
-	// Commit with retry. Data file is already persisted; on conflict we
-	// only re-parent the manifest and retry the pointer CAS.
-	return d.commitWithRetry(ctx, snapshotID, []FileRef{fileRef}, []string{""}, metadata, rowCount, d.codec.Name(), ts.min, ts.max, filePath)
-}
-
-// cleanupStreamWrite tears down the streaming write pipeline on error and
-// waits for the background Put to return. It never deletes the data object:
-// a failed Put leaves the path as it was (CONTRACT_STORAGE §Put), and a Put
-// that returned ErrPathExists refused a path that belongs to another writer.
-// Arguments may be nil when the failure occurs before the corresponding
-// resource is created; nil values are skipped.
-func cleanupStreamWrite(encoder RecordStreamEncoder, compWriter io.WriteCloser, pw *io.PipeWriter, put *putResult, cause error) {
-	if encoder != nil {
-		_ = encoder.Close()
-	}
-	if compWriter != nil {
-		_ = compWriter.Close()
-	}
-	if pw != nil {
-		_ = pw.CloseWithError(cause)
-	}
-	_ = put.wait()
-}
-
-// putResult tracks the background store.Put of a streamed data object.
-type putResult struct {
-	done chan struct{} // closed once the result below is published
-
-	mu       sync.Mutex
-	finished bool
-	err      error
-}
-
-// startPut runs store.Put in the background. The result is published before
-// the read end is closed with Put's error, so a writer blocked on the pipe
-// fails instead of hanging (a fast failure such as ErrPathExists never drains
-// the pipe) and a Write issued after Put returned always observes the result.
-func startPut(ctx context.Context, store Store, path string, pr *io.PipeReader) *putResult {
-	r := &putResult{done: make(chan struct{})}
-	go func() {
-		err := store.Put(ctx, path, pr)
-		r.mu.Lock()
-		r.err, r.finished = err, true
-		r.mu.Unlock()
-		_ = pr.CloseWithError(err)
-		close(r.done)
-	}()
-	return r
-}
-
-// wait blocks until Put has returned and returns its error.
-func (r *putResult) wait() error {
-	<-r.done
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.err
-}
-
-// poll reports Put's result if it has already returned, without blocking.
-func (r *putResult) poll() (finished bool, err error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.finished, r.err
-}
-
-// rootCause picks the error to surface when a finalization step fails: a Put
-// that has already failed is the root cause of anything that broke after it.
-func (r *putResult) rootCause(stepErr error) (fromPut bool, cause error) {
-	if finished, putErr := r.poll(); finished && putErr != nil {
-		return true, putErr
-	}
-	return false, stepErr
-}
-
-// finalizeError runs teardown with the root cause of a failed finalization
-// step and returns the error to report: the Put failure when one preceded
-// the step, otherwise the step's own error.
-func finalizeError(put *putResult, step string, stepErr error, teardown func(cause error)) error {
-	fromPut, cause := put.rootCause(stepErr)
-	teardown(cause)
-	if fromPut {
-		return fmt.Errorf("lode: failed to write data: %w", cause)
-	}
-	return fmt.Errorf("lode: failed to close %s: %w", step, cause)
-}
-
-// commitWithRetry resolves the parent, builds a manifest, and commits.
-// On ErrSnapshotConflict it refreshes state and retries up to d.retry.maxAttempts
-// times. Data files must already be persisted before calling.
-//
-// The snapshotID is stable across retries. Data files are written under paths
-// derived from the snapshotID, so changing it would break layout co-location
-// (manifest and data must share the same snapshot directory). On CAS failure,
-// no manifest was written for this ID — it is safe to reuse.
-//
-// Parameters:
-//   - snapshotID: snapshot ID (stable across retries)
-//   - files: immutable file references (stable across retries)
-//   - partitionKeys: partition keys for manifest fan-out
-//   - metadata: user metadata
-//   - rowCount: total row count
-//   - codec: codec name (empty for raw blob)
-//   - minTs, maxTs: timestamp bounds
-//   - cleanupPath: data file path to delete on final failure (empty = no cleanup)
-func (d *dataset) commitWithRetry(
-	ctx context.Context,
-	snapshotID DatasetSnapshotID,
-	files []FileRef,
-	partitionKeys []string,
-	metadata Metadata,
-	rowCount int64,
-	codec string,
-	minTs, maxTs *time.Time,
-	cleanupPath string,
-) (*DatasetSnapshot, error) {
-	var manifest *Manifest
-	err := d.history.CommitLoop(ctx, &d.retry, func() error {
-		parentID, expectedPointer, err := d.history.Resolve(ctx)
-		if err != nil {
-			return err
-		}
-		manifest = d.buildManifest(snapshotID, parentID, metadata, files, rowCount, codec, minTs, maxTs)
-		return d.history.Advance(ctx, expectedPointer, snapshotID, manifest, d.manifestPaths(snapshotID, partitionKeys))
-	})
-	if err != nil {
-		d.cleanupDataFile(ctx, cleanupPath)
-		return nil, err
-	}
-	return &DatasetSnapshot{ID: snapshotID, Manifest: manifest}, nil
-}
-
-// cleanupDataFile deletes a data file on commit failure. No-op if path is empty.
-func (d *dataset) cleanupDataFile(ctx context.Context, path string) {
-	if path != "" {
-		_ = d.store.Delete(ctx, path)
-	}
-}
-
-func (d *dataset) partitionRecords(records []any) (map[string][]any, error) {
-	partitions := make(map[string][]any)
-	part := d.layout.partitioner()
-
-	for _, record := range records {
-		key, err := part.partitionKey(record)
-		if err != nil {
-			return nil, err
-		}
-		partitions[key] = append(partitions[key], record)
-	}
-
-	return partitions, nil
-}
-
-// buildManifest constructs a Manifest with common fields derived from the
-// dataset configuration. Only fields that vary across call sites are parameters.
-func (d *dataset) buildManifest(
-	snapshotID DatasetSnapshotID,
-	parentID DatasetSnapshotID,
-	metadata Metadata,
-	files []FileRef,
-	rowCount int64,
-	codec string,
-	minTs, maxTs *time.Time,
-) *Manifest {
-	m := &Manifest{
-		SchemaName:       manifestSchemaName,
-		FormatVersion:    manifestFormatVersion,
-		DatasetID:        d.id,
-		SnapshotID:       snapshotID,
-		CreatedAt:        time.Now().UTC(),
-		Metadata:         metadata,
-		Files:            files,
-		ParentSnapshotID: parentID,
-		RowCount:         rowCount,
-		MinTimestamp:     minTs,
-		MaxTimestamp:     maxTs,
-		Codec:            codec,
-		Compressor:       d.compressor.Name(),
-		Partitioner:      d.layout.partitioner().name(),
-	}
-	if d.checksum != nil {
-		m.ChecksumAlgorithm = d.checksum.Name()
-	}
-	return m
-}
-
-// checksumBytes computes a checksum of data using the dataset's configured checksum
-// algorithm. Returns empty string if no checksum is configured.
-func (d *dataset) checksumBytes(data []byte) string {
-	if d.checksum == nil {
-		return ""
-	}
-	hasher := d.checksum.NewHasher()
-	_, _ = hasher.Write(data)
-	return hasher.Sum()
-}
-
-func (d *dataset) writeRawBlob(ctx context.Context, snapshotID DatasetSnapshotID, data []byte) (FileRef, error) {
-	fileName := "blob" + d.compressor.Extension()
-	filePath := d.layout.dataFilePath(d.id, snapshotID, "", fileName)
-
-	var buf bytes.Buffer
-	compWriter, err := d.compressor.Compress(&buf)
-	if err != nil {
-		return FileRef{}, fmt.Errorf("lode: write blob: %w", err)
-	}
-
-	if _, err := compWriter.Write(data); err != nil {
-		_ = compWriter.Close()
-		return FileRef{}, fmt.Errorf("lode: write blob: %w", err)
-	}
-
-	if err := compWriter.Close(); err != nil {
-		return FileRef{}, fmt.Errorf("lode: write blob: %w", err)
-	}
-
-	compressedData := buf.Bytes()
-	if err := d.store.Put(ctx, filePath, bytes.NewReader(compressedData)); err != nil {
-		return FileRef{}, fmt.Errorf("lode: write blob: %w", err)
-	}
-
-	fileRef := FileRef{
-		Path:      filePath,
-		SizeBytes: int64(len(compressedData)),
-	}
-
-	fileRef.Checksum = d.checksumBytes(compressedData)
-
-	return fileRef, nil
-}
-
-func (d *dataset) writeDataFile(ctx context.Context, snapshotID DatasetSnapshotID, partKey string, records []any) (FileRef, error) {
-	fileName := "data" + d.compressor.Extension()
-	filePath := d.layout.dataFilePath(d.id, snapshotID, partKey, fileName)
-
-	var buf bytes.Buffer
-	compWriter, err := d.compressor.Compress(&buf)
-	if err != nil {
-		return FileRef{}, fmt.Errorf("lode: write data file: %w", err)
-	}
-
-	if err := d.codec.Encode(compWriter, records); err != nil {
-		_ = compWriter.Close()
-		return FileRef{}, fmt.Errorf("lode: write data file: %w", err)
-	}
-
-	if err := compWriter.Close(); err != nil {
-		return FileRef{}, fmt.Errorf("lode: write data file: %w", err)
-	}
-
-	data := buf.Bytes()
-	if err := d.store.Put(ctx, filePath, bytes.NewReader(data)); err != nil {
-		return FileRef{}, fmt.Errorf("lode: write data file: %w", err)
-	}
-
-	fileRef := FileRef{
-		Path:      filePath,
-		SizeBytes: int64(len(data)),
-	}
-
-	fileRef.Checksum = d.checksumBytes(data)
-
-	// Collect per-file stats if the codec supports it
-	if sc, ok := d.codec.(StatisticalCodec); ok {
-		fileRef.Stats = sc.FileStats()
-	}
-
-	return fileRef, nil
+	pending.add(ref, "")
+	pending.rowCount = stream.rows
+	pending.codec = d.codec.Name()
+	pending.timestamps = stream.timestamps
+	pending.streamed = ref.Path
+	return d.commit(ctx, &pending)
 }
 
 func (d *dataset) readRawBlob(ctx context.Context, filePath string) ([]byte, error) {
@@ -1074,30 +595,6 @@ func (d *dataset) readDataFile(ctx context.Context, filePath string) ([]any, err
 	return d.codec.Decode(decompReader)
 }
 
-// manifestPaths returns where a snapshot's manifest is written: always the
-// canonical path (O(1) Snapshot lookup) and, on layouts that place segments
-// under partitions, one copy per partition the snapshot touches so partition
-// listings can find it. Partitionless layouts have only the canonical path.
-func (d *dataset) manifestPaths(snapshotID DatasetSnapshotID, partitionKeys []string) []string {
-	canonical := d.layout.manifestPath(d.id, snapshotID)
-	paths := []string{canonical}
-	if !d.layout.supportsPartitions() {
-		return paths
-	}
-	seen := map[string]bool{canonical: true}
-	for _, pk := range partitionKeys {
-		if pk == "" {
-			continue
-		}
-		p := d.layout.manifestPathInPartition(d.id, snapshotID, pk)
-		if !seen[p] {
-			seen[p] = true
-			paths = append(paths, p)
-		}
-	}
-	return paths
-}
-
 func (d *dataset) validateComponentsMatch(m *Manifest) error {
 	var expectedCodec string
 	if d.codec != nil {
@@ -1116,221 +613,4 @@ func (d *dataset) validateComponentsMatch(m *Manifest) error {
 
 func generateID() string {
 	return fmt.Sprintf("%d", time.Now().UnixNano())
-}
-
-// extractTimestamps iterates over records and extracts min/max timestamps
-// from records that implement the Timestamped interface.
-// Returns nil pointers if no records implement Timestamped.
-func extractTimestamps(data []any) (minTs, maxTs *time.Time) {
-	var hasTimestamp bool
-
-	for _, record := range data {
-		ts, ok := record.(Timestamped)
-		if !ok {
-			continue
-		}
-
-		t := ts.Timestamp()
-		if !hasTimestamp {
-			minTs = &t
-			maxTs = &t
-			hasTimestamp = true
-			continue
-		}
-
-		if t.Before(*minTs) {
-			minTs = &t
-		}
-		if t.After(*maxTs) {
-			maxTs = &t
-		}
-	}
-
-	return minTs, maxTs
-}
-
-// -----------------------------------------------------------------------------
-// StreamWriter Implementation
-// -----------------------------------------------------------------------------
-
-// streamWriter implements StreamWriter for raw binary streaming writes.
-type streamWriter struct {
-	ds              *dataset
-	ctx             context.Context
-	metadata        Metadata
-	snapshotID      DatasetSnapshotID
-	parentID        DatasetSnapshotID
-	expectedPointer string // current pointer content for CAS
-	filePath        string
-	pipeWriter      *io.PipeWriter
-	compWriter      io.WriteCloser
-	countWriter     *countingWriter
-	hasher          HashWriter
-	put             *putResult
-
-	mu        sync.Mutex
-	committed bool
-	aborted   bool
-	closed    bool
-	writeErr  error
-}
-
-func (sw *streamWriter) Write(p []byte) (n int, err error) {
-	sw.mu.Lock()
-	if sw.closed || sw.aborted || sw.committed {
-		sw.mu.Unlock()
-		return 0, errors.New("lode: stream is closed")
-	}
-	if sw.writeErr != nil {
-		sw.mu.Unlock()
-		return 0, sw.writeErr
-	}
-	sw.mu.Unlock()
-
-	// A compressor may buffer p without touching the pipe, so a Put that has
-	// already failed would otherwise go unnoticed until Commit.
-	if finished, putErr := sw.put.poll(); finished && putErr != nil {
-		sw.mu.Lock()
-		sw.writeErr = putErr
-		sw.mu.Unlock()
-		return 0, putErr
-	}
-
-	n, err = sw.compWriter.Write(p)
-	if err != nil {
-		sw.mu.Lock()
-		sw.writeErr = err
-		sw.mu.Unlock()
-	}
-	return n, err
-}
-
-func (sw *streamWriter) Commit(ctx context.Context) (*DatasetSnapshot, error) {
-	sw.mu.Lock()
-	if sw.committed {
-		sw.mu.Unlock()
-		return nil, errors.New("lode: stream already committed")
-	}
-	if sw.aborted || sw.closed {
-		sw.mu.Unlock()
-		return nil, errors.New("lode: stream is closed")
-	}
-	// Mark as closed to prevent concurrent commits, but not committed until success
-	sw.closed = true
-	sw.mu.Unlock()
-
-	// Close compression writer (flushes final data). A Put that already failed
-	// is the root cause of a failing close and is the error reported.
-	if err := sw.compWriter.Close(); err != nil {
-		return nil, finalizeError(sw.put, "compressor", err, func(cause error) {
-			_ = sw.pipeWriter.CloseWithError(cause)
-			_ = sw.put.wait()
-		})
-	}
-
-	// Close pipe writer (signals EOF to store.Put)
-	if err := sw.pipeWriter.Close(); err != nil {
-		return nil, finalizeError(sw.put, "pipe", err, func(error) { _ = sw.put.wait() })
-	}
-
-	// Wait for store.Put to complete. A failed Put leaves nothing behind
-	// (CONTRACT_STORAGE §Put), so there is nothing for the writer to clean up.
-	if err := sw.put.wait(); err != nil {
-		return nil, fmt.Errorf("lode: failed to write data: %w", err)
-	}
-
-	// Build file reference with optional checksum
-	fileRef := FileRef{
-		Path:      sw.filePath,
-		SizeBytes: sw.countWriter.n,
-	}
-	if sw.hasher != nil {
-		fileRef.Checksum = sw.hasher.Sum()
-	}
-
-	// Commit with retry. Data file is already persisted; on conflict we
-	// only re-parent the manifest and retry the pointer CAS.
-	snapshot, err := sw.ds.commitWithRetry(ctx, sw.snapshotID, []FileRef{fileRef}, []string{""}, sw.metadata, 1, "", nil, nil, sw.filePath)
-	if err != nil {
-		return nil, err
-	}
-
-	sw.mu.Lock()
-	sw.committed = true
-	sw.mu.Unlock()
-
-	return snapshot, nil
-}
-
-func (sw *streamWriter) Abort(_ context.Context) error {
-	sw.mu.Lock()
-	if sw.committed {
-		sw.mu.Unlock()
-		return errors.New("lode: cannot abort committed stream")
-	}
-	if sw.aborted {
-		sw.mu.Unlock()
-		return nil // already aborted
-	}
-	sw.aborted = true
-	sw.mu.Unlock()
-
-	// Close pipe with error to cancel store.Put, then wait for it to return.
-	// The failed Put leaves no object behind (CONTRACT_STORAGE §Put); nothing
-	// to delete.
-	_ = sw.pipeWriter.CloseWithError(errors.New("stream aborted"))
-	_ = sw.put.wait()
-
-	return nil
-}
-
-func (sw *streamWriter) Close() error {
-	sw.mu.Lock()
-	if sw.closed {
-		sw.mu.Unlock()
-		return nil
-	}
-	sw.closed = true
-	alreadyCommitted := sw.committed
-	alreadyAborted := sw.aborted
-	sw.mu.Unlock()
-
-	if alreadyCommitted || alreadyAborted {
-		return nil
-	}
-
-	// Close without commit = abort
-	return sw.Abort(sw.ctx)
-}
-
-// countingWriter wraps an io.Writer and counts bytes written.
-type countingWriter struct {
-	w io.Writer
-	n int64
-}
-
-func (cw *countingWriter) Write(p []byte) (n int, err error) {
-	n, err = cw.w.Write(p)
-	cw.n += int64(n)
-	return n, err
-}
-
-// timestampRange accumulates the earliest and latest Timestamp over the
-// records it observes; records that are not Timestamped are ignored.
-type timestampRange struct {
-	min, max *time.Time
-}
-
-func (r *timestampRange) observe(record any) {
-	ts, ok := record.(Timestamped)
-	if !ok {
-		return
-	}
-	t := ts.Timestamp()
-	if r.min == nil || t.Before(*r.min) {
-		r.min = &t
-	}
-	if r.max == nil || t.After(*r.max) {
-		r.max = &t
-	}
 }
