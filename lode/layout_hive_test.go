@@ -7,10 +7,13 @@ import "testing"
 // the index arithmetic (loop starts, -1 sentinels, boundary checks) was not
 // observed by any test. These pin the edges directly.
 //
-// Known equivalent mutants in parsePartitionFromManifest/extractPartitionPath,
-// left alive: `segmentsIdx <= partitionsIdx+1` → `<`: segments directly after
-// partitions yields an empty join either way, and segmentsIdx is always greater
-// than partitionsIdx.
+// Known equivalent mutants, left alive: `len(parts) < 4` → `<=` (a 4-part
+// path can never be a manifest); the `-1` sentinel inversions and `< 0`
+// → `<= 0` checks on partitionsIdx/segmentsIdx (indices are never 0 or 1);
+// the loop bounds in isManifest/parseSegmentID (the isManifest guard proves a
+// segments marker exists before the loop could overrun); and
+// `segmentsIdx <= partitionsIdx+1` → `<` (segments directly after partitions
+// yields an empty join either way).
 
 func hiveForTest(t *testing.T) *hiveLayout {
 	t.Helper()
@@ -91,6 +94,9 @@ func TestHiveLayout_ParsePartitionFromManifest(t *testing.T) {
 		{"datasets/ds/partitions/segments/1/manifest.json", ""},
 		// Not a manifest at all.
 		{"datasets/ds/partitions/day=1/segments/1/data/f.jsonl", ""},
+		// A dataset literally named "segments" must not be mistaken for the
+		// segments marker when scanning after the partitions marker.
+		{"datasets/segments/partitions/day=1/segments/1/manifest.json", "day=1"},
 	}
 	for _, c := range cases {
 		if got := l.parsePartitionFromManifest(c.path); got != c.want {
@@ -115,6 +121,9 @@ func TestHiveLayout_ExtractPartitionPath(t *testing.T) {
 		{"datasets/ds/partitions/segments/1/data/f.jsonl", ""},
 		// Marker deeper than index 2 is still found.
 		{"datasets/ds/x/partitions/day=1/segments/1/data/f.jsonl", "day=1"},
+		// A dataset literally named "segments" sits before the partitions
+		// marker and must not terminate the scan.
+		{"datasets/segments/partitions/day=1/segments/1/data/f.jsonl", "day=1"},
 	}
 	for _, c := range cases {
 		if got := l.extractPartitionPath(c.path); got != c.want {
