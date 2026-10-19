@@ -10,10 +10,14 @@ import "testing"
 // Known equivalent mutants, left alive: `len(parts) < 4` → `<=` (a 4-part
 // path can never be a manifest); the `-1` sentinel inversions and `< 0`
 // → `<= 0` checks on partitionsIdx/segmentsIdx (indices are never 0 or 1);
-// the loop bounds in isManifest/parseSegmentID (the isManifest guard proves a
-// segments marker exists before the loop could overrun); and
+// the loop upper bounds in isManifest/parseSegmentID (the isManifest guard
+// proves a segments marker exists before the loop could overrun); and
 // `segmentsIdx <= partitionsIdx+1` → `<` (segments directly after partitions
 // yields an empty join either way).
+//
+// The loop starts are not equivalent: scanning from index 1 would mistake a
+// dataset named "segments" or "partitions" for the marker. Those names are
+// covered below as reserved-name cases.
 
 func hiveForTest(t *testing.T) *hiveLayout {
 	t.Helper()
@@ -46,6 +50,10 @@ func TestHiveLayout_IsManifest(t *testing.T) {
 		{"datasets/ds/segments//manifest.json", false},
 		// A "latest" pointer is not a manifest.
 		{"datasets/ds/latest", false},
+		// A dataset named "segments" with no segments directory beneath it:
+		// the dataset ID must not be read as the marker.
+		{"datasets/segments/1/manifest.json", false},
+		{"datasets/segments/segments/1/manifest.json", true},
 	}
 	for _, c := range cases {
 		if got := l.isManifest(c.path); got != c.want {
@@ -97,6 +105,9 @@ func TestHiveLayout_ParsePartitionFromManifest(t *testing.T) {
 		// A dataset literally named "segments" must not be mistaken for the
 		// segments marker when scanning after the partitions marker.
 		{"datasets/segments/partitions/day=1/segments/1/manifest.json", "day=1"},
+		// Likewise a dataset named "partitions" must not be read as the
+		// partitions marker, which would leak it into the partition path.
+		{"datasets/partitions/partitions/day=1/segments/1/manifest.json", "day=1"},
 	}
 	for _, c := range cases {
 		if got := l.parsePartitionFromManifest(c.path); got != c.want {
@@ -124,6 +135,8 @@ func TestHiveLayout_ExtractPartitionPath(t *testing.T) {
 		// A dataset literally named "segments" sits before the partitions
 		// marker and must not terminate the scan.
 		{"datasets/segments/partitions/day=1/segments/1/data/f.jsonl", "day=1"},
+		// A dataset named "partitions" sits before the real marker.
+		{"datasets/partitions/partitions/day=1/segments/1/data/f.jsonl", "day=1"},
 	}
 	for _, c := range cases {
 		if got := l.extractPartitionPath(c.path); got != c.want {
