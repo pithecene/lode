@@ -48,6 +48,8 @@ func TestNew_PrefixNormalization(t *testing.T) {
 		{"foo/", "foo/"},
 		{"foo/bar", "foo/bar/"},
 		{"foo/bar/", "foo/bar/"},
+		{"/foo", "foo/"},
+		{"foo//bar", "foo/bar/"},
 	}
 
 	for _, tt := range tests {
@@ -57,6 +59,17 @@ func TestNew_PrefixNormalization(t *testing.T) {
 		}
 		if store.prefix != tt.expected {
 			t.Errorf("prefix %q: expected %q, got %q", tt.prefix, tt.expected, store.prefix)
+		}
+	}
+}
+
+// The configured prefix is part of every key, so a prefix that a key could
+// not be is refused at construction rather than composed into object keys.
+func TestNew_PrefixRejected(t *testing.T) {
+	for _, prefix := range []string{`..`, `../x`, `a\b`, `..\x`} {
+		_, err := New(NewMockS3Client(), Config{Bucket: "test", Prefix: prefix})
+		if !errors.Is(err, lode.ErrInvalidPath) {
+			t.Errorf("prefix %q: got %v, want ErrInvalidPath", prefix, err)
 		}
 	}
 }
