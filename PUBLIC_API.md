@@ -638,7 +638,8 @@ relying on the multipart path, or ensure single-writer semantics at the applicat
 
 On abort or error before commit:
 - No manifest is written (the snapshot does not exist).
-- Partial data objects may remain in storage.
+- A failed `Put` leaves nothing behind (`CONTRACT_STORAGE.md` §Put is all-or-nothing); the writer never deletes after a failed `Put`.
+- A data object that was fully written but whose commit failed is deleted best-effort and may remain in storage.
 - Callers should not rely on automatic cleanup of partial objects.
 - Cleanup uses an independent context to maximize success even if the caller's
   context was canceled.
