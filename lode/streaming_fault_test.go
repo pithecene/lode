@@ -125,10 +125,27 @@ func TestStreamWrite_Abort_NoManifest_CleanupAttempted(t *testing.T) {
 		t.Errorf("expected ErrNoSnapshots after abort, got: %v", err)
 	}
 
-	// Verify: cleanup was attempted
-	deleteCalls := fs.DeleteCalls()
-	if len(deleteCalls) == 0 {
-		t.Error("expected cleanup Delete call after abort")
+	// Verify: the aborted Put left no object behind, without the writer
+	// deleting anything (CONTRACT_STORAGE §Put is all-or-nothing).
+	assertNoDataObject(t, fs, inner)
+	assertNoDataDelete(t, fs)
+}
+
+// assertNoDataObject verifies no data object exists in the inner store for
+// any data path the stream handed to Put.
+func assertNoDataObject(t *testing.T, fs *faultStore, inner Store) {
+	t.Helper()
+	for _, p := range fs.PutCalls() {
+		if !strings.Contains(p, "/data/") {
+			continue
+		}
+		exists, err := inner.Exists(t.Context(), p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if exists {
+			t.Fatalf("failed stream left a data object at %s", p)
+		}
 	}
 }
 
@@ -166,15 +183,14 @@ func TestStreamWrite_CloseWithoutCommit_NoManifest_CleanupAttempted(t *testing.T
 		t.Errorf("expected ErrNoSnapshots after close without commit, got: %v", err)
 	}
 
-	// Verify: cleanup was attempted
-	deleteCalls := fs.DeleteCalls()
-	if len(deleteCalls) == 0 {
-		t.Error("expected cleanup Delete call after close without commit")
-	}
+	// Verify: no object remains and the writer deleted nothing.
+	assertNoDataObject(t, fs, inner)
+	assertNoDataDelete(t, fs)
 }
 
-// TestStreamWrite_CleanupErrorIgnored verifies that cleanup errors don't propagate
-// (best-effort cleanup semantics).
+// TestStreamWrite_CleanupErrorIgnored verifies Abort succeeds even when the
+// store's Delete fails: the writer has nothing to delete after a failed Put,
+// so a broken Delete cannot affect the outcome.
 func TestStreamWrite_CleanupErrorIgnored(t *testing.T) {
 	inner := NewMemory()
 	fs := newFaultStore(inner)
@@ -203,10 +219,7 @@ func TestStreamWrite_CleanupErrorIgnored(t *testing.T) {
 		t.Fatalf("Abort failed despite Delete error: %v", err)
 	}
 
-	// Verify Delete was attempted
-	if len(fs.DeleteCalls()) == 0 {
-		t.Error("expected Delete call even when it fails")
-	}
+	assertNoDataObject(t, fs, inner)
 }
 
 // -----------------------------------------------------------------------------
@@ -242,11 +255,9 @@ func TestStreamWriteRecords_IteratorError_NoManifest_CleanupAttempted(t *testing
 		t.Errorf("expected ErrNoSnapshots after iterator error, got: %v", err)
 	}
 
-	// Verify: cleanup was attempted
-	deleteCalls := fs.DeleteCalls()
-	if len(deleteCalls) == 0 {
-		t.Error("expected cleanup Delete call after iterator error")
-	}
+	// Verify: no object remains and the writer deleted nothing.
+	assertNoDataObject(t, fs, inner)
+	assertNoDataDelete(t, fs)
 }
 
 // TestStreamWriteRecords_ManifestPutError_NoManifest verifies that when Put fails
@@ -609,10 +620,12 @@ func TestStreamWrite_BufferedCompressor_WriteFailsOncePutReturned(t *testing.T) 
 }
 
 // An ErrPathExists that the stream itself produced (here, the iterator) is
-// wrapped by the store after it has read from the pipe; it is not the
-// store's verdict, so the partial object is still ours to clean up.
-func TestStreamWriteRecords_PropagatedErrPathExists_StillCleansUp(t *testing.T) {
-	fs := newFaultStore(NewMemory())
+// wrapped by the store; the writer cannot tell it from the store's own
+// verdict and does not try to. The store's all-or-nothing Put leaves no
+// object, and the writer deletes nothing either way.
+func TestStreamWriteRecords_PropagatedErrPathExists_LeavesNothing(t *testing.T) {
+	inner := NewMemory()
+	fs := newFaultStore(inner)
 	ds, err := NewDataset("test-ds", newFaultStoreFactory(fs), WithCodec(NewJSONLCodec()))
 	if err != nil {
 		t.Fatal(err)
@@ -622,15 +635,8 @@ func TestStreamWriteRecords_PropagatedErrPathExists_StillCleansUp(t *testing.T) 
 	if !errors.Is(err, ErrPathExists) {
 		t.Fatalf("got %v, want the propagated ErrPathExists", err)
 	}
-	deleted := false
-	for _, p := range fs.DeleteCalls() {
-		if strings.Contains(p, "/data/") {
-			deleted = true
-		}
-	}
-	if !deleted {
-		t.Fatalf("partial object not cleaned up; deletes: %v", fs.DeleteCalls())
-	}
+	assertNoDataObject(t, fs, inner)
+	assertNoDataDelete(t, fs)
 }
 
 // A store that spools the stream before checking existence (memory, S3)
