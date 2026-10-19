@@ -95,8 +95,10 @@ snapshot's data prefix is never unreferenced, whether or not that snapshot's
 `Files[]` lists it. PUBLIC_API.md presents a file inventory kept in
 `Manifest.Metadata` as a correct pattern, so `Files[]` membership cannot be
 the test for liveness. Objects anywhere else under the dataset (partition-level
-sidecars, pointers, tombstones) are outside the sweep's scan and are never
-touched.
+sidecars such as `partitions/<k=v>/run.json`, pointers, tombstones) are
+outside the sweep's scan: `Sweep` MUST NOT list, report, or delete them. This
+scope is a consumer dependency (quarry keeps its run record there), not an
+implementation detail.
 
 ---
 
