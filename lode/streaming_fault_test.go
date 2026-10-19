@@ -923,3 +923,43 @@ func TestStreamWrite_Commit_PutFailurePrecedesCompressorCloseError(t *testing.T)
 		t.Fatalf("Commit without Put failure: got %v, want errCloseBoom", err)
 	}
 }
+
+// writeFailCompressor hands out a writer whose first Write fails and that
+// counts how many Writes reached it.
+type writeFailCompressor struct {
+	Compressor
+	writes int
+	err    error
+}
+
+func (c *writeFailCompressor) Compress(io.Writer) (io.WriteCloser, error) { return c, nil }
+func (c *writeFailCompressor) Write([]byte) (int, error)                  { c.writes++; return 0, c.err }
+func (c *writeFailCompressor) Close() error                               { return nil }
+
+// A StreamWriter whose Write failed stays failed: the error is returned again
+// without another attempt on the compressor, so a caller that keeps writing
+// cannot interleave bytes after a gap.
+func TestDataset_StreamWrite_WriteErrorIsSticky(t *testing.T) {
+	ctx := t.Context()
+	boom := errors.New("compressor refused")
+	comp := &writeFailCompressor{Compressor: NewNoOpCompressor(), err: boom}
+	ds, err := NewDataset("sticky", NewMemoryFactoryFrom(NewMemory()), WithCompressor(comp))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sw, err := ds.StreamWrite(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sw.Close() }()
+
+	if _, err := sw.Write([]byte("a")); !errors.Is(err, boom) {
+		t.Fatalf("first Write: got %v, want the compressor error", err)
+	}
+	if _, err := sw.Write([]byte("b")); !errors.Is(err, boom) {
+		t.Fatalf("second Write: got %v, want the same error", err)
+	}
+	if comp.writes != 1 {
+		t.Errorf("compressor saw %d writes, want 1 (second Write must not retry)", comp.writes)
+	}
+}
