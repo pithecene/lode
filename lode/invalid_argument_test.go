@@ -171,3 +171,22 @@ func TestErrInvalidArgument_BeforeStoreFactory(t *testing.T) {
 		})
 	}
 }
+
+// The sentinels that moved from errors.New values keep the static type
+// `error`, so downstream code such as `err := lode.ErrInvalidPath` followed by
+// another assignment keeps compiling. ErrInvalidArgument is declared the same
+// way for consistency.
+func TestMovedSentinels_StaticTypeIsError(t *testing.T) {
+	for name, ptr := range map[string]any{
+		"ErrInvalidArgument":                &ErrInvalidArgument,
+		"ErrInvalidPath":                    &ErrInvalidPath,
+		"ErrManifestInvalid":                &ErrManifestInvalid,
+		"ErrOptionNotValidForDataset":       &ErrOptionNotValidForDataset,
+		"ErrOptionNotValidForDatasetReader": &ErrOptionNotValidForDatasetReader,
+		"ErrOptionNotValidForVolume":        &ErrOptionNotValidForVolume,
+	} {
+		if _, ok := ptr.(*error); !ok {
+			t.Errorf("%s is declared as %T, want *error", name, ptr)
+		}
+	}
+}
