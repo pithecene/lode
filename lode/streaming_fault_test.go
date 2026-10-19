@@ -431,3 +431,82 @@ func (f *failingIterator) Err() error {
 	}
 	return nil
 }
+
+// -----------------------------------------------------------------------------
+// Fast Put Failure Tests
+// -----------------------------------------------------------------------------
+//
+// A Put that returns before draining the pipe (ErrPathExists, invalid path, an
+// injected error) used to leave the writer blocked forever on the pipe. The
+// data-path Put below fails before reading a byte; the write must surface that
+// error, not hang (CONTRACT_WRITE_API §StreamWrite / §StreamWriteRecords).
+
+// awaitOrFail runs op and fails the test if it has not returned within the
+// deadline, so a regression shows up as a failure rather than a suite timeout.
+func awaitOrFail(t *testing.T, op func() error) error {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() { done <- op() }()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(10 * time.Second):
+		t.Fatal("stream write blocked after fast Put failure")
+		return nil
+	}
+}
+
+func TestStreamWrite_DataPutFailsFast_ReturnsError(t *testing.T) {
+	fs := newFaultStore(NewMemory())
+	fs.SetPutError(errInjectedPut, "/data/")
+
+	ds, err := NewDataset("test-ds", newFaultStoreFactory(fs))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sw, err := ds.StreamWrite(t.Context(), Metadata{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = awaitOrFail(t, func() error {
+		// Compression may buffer the write; the pipe error then surfaces on Commit.
+		if _, werr := sw.Write(make([]byte, 1<<20)); werr != nil {
+			return werr
+		}
+		_, cerr := sw.Commit(t.Context())
+		return cerr
+	})
+	if !errors.Is(err, errInjectedPut) {
+		t.Fatalf("got %v, want errInjectedPut", err)
+	}
+
+	fs.SetPutError(nil)
+	if _, err := ds.Latest(t.Context()); !errors.Is(err, ErrNoSnapshots) {
+		t.Errorf("expected ErrNoSnapshots after failed stream, got: %v", err)
+	}
+}
+
+func TestStreamWriteRecords_DataPutFailsFast_ReturnsError(t *testing.T) {
+	fs := newFaultStore(NewMemory())
+	fs.SetPutError(errInjectedPut, "/data/")
+
+	ds, err := NewDataset("test-ds", newFaultStoreFactory(fs), WithCodec(NewJSONLCodec()))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	iter := &sliceIterator{records: []any{D{"id": "1"}, D{"id": "2"}}}
+	err = awaitOrFail(t, func() error {
+		_, werr := ds.StreamWriteRecords(t.Context(), iter, Metadata{})
+		return werr
+	})
+	if !errors.Is(err, errInjectedPut) {
+		t.Fatalf("got %v, want errInjectedPut", err)
+	}
+
+	fs.SetPutError(nil)
+	if _, err := ds.Latest(t.Context()); !errors.Is(err, ErrNoSnapshots) {
+		t.Errorf("expected ErrNoSnapshots after failed stream, got: %v", err)
+	}
+}

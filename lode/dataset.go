@@ -766,7 +766,12 @@ func (d *dataset) StreamWrite(ctx context.Context, metadata Metadata) (StreamWri
 	// Start store.Put in background
 	putDone := make(chan error, 1)
 	go func() {
-		putDone <- d.store.Put(ctx, filePath, pr)
+		err := d.store.Put(ctx, filePath, pr)
+		// A Put that returns before draining the pipe (fast failure such as
+		// ErrPathExists) would leave the writer blocked forever; closing the
+		// read end turns pending and future writes into err instead.
+		_ = pr.CloseWithError(err)
+		putDone <- err
 	}()
 
 	return &streamWriter{
@@ -841,7 +846,12 @@ func (d *dataset) StreamWriteRecords(ctx context.Context, records RecordIterator
 	// Start store.Put in background
 	putDone := make(chan error, 1)
 	go func() {
-		putDone <- d.store.Put(ctx, filePath, pr)
+		err := d.store.Put(ctx, filePath, pr)
+		// A Put that returns before draining the pipe (fast failure such as
+		// ErrPathExists) would leave the writer blocked forever; closing the
+		// read end turns pending and future writes into err instead.
+		_ = pr.CloseWithError(err)
+		putDone <- err
 	}()
 
 	// Stream records through encoder, tracking count and timestamps

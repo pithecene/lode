@@ -52,6 +52,9 @@ It is authoritative for any `Dataset` implementation.
 - When a checksum component is configured, the checksum MUST be computed during
   streaming and recorded in the manifest for each file written.
 - When a codec is configured, `StreamWrite` MUST return an error.
+- If the store's `Put` returns before consuming the stream (for example with
+  `ErrPathExists`), subsequent `Write` and `Commit` calls MUST fail with that
+  error; they MUST NOT block.
 
 ### StreamWriteRecords Semantics
 
@@ -67,6 +70,8 @@ It is authoritative for any `Dataset` implementation.
 - On success, the manifest is written and the new snapshot is returned.
 - On error (iterator failure, codec error, storage error), no manifest is written
   and best-effort cleanup of partial objects is attempted.
+- If the store's `Put` returns before consuming the stream, `StreamWriteRecords`
+  MUST return that error; it MUST NOT block.
 - Row/event count MUST equal the total number of records consumed.
 - When a checksum component is configured, the checksum MUST be computed during
   streaming and recorded in the manifest for each file written.
