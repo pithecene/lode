@@ -41,129 +41,186 @@ const (
 	dataDir       = "data"
 	partitionsDir = "partitions"
 	segmentsDir   = "segments"
+	latestFile    = "latest"
 )
 
 // -----------------------------------------------------------------------------
-// Default Layout
+// Path grammar
 // -----------------------------------------------------------------------------
 
-// defaultLayout implements the reference layout from CONTRACT_READ_API.md:
+// pathGrammar describes a layout's object paths as data. Every layout is one
+// grammar plus a partitioner; building and parsing paths are written once.
 //
-//	/datasets/<dataset>/snapshots/<segment_id>/
-//	  manifest.json
-//	  /data/
-//	    filename
+//	[<root>/]<dataset>/[partitions/<k=v>.../]<snapshotDir>/<snapshot>/manifest.json
+//	[<root>/]<dataset>/[partitions/<k=v>.../]<snapshotDir>/<snapshot>/data/<file>
 //
-// This layout uses noop partitioning (flat, unpartitioned).
-type defaultLayout struct {
-	part partitioner
+// root, partitions and snapshotDir are each optional per grammar.
+type pathGrammar struct {
+	root        string // common prefix for all datasets; "" puts datasets at the store root
+	snapshotDir string // directory holding snapshots under a dataset (or partition); "" for none
+	partitioned bool   // partitions/<k=v>... may sit between the dataset and snapshotDir
 }
 
-// NewDefaultLayout creates the default novice-friendly layout.
-//
-// This layout:
-//   - Uses segment-first organization (datasets/snapshots/segment)
-//   - Does not support partitioning (flat data organization)
-//   - Is the default for NewDataset when no layout is specified
-func NewDefaultLayout() layout {
-	return &defaultLayout{part: newNoopPartitioner()}
+// pathKind is what the leaf of a parsed path names.
+type pathKind int
+
+const (
+	otherPath pathKind = iota
+	manifestLeaf
+	dataLeaf
+)
+
+// snapshotPath is a path parsed against a grammar: which dataset, which
+// partition ("" when none) and which snapshot it belongs to.
+type snapshotPath struct {
+	dataset   DatasetID
+	partition string
+	snapshot  DatasetSnapshotID
+	kind      pathKind
 }
 
-func (l *defaultLayout) supportsDatasetEnumeration() bool { return true }
-func (l *defaultLayout) supportsPartitions() bool         { return false }
-func (l *defaultLayout) datasetsPrefix() string           { return datasetsDir + "/" }
-
-func (l *defaultLayout) segmentsPrefix(dataset DatasetID) string {
-	return path.Join(datasetsDir, string(dataset), snapshotsDir) + "/"
+// join is path.Join over the non-empty parts. A grammar's optional pieces
+// (root, partition, snapshotDir) are "" when absent; dropping them up front
+// means one Join per path and nothing for Clean to repair.
+func join(parts ...string) string {
+	n := 0
+	for _, part := range parts {
+		if part != "" {
+			parts[n] = part
+			n++
+		}
+	}
+	return path.Join(parts[:n]...)
 }
 
-func (l *defaultLayout) segmentsPrefixForPartition(dataset DatasetID, _ string) string {
-	return l.segmentsPrefix(dataset)
+// partitionParts is the partitions directory and the partition, or two
+// empty strings when the grammar has no partitions or none is given.
+func (g pathGrammar) partitionParts(partition string) (dir, part string) {
+	if !g.partitioned || partition == "" {
+		return "", ""
+	}
+	return partitionsDir, partition
 }
 
-func (l *defaultLayout) partitionsPrefix(dataset DatasetID, _ string) string {
-	return l.segmentsPrefix(dataset) // no partitions: callers guard on supportsPartitions()
+// datasetDir is the directory that holds everything about one dataset.
+func (g pathGrammar) datasetDir(dataset DatasetID) string {
+	return join(g.root, string(dataset))
 }
 
-func (l *defaultLayout) manifestPath(dataset DatasetID, segment DatasetSnapshotID) string {
-	return path.Join(datasetsDir, string(dataset), snapshotsDir, string(segment), manifestFile)
+// snapshotDirFor is the directory holding snapshots of a dataset, under the
+// given partition when the grammar is partitioned and partition is non-empty.
+func (g pathGrammar) snapshotDirFor(dataset DatasetID, partition string) string {
+	partDir, part := g.partitionParts(partition)
+	return join(g.root, string(dataset), partDir, part, g.snapshotDir)
 }
 
-func (l *defaultLayout) manifestPathInPartition(dataset DatasetID, segment DatasetSnapshotID, _ string) string {
-	return l.manifestPath(dataset, segment)
+// objectPath is the path of one object in a snapshot's directory: the
+// manifest (dir "", file manifestFile) or a data file (dir dataDir).
+func (g pathGrammar) objectPath(dataset DatasetID, partition string, snapshot DatasetSnapshotID, dir, file string) string {
+	partDir, part := g.partitionParts(partition)
+	return join(g.root, string(dataset), partDir, part, g.snapshotDir, string(snapshot), dir, file)
 }
 
-func (l *defaultLayout) isManifest(p string) bool {
+// parse reads a path against the grammar. ok is false for any path that is
+// not a manifest or data object of this layout.
+func (g pathGrammar) parse(p string) (sp snapshotPath, ok bool) {
 	parts := strings.Split(p, "/")
-	if len(parts) != 5 {
-		return false
+	next := func() (string, bool) {
+		if len(parts) == 0 {
+			return "", false
+		}
+		head := parts[0]
+		parts = parts[1:]
+		return head, true
 	}
-	return parts[0] == datasetsDir &&
-		parts[1] != "" &&
-		parts[2] == snapshotsDir &&
-		parts[3] != "" &&
-		parts[4] == manifestFile
-}
-
-func (l *defaultLayout) parseDatasetID(manifestPath string) DatasetID {
-	if !l.isManifest(manifestPath) {
-		return ""
+	expect := func(want string) bool {
+		got, ok := next()
+		return ok && got == want
 	}
-	parts := strings.Split(manifestPath, "/")
-	return DatasetID(parts[1])
-}
 
-func (l *defaultLayout) parseSegmentID(manifestPath string) DatasetSnapshotID {
-	if !l.isManifest(manifestPath) {
-		return ""
+	if g.root != "" && !expect(g.root) {
+		return sp, false
 	}
-	parts := strings.Split(manifestPath, "/")
-	return DatasetSnapshotID(parts[3])
+	ds, ok := next()
+	if !ok || ds == "" {
+		return sp, false
+	}
+	sp.dataset = DatasetID(ds)
+
+	if g.partitioned && len(parts) > 0 && parts[0] == partitionsDir {
+		parts = parts[1:]
+		end := indexOf(parts, g.snapshotDir)
+		if end <= 0 {
+			return sp, false // no partition segments, or no snapshot dir after them
+		}
+		sp.partition = strings.Join(parts[:end], "/")
+		parts = parts[end:]
+	}
+	if g.snapshotDir != "" && !expect(g.snapshotDir) {
+		return sp, false
+	}
+	id, ok := next()
+	if !ok || id == "" {
+		return sp, false
+	}
+	sp.snapshot = DatasetSnapshotID(id)
+
+	// The leaf decides the kind. If-chain rather than a tagless switch so
+	// the mutation gate measures these guards (go-gremlins/gremlins#298).
+	if len(parts) == 1 && parts[0] == manifestFile {
+		sp.kind = manifestLeaf
+		return sp, true
+	}
+	if len(parts) == 2 && parts[0] == dataDir && parts[1] != "" {
+		sp.kind = dataLeaf
+		return sp, true
+	}
+	return sp, false
 }
 
-func (l *defaultLayout) parsePartitionFromManifest(_ string) string {
-	return "" // Default layout doesn't encode partitions in manifest paths
-}
-
-func (l *defaultLayout) extractPartitionPath(_ string) string {
-	return "" // Default layout doesn't support partitions
-}
-
-func (l *defaultLayout) dataFilePath(dataset DatasetID, segment DatasetSnapshotID, _, filename string) string {
-	return path.Join(datasetsDir, string(dataset), snapshotsDir, string(segment), dataDir, filename)
-}
-
-func (l *defaultLayout) latestPointerPath(dataset DatasetID) string {
-	return path.Join(datasetsDir, string(dataset), "latest")
-}
-
-func (l *defaultLayout) partitioner() partitioner {
-	return l.part
+func indexOf(parts []string, want string) int {
+	for i, p := range parts {
+		if p == want {
+			return i
+		}
+	}
+	return -1
 }
 
 // -----------------------------------------------------------------------------
-// Hive Layout
+// The one layout implementation
 // -----------------------------------------------------------------------------
 
-// hiveLayout implements a partition-first layout:
+// pathLayout implements layout from a grammar and a partitioner.
+type pathLayout struct {
+	grammar pathGrammar
+	part    partitioner
+}
+
+// NewDefaultLayout creates the default novice-friendly layout:
 //
-//	/datasets/<dataset>/partitions/<k=v>/segments/<segment_id>/
+//	/datasets/<dataset>/snapshots/<snapshot>/
 //	  manifest.json
-//	  /data/
-//	    filename
+//	  /data/<file>
 //
-// This layout places partitions at the dataset level, enabling efficient
-// partition pruning at the storage layer.
-type hiveLayout struct {
-	part partitioner
+// Flat (noop partitioning); the default for NewDataset and NewDatasetReader.
+func NewDefaultLayout() layout {
+	return &pathLayout{
+		grammar: pathGrammar{root: datasetsDir, snapshotDir: snapshotsDir},
+		part:    newNoopPartitioner(),
+	}
 }
 
-// NewHiveLayout creates a Hive (partition-first) layout with the specified partition keys.
+// NewHiveLayout creates a Hive (partition-first) layout with the specified partition keys:
 //
-// At least one partition key is required. For unpartitioned data, use NewDefaultLayout instead.
+//	/datasets/<dataset>/partitions/<k=v>/segments/<snapshot>/
+//	  manifest.json
+//	  /data/<file>
 //
-// The keys specify which record fields to use for partitioning.
-// Records must be map[string]any with the specified keys present.
+// plus a canonical manifest at /datasets/<dataset>/segments/<snapshot>/manifest.json
+// for O(1) lookup by ID. At least one partition key is required; for
+// unpartitioned data use NewDefaultLayout. Records must be map[string]any
+// with the keys present.
 //
 // Example:
 //
@@ -173,245 +230,105 @@ func NewHiveLayout(keys ...string) (layout, error) {
 	if len(keys) == 0 {
 		return nil, errors.New("NewHiveLayout requires at least one partition key; use NewDefaultLayout for unpartitioned data")
 	}
-	return &hiveLayout{part: newHivePartitioner(keys...)}, nil
+	return &pathLayout{
+		grammar: pathGrammar{root: datasetsDir, snapshotDir: segmentsDir, partitioned: true},
+		part:    newHivePartitioner(keys...),
+	}, nil
 }
 
-func (l *hiveLayout) supportsDatasetEnumeration() bool { return true }
-func (l *hiveLayout) supportsPartitions() bool         { return true }
-func (l *hiveLayout) datasetsPrefix() string           { return datasetsDir + "/" }
-
-func (l *hiveLayout) segmentsPrefix(dataset DatasetID) string {
-	return path.Join(datasetsDir, string(dataset)) + "/"
+// NewFlatLayout creates a minimal layout with dataset names at the store root:
+//
+//	/<dataset>/<snapshot>/
+//	  manifest.json
+//	  /data/<file>
+//
+// No partitions, and no dataset enumeration (there is no common prefix).
+func NewFlatLayout() layout {
+	return &pathLayout{grammar: pathGrammar{}, part: newNoopPartitioner()}
 }
 
-func (l *hiveLayout) segmentsPrefixForPartition(dataset DatasetID, partition string) string {
-	if partition == "" {
+func (l *pathLayout) supportsDatasetEnumeration() bool { return l.grammar.root != "" }
+func (l *pathLayout) supportsPartitions() bool         { return l.grammar.partitioned }
+func (l *pathLayout) partitioner() partitioner         { return l.part }
+
+func (l *pathLayout) datasetsPrefix() string {
+	if l.grammar.root == "" {
+		return ""
+	}
+	return l.grammar.root + "/"
+}
+
+// segmentsPrefix covers every manifest of the dataset. On a partitioned
+// grammar that is the whole dataset directory (partitions sit inside it).
+func (l *pathLayout) segmentsPrefix(dataset DatasetID) string {
+	if l.grammar.partitioned {
+		return l.grammar.datasetDir(dataset) + "/"
+	}
+	return l.grammar.snapshotDirFor(dataset, "") + "/"
+}
+
+func (l *pathLayout) segmentsPrefixForPartition(dataset DatasetID, partition string) string {
+	if partition == "" || !l.grammar.partitioned {
 		return l.segmentsPrefix(dataset)
 	}
-	return path.Join(datasetsDir, string(dataset), partitionsDir, partition, segmentsDir) + "/"
+	return l.grammar.snapshotDirFor(dataset, partition) + "/"
 }
 
-func (l *hiveLayout) partitionsPrefix(dataset DatasetID, partitionPrefix string) string {
+func (l *pathLayout) partitionsPrefix(dataset DatasetID, partitionPrefix string) string {
+	if !l.grammar.partitioned {
+		return l.segmentsPrefix(dataset) // callers guard on supportsPartitions()
+	}
 	// Raw concatenation, not path.Join: a partial final token such as
 	// "day=2026-10" must stay a prefix of "day=2026-10-18".
-	return path.Join(datasetsDir, string(dataset), partitionsDir) + "/" + partitionPrefix
+	return join(l.grammar.root, string(dataset), partitionsDir) + "/" + partitionPrefix
 }
 
-func (l *hiveLayout) manifestPath(dataset DatasetID, segment DatasetSnapshotID) string {
-	return path.Join(datasetsDir, string(dataset), segmentsDir, string(segment), manifestFile)
+func (l *pathLayout) manifestPath(dataset DatasetID, segment DatasetSnapshotID) string {
+	return l.grammar.objectPath(dataset, "", segment, "", manifestFile)
 }
 
-func (l *hiveLayout) manifestPathInPartition(dataset DatasetID, segment DatasetSnapshotID, partition string) string {
-	if partition == "" {
-		return l.manifestPath(dataset, segment)
-	}
-	return path.Join(datasetsDir, string(dataset), partitionsDir, partition, segmentsDir, string(segment), manifestFile)
+func (l *pathLayout) manifestPathInPartition(dataset DatasetID, segment DatasetSnapshotID, partition string) string {
+	return l.grammar.objectPath(dataset, partition, segment, "", manifestFile)
 }
 
-func (l *hiveLayout) isManifest(p string) bool {
-	parts := strings.Split(p, "/")
-	if len(parts) < 4 {
-		return false
-	}
-	if parts[0] != datasetsDir || parts[1] == "" {
-		return false
-	}
-	if parts[len(parts)-1] != manifestFile {
-		return false
-	}
-	for i := 2; i < len(parts)-2; i++ {
-		if parts[i] == segmentsDir && parts[i+2] == manifestFile {
-			return parts[i+1] != ""
-		}
-	}
-	return false
+func (l *pathLayout) dataFilePath(dataset DatasetID, segment DatasetSnapshotID, partition, filename string) string {
+	return l.grammar.objectPath(dataset, partition, segment, dataDir, filename)
 }
 
-func (l *hiveLayout) parseDatasetID(manifestPath string) DatasetID {
-	if !l.isManifest(manifestPath) {
-		return ""
-	}
-	parts := strings.Split(manifestPath, "/")
-	return DatasetID(parts[1])
+func (l *pathLayout) latestPointerPath(dataset DatasetID) string {
+	return join(l.grammar.root, string(dataset), latestFile)
 }
 
-func (l *hiveLayout) parseSegmentID(manifestPath string) DatasetSnapshotID {
-	if !l.isManifest(manifestPath) {
-		return ""
+// manifest parses p as a manifest path of this layout; the zero snapshotPath
+// for anything else, so callers never see partial fields.
+func (l *pathLayout) manifest(p string) snapshotPath {
+	if sp, ok := l.grammar.parse(p); ok && sp.kind == manifestLeaf {
+		return sp
 	}
-	parts := strings.Split(manifestPath, "/")
-	for i := 2; i < len(parts)-2; i++ {
-		if parts[i] == segmentsDir {
-			return DatasetSnapshotID(parts[i+1])
-		}
+	return snapshotPath{}
+}
+
+func (l *pathLayout) isManifest(p string) bool {
+	return l.manifest(p).kind == manifestLeaf
+}
+
+func (l *pathLayout) parseDatasetID(manifestPath string) DatasetID {
+	return l.manifest(manifestPath).dataset
+}
+
+func (l *pathLayout) parseSegmentID(manifestPath string) DatasetSnapshotID {
+	return l.manifest(manifestPath).snapshot
+}
+
+func (l *pathLayout) parsePartitionFromManifest(manifestPath string) string {
+	return l.manifest(manifestPath).partition
+}
+
+// extractPartitionPath returns the partition of a manifest or data path, ""
+// when it has none or is not a path of this layout.
+func (l *pathLayout) extractPartitionPath(filePath string) string {
+	if sp, ok := l.grammar.parse(filePath); ok {
+		return sp.partition
 	}
 	return ""
-}
-
-func (l *hiveLayout) parsePartitionFromManifest(manifestPath string) string {
-	if !l.isManifest(manifestPath) {
-		return ""
-	}
-	parts := strings.Split(manifestPath, "/")
-
-	partitionsIdx := -1
-	for i := 2; i < len(parts); i++ {
-		if parts[i] == partitionsDir {
-			partitionsIdx = i
-			break
-		}
-	}
-	if partitionsIdx < 0 {
-		return ""
-	}
-
-	segmentsIdx := -1
-	for i := partitionsIdx + 1; i < len(parts); i++ {
-		if parts[i] == segmentsDir {
-			segmentsIdx = i
-			break
-		}
-	}
-	if segmentsIdx < 0 || segmentsIdx <= partitionsIdx+1 {
-		return ""
-	}
-
-	return strings.Join(parts[partitionsIdx+1:segmentsIdx], "/")
-}
-
-func (l *hiveLayout) extractPartitionPath(filePath string) string {
-	parts := strings.Split(filePath, "/")
-
-	partitionsIdx := -1
-	for i := 2; i < len(parts); i++ {
-		if parts[i] == partitionsDir {
-			partitionsIdx = i
-			break
-		}
-	}
-	if partitionsIdx < 0 {
-		return ""
-	}
-
-	segmentsIdx := -1
-	for i := partitionsIdx + 1; i < len(parts); i++ {
-		if parts[i] == segmentsDir {
-			segmentsIdx = i
-			break
-		}
-	}
-	if segmentsIdx < 0 || segmentsIdx <= partitionsIdx+1 {
-		return ""
-	}
-
-	return strings.Join(parts[partitionsIdx+1:segmentsIdx], "/")
-}
-
-func (l *hiveLayout) dataFilePath(dataset DatasetID, segment DatasetSnapshotID, partition, filename string) string {
-	if partition == "" {
-		return path.Join(datasetsDir, string(dataset), segmentsDir, string(segment), dataDir, filename)
-	}
-	return path.Join(datasetsDir, string(dataset), partitionsDir, partition, segmentsDir, string(segment), dataDir, filename)
-}
-
-func (l *hiveLayout) latestPointerPath(dataset DatasetID) string {
-	return path.Join(datasetsDir, string(dataset), "latest")
-}
-
-func (l *hiveLayout) partitioner() partitioner {
-	return l.part
-}
-
-// -----------------------------------------------------------------------------
-// Flat Layout
-// -----------------------------------------------------------------------------
-
-// flatLayout implements a minimal flat layout:
-//
-//	/<dataset>/<segment>/
-//	  manifest.json
-//	  /data/
-//	    filename
-//
-// This layout has no partition support and no "datasets" prefix.
-type flatLayout struct {
-	part partitioner
-}
-
-// NewFlatLayout creates a minimal flat layout for simple use cases.
-//
-// This layout:
-//   - Has no "datasets" prefix (dataset names are at root level)
-//   - Does not support partitioning
-//   - Does not support dataset enumeration (no common prefix)
-func NewFlatLayout() layout {
-	return &flatLayout{part: newNoopPartitioner()}
-}
-
-func (l *flatLayout) supportsDatasetEnumeration() bool { return false }
-func (l *flatLayout) supportsPartitions() bool         { return false }
-func (l *flatLayout) datasetsPrefix() string           { return "" }
-
-func (l *flatLayout) segmentsPrefix(dataset DatasetID) string {
-	return string(dataset) + "/"
-}
-
-func (l *flatLayout) segmentsPrefixForPartition(dataset DatasetID, _ string) string {
-	return l.segmentsPrefix(dataset)
-}
-
-func (l *flatLayout) partitionsPrefix(dataset DatasetID, _ string) string {
-	return l.segmentsPrefix(dataset) // no partitions: callers guard on supportsPartitions()
-}
-
-func (l *flatLayout) manifestPath(dataset DatasetID, segment DatasetSnapshotID) string {
-	return path.Join(string(dataset), string(segment), manifestFile)
-}
-
-func (l *flatLayout) manifestPathInPartition(dataset DatasetID, segment DatasetSnapshotID, _ string) string {
-	return l.manifestPath(dataset, segment)
-}
-
-func (l *flatLayout) isManifest(p string) bool {
-	parts := strings.Split(p, "/")
-	return len(parts) == 3 &&
-		parts[0] != "" &&
-		parts[1] != "" &&
-		parts[2] == manifestFile
-}
-
-func (l *flatLayout) parseDatasetID(manifestPath string) DatasetID {
-	if !l.isManifest(manifestPath) {
-		return ""
-	}
-	parts := strings.Split(manifestPath, "/")
-	return DatasetID(parts[0])
-}
-
-func (l *flatLayout) parseSegmentID(manifestPath string) DatasetSnapshotID {
-	if !l.isManifest(manifestPath) {
-		return ""
-	}
-	parts := strings.Split(manifestPath, "/")
-	return DatasetSnapshotID(parts[1])
-}
-
-func (l *flatLayout) parsePartitionFromManifest(_ string) string {
-	return ""
-}
-
-func (l *flatLayout) extractPartitionPath(_ string) string {
-	return ""
-}
-
-func (l *flatLayout) dataFilePath(dataset DatasetID, segment DatasetSnapshotID, _, filename string) string {
-	return path.Join(string(dataset), string(segment), dataDir, filename)
-}
-
-func (l *flatLayout) latestPointerPath(dataset DatasetID) string {
-	return path.Join(string(dataset), "latest")
-}
-
-func (l *flatLayout) partitioner() partitioner {
-	return l.part
 }

@@ -117,68 +117,39 @@ func (r *reader) ListPartitions(ctx context.Context, dataset DatasetID, opts Par
 		return nil, ErrPartitionPrefixNotSupported
 	}
 
-	// Single-pass: list paths, load each manifest once, extract partitions.
-	// Eliminates the double-deserialization of ListManifests + GetManifest (CX-3).
+	// Partition-first layouts put every segment under its partition, so a
+	// partition prefix is a storage prefix (CONTRACT_LAYOUT §Hive-style).
 	prefix := r.layout.segmentsPrefixForPartition(dataset, "")
 	if opts.Prefix != "" {
-		// Partition-first layouts put every segment under its partition, so a
-		// partition prefix is a storage prefix (CONTRACT_LAYOUT §Hive-style).
 		prefix = r.layout.partitionsPrefix(dataset, opts.Prefix)
 	}
-	paths, err := r.store.List(ctx, prefix)
+	listing, err := r.listManifests(ctx, prefix)
 	if err != nil {
 		return nil, err
 	}
-	// Store.List ordering is unspecified (CONTRACT_STORAGE §List); sort so
-	// the result is deterministic regardless of backend.
-	sort.Strings(paths)
-
-	seenSnap := make(map[DatasetSnapshotID]bool)
-	seenPart := make(map[string]bool)
-	var partitions []PartitionRef
-	hasAnyManifest := false
-
-	for _, p := range paths {
-		if !r.layout.isManifest(p) {
-			continue
-		}
-		hasAnyManifest = true
-
-		snapshotID := r.layout.parseSegmentID(p)
-		if snapshotID == "" || seenSnap[snapshotID] {
-			continue
-		}
-
-		manifestPartition := r.layout.parsePartitionFromManifest(p)
-
-		// Skip canonical manifests in partition-aware layouts (same logic as ListManifests).
-		if r.layout.supportsPartitions() && manifestPartition == "" {
-			continue
-		}
-
-		seenSnap[snapshotID] = true
-
-		// Load each manifest once — the only Get per manifest.
-		manifest, err := r.loadManifest(ctx, p)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load manifest %s: %w", p, err)
-		}
-
-		for _, f := range manifest.Files {
-			partPath := r.layout.extractPartitionPath(f.Path)
-			// A snapshot found under the prefix may also carry files for
-			// partitions outside it; those are not part of this listing.
-			if partPath == "" || seenPart[partPath] || !strings.HasPrefix(partPath, opts.Prefix) {
-				continue
-			}
-			seenPart[partPath] = true
-			partitions = append(partitions, PartitionRef{Path: partPath})
-		}
+	// With a prefix, an empty subtree is a valid answer, not a missing dataset.
+	if !listing.any && opts.Prefix == "" {
+		return nil, ErrNotFound
 	}
 
-	// With a prefix, an empty subtree is a valid answer, not a missing dataset.
-	if !hasAnyManifest && opts.Prefix == "" {
-		return nil, ErrNotFound
+	// Each snapshot's manifest is loaded once; its files name the partitions.
+	// A snapshot found under the prefix may also carry files for partitions
+	// outside it; those are not part of this listing.
+	seen := make(map[string]bool)
+	var partitions []PartitionRef
+	for _, m := range listing.manifests {
+		manifest, err := r.loadManifest(ctx, m.path)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load manifest %s: %w", m.path, err)
+		}
+		for _, f := range manifest.Files {
+			p := r.layout.extractPartitionPath(f.Path)
+			if p == "" || seen[p] || !strings.HasPrefix(p, opts.Prefix) {
+				continue
+			}
+			seen[p] = true
+			partitions = append(partitions, PartitionRef{Path: p})
+		}
 	}
 
 	sort.Slice(partitions, func(i, j int) bool { return partitions[i].Path < partitions[j].Path })
@@ -186,75 +157,92 @@ func (r *reader) ListPartitions(ctx context.Context, dataset DatasetID, opts Par
 }
 
 func (r *reader) ListManifests(ctx context.Context, dataset DatasetID, partition string, opts ManifestListOptions) ([]ManifestRef, error) {
-	prefix := r.layout.segmentsPrefixForPartition(dataset, partition)
-	paths, err := r.store.List(ctx, prefix)
+	listing, err := r.listManifests(ctx, r.layout.segmentsPrefixForPartition(dataset, partition))
 	if err != nil {
 		return nil, err
 	}
-	// Store.List ordering is unspecified (CONTRACT_STORAGE §List). Sort by
-	// (parsed partition, path) so the first manifest seen for a snapshot is its
-	// lexicographically smallest partition — which is then the one loaded and
-	// validated. Path order alone is not partition order when one partition
-	// name prefixes another ("day=a-b/..." sorts before "day=a/...").
-	sort.Slice(paths, func(i, j int) bool {
-		pi, pj := r.layout.parsePartitionFromManifest(paths[i]), r.layout.parsePartitionFromManifest(paths[j])
-		if pi != pj {
-			return pi < pj
-		}
-		return paths[i] < paths[j]
-	})
-
-	var refs []ManifestRef
-	seen := make(map[DatasetSnapshotID]bool)
-	hasAnyManifest := false
-
-	for _, p := range paths {
-		if !r.layout.isManifest(p) {
-			continue
-		}
-		hasAnyManifest = true
-
-		snapshotID := r.layout.parseSegmentID(p)
-		if snapshotID == "" || seen[snapshotID] {
-			continue
-		}
-
-		manifestPartition := r.layout.parsePartitionFromManifest(p)
-
-		// Skip canonical manifests in partition-aware layouts. These exist
-		// only for O(1) Snapshot(ctx, id) lookups and must not appear in
-		// listing results.
-		if r.layout.supportsPartitions() && manifestPartition == "" {
-			continue
-		}
-
-		// Always validate manifest per CONTRACT_READ_API.md — once per snapshot,
-		// and it is the smallest-partition manifest thanks to the sort above.
-		manifest, err := r.loadManifest(ctx, p)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load manifest %s: %w", p, err)
-		}
-
-		// Apply partition filter if specified
-		if partition != "" && manifestPartition == "" {
-			if !r.manifestContainsPartition(manifest, partition) {
-				continue
-			}
-		}
-
-		seen[snapshotID] = true
-		refs = append(refs, ManifestRef{
-			ID:        snapshotID,
-			Partition: manifestPartition,
-		})
+	if !listing.any {
+		return nil, ErrNotFound
 	}
 
-	if !hasAnyManifest {
-		return nil, ErrNotFound
+	// Validate each snapshot's manifest once (CONTRACT_READ_API) — the
+	// smallest-partition one, which the listing order guarantees comes first.
+	refs := make([]ManifestRef, 0, len(listing.manifests))
+	for _, m := range listing.manifests {
+		if _, err := r.loadManifest(ctx, m.path); err != nil {
+			return nil, fmt.Errorf("failed to load manifest %s: %w", m.path, err)
+		}
+		refs = append(refs, ManifestRef{ID: m.id, Partition: m.partition})
+	}
+	// A layout without partitions has no snapshot in any named partition: the
+	// selector matches nothing (the dataset itself was found and validated).
+	if partition != "" && !r.layout.supportsPartitions() {
+		refs = refs[:0]
 	}
 
 	sort.Slice(refs, func(i, j int) bool { return manifestRefLess(refs[i], refs[j]) })
 	return cursorWindow(refs, func(ref ManifestRef) bool { return manifestRefLess(opts.StartAfter, ref) }, opts.Limit), nil
+}
+
+// listedManifest is one snapshot's manifest as found by listing.
+type listedManifest struct {
+	id        DatasetSnapshotID
+	partition string
+	path      string
+}
+
+// manifestListing is the result of enumerating manifests under a prefix.
+type manifestListing struct {
+	// manifests holds one entry per snapshot, in (partition, path) order; the
+	// entry is the snapshot's lexicographically smallest partition manifest.
+	manifests []listedManifest
+	// any reports whether the prefix held any manifest at all, including the
+	// canonical ones excluded from manifests; it distinguishes an empty
+	// dataset from a missing one.
+	any bool
+}
+
+// listManifests enumerates manifests under prefix. Store.List order is
+// unspecified (CONTRACT_STORAGE §List), so entries are sorted by (partition,
+// path): path order alone is not partition order when one partition name
+// prefixes another ("day=a-b/…" sorts before "day=a/…"). Canonical manifests
+// on partition-aware layouts exist only for O(1) lookup by ID and are not
+// listed.
+func (r *reader) listManifests(ctx context.Context, prefix string) (manifestListing, error) {
+	paths, err := r.store.List(ctx, prefix)
+	if err != nil {
+		return manifestListing{}, err
+	}
+
+	var listing manifestListing
+	var all []listedManifest
+	for _, p := range paths {
+		if !r.layout.isManifest(p) {
+			continue
+		}
+		listing.any = true
+		id := r.layout.parseSegmentID(p)
+		partition := r.layout.parsePartitionFromManifest(p)
+		if id == "" || (r.layout.supportsPartitions() && partition == "") {
+			continue
+		}
+		all = append(all, listedManifest{id: id, partition: partition, path: p})
+	}
+	sort.Slice(all, func(i, j int) bool {
+		if all[i].partition != all[j].partition {
+			return all[i].partition < all[j].partition
+		}
+		return all[i].path < all[j].path
+	})
+
+	seen := make(map[DatasetSnapshotID]bool, len(all))
+	for _, m := range all {
+		if !seen[m.id] {
+			seen[m.id] = true
+			listing.manifests = append(listing.manifests, m)
+		}
+	}
+	return listing, nil
 }
 
 // validPartitionPrefix reports whether a PartitionListOptions.Prefix is a
@@ -337,16 +325,6 @@ func (r *reader) loadManifest(ctx context.Context, manifestPath string) (*Manife
 	return &manifest, nil
 }
 
-func (r *reader) manifestContainsPartition(m *Manifest, partition string) bool {
-	for _, f := range m.Files {
-		partPath := r.layout.extractPartitionPath(f.Path)
-		if partPath == partition || strings.HasPrefix(partPath, partition+"/") {
-			return true
-		}
-	}
-	return false
-}
-
 // -----------------------------------------------------------------------------
 // Manifest Validation
 // -----------------------------------------------------------------------------
@@ -375,52 +353,28 @@ func validateManifest(m *Manifest) error {
 		return &manifestValidationError{Field: "manifest", Message: "is nil"}
 	}
 
-	if m.SchemaName == "" {
-		return &manifestValidationError{Field: "schema_name", Message: "is required"}
+	// Codec is optional: empty is valid for raw blob storage.
+	if err := firstInvalid([]fieldCheck{
+		{m.SchemaName == "", "schema_name", "is required"},
+		{m.FormatVersion == "", "format_version", "is required"},
+		{m.DatasetID == "", "dataset_id", "is required"},
+		{m.SnapshotID == "", "snapshot_id", "is required"},
+		{m.CreatedAt.IsZero(), "created_at", "is required"},
+		{m.Metadata == nil, "metadata", "must not be nil (use empty map for no metadata)"},
+		{m.Files == nil, "files", "must not be nil (use empty slice for no files)"},
+		{m.RowCount < 0, "row_count", "must be non-negative"},
+		{m.Compressor == "", "compressor", "is required"},
+		{m.Partitioner == "", "partitioner", "is required"},
+	}); err != nil {
+		return err
 	}
-	if m.FormatVersion == "" {
-		return &manifestValidationError{Field: "format_version", Message: "is required"}
-	}
-	if m.DatasetID == "" {
-		return &manifestValidationError{Field: "dataset_id", Message: "is required"}
-	}
-	if m.SnapshotID == "" {
-		return &manifestValidationError{Field: "snapshot_id", Message: "is required"}
-	}
-	if m.CreatedAt.IsZero() {
-		return &manifestValidationError{Field: "created_at", Message: "is required"}
-	}
-	if m.Metadata == nil {
-		return &manifestValidationError{Field: "metadata", Message: "must not be nil (use empty map for no metadata)"}
-	}
-	if m.Files == nil {
-		return &manifestValidationError{Field: "files", Message: "must not be nil (use empty slice for no files)"}
-	}
-	if m.RowCount < 0 {
-		return &manifestValidationError{Field: "row_count", Message: "must be non-negative"}
-	}
-	// Codec is optional (empty string is valid for raw blob storage)
-	if m.Compressor == "" {
-		return &manifestValidationError{Field: "compressor", Message: "is required"}
-	}
-	if m.Partitioner == "" {
-		return &manifestValidationError{Field: "partitioner", Message: "is required"}
-	}
-
 	for i, f := range m.Files {
-		if f.Path == "" {
-			return &manifestValidationError{
-				Field:   fmt.Sprintf("files[%d].path", i),
-				Message: "is required",
-			}
-		}
-		if f.SizeBytes < 0 {
-			return &manifestValidationError{
-				Field:   fmt.Sprintf("files[%d].size_bytes", i),
-				Message: "must be non-negative",
-			}
+		if err := firstInvalid([]fieldCheck{
+			{f.Path == "", fmt.Sprintf("files[%d].path", i), "is required"},
+			{f.SizeBytes < 0, fmt.Sprintf("files[%d].size_bytes", i), "must be non-negative"},
+		}); err != nil {
+			return err
 		}
 	}
-
 	return nil
 }
