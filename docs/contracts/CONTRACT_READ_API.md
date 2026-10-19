@@ -96,7 +96,8 @@ This is essential for Parquet footers, Arrow metadata, and block indexes.
 type ReadAPI interface {
     ListDatasets(ctx context.Context, opts DatasetListOptions) ([]DatasetID, error)
     ListPartitions(ctx context.Context, dataset DatasetID, opts PartitionListOptions) ([]PartitionRef, error)
-    ListManifests(ctx context.Context, dataset DatasetID, partition PartitionPath, opts ManifestListOptions) ([]ManifestRef, error)
+    ListManifests(ctx context.Context, dataset DatasetID, partition string, opts ManifestListOptions) ([]ManifestRef, error)
+    // partition is a raw partition path; a PartitionPath type is a v1.0 candidate (docs/V1_API_DECISIONS.md D4).
     GetManifest(ctx context.Context, dataset DatasetID, ref ManifestRef) (Manifest, error)
     OpenObject(ctx context.Context, obj ObjectRef) (io.ReadCloser, error)
     ReaderAt(ctx context.Context, obj ObjectRef) (ReaderAt, error)
