@@ -1,6 +1,6 @@
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/lode-splash-dark.svg">
-  <img alt="Lode — an engraved geological cross-section: folded strata as fine contour lines, two faults offsetting them, and one luminous ore vein following the crest of the fold" src="docs/assets/lode-splash-light.svg" width="100%">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/lode-splash-dark.jpg">
+  <img alt="Lode — a geological cross-section: folded strata cut by two faults, with a vein of copper ore running along the crest of the fold" src="docs/assets/lode-splash-light.jpg" width="100%">
 </picture>
 
 # Lode
