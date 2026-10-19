@@ -676,3 +676,44 @@ func TestStreamWrite_ReadBeforeCheckStore_PreservesForeignObject(t *testing.T) {
 		}
 	}
 }
+
+// endlessAfterIterator yields records forever once the gate is closed; before
+// that it yields nothing, so the loop cannot race ahead of the Put failure.
+type endlessAfterIterator struct {
+	gate <-chan struct{}
+	n    int
+}
+
+func (e *endlessAfterIterator) Next() bool {
+	<-e.gate
+	e.n++
+	return true
+}
+func (e *endlessAfterIterator) Record() any { return D{"id": e.n} }
+func (e *endlessAfterIterator) Err() error  { return nil }
+
+// A buffering compressor lets WriteRecord succeed after Put has failed; the
+// record loop must notice the failure instead of following an iterator that
+// never ends.
+func TestStreamWriteRecords_BufferedCompressor_StopsOncePutReturned(t *testing.T) {
+	fs := newFaultStore(NewMemory())
+	fs.SetPutError(ErrPathExists, "/data/")
+	putReturned := make(chan struct{})
+	fs.SetAfterPut(func(path string, _ error) {
+		if strings.Contains(path, "/data/") {
+			close(putReturned)
+		}
+	})
+	ds, err := NewDataset("test-ds", newFaultStoreFactory(fs), WithCodec(NewJSONLCodec()), WithCompressor(NewZstdCompressor()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = awaitOrFail(t, func() error {
+		_, werr := ds.StreamWriteRecords(t.Context(), &endlessAfterIterator{gate: putReturned}, Metadata{})
+		return werr
+	})
+	if !errors.Is(err, ErrPathExists) {
+		t.Fatalf("got %v, want ErrPathExists", err)
+	}
+	assertNoDataDelete(t, fs)
+}
