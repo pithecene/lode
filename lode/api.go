@@ -475,28 +475,28 @@ var (
 	// used: a nil store factory, a negative offset, a block outside the
 	// volume, a blob write without exactly one []byte. The message names the
 	// value. Not retry-safe; fix the call.
-	ErrInvalidArgument = errInvalidArgument{}
+	ErrInvalidArgument error = errInvalidArgument{}
 
 	// ErrInvalidPath indicates a storage path or range the store refuses:
 	// a key that is empty or escapes the root, a partition prefix that is not
 	// a canonical relative path, or a ReadRange with negative or overflowing
 	// bounds.
-	ErrInvalidPath = errInvalidPath{}
+	ErrInvalidPath error = errInvalidPath{}
 
 	// ErrManifestInvalid indicates a manifest failed validation.
-	ErrManifestInvalid = errManifestInvalid{}
+	ErrManifestInvalid error = errManifestInvalid{}
 
 	// ErrOptionNotValidForDataset indicates an option was used with NewDataset
 	// that only applies to NewDatasetReader.
-	ErrOptionNotValidForDataset = errOptionNotValidForDataset{}
+	ErrOptionNotValidForDataset error = errOptionNotValidForDataset{}
 
 	// ErrOptionNotValidForDatasetReader indicates an option was used with
 	// NewDatasetReader that only applies to NewDataset.
-	ErrOptionNotValidForDatasetReader = errOptionNotValidForDatasetReader{}
+	ErrOptionNotValidForDatasetReader error = errOptionNotValidForDatasetReader{}
 
 	// ErrOptionNotValidForVolume indicates an option was used with NewVolume
 	// that only applies to Dataset or DatasetReader.
-	ErrOptionNotValidForVolume = errOptionNotValidForVolume{}
+	ErrOptionNotValidForVolume error = errOptionNotValidForVolume{}
 )
 
 type errNotFound struct{}
