@@ -108,7 +108,7 @@ func NewVolume(id VolumeID, storeFactory StoreFactory, totalLength int64, opts .
 		totalLength: totalLength,
 		checksum:    cfg.checksum,
 		retry:       cfg.retry,
-		history:     newHistory(store, volumeKind{id: id, totalLength: totalLength}),
+		history:     newHistory(store, volumeKind{id: id, totalLength: totalLength}, "volume manifest"),
 	}, nil
 }
 
