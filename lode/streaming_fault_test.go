@@ -632,3 +632,47 @@ func TestStreamWriteRecords_PropagatedErrPathExists_StillCleansUp(t *testing.T) 
 		t.Fatalf("partial object not cleaned up; deletes: %v", fs.DeleteCalls())
 	}
 }
+
+// A store that spools the stream before checking existence (memory, S3)
+// reports ErrPathExists only after reading; the object is still foreign and
+// must survive cleanup.
+func TestStreamWrite_ReadBeforeCheckStore_PreservesForeignObject(t *testing.T) {
+	inner := NewMemory()
+	fs := newFaultStore(inner)
+	ctx := t.Context()
+	// Plant a foreign object at the exact data path just before Put runs, so
+	// the memory store reads the whole stream and then refuses to overwrite.
+	fs.SetBeforePut(func(path string) {
+		if strings.Contains(path, "/data/") {
+			_ = inner.Put(ctx, path, strings.NewReader("foreign"))
+		}
+	})
+	ds, err := NewDataset("test-ds", newFaultStoreFactory(fs))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sw, err := ds.StreamWrite(ctx, Metadata{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = awaitOrFail(t, func() error {
+		if _, werr := sw.Write([]byte("ours")); werr != nil {
+			return werr
+		}
+		_, cerr := sw.Commit(ctx)
+		return cerr
+	})
+	if !errors.Is(err, ErrPathExists) {
+		t.Fatalf("got %v, want ErrPathExists", err)
+	}
+	assertNoDataDelete(t, fs)
+	for _, p := range fs.PutCalls() {
+		if strings.Contains(p, "/data/") {
+			rc, gerr := inner.Get(ctx, p)
+			if gerr != nil {
+				t.Fatalf("foreign object missing after cleanup: %v", gerr)
+			}
+			_ = rc.Close()
+		}
+	}
+}

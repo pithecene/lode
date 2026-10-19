@@ -10,7 +10,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -925,42 +924,44 @@ func cleanupStreamWrite(ctx context.Context, store Store, filePath string, encod
 		_ = compWriter.Close()
 	}
 	if pw != nil {
-		_ = pw.CloseWithError(cause)
+		put.failStream(pw, cause)
 	}
 	cleanupDataObject(ctx, store, filePath, put)
 }
 
 // putResult tracks the background store.Put of a streamed data object: its
-// outcome, and whether the store ever read from the pipe before returning.
+// outcome, and whether the writer failed the stream before Put returned.
 type putResult struct {
-	done      chan error
-	attempted atomic.Bool // the store called Read at least once
+	done chan struct{} // closed once the result below is published
 
-	mu       sync.Mutex
-	finished bool
-	err      error
+	mu           sync.Mutex
+	finished     bool
+	err          error
+	streamFailed bool // the writer closed the pipe with an error first
 }
 
-// startPut runs store.Put in the background. When Put returns, the read end is
-// closed with its error so a writer blocked on the pipe fails instead of
-// hanging: a fast failure such as ErrPathExists never drains the pipe.
+// startPut runs store.Put in the background. The result is published before
+// the read end is closed with Put's error, so a writer blocked on the pipe
+// fails instead of hanging (a fast failure such as ErrPathExists never drains
+// the pipe) and a Write issued after Put returned always observes the result.
 func startPut(ctx context.Context, store Store, path string, pr *io.PipeReader) *putResult {
-	r := &putResult{done: make(chan error, 1)}
+	r := &putResult{done: make(chan struct{})}
 	go func() {
-		err := store.Put(ctx, path, &readProbe{r: pr, attempted: &r.attempted})
+		err := store.Put(ctx, path, pr)
+		r.mu.Lock()
+		r.err, r.finished = err, true
+		r.mu.Unlock()
 		_ = pr.CloseWithError(err)
-		r.done <- err
+		close(r.done)
 	}()
 	return r
 }
 
-// wait blocks until Put has returned; repeated calls return the cached result.
+// wait blocks until Put has returned and returns its error.
 func (r *putResult) wait() error {
+	<-r.done
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if !r.finished {
-		r.err, r.finished = <-r.done, true
-	}
 	return r.err
 }
 
@@ -968,35 +969,31 @@ func (r *putResult) wait() error {
 func (r *putResult) poll() (finished bool, err error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if !r.finished {
-		select {
-		case r.err = <-r.done:
-			r.finished = true
-		default:
-		}
-	}
 	return r.finished, r.err
 }
 
+// failStream closes the write end with cause. If Put has not returned yet,
+// it records that the stream failed first: whatever Put then reports is a
+// consequence of that failure, not a verdict about the path.
+func (r *putResult) failStream(pw *io.PipeWriter, cause error) {
+	r.mu.Lock()
+	if !r.finished {
+		r.streamFailed = true
+	}
+	r.mu.Unlock()
+	_ = pw.CloseWithError(cause)
+}
+
 // leftForeignObject reports whether the object at the path belongs to another
-// writer. A store reports ErrPathExists from its own existence check, before
-// it reads anything; an ErrPathExists that the stream itself produced (an
-// iterator or encoder error wrapped by the store) can only arrive through a
-// Read. So: ErrPathExists without any Read attempt is the store's verdict,
-// and the object is not ours.
+// writer: Put returned ErrPathExists on its own, with the stream intact. It
+// does not matter whether the store checked before or after reading. When
+// the stream failed first, Put's error is ours (an iterator error may itself
+// be ErrPathExists) and the partial object is cleaned up.
 func (r *putResult) leftForeignObject() bool {
-	return errors.Is(r.wait(), ErrPathExists) && !r.attempted.Load()
-}
-
-// readProbe records that the store attempted to read from the pipe.
-type readProbe struct {
-	r         io.Reader
-	attempted *atomic.Bool
-}
-
-func (p *readProbe) Read(b []byte) (int, error) {
-	p.attempted.Store(true)
-	return p.r.Read(b)
+	err := r.wait()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return errors.Is(err, ErrPathExists) && !r.streamFailed
 }
 
 // cleanupDataObject removes a partial data object after a failed stream,
@@ -1492,7 +1489,7 @@ func (sw *streamWriter) Commit(ctx context.Context) (*DatasetSnapshot, error) {
 
 	// Close compression writer (flushes final data)
 	if err := sw.compWriter.Close(); err != nil {
-		_ = sw.pipeWriter.CloseWithError(err)
+		sw.put.failStream(sw.pipeWriter, err)
 		cleanupDataObject(ctx, sw.ds.store, sw.filePath, sw.put)
 		return nil, fmt.Errorf("lode: failed to close compressor: %w", err)
 	}
@@ -1546,7 +1543,7 @@ func (sw *streamWriter) Abort(ctx context.Context) error {
 	sw.mu.Unlock()
 
 	// Close pipe with error to cancel store.Put
-	_ = sw.pipeWriter.CloseWithError(errors.New("stream aborted"))
+	sw.put.failStream(sw.pipeWriter, errors.New("stream aborted"))
 
 	// Wait for store.Put to complete, then best-effort cleanup of the partial
 	// object — unless Put reported the path already existed (not ours).
