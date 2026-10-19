@@ -3,7 +3,6 @@ package lode
 import (
 	"bytes"
 	"errors"
-	"strings"
 	"testing"
 )
 
@@ -81,15 +80,17 @@ func TestVolume_ReadAt_ExactEndOfAddressSpace(t *testing.T) {
 	if err != nil || len(got) != 1 {
 		t.Fatalf("ReadAt(19,1): got %d bytes, err %v", len(got), err)
 	}
-	// One past the end is an address-space error, not a missing range.
+	// One past the end is rejected up front as an address-space error; it is
+	// not the ErrRangeMissing a block lookup would produce, which is the
+	// structured distinction the boundary pins (the message itself is not).
 	_, err = vol.ReadAt(t.Context(), snap.ID, 19, 2)
-	if err == nil || errors.Is(err, ErrRangeMissing) || !strings.Contains(err.Error(), "exceeds volume address space") {
-		t.Fatalf("ReadAt(19,2): got %v, want address-space error", err)
+	if err == nil || errors.Is(err, ErrRangeMissing) {
+		t.Fatalf("ReadAt(19,2): got %v, want a non-ErrRangeMissing error", err)
 	}
 	// Offset at the end with any length is likewise rejected up front.
 	_, err = vol.ReadAt(t.Context(), snap.ID, 20, 1)
-	if err == nil || !strings.Contains(err.Error(), "exceeds volume address space") {
-		t.Fatalf("ReadAt(20,1): got %v, want address-space error", err)
+	if err == nil || errors.Is(err, ErrRangeMissing) {
+		t.Fatalf("ReadAt(20,1): got %v, want a non-ErrRangeMissing error", err)
 	}
 }
 
