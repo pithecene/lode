@@ -871,8 +871,12 @@ func (d *dataset) StreamWriteRecords(ctx context.Context, records RecordIterator
 	}
 
 	// A Put that failed while the iterator was finishing is the root cause and
-	// takes precedence over whatever the iterator reports. The check runs
-	// after records.Err() too: Err may do work, and Put may complete during it.
+	// takes precedence over whatever the iterator reports. Check before calling
+	// Err, which may block, and again after, since Put may complete during it.
+	if finished, putErr := put.poll(); finished && putErr != nil {
+		cleanupStreamWrite(encoder, compWriter, pw, put, putErr)
+		return nil, fmt.Errorf("lode: failed to write data: %w", putErr)
+	}
 	iterErr := records.Err()
 	if finished, putErr := put.poll(); finished && putErr != nil {
 		cleanupStreamWrite(encoder, compWriter, pw, put, putErr)
@@ -885,8 +889,9 @@ func (d *dataset) StreamWriteRecords(ctx context.Context, records RecordIterator
 
 	// Close encoder (finalizes format)
 	if err := encoder.Close(); err != nil {
-		cleanupStreamWrite(nil, compWriter, pw, put, err)
-		return nil, fmt.Errorf("lode: failed to close encoder: %w", err)
+		return nil, finalizeError(put, "encoder", err, func(cause error) {
+			cleanupStreamWrite(nil, compWriter, pw, put, cause)
+		})
 	}
 
 	// Collect per-file stats if the stream encoder supports it
@@ -897,14 +902,14 @@ func (d *dataset) StreamWriteRecords(ctx context.Context, records RecordIterator
 
 	// Close compression (flushes final data)
 	if err := compWriter.Close(); err != nil {
-		cleanupStreamWrite(nil, nil, pw, put, err)
-		return nil, fmt.Errorf("lode: failed to close compressor: %w", err)
+		return nil, finalizeError(put, "compressor", err, func(cause error) {
+			cleanupStreamWrite(nil, nil, pw, put, cause)
+		})
 	}
 
 	// Close pipe (signals EOF to store.Put)
 	if err := pw.Close(); err != nil {
-		_ = put.wait()
-		return nil, fmt.Errorf("lode: failed to close pipe: %w", err)
+		return nil, finalizeError(put, "pipe", err, func(error) { _ = put.wait() })
 	}
 
 	// Wait for store.Put to complete. A failed Put leaves nothing behind
@@ -986,6 +991,27 @@ func (r *putResult) poll() (finished bool, err error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.finished, r.err
+}
+
+// rootCause picks the error to surface when a finalization step fails: a Put
+// that has already failed is the root cause of anything that broke after it.
+func (r *putResult) rootCause(stepErr error) (fromPut bool, cause error) {
+	if finished, putErr := r.poll(); finished && putErr != nil {
+		return true, putErr
+	}
+	return false, stepErr
+}
+
+// finalizeError runs teardown with the root cause of a failed finalization
+// step and returns the error to report: the Put failure when one preceded
+// the step, otherwise the step's own error.
+func finalizeError(put *putResult, step string, stepErr error, teardown func(cause error)) error {
+	fromPut, cause := put.rootCause(stepErr)
+	teardown(cause)
+	if fromPut {
+		return fmt.Errorf("lode: failed to write data: %w", cause)
+	}
+	return fmt.Errorf("lode: failed to close %s: %w", step, cause)
 }
 
 // commitWithRetry resolves the parent, builds a manifest, and commits.
@@ -1469,17 +1495,18 @@ func (sw *streamWriter) Commit(ctx context.Context) (*DatasetSnapshot, error) {
 	sw.closed = true
 	sw.mu.Unlock()
 
-	// Close compression writer (flushes final data)
+	// Close compression writer (flushes final data). A Put that already failed
+	// is the root cause of a failing close and is the error reported.
 	if err := sw.compWriter.Close(); err != nil {
-		_ = sw.pipeWriter.CloseWithError(err)
-		_ = sw.put.wait()
-		return nil, fmt.Errorf("lode: failed to close compressor: %w", err)
+		return nil, finalizeError(sw.put, "compressor", err, func(cause error) {
+			_ = sw.pipeWriter.CloseWithError(cause)
+			_ = sw.put.wait()
+		})
 	}
 
 	// Close pipe writer (signals EOF to store.Put)
 	if err := sw.pipeWriter.Close(); err != nil {
-		_ = sw.put.wait()
-		return nil, fmt.Errorf("lode: failed to close pipe: %w", err)
+		return nil, finalizeError(sw.put, "pipe", err, func(error) { _ = sw.put.wait() })
 	}
 
 	// Wait for store.Put to complete. A failed Put leaves nothing behind
