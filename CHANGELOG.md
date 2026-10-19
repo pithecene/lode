@@ -13,10 +13,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Listing filters and cursors**: `PartitionListOptions.Prefix` narrows `ListPartitions` to a partition-path prefix (a storage prefix on Hive layouts); `PartitionListOptions.StartAfter` and `ManifestListOptions.StartAfter` resume a listing after a previous result. ([#175](https://github.com/pithecene-io/lode/issues/175))
 - **`ErrPartitionPrefixNotSupported`**: Sentinel for `Prefix` on a layout without partitions.
+- **`ErrInvalidArgument`**: One sentinel for every caller-supplied value Lode refuses — nil factories, nil layouts or compressors, out-of-range retry options, blob writes without exactly one `[]byte`, Volume offsets, lengths, blocks and commits. Previously these were ad-hoc errors matchable only by message; `errors.Is(err, lode.ErrInvalidArgument)` now classifies them and the message still names the value.
+- **`DatasetListOptions.StartAfter`**: `ListDatasets` gains the cursor the other listings have; the last ID from a previous call resumes after it.
 
 ### Changed
 
-- **Deterministic listing order**: `ListPartitions` returns lexicographic `Path` order and `ListManifests` returns `(Partition, ID)` order on every store. Previously both followed the store's unspecified `List` order, and a multi-partition snapshot's `ManifestRef.Partition` could differ between calls. `Limit` now bounds the result set after sorting rather than stopping enumeration early; store-call bounds are unchanged.
+- **Deterministic listing order**: `ListDatasets` returns lexicographic ID order, `ListPartitions` returns lexicographic `Path` order and `ListManifests` returns `(Partition, ID)` order on every store. Previously both followed the store's unspecified `List` order, and a multi-partition snapshot's `ManifestRef.Partition` could differ between calls. `Limit` now bounds the result set after sorting rather than stopping enumeration early; store-call bounds are unchanged.
+- **Argument error messages**: errors that now match `ErrInvalidArgument` read `lode: invalid argument: <value>`; the value text is unchanged, so substring checks keep working. `ErrInvalidPath`'s message is now `invalid path` — it was `invalid path: escapes storage root`, which was wrong for the `ReadRange` bounds and partition-prefix cases that return it.
+- **Sentinel homes**: `ErrInvalidPath`, `ErrManifestInvalid` and the `ErrOptionNotValidFor*` sentinels are declared in `api.go` with the others. Identity under `errors.Is` and messages are unchanged.
 
 ### Fixed
 

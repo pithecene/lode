@@ -78,8 +78,8 @@ func TestHiveLayout_ParseIDs(t *testing.T) {
 		if got := l.parseDatasetID(c.path); got != c.wantDataset {
 			t.Errorf("parseDatasetID(%q) = %q, want %q", c.path, got, c.wantDataset)
 		}
-		if got := l.parseSegmentID(c.path); got != c.wantSegment {
-			t.Errorf("parseSegmentID(%q) = %q, want %q", c.path, got, c.wantSegment)
+		if got := l.parseSnapshotID(c.path); got != c.wantSegment {
+			t.Errorf("parseSnapshotID(%q) = %q, want %q", c.path, got, c.wantSegment)
 		}
 	}
 }
@@ -151,9 +151,9 @@ func TestHiveLayout_Prefixes(t *testing.T) {
 		got  string
 		want string
 	}{
-		{"segmentsPrefix", l.segmentsPrefix("ds"), "datasets/ds/"},
-		{"segmentsPrefixForPartition empty", l.segmentsPrefixForPartition("ds", ""), "datasets/ds/"},
-		{"segmentsPrefixForPartition", l.segmentsPrefixForPartition("ds", "day=1"), "datasets/ds/partitions/day=1/segments/"},
+		{"snapshotsPrefix", l.snapshotsPrefix("ds"), "datasets/ds/"},
+		{"snapshotsPrefixForPartition empty", l.snapshotsPrefixForPartition("ds", ""), "datasets/ds/"},
+		{"snapshotsPrefixForPartition", l.snapshotsPrefixForPartition("ds", "day=1"), "datasets/ds/partitions/day=1/segments/"},
 		{"partitionsPrefix partial token", l.partitionsPrefix("ds", "day=2026-10"), "datasets/ds/partitions/day=2026-10"},
 		{"partitionsPrefix empty", l.partitionsPrefix("ds", ""), "datasets/ds/partitions/"},
 		{"manifestPath", l.manifestPath("ds", "1"), "datasets/ds/segments/1/manifest.json"},
@@ -185,8 +185,8 @@ func TestHiveLayout_IsManifest_GrammarEdges(t *testing.T) {
 		if l.isManifest(p) {
 			t.Errorf("isManifest(%q) = true, want false", p)
 		}
-		if id := l.parseSegmentID(p); id != "" {
-			t.Errorf("parseSegmentID(%q) = %q, want empty", p, id)
+		if id := l.parseSnapshotID(p); id != "" {
+			t.Errorf("parseSnapshotID(%q) = %q, want empty", p, id)
 		}
 	}
 }

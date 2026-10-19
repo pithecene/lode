@@ -227,6 +227,7 @@ All covered ✅
 |-------------|------|
 | ListDatasets layout error | `TestDatasetReader_ListDatasets_FlatLayout_ReturnsErrDatasetsNotModeled` |
 | ListDatasets empty storage | `TestDatasetReader_ListDatasets_EmptyStorage` |
+| ListDatasets order / StartAfter | `TestDatasetReader_ListDatasets_Sorted`, `TestDatasetReader_ListDatasets_StartAfter_Pages`, `TestDatasetReader_ListDatasets_Limit_Boundary` |
 | ErrNoManifests | `TestDatasetReader_ListDatasets_ErrNoManifests` |
 | Manifest validation errors | Multiple `TestDatasetReader_GetManifest_InvalidManifest_*` tests |
 | ListPartitions lexicographic order | `TestDatasetReader_ListPartitions_Sorted` |
@@ -253,6 +254,8 @@ All error sentinels covered ✅
 | ErrDatasetsNotModeled | `TestDatasetReader_ListDatasets_FlatLayout_ReturnsErrDatasetsNotModeled` |
 | ErrPartitionPrefixNotSupported | `TestDatasetReader_ListPartitions_Prefix_DefaultLayout_Rejected` |
 | ErrManifestInvalid | Multiple validation tests |
+| ErrInvalidArgument | `TestErrInvalidArgument_Classification` |
+| ErrOptionNotValidFor{Dataset,DatasetReader,Volume} | `TestSentinels_Messages`, option applicability tests |
 | ErrCodecConfigured | `TestDataset_StreamWrite_WithCodec_ReturnsError` |
 | ErrCodecNotStreamable | `TestDataset_StreamWriteRecords_NonStreamingCodec_ReturnsError` |
 | ErrNilIterator | `TestDataset_StreamWriteRecords_NilIterator_ReturnsError` |

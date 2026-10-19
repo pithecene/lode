@@ -3,7 +3,6 @@ package lode
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"slices"
@@ -145,11 +144,11 @@ func (d *dataset) stage(ctx context.Context, p *pendingSnapshot, data []any) err
 
 func (d *dataset) stageBlob(ctx context.Context, p *pendingSnapshot, data []any) error {
 	if len(data) != 1 {
-		return errors.New("lode: raw blob mode requires exactly one data element")
+		return invalidArgument("raw blob mode requires exactly one data element")
 	}
 	blob, ok := data[0].([]byte)
 	if !ok {
-		return fmt.Errorf("lode: raw blob mode requires []byte, got %T", data[0])
+		return invalidArgument("raw blob mode requires []byte, got %T", data[0])
 	}
 	ref, err := d.putFile(ctx, d.filePath(p.id, "", blobFile), blobContent(blob))
 	if err != nil {
