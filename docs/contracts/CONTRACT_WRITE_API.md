@@ -78,8 +78,13 @@ It is authoritative for any `Dataset` implementation.
   A failed `Put` leaves nothing behind (`CONTRACT_STORAGE.md` §Put); a data
   object whose `Put` succeeded but whose commit failed is deleted best-effort.
 - If the store's `Put` returns before consuming the stream, `StreamWriteRecords`
-  MUST return that error (ahead of any iterator error reported afterwards); it
-  MUST NOT block. The writer MUST NOT touch the path afterwards.
+  MUST return that error, ahead of any iterator or finalization error reported
+  afterwards, and MUST NOT block on the store or the pipe. The `Put` result is
+  checked before and after every iterator call (`Next`, `Record`, `Err`) and
+  before accepting each record. Lode cannot interrupt the caller's own
+  iterator: a `Next` or `Err` that blocks blocks `StreamWriteRecords` for as
+  long as it blocks, and the storage error is reported when it returns. The
+  writer MUST NOT touch the path afterwards.
 - Row/event count MUST equal the total number of records consumed.
 - When a checksum component is configured, the checksum MUST be computed during
   streaming and recorded in the manifest for each file written.
