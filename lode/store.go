@@ -80,8 +80,11 @@ func (f *fsStore) Put(_ context.Context, path string, r io.Reader) error {
 	if _, err = io.Copy(file, r); err != nil {
 		// Put is all-or-nothing (CONTRACT_STORAGE §Put): this call created the
 		// file, so this call removes it. The caller never has to guess whether
-		// a failed Put left an object behind, or whose it is.
-		_ = os.Remove(fullPath)
+		// a failed Put left an object behind, or whose it is. A failed removal
+		// is reported alongside the original error, never hidden.
+		if rmErr := os.Remove(fullPath); rmErr != nil {
+			return errors.Join(fmt.Errorf("lode: fs put: %w", err), fmt.Errorf("lode: fs put: remove partial object: %w", rmErr))
+		}
 		return fmt.Errorf("lode: fs put: %w", err)
 	}
 	return nil
