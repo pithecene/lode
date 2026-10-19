@@ -1,0 +1,74 @@
+package storepath
+
+import (
+	"math"
+	"testing"
+)
+
+func TestKey(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+		ok   bool
+	}{
+		{"", "", false},
+		{".", "", false},
+		{"..", "", false},
+		{"../secret", "", false},
+		{"/", "", false},
+		{"datasets/test/file.txt", "datasets/test/file.txt", true},
+		{"file.txt", "file.txt", true},
+		{"/file.txt", "file.txt", true},
+		{"a/./b//c", "a/b/c", true},
+		{"a/../b", "b", true}, // resolves inside the root
+	}
+	for _, c := range cases {
+		got, ok := Key(c.in)
+		if ok != c.ok || got != c.want {
+			t.Errorf("Key(%q) = %q, %v; want %q, %v", c.in, got, ok, c.want, c.ok)
+		}
+	}
+}
+
+func TestPrefix(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+		ok   bool
+	}{
+		{"", "", true},
+		{".", "", true},
+		{"/", "", true},
+		{"a/..", "", true},
+		{"..", "", false},
+		{"../escape", "", false},
+		{"datasets/test/", "datasets/test/", true}, // trailing slash preserved
+		{"datasets/test", "datasets/test", true},
+		{"/day=2026-10", "day=2026-10", true},
+	}
+	for _, c := range cases {
+		got, ok := Prefix(c.in)
+		if ok != c.ok || got != c.want {
+			t.Errorf("Prefix(%q) = %q, %v; want %q, %v", c.in, got, ok, c.want, c.ok)
+		}
+	}
+}
+
+func TestRangeValid(t *testing.T) {
+	cases := []struct {
+		offset, length int64
+		want           bool
+	}{
+		{0, 0, true},
+		{0, MaxRangeLength, true},
+		{math.MaxInt64 - 10, 10, true},
+		{-1, 1, false},
+		{0, -1, false},
+		{math.MaxInt64 - 10, 11, false},
+	}
+	for _, c := range cases {
+		if got := RangeValid(c.offset, c.length); got != c.want {
+			t.Errorf("RangeValid(%d, %d) = %v, want %v", c.offset, c.length, got, c.want)
+		}
+	}
+}
