@@ -1,6 +1,6 @@
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/lode-splash-dark.png">
-  <img alt="Lode — structured persistence for object storage" src="docs/assets/lode-splash-light.png" width="100%">
+  <img alt="Lode — an illustrated geological section: folded, faulted strata under a hill, a gold vein along the crest of the fold, and a mine shaft running down to it from a headframe" src="docs/assets/lode-splash-light.png" width="100%">
 </picture>
 
 # Lode

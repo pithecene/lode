@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Renders the README splash from splash.html (HTML/CSS set in EB Garamond)
+# Renders the README splash from splash.html (an illustrated geological section drawn in SVG, set in EB Garamond)
 # with headless Chromium at 2x, light and dark.
 #
 #   docs/assets/source/render.sh [path-to-chrome-or-chrome-headless-shell]
@@ -17,7 +17,7 @@ curl -sfL -o "$work/fonts/EBGaramond.ttf" "https://github.com/google/fonts/raw/m
 curl -sfL -o "$work/fonts/EBGaramond-Italic.ttf" "https://github.com/google/fonts/raw/main/ofl/ebgaramond/EBGaramond-Italic%5Bwght%5D.ttf"
 for mode in light dark; do
   "$chrome" --headless --allow-file-access-from-files --hide-scrollbars --force-device-scale-factor=2 \
-    --virtual-time-budget=5000 --window-size=1280,400 --screenshot="$work/$mode.png" "file://$work/splash.html#$mode" >/dev/null 2>&1
+    --virtual-time-budget=5000 --window-size=1280,560 --screenshot="$work/$mode.png" "file://$work/splash.html#$mode" >/dev/null 2>&1
   magick "$work/$mode.png" -strip -define png:compression-level=9 "$out/lode-splash-$mode.png"
 done
 echo "rendered into $out"
