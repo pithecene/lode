@@ -53,11 +53,13 @@ It is authoritative for any `Dataset` implementation.
   streaming and recorded in the manifest for each file written.
 - When a codec is configured, `StreamWrite` MUST return an error.
 - If the store's `Put` returns before consuming the stream (for example with
-  `ErrPathExists`), subsequent `Write` and `Commit` calls MUST fail with that
-  error; they MUST NOT block.
+  `ErrPathExists`), `Write` calls issued after it returned and `Commit` MUST
+  fail with that error, even when a compressor would buffer the bytes; they
+  MUST NOT block.
 - Cleanup after a failed stream MUST NOT delete the data object when `Put`
-  failed with `ErrPathExists`: the object was written by another writer and
-  data files are immutable.
+  failed with `ErrPathExists` without reading from the stream: the object was
+  written by another writer and data files are immutable. An `ErrPathExists`
+  the stream itself produced (iterator or encoder error) does not count.
 
 ### StreamWriteRecords Semantics
 
