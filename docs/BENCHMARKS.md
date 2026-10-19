@@ -36,11 +36,14 @@ revision, which the next CI benchmark run will provide.
 | `BenchmarkFindCoveringBlocks/blocks=10…10000` | Workstation | 94 – 109 ± 3% | 144 | 2 |
 | `BenchmarkMergeBlocks/existing=10…10000/new=3` | Workstation | 354 – 198,000 ± 7% | 904 – 483,635 | 5 |
 
-The v0.10.0 hygiene restructuring was measured against the v0.9.1 code on
-the same machine (count=10): time geomean −2.4% with every Dataset and
-Volume path within noise; allocations +2 per `Write`, +3 per `StreamWrite`,
-+1 per `Read` and `ReadAt` (the shared commit-loop closure and the generic
-snapshot wrapper). The first cut of that restructuring had regressed
+The v0.10.0 hygiene restructuring was measured against the pre-restructuring
+code on the same machine (count=10): time geomean −2.4% with every Dataset
+and Volume path within noise. Allocations per op, tag `v0.9.1` → v0.10.0:
+`SequentialWrites` 720 → 760 (20 writes per op, so +2 per `Write`),
+`StreamWrite` 30 → 33, `Read` 69 → 70, `Volume_ReadAt` 43 → 44 — the shared
+commit-loop closure and the generic snapshot wrapper. Reproduce with
+`go test -bench='Dataset_SequentialWrites$' -benchmem -run='^$' ./lode/` at
+each revision; allocation counts are deterministic. The first cut of that restructuring had regressed
 `Volume_ReadAt` to 126 allocs/op and `SequentialWrites` by +36%; both were
 found by this comparison and fixed before merge, which is why the comparison
 is part of the release checklist.

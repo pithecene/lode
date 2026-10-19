@@ -21,8 +21,11 @@ unleash:
   exclude-files:
     - examples/
   # Baseline (2026-10-19, gremlins v0.6.0, ./lode incl. s3, v0.10.0 at
-  # 99cb592): killed 555, lived 49, not covered 26, timed out 4 → efficacy
-  # 91.89%, mutant coverage 95.87%. The mutant count fell from 769 to 634 with
+  # 99cb592, produced by `task mutate` with exactly this file — workers 2,
+  # timeout-coefficient 20, no test-cpu — and reproduced across four runs
+  # within ±5 lived): killed 555, lived 49, not covered 26, timed out 4 →
+  # efficacy 91.89%, mutant coverage 95.87%. A run that reports ~1 lived and
+  # 0 timed out is the vacuous `-cpu` mode described below, not a baseline. The mutant count fell from 769 to 634 with
   # the hygiene restructuring (less code, same behavior); the hardening pass
   # before it had taken efficacy from 80.91% / 93.67% to 89.55% / 96.21%.
   # Every remaining LIVED mutant is either documented as equivalent in the
