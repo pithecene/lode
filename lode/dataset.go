@@ -843,6 +843,14 @@ func (d *dataset) StreamWriteRecords(ctx context.Context, records RecordIterator
 	for records.Next() {
 		record := records.Record()
 
+		// A buffering compressor can absorb records without touching the pipe,
+		// so a Put that has already failed must be noticed here rather than
+		// after an iterator that may never end.
+		if finished, putErr := put.poll(); finished && putErr != nil {
+			cleanupStreamWrite(ctx, d.store, filePath, encoder, compWriter, pw, put, putErr)
+			return nil, fmt.Errorf("lode: failed to write data: %w", putErr)
+		}
+
 		if err := encoder.WriteRecord(record); err != nil {
 			cleanupStreamWrite(ctx, d.store, filePath, encoder, compWriter, pw, put, err)
 			return nil, fmt.Errorf("lode: failed to write record: %w", err)
