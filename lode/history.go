@@ -7,7 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"sort"
+	"slices"
 	"strings"
 )
 
@@ -84,21 +84,29 @@ func (h *history[ID, M]) Snapshot(ctx context.Context, id ID) (*snapshot[ID, M],
 }
 
 // manifests lists every manifest path with the snapshot ID it names, one
-// entry per snapshot (the first path seen in sorted order wins).
+// entry per snapshot, in no particular order. A snapshot may have several
+// manifest copies (canonical plus one per partition); the lexicographically
+// smallest path is kept so the same storage state always yields the same
+// entries. One pass, no sort: a dataset prefix covers every data file too,
+// and CONTRACT_COMPLEXITY bounds degraded Latest/Snapshot at O(N) in listed
+// keys. Snapshots orders the entries itself, within its own S log S bound.
 func (h *history[ID, M]) manifests(ctx context.Context) ([]manifestEntry[ID], error) {
 	paths, err := h.store.List(ctx, h.kind.snapshotsPrefix())
 	if err != nil {
 		return nil, fmt.Errorf("lode: failed to list snapshots: %w", err)
 	}
-	sort.Strings(paths)
-	seen := make(map[ID]bool)
-	var out []manifestEntry[ID]
+	byID := make(map[ID]string)
 	for _, p := range paths {
 		id, ok := h.kind.parseManifest(p)
-		if !ok || seen[id] {
+		if !ok {
 			continue
 		}
-		seen[id] = true
+		if cur, seen := byID[id]; !seen || p < cur {
+			byID[id] = p
+		}
+	}
+	out := make([]manifestEntry[ID], 0, len(byID))
+	for id, p := range byID {
 		out = append(out, manifestEntry[ID]{id, p})
 	}
 	return out, nil
@@ -109,12 +117,14 @@ type manifestEntry[ID ~string] struct {
 	path string
 }
 
-// Snapshots loads every snapshot.
+// Snapshots loads every snapshot, ordered by ID so that callers sorting on
+// a manifest field get a deterministic tie-break.
 func (h *history[ID, M]) Snapshots(ctx context.Context) ([]*snapshot[ID, M], error) {
 	entries, err := h.manifests(ctx)
 	if err != nil {
 		return nil, err
 	}
+	slices.SortFunc(entries, func(a, b manifestEntry[ID]) int { return strings.Compare(string(a.id), string(b.id)) })
 	out := make([]*snapshot[ID, M], 0, len(entries))
 	for _, e := range entries {
 		s, err := h.load(ctx, e.id, e.path)
@@ -228,9 +238,10 @@ func (h *history[ID, M]) Latest(ctx context.Context) (*snapshot[ID, M], error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := h.writePointer(ctx, observed, s.ID); err != nil && !errors.Is(err, ErrSnapshotConflict) {
-		_ = err // self-heal is best-effort; the scan result stands
-	}
+	// Self-heal is best-effort: a conflict means another writer repaired or
+	// advanced the pointer first, and any other failure leaves the next
+	// Latest to scan again. Either way the scan result stands.
+	_ = h.writePointer(ctx, observed, s.ID)
 	h.remember(s.ID, string(s.ID))
 	return s, nil
 }

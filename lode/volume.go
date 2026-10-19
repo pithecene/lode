@@ -476,6 +476,29 @@ func parseVolumeSnapshotID(p string) VolumeSnapshotID {
 // Volume manifest validation
 // -----------------------------------------------------------------------------
 
+// validateBlock checks one block's bounds against the volume's total length.
+// Written as an if-chain, not a tagless switch: gremlins reports switch case
+// expressions as not covered (go-gremlins/gremlins#298), which would hide
+// these guards from the mutation gate.
+func validateBlock(i int, b BlockRef, totalLength int64) error {
+	if b.Offset < 0 {
+		return &manifestValidationError{Field: fmt.Sprintf("blocks[%d].offset", i), Message: "must be non-negative"}
+	}
+	if b.Length <= 0 {
+		return &manifestValidationError{Field: fmt.Sprintf("blocks[%d].length", i), Message: "must be positive"}
+	}
+	if b.Path == "" {
+		return &manifestValidationError{Field: fmt.Sprintf("blocks[%d].path", i), Message: "is required"}
+	}
+	if b.Length > totalLength-b.Offset {
+		return &manifestValidationError{
+			Field:   fmt.Sprintf("blocks[%d]", i),
+			Message: fmt.Sprintf("exceeds total_length (offset=%d, length=%d, total_length=%d)", b.Offset, b.Length, totalLength),
+		}
+	}
+	return nil
+}
+
 // ensureBlocksSortedByOffset sorts blocks by ascending Offset if not already sorted.
 func ensureBlocksSortedByOffset(blocks []BlockRef) {
 	if !sort.SliceIsSorted(blocks, func(i, j int) bool {
@@ -506,17 +529,14 @@ func validateVolumeManifest(m *VolumeManifest) error {
 	if err := firstInvalid(checks); err != nil {
 		return err
 	}
-	// Block checks run only once total_length is known valid.
+	// Block checks run only once total_length is known valid. They are plain
+	// conditions, not table entries: field names carry the block index, and
+	// formatting them for every block on every load would allocate on the
+	// read path.
 	for i, b := range m.Blocks {
-		checks = append(checks,
-			fieldCheck{b.Offset < 0, fmt.Sprintf("blocks[%d].offset", i), "must be non-negative"},
-			fieldCheck{b.Length <= 0, fmt.Sprintf("blocks[%d].length", i), "must be positive"},
-			fieldCheck{b.Path == "", fmt.Sprintf("blocks[%d].path", i), "is required"},
-			fieldCheck{b.Length > m.TotalLength-b.Offset, fmt.Sprintf("blocks[%d]", i), fmt.Sprintf("exceeds total_length (offset=%d, length=%d, total_length=%d)", b.Offset, b.Length, m.TotalLength)},
-		)
-	}
-	if err := firstInvalid(checks); err != nil {
-		return err
+		if err := validateBlock(i, b, m.TotalLength); err != nil {
+			return err
+		}
 	}
 
 	// Sort blocks by offset at load time so downstream consumers
