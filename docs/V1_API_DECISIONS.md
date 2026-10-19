@@ -10,9 +10,8 @@ who it breaks. The *Status* line is the decision. Until a candidate is
 accepted and shipped, the current shape in `PUBLIC_API.md` is the contract.
 
 Additive fixes from the same pass (`ErrInvalidArgument`,
-`DatasetListOptions.StartAfter`, sentinel consolidation) are part of the
-v0.10.0 work recorded under `[Unreleased]` in `CHANGELOG.md` and are not
-listed here.
+`DatasetListOptions.StartAfter`, sentinel consolidation) shipped in v0.10.0
+(`CHANGELOG.md` §0.10.0) and are not listed here.
 
 ---
 
