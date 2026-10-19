@@ -27,14 +27,50 @@ type volume struct {
 	checksum    Checksum
 	retry       retryConfig
 
-	// lastSnapshotID guards against stale-but-existing pointers after a
-	// pointer write failure. See dataset.lastSnapshotID for rationale.
-	lastSnapshotID VolumeSnapshotID
+	// history owns the snapshot sequence and its head pointer (history.go).
+	history history[VolumeSnapshotID, VolumeManifest]
+}
 
-	// lastWrittenPointer tracks what we last successfully wrote to the pointer
-	// file. Used as the CAS expected value when the store implements
-	// ConditionalWriter. See dataset.lastWrittenPointer for rationale.
-	lastWrittenPointer string
+// volumeKind is the volume's snapshot grammar for history: a fixed layout
+// (CONTRACT_VOLUME.md), and manifests validated against this volume on read.
+type volumeKind struct {
+	id          VolumeID
+	totalLength int64
+}
+
+func (k volumeKind) snapshotsPrefix() string                 { return volumeSnapshotsPrefix(k.id) }
+func (k volumeKind) pointerPath() string                     { return volumeLatestPointerPath(k.id) }
+func (k volumeKind) manifestPath(id VolumeSnapshotID) string { return volumeManifestPath(k.id, id) }
+
+func (k volumeKind) parseManifest(p string) (VolumeSnapshotID, bool) {
+	if !strings.HasSuffix(p, "manifest.json") {
+		return "", false
+	}
+	id := parseVolumeSnapshotID(p)
+	return id, id != ""
+}
+
+func (k volumeKind) decode(r io.Reader) (*VolumeManifest, error) {
+	var m VolumeManifest
+	if err := json.NewDecoder(r).Decode(&m); err != nil {
+		return nil, fmt.Errorf("lode: failed to decode volume manifest: %w", err)
+	}
+	if err := validateVolumeManifest(&m); err != nil {
+		return nil, err
+	}
+	if m.VolumeID != k.id {
+		return nil, fmt.Errorf("lode: manifest volume_id %q does not match volume %q", m.VolumeID, k.id)
+	}
+	if m.TotalLength != k.totalLength {
+		return nil, fmt.Errorf("lode: manifest total_length %d does not match volume total_length %d", m.TotalLength, k.totalLength)
+	}
+	return &m, nil
+}
+
+var _ snapshotKind[VolumeSnapshotID, VolumeManifest] = volumeKind{}
+
+func toVolumeSnapshot(s *snapshot[VolumeSnapshotID, VolumeManifest]) *VolumeSnapshot {
+	return &VolumeSnapshot{ID: s.ID, Manifest: s.Manifest}
 }
 
 // NewVolume creates a volume with a fixed total length.
@@ -72,6 +108,7 @@ func NewVolume(id VolumeID, storeFactory StoreFactory, totalLength int64, opts .
 		totalLength: totalLength,
 		checksum:    cfg.checksum,
 		retry:       cfg.retry,
+		history:     newHistory(store, volumeKind{id: id, totalLength: totalLength}, "volume manifest"),
 	}, nil
 }
 
@@ -96,62 +133,6 @@ func volumeBlockPath(id VolumeID, offset, length int64) string {
 
 func volumeLatestPointerPath(id VolumeID) string {
 	return path.Join("volumes", string(id), "latest")
-}
-
-// readLatestPointer reads the persistent latest-snapshot pointer file.
-// Returns the snapshot ID or ErrNotFound if the pointer does not exist.
-func (v *volume) readLatestPointer(ctx context.Context) (VolumeSnapshotID, error) {
-	rc, err := v.store.Get(ctx, volumeLatestPointerPath(v.id))
-	if err != nil {
-		return "", err
-	}
-	defer closer(rc)()
-
-	data, err := io.ReadAll(rc)
-	if err != nil {
-		return "", fmt.Errorf("lode: failed to read volume latest pointer: %w", err)
-	}
-
-	id := VolumeSnapshotID(strings.TrimSpace(string(data)))
-	if id == "" {
-		return "", ErrNotFound
-	}
-	return id, nil
-}
-
-// writeLatestPointer persists the snapshot ID as the latest pointer.
-// When the store implements ConditionalWriter, uses CompareAndSwap for
-// optimistic concurrency. Falls back to Delete+Put (single-writer assumption).
-//
-// expected is the current pointer content for CAS (may differ from parentID
-// when the pointer is stale or a previous pointer write failed).
-func (v *volume) writeLatestPointer(ctx context.Context, expected string, newID VolumeSnapshotID) error {
-	pointerPath := volumeLatestPointerPath(v.id)
-	if cw, ok := v.store.(ConditionalWriter); ok {
-		return cw.CompareAndSwap(ctx, pointerPath, expected, string(newID))
-	}
-	// Fallback: Delete+Put (single-writer assumption)
-	_ = v.store.Delete(ctx, pointerPath) // ignore error; path may not exist
-	return v.store.Put(ctx, pointerPath, strings.NewReader(string(newID)))
-}
-
-// selfHealPointer attempts to write the pointer for scan-fallback recovery.
-// When the store supports CAS, uses CompareAndSwap with the observed pointer
-// content. CAS failure (ErrSnapshotConflict) is swallowed — it means a
-// concurrent commit already advanced the pointer, which is the desired state.
-// Falls back to Delete+Put only when CAS is not available.
-func (v *volume) selfHealPointer(ctx context.Context, observed string, id VolumeSnapshotID) error {
-	pointerPath := volumeLatestPointerPath(v.id)
-	if cw, ok := v.store.(ConditionalWriter); ok {
-		err := cw.CompareAndSwap(ctx, pointerPath, observed, string(id))
-		if errors.Is(err, ErrSnapshotConflict) {
-			return nil // concurrent commit advanced pointer; self-heal unnecessary
-		}
-		return err
-	}
-	// Fallback: Delete+Put (single-writer assumption, no CAS available)
-	_ = v.store.Delete(ctx, pointerPath)
-	return v.store.Put(ctx, pointerPath, strings.NewReader(string(id)))
 }
 
 // -----------------------------------------------------------------------------
@@ -228,157 +209,74 @@ func (v *volume) Commit(ctx context.Context, blocks []BlockRef, metadata Metadat
 		}
 	}
 
+	var result *VolumeSnapshot
+	err := v.history.CommitLoop(ctx, &v.retry, func() error {
+		parent, expectedPointer, err := v.history.ResolveParent(ctx)
+		if err != nil {
+			return err
+		}
+		var existing []BlockRef
+		var parentID VolumeSnapshotID
+		if parent != nil {
+			existing, parentID = parent.Manifest.Blocks, parent.ID
+		}
+		if !hasNewBlock(existing, blocks) {
+			return errors.New("lode: commit must include at least one new block (all provided blocks already committed)")
+		}
+
+		// Cumulative block set, sorted by offset for O(log B) lookups: existing
+		// blocks are already sorted, so only the new ones are sorted and merged.
+		// Overlaps are a logic error and are not retried.
+		cumulative := mergeBlocks(existing, blocks)
+		if err := validateNoOverlaps(cumulative); err != nil {
+			return err
+		}
+
+		manifest := v.buildManifest(VolumeSnapshotID(generateID()), parentID, metadata, cumulative)
+		if err := v.history.Advance(ctx, expectedPointer, manifest.SnapshotID, manifest, []string{volumeManifestPath(v.id, manifest.SnapshotID)}); err != nil {
+			return err
+		}
+		result = &VolumeSnapshot{ID: manifest.SnapshotID, Manifest: manifest}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// hasNewBlock reports whether any of blocks is absent from existing.
+func hasNewBlock(existing, blocks []BlockRef) bool {
+	seen := make(map[string]struct{}, len(existing))
+	for _, b := range existing {
+		seen[b.Path] = struct{}{}
+	}
+	for _, b := range blocks {
+		if _, found := seen[b.Path]; !found {
+			return true
+		}
+	}
+	return false
+}
+
+// buildManifest constructs the manifest for a snapshot of this volume.
+func (v *volume) buildManifest(snapshotID, parentID VolumeSnapshotID, metadata Metadata, blocks []BlockRef) *VolumeManifest {
 	var checksumAlgorithm string
 	if v.checksum != nil {
 		checksumAlgorithm = v.checksum.Name()
 	}
-
-	// Commit loop: resolve parent, merge blocks, write pointer+manifest.
-	// On CAS conflict, re-read Latest() to get the new parent's blocks
-	// and re-merge before retrying.
-	var lastErr error
-	for attempt := range v.retry.maxAttempts + 1 {
-		if attempt > 0 {
-			if err := v.retry.retryBackoff(ctx, attempt); err != nil {
-				return nil, err
-			}
-			// Refresh in-memory CAS cache from storage.
-			if _, err := v.Latest(ctx); err != nil && !errors.Is(err, ErrNoSnapshots) {
-				return nil, err
-			}
-		}
-
-		parentID, existingBlocks, expectedPointer, err := v.resolveParent(ctx)
-		if err != nil {
-			return nil, err
-		}
-
-		// Verify at least one block is genuinely new against this parent.
-		existingSet := make(map[string]struct{}, len(existingBlocks))
-		for _, b := range existingBlocks {
-			existingSet[b.Path] = struct{}{}
-		}
-		hasNew := false
-		for _, b := range blocks {
-			if _, found := existingSet[b.Path]; !found {
-				hasNew = true
-				break
-			}
-		}
-		if !hasNew {
-			return nil, errors.New("lode: commit must include at least one new block (all provided blocks already committed)")
-		}
-
-		// Build cumulative block set, sorted by offset for O(log B) lookups.
-		// existingBlocks are sorted (guaranteed by prior commits). Sort only
-		// the new blocks and merge for O(N + K log K) instead of O((N+K) log(N+K)).
-		cumulativeBlocks := mergeBlocks(existingBlocks, blocks)
-
-		// Validate no overlaps in the full cumulative set.
-		// Non-retryable: overlapping blocks are a logic error.
-		if err := validateNoOverlaps(cumulativeBlocks); err != nil {
-			return nil, err
-		}
-
-		snapshotID := VolumeSnapshotID(generateID())
-
-		manifest := &VolumeManifest{
-			SchemaName:        volumeManifestSchemaName,
-			FormatVersion:     volumeManifestFormatVersion,
-			VolumeID:          v.id,
-			SnapshotID:        snapshotID,
-			CreatedAt:         time.Now().UTC(),
-			Metadata:          metadata,
-			TotalLength:       v.totalLength,
-			Blocks:            cumulativeBlocks,
-			ParentSnapshotID:  parentID,
-			ChecksumAlgorithm: checksumAlgorithm,
-		}
-
-		manifestData, err := json.MarshalIndent(manifest, "", "  ")
-		if err != nil {
-			return nil, fmt.Errorf("lode: failed to marshal volume manifest: %w", err)
-		}
-
-		// Pointer must be written before manifest to prevent stale-but-existing
-		// pointers on cold start. If this fails, no manifest is written and the
-		// commit is aborted. A pointer referencing a not-yet-existing snapshot is
-		// harmless (Exists check falls through to scan on the next cold start).
-		if err := v.writeLatestPointer(ctx, expectedPointer, snapshotID); err != nil {
-			if !errors.Is(err, ErrSnapshotConflict) {
-				return nil, fmt.Errorf("lode: failed to update latest pointer: %w", err)
-			}
-			lastErr = fmt.Errorf("lode: failed to update latest pointer: %w", err)
-			continue
-		}
-
-		manifestPath := volumeManifestPath(v.id, snapshotID)
-		if err := v.store.Put(ctx, manifestPath, bytes.NewReader(manifestData)); err != nil {
-			return nil, fmt.Errorf("lode: failed to write volume manifest: %w", err)
-		}
-		v.lastSnapshotID = snapshotID
-		v.lastWrittenPointer = string(snapshotID)
-
-		return &VolumeSnapshot{
-			ID:       snapshotID,
-			Manifest: manifest,
-		}, nil
+	return &VolumeManifest{
+		SchemaName:        volumeManifestSchemaName,
+		FormatVersion:     volumeManifestFormatVersion,
+		VolumeID:          v.id,
+		SnapshotID:        snapshotID,
+		CreatedAt:         time.Now().UTC(),
+		Metadata:          metadata,
+		TotalLength:       v.totalLength,
+		Blocks:            blocks,
+		ParentSnapshotID:  parentID,
+		ChecksumAlgorithm: checksumAlgorithm,
 	}
-	return nil, lastErr
-}
-
-// resolveParent finds the most recent committed snapshot for parent chaining
-// and the expected pointer content for CAS writes.
-//
-// Returns:
-//   - parentID: the snapshot ID for the manifest's ParentSnapshotID
-//   - blocks: the parent's cumulative blocks (nil for first commit)
-//   - expectedPointer: what the pointer file currently contains (for CAS)
-//
-// Resolution cascade: in-memory cache → pointer → scan fallback.
-// Returns zero values if no parent exists (first commit).
-func (v *volume) resolveParent(ctx context.Context) (VolumeSnapshotID, []BlockRef, string, error) {
-	// In-memory cache is authoritative within this process.
-	// lastWrittenPointer tracks what the pointer should contain for CAS.
-	if v.lastSnapshotID != "" {
-		snap, snapErr := v.Snapshot(ctx, v.lastSnapshotID)
-		if snapErr == nil {
-			return snap.ID, snap.Manifest.Blocks, v.lastWrittenPointer, nil
-		}
-		if !errors.Is(snapErr, ErrNotFound) {
-			return "", nil, "", fmt.Errorf("lode: failed to load snapshot from cache: %w", snapErr)
-		}
-		// Cache references nonexistent snapshot — fall through to pointer/scan.
-	}
-
-	latestID, pointerErr := v.readLatestPointer(ctx)
-	if pointerErr == nil {
-		snap, snapErr := v.Snapshot(ctx, latestID)
-		if snapErr == nil {
-			return snap.ID, snap.Manifest.Blocks, string(latestID), nil
-		}
-		if !errors.Is(snapErr, ErrNotFound) {
-			return "", nil, "", fmt.Errorf("lode: failed to load snapshot from pointer: %w", snapErr)
-		}
-		// Pointer references nonexistent snapshot — fall through to scan.
-	}
-
-	// Track what the pointer currently contains for CAS.
-	var currentPointer string
-	if pointerErr == nil {
-		currentPointer = string(latestID) // stale/corrupt content
-	}
-
-	// No cache, no pointer, or stale: fall back to scan for backward compat.
-	latest, scanErr := v.latestByScan(ctx)
-	if scanErr != nil && !errors.Is(scanErr, ErrNoSnapshots) {
-		return "", nil, "", fmt.Errorf("lode: failed to get latest snapshot: %w", scanErr)
-	}
-	if latest != nil {
-		return latest.ID, latest.Manifest.Blocks, currentPointer, nil
-	}
-
-	return "", nil, currentPointer, nil
 }
 
 // mergeBlocks merges two block slices into a single sorted-by-offset result.
@@ -526,147 +424,41 @@ func findCoveringBlocks(blocks []BlockRef, offset, length int64) ([]BlockRef, er
 	return relevant, nil
 }
 
-// Latest returns the most recently committed snapshot.
+// Latest returns the head snapshot.
 func (v *volume) Latest(ctx context.Context) (*VolumeSnapshot, error) {
-	// Pointer-first: O(1) via persistent latest file.
-	// Track observed pointer content for CAS-safe self-heal.
-	var observedPointer string
-	id, err := v.readLatestPointer(ctx)
-	if err == nil {
-		snap, snapErr := v.Snapshot(ctx, id)
-		if snapErr == nil {
-			// Refresh CAS cache so retries after ErrSnapshotConflict
-			// use the current pointer content, not stale cached values.
-			v.lastSnapshotID = snap.ID
-			v.lastWrittenPointer = string(id)
-			return snap, nil
-		}
-		// Pointer references a nonexistent snapshot — fall through to scan.
-		observedPointer = string(id)
-	}
-
-	snap, err := v.latestByScan(ctx)
+	s, err := v.history.Latest(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	// Self-heal: write the pointer so subsequent calls are O(1).
-	// Uses CAS when available to avoid rewinding a concurrently advanced pointer.
-	_ = v.selfHealPointer(ctx, observedPointer, snap.ID)
-
-	// Refresh CAS cache. After self-heal the pointer contains snap.ID.
-	v.lastSnapshotID = snap.ID
-	v.lastWrittenPointer = string(snap.ID)
-
-	return snap, nil
+	return toVolumeSnapshot(s), nil
 }
 
-// latestByScan finds the latest snapshot via a single List + single Get.
-// Snapshot IDs are nanosecond timestamps, so the lexicographically largest
-// manifest path contains the latest snapshot.
-func (v *volume) latestByScan(ctx context.Context) (*VolumeSnapshot, error) {
-	prefix := volumeSnapshotsPrefix(v.id)
-	paths, err := v.store.List(ctx, prefix)
-	if err != nil {
-		return nil, fmt.Errorf("lode: failed to list volume snapshots: %w", err)
-	}
-
-	// Find the lexicographically largest snapshot ID from manifest paths.
-	var latestID VolumeSnapshotID
-	var latestPath string
-	for _, p := range paths {
-		if !strings.HasSuffix(p, "manifest.json") {
-			continue
-		}
-		id := parseVolumeSnapshotID(p)
-		if id == "" {
-			continue
-		}
-		if string(id) > string(latestID) {
-			latestID = id
-			latestPath = p
-		}
-	}
-	if latestID == "" {
-		return nil, ErrNoSnapshots
-	}
-
-	snap, err := v.loadSnapshot(ctx, latestID, latestPath)
-	if err != nil {
-		return nil, err
-	}
-
-	return snap, nil
-}
-
-// Snapshots lists all committed snapshots sorted by creation time.
+// Snapshots lists every snapshot, oldest first.
 func (v *volume) Snapshots(ctx context.Context) ([]*VolumeSnapshot, error) {
-	prefix := volumeSnapshotsPrefix(v.id)
-	paths, err := v.store.List(ctx, prefix)
+	all, err := v.history.Snapshots(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("lode: failed to list volume snapshots: %w", err)
+		return nil, err
 	}
-
-	var snapshots []*VolumeSnapshot
-	for _, p := range paths {
-		if !strings.HasSuffix(p, "manifest.json") {
-			continue
-		}
-		snapID := parseVolumeSnapshotID(p)
-		if snapID == "" {
-			continue
-		}
-		snap, err := v.loadSnapshot(ctx, snapID, p)
-		if err != nil {
-			return nil, err
-		}
-		snapshots = append(snapshots, snap)
+	snapshots := make([]*VolumeSnapshot, len(all))
+	for i, s := range all {
+		snapshots[i] = toVolumeSnapshot(s)
 	}
-
 	sort.Slice(snapshots, func(i, j int) bool {
 		return snapshots[i].Manifest.CreatedAt.Before(snapshots[j].Manifest.CreatedAt)
 	})
-
 	return snapshots, nil
 }
 
-// Snapshot retrieves a specific snapshot by ID.
+// Snapshot loads a snapshot by ID.
 func (v *volume) Snapshot(ctx context.Context, id VolumeSnapshotID) (*VolumeSnapshot, error) {
-	manifestPath := volumeManifestPath(v.id, id)
-	return v.loadSnapshot(ctx, id, manifestPath)
-}
-
-// loadSnapshot loads and validates a volume manifest from the given path.
-func (v *volume) loadSnapshot(ctx context.Context, id VolumeSnapshotID, manifestPath string) (*VolumeSnapshot, error) {
-	rc, err := v.store.Get(ctx, manifestPath)
+	s, err := v.history.Snapshot(ctx, id)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
-			return nil, ErrNotFound
+			return nil, err
 		}
 		return nil, fmt.Errorf("lode: failed to get volume manifest: %w", err)
 	}
-	defer closer(rc)()
-
-	var manifest VolumeManifest
-	if err := json.NewDecoder(rc).Decode(&manifest); err != nil {
-		return nil, fmt.Errorf("lode: failed to decode volume manifest: %w", err)
-	}
-
-	if err := validateVolumeManifest(&manifest); err != nil {
-		return nil, err
-	}
-
-	if manifest.VolumeID != v.id {
-		return nil, fmt.Errorf("lode: manifest volume_id %q does not match volume %q", manifest.VolumeID, v.id)
-	}
-	if manifest.TotalLength != v.totalLength {
-		return nil, fmt.Errorf("lode: manifest total_length %d does not match volume total_length %d", manifest.TotalLength, v.totalLength)
-	}
-
-	return &VolumeSnapshot{
-		ID:       id,
-		Manifest: &manifest,
-	}, nil
+	return toVolumeSnapshot(s), nil
 }
 
 // parseVolumeSnapshotID extracts the snapshot ID from a volume manifest path.
@@ -683,6 +475,29 @@ func parseVolumeSnapshotID(p string) VolumeSnapshotID {
 // -----------------------------------------------------------------------------
 // Volume manifest validation
 // -----------------------------------------------------------------------------
+
+// validateBlock checks one block's bounds against the volume's total length.
+// Written as an if-chain, not a tagless switch: gremlins reports switch case
+// expressions as not covered (go-gremlins/gremlins#298), which would hide
+// these guards from the mutation gate.
+func validateBlock(i int, b BlockRef, totalLength int64) error {
+	if b.Offset < 0 {
+		return &manifestValidationError{Field: fmt.Sprintf("blocks[%d].offset", i), Message: "must be non-negative"}
+	}
+	if b.Length <= 0 {
+		return &manifestValidationError{Field: fmt.Sprintf("blocks[%d].length", i), Message: "must be positive"}
+	}
+	if b.Path == "" {
+		return &manifestValidationError{Field: fmt.Sprintf("blocks[%d].path", i), Message: "is required"}
+	}
+	if b.Length > totalLength-b.Offset {
+		return &manifestValidationError{
+			Field:   fmt.Sprintf("blocks[%d]", i),
+			Message: fmt.Sprintf("exceeds total_length (offset=%d, length=%d, total_length=%d)", b.Offset, b.Length, totalLength),
+		}
+	}
+	return nil
+}
 
 // ensureBlocksSortedByOffset sorts blocks by ascending Offset if not already sorted.
 func ensureBlocksSortedByOffset(blocks []BlockRef) {
@@ -701,14 +516,6 @@ func validateVolumeManifest(m *VolumeManifest) error {
 	if m == nil {
 		return &manifestValidationError{Field: "manifest", Message: "is nil"}
 	}
-	// Table-driven field validation. Each entry maps a boolean condition
-	// (true = invalid) to the field name and error message.
-	type fieldCheck struct {
-		invalid bool
-		field   string
-		message string
-	}
-
 	checks := []fieldCheck{
 		{m.SchemaName == "", "schema_name", "is required"},
 		{m.FormatVersion == "", "format_version", "is required"},
@@ -719,37 +526,16 @@ func validateVolumeManifest(m *VolumeManifest) error {
 		{m.Blocks == nil, "blocks", "must not be nil (use empty slice for no blocks)"},
 		{m.TotalLength <= 0, "total_length", "must be positive"},
 	}
-
-	for _, c := range checks {
-		if c.invalid {
-			return &manifestValidationError{Field: c.field, Message: c.message}
-		}
+	if err := firstInvalid(checks); err != nil {
+		return err
 	}
-
+	// Block checks run only once total_length is known valid. They are plain
+	// conditions, not table entries: field names carry the block index, and
+	// formatting them for every block on every load would allocate on the
+	// read path.
 	for i, b := range m.Blocks {
-		if b.Offset < 0 {
-			return &manifestValidationError{
-				Field:   fmt.Sprintf("blocks[%d].offset", i),
-				Message: "must be non-negative",
-			}
-		}
-		if b.Length <= 0 {
-			return &manifestValidationError{
-				Field:   fmt.Sprintf("blocks[%d].length", i),
-				Message: "must be positive",
-			}
-		}
-		if b.Path == "" {
-			return &manifestValidationError{
-				Field:   fmt.Sprintf("blocks[%d].path", i),
-				Message: "is required",
-			}
-		}
-		if b.Length > m.TotalLength-b.Offset {
-			return &manifestValidationError{
-				Field:   fmt.Sprintf("blocks[%d]", i),
-				Message: fmt.Sprintf("exceeds total_length (offset=%d, length=%d, total_length=%d)", b.Offset, b.Length, m.TotalLength),
-			}
+		if err := validateBlock(i, b, m.TotalLength); err != nil {
+			return err
 		}
 	}
 
