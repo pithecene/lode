@@ -179,8 +179,12 @@ func TestStore_ReadRange_ExactOverflowBound(t *testing.T) {
 	if err := store.Put(ctx, "k", bytes.NewReader([]byte("hello"))); err != nil {
 		t.Fatal(err)
 	}
-	// offset+length == MaxInt64 is valid (and past EOF: empty).
-	got, err := store.ReadRange(ctx, "k", math.MaxInt64-10, 10)
+	// Zero length is valid and answered without a request.
+	got, err := store.ReadRange(ctx, "k", 1, 0)
+	if err != nil || len(got) != 0 {
+		t.Fatalf("zero length: got %d bytes, %v; want empty, nil", len(got), err)
+	}
+	got, err = store.ReadRange(ctx, "k", math.MaxInt64-10, 10)
 	if err != nil || len(got) != 0 {
 		t.Fatalf("exact bound: got %d bytes, %v; want empty, nil", len(got), err)
 	}

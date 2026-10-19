@@ -92,6 +92,9 @@ func TestParquetCodec_NewParquetCodec_TypeAtSentinel_Rejected(t *testing.T) {
 	if _, err := NewParquetCodec(ParquetSchema{Fields: []ParquetField{{Name: "v", Type: parquetTypeMax - 1}}}); err != nil {
 		t.Fatalf("Type == parquetTypeMax-1 (last valid): unexpected error %v", err)
 	}
+	if _, err := NewParquetCodec(ParquetSchema{Fields: []ParquetField{{Name: "v", Type: ParquetType(0)}}}); err != nil {
+		t.Fatalf("Type == 0 (first valid): unexpected error %v", err)
+	}
 }
 
 // Int32 and Float32 columns never appeared in a stats test, so their

@@ -11,9 +11,11 @@ import (
 // (CONTRACT_STORAGE §ReadRange). The existing tests probe clearly-inside and
 // clearly-outside values; these sit exactly on the edges the contract names.
 //
-// Known equivalent mutants left alive in memoryStore.ReadRange:
-// `offset >= len(data)` → `>` and `end > len(data)` → `>=`: at equality both
-// branches yield the same empty or full slice.
+// Known equivalent mutants left alive: in memoryStore.ReadRange,
+// `offset >= len(data)` → `>` and `end > len(data)` → `>=` (at equality both
+// branches yield the same empty or full slice); in fsStore.ReadRange, the
+// `available` arithmetic and `available <= 0` → `<` (only the buffer size
+// differs; ReadAt still returns exactly the bytes present).
 
 func assertReadRangeBounds(t *testing.T, store Store) {
 	t.Helper()
@@ -55,6 +57,12 @@ func assertReadRangeBounds(t *testing.T, store Store) {
 	}
 	if string(data) != "lo" {
 		t.Fatalf("large length: got %q, want %q", data, "lo")
+	}
+
+	// Zero length is valid and empty, not ErrInvalidPath.
+	data, err = store.ReadRange(ctx, "test.txt", 1, 0)
+	if err != nil || len(data) != 0 {
+		t.Fatalf("zero length: got %d bytes, %v; want empty, nil", len(data), err)
 	}
 
 	// offset exactly at EOF is empty, not an error.
