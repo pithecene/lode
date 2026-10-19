@@ -102,6 +102,7 @@ Gaps are tracked with codes indicating category and priority:
 | Abort → cleanup attempted | `TestStreamWrite_Abort_NoManifest_CleanupAttempted` |
 | Close → cleanup attempted | `TestStreamWrite_CloseWithoutCommit_NoManifest_CleanupAttempted` |
 | Cleanup errors ignored | `TestStreamWrite_CleanupErrorIgnored` |
+| Fast Put failure → error, no block | `TestStreamWrite_DataPutFailsFast_ReturnsError` |
 | Blocked Put + cancel → no manifest | `TestStreamWrite_BlockedPut_ContextCancel_NoManifest` |
 
 **StreamWriteRecords**: All covered ✅
@@ -117,6 +118,7 @@ Gaps are tracked with codes indicating category and priority:
 | Iterator error → cleanup attempted | `TestStreamWriteRecords_IteratorError_NoManifest_CleanupAttempted` |
 | Parent ID resolved O(1) via persistent pointer | `TestDataset_StreamWriteRecords_LatestPointer_SkipsScan` |
 | Manifest Put error → no manifest + cleanup | `TestStreamWriteRecords_ManifestPutError_NoManifest` |
+| Fast Put failure → error, no block | `TestStreamWriteRecords_DataPutFailsFast_ReturnsError` |
 
 **Timestamp Computation**: All covered ✅
 

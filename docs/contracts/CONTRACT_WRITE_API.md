@@ -52,6 +52,15 @@ It is authoritative for any `Dataset` implementation.
 - When a checksum component is configured, the checksum MUST be computed during
   streaming and recorded in the manifest for each file written.
 - When a codec is configured, `StreamWrite` MUST return an error.
+- If the store's `Put` returns before consuming the stream (for example with
+  `ErrPathExists`), `Write` calls issued after it returned and `Commit` MUST
+  fail with that error, even when a compressor would buffer the bytes; they
+  MUST NOT block.
+- After a failed `Put` the writer MUST NOT touch the data path. `Put` is
+  all-or-nothing (`CONTRACT_STORAGE.md` §Put), so a failed stream leaves no
+  object of its own, and a path whose `Put` returned `ErrPathExists` belongs
+  to another writer. Data-file cleanup applies only to objects whose `Put`
+  succeeded and whose commit then failed.
 
 ### StreamWriteRecords Semantics
 
@@ -65,8 +74,17 @@ It is authoritative for any `Dataset` implementation.
 - Streamed record writes MUST be single-pass writes to the final object path.
 - Streamed record writes MUST NOT mutate existing objects; all writes are new paths.
 - On success, the manifest is written and the new snapshot is returned.
-- On error (iterator failure, codec error, storage error), no manifest is written
-  and best-effort cleanup of partial objects is attempted.
+- On error (iterator failure, codec error, storage error), no manifest is written.
+  A failed `Put` leaves nothing behind (`CONTRACT_STORAGE.md` §Put); a data
+  object whose `Put` succeeded but whose commit failed is deleted best-effort.
+- If the store's `Put` returns before consuming the stream, `StreamWriteRecords`
+  MUST return that error, ahead of any iterator or finalization error reported
+  afterwards, and MUST NOT block on the store or the pipe. The `Put` result is
+  checked before and after every iterator call (`Next`, `Record`, `Err`) and
+  before accepting each record. Lode cannot interrupt the caller's own
+  iterator: a `Next` or `Err` that blocks blocks `StreamWriteRecords` for as
+  long as it blocks, and the storage error is reported when it returns. The
+  writer MUST NOT touch the path afterwards.
 - Row/event count MUST equal the total number of records consumed.
 - When a checksum component is configured, the checksum MUST be computed during
   streaming and recorded in the manifest for each file written.

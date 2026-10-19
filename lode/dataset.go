@@ -763,11 +763,7 @@ func (d *dataset) StreamWrite(ctx context.Context, metadata Metadata) (StreamWri
 		return nil, fmt.Errorf("lode: failed to create compressor: %w", err)
 	}
 
-	// Start store.Put in background
-	putDone := make(chan error, 1)
-	go func() {
-		putDone <- d.store.Put(ctx, filePath, pr)
-	}()
+	put := startPut(ctx, d.store, filePath, pr)
 
 	return &streamWriter{
 		ds:              d,
@@ -781,7 +777,7 @@ func (d *dataset) StreamWrite(ctx context.Context, metadata Metadata) (StreamWri
 		compWriter:      compWriter,
 		countWriter:     cw,
 		hasher:          hasher,
-		putDone:         putDone,
+		put:             put,
 	}, nil
 }
 
@@ -838,48 +834,70 @@ func (d *dataset) StreamWriteRecords(ctx context.Context, records RecordIterator
 		return nil, fmt.Errorf("lode: failed to create stream encoder: %w", err)
 	}
 
-	// Start store.Put in background
-	putDone := make(chan error, 1)
-	go func() {
-		putDone <- d.store.Put(ctx, filePath, pr)
-	}()
+	put := startPut(ctx, d.store, filePath, pr)
 
 	// Stream records through encoder, tracking count and timestamps
 	var rowCount int64
-	var minTs, maxTs *time.Time
+	var ts timestampRange
 
+	// A buffering compressor can absorb records without touching the pipe, so a
+	// Put that has already failed must be noticed before every iterator call
+	// (which may block) and before accepting each record — never only after an
+	// iterator that may never end.
+	putFailed := func() error {
+		if finished, putErr := put.poll(); finished && putErr != nil {
+			cleanupStreamWrite(encoder, compWriter, pw, put, putErr)
+			return fmt.Errorf("lode: failed to write data: %w", putErr)
+		}
+		return nil
+	}
+	if err := putFailed(); err != nil {
+		return nil, err
+	}
 	for records.Next() {
+		// Before and after Record(), which a producer-backed iterator may block in.
+		if err := putFailed(); err != nil {
+			return nil, err
+		}
 		record := records.Record()
+		if err := putFailed(); err != nil {
+			return nil, err
+		}
 
 		if err := encoder.WriteRecord(record); err != nil {
-			cleanupStreamWrite(ctx, d.store, filePath, encoder, compWriter, pw, putDone, err)
+			cleanupStreamWrite(encoder, compWriter, pw, put, err)
 			return nil, fmt.Errorf("lode: failed to write record: %w", err)
 		}
 
 		rowCount++
+		ts.observe(record)
 
-		// Track timestamps from Timestamped records
-		if ts, ok := record.(Timestamped); ok {
-			t := ts.Timestamp()
-			if minTs == nil || t.Before(*minTs) {
-				minTs = &t
-			}
-			if maxTs == nil || t.After(*maxTs) {
-				maxTs = &t
-			}
+		// Before the next (possibly blocking) call into the iterator.
+		if err := putFailed(); err != nil {
+			return nil, err
 		}
 	}
 
-	// Check for iterator errors
-	if err := records.Err(); err != nil {
-		cleanupStreamWrite(ctx, d.store, filePath, encoder, compWriter, pw, putDone, err)
-		return nil, fmt.Errorf("lode: record iterator error: %w", err)
+	// A Put that failed while the iterator was finishing is the root cause and
+	// takes precedence over whatever the iterator reports. Check before calling
+	// Err, which may block, and again after, since Put may complete during it.
+	if err := putFailed(); err != nil {
+		return nil, err
+	}
+	iterErr := records.Err()
+	if err := putFailed(); err != nil {
+		return nil, err
+	}
+	if iterErr != nil {
+		cleanupStreamWrite(encoder, compWriter, pw, put, iterErr)
+		return nil, fmt.Errorf("lode: record iterator error: %w", iterErr)
 	}
 
 	// Close encoder (finalizes format)
 	if err := encoder.Close(); err != nil {
-		cleanupStreamWrite(ctx, d.store, filePath, nil, compWriter, pw, putDone, err)
-		return nil, fmt.Errorf("lode: failed to close encoder: %w", err)
+		return nil, finalizeError(put, "encoder", err, func(cause error) {
+			cleanupStreamWrite(nil, compWriter, pw, put, cause)
+		})
 	}
 
 	// Collect per-file stats if the stream encoder supports it
@@ -890,20 +908,19 @@ func (d *dataset) StreamWriteRecords(ctx context.Context, records RecordIterator
 
 	// Close compression (flushes final data)
 	if err := compWriter.Close(); err != nil {
-		cleanupStreamWrite(ctx, d.store, filePath, nil, nil, pw, putDone, err)
-		return nil, fmt.Errorf("lode: failed to close compressor: %w", err)
+		return nil, finalizeError(put, "compressor", err, func(cause error) {
+			cleanupStreamWrite(nil, nil, pw, put, cause)
+		})
 	}
 
 	// Close pipe (signals EOF to store.Put)
 	if err := pw.Close(); err != nil {
-		<-putDone
-		_ = d.store.Delete(ctx, filePath)
-		return nil, fmt.Errorf("lode: failed to close pipe: %w", err)
+		return nil, finalizeError(put, "pipe", err, func(error) { _ = put.wait() })
 	}
 
-	// Wait for store.Put to complete
-	if err := <-putDone; err != nil {
-		_ = d.store.Delete(ctx, filePath)
+	// Wait for store.Put to complete. A failed Put leaves nothing behind
+	// (CONTRACT_STORAGE §Put), so there is nothing for the writer to clean up.
+	if err := put.wait(); err != nil {
 		return nil, fmt.Errorf("lode: failed to write data: %w", err)
 	}
 
@@ -919,13 +936,16 @@ func (d *dataset) StreamWriteRecords(ctx context.Context, records RecordIterator
 
 	// Commit with retry. Data file is already persisted; on conflict we
 	// only re-parent the manifest and retry the pointer CAS.
-	return d.commitWithRetry(ctx, snapshotID, []FileRef{fileRef}, []string{""}, metadata, rowCount, d.codec.Name(), minTs, maxTs, filePath)
+	return d.commitWithRetry(ctx, snapshotID, []FileRef{fileRef}, []string{""}, metadata, rowCount, d.codec.Name(), ts.min, ts.max, filePath)
 }
 
-// cleanupStreamWrite tears down the streaming write pipeline on error.
+// cleanupStreamWrite tears down the streaming write pipeline on error and
+// waits for the background Put to return. It never deletes the data object:
+// a failed Put leaves the path as it was (CONTRACT_STORAGE §Put), and a Put
+// that returned ErrPathExists refused a path that belongs to another writer.
 // Arguments may be nil when the failure occurs before the corresponding
 // resource is created; nil values are skipped.
-func cleanupStreamWrite(ctx context.Context, store Store, filePath string, encoder RecordStreamEncoder, compWriter io.WriteCloser, pw *io.PipeWriter, putDone <-chan error, cause error) {
+func cleanupStreamWrite(encoder RecordStreamEncoder, compWriter io.WriteCloser, pw *io.PipeWriter, put *putResult, cause error) {
 	if encoder != nil {
 		_ = encoder.Close()
 	}
@@ -935,10 +955,69 @@ func cleanupStreamWrite(ctx context.Context, store Store, filePath string, encod
 	if pw != nil {
 		_ = pw.CloseWithError(cause)
 	}
-	if putDone != nil {
-		<-putDone
+	_ = put.wait()
+}
+
+// putResult tracks the background store.Put of a streamed data object.
+type putResult struct {
+	done chan struct{} // closed once the result below is published
+
+	mu       sync.Mutex
+	finished bool
+	err      error
+}
+
+// startPut runs store.Put in the background. The result is published before
+// the read end is closed with Put's error, so a writer blocked on the pipe
+// fails instead of hanging (a fast failure such as ErrPathExists never drains
+// the pipe) and a Write issued after Put returned always observes the result.
+func startPut(ctx context.Context, store Store, path string, pr *io.PipeReader) *putResult {
+	r := &putResult{done: make(chan struct{})}
+	go func() {
+		err := store.Put(ctx, path, pr)
+		r.mu.Lock()
+		r.err, r.finished = err, true
+		r.mu.Unlock()
+		_ = pr.CloseWithError(err)
+		close(r.done)
+	}()
+	return r
+}
+
+// wait blocks until Put has returned and returns its error.
+func (r *putResult) wait() error {
+	<-r.done
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.err
+}
+
+// poll reports Put's result if it has already returned, without blocking.
+func (r *putResult) poll() (finished bool, err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.finished, r.err
+}
+
+// rootCause picks the error to surface when a finalization step fails: a Put
+// that has already failed is the root cause of anything that broke after it.
+func (r *putResult) rootCause(stepErr error) (fromPut bool, cause error) {
+	if finished, putErr := r.poll(); finished && putErr != nil {
+		return true, putErr
 	}
-	_ = store.Delete(ctx, filePath)
+	return false, stepErr
+}
+
+// finalizeError runs teardown with the root cause of a failed finalization
+// step and returns the error to report: the Put failure when one preceded
+// the step, otherwise the step's own error.
+func finalizeError(put *putResult, step string, stepErr error, teardown func(cause error)) error {
+	fromPut, cause := put.rootCause(stepErr)
+	teardown(cause)
+	if fromPut {
+		return fmt.Errorf("lode: failed to write data: %w", cause)
+	}
+	return fmt.Errorf("lode: failed to close %s: %w", step, cause)
 }
 
 // commitWithRetry resolves the parent, builds a manifest, and commits.
@@ -1375,17 +1454,13 @@ type streamWriter struct {
 	compWriter      io.WriteCloser
 	countWriter     *countingWriter
 	hasher          HashWriter
-	putDone         chan error
+	put             *putResult
 
 	mu        sync.Mutex
 	committed bool
 	aborted   bool
 	closed    bool
 	writeErr  error
-
-	// putDrainOnce ensures exactly one consumer drains putDone
-	putDrainOnce sync.Once
-	putErr       error // cached error from putDone
 }
 
 func (sw *streamWriter) Write(p []byte) (n int, err error) {
@@ -1400,6 +1475,15 @@ func (sw *streamWriter) Write(p []byte) (n int, err error) {
 	}
 	sw.mu.Unlock()
 
+	// A compressor may buffer p without touching the pipe, so a Put that has
+	// already failed would otherwise go unnoticed until Commit.
+	if finished, putErr := sw.put.poll(); finished && putErr != nil {
+		sw.mu.Lock()
+		sw.writeErr = putErr
+		sw.mu.Unlock()
+		return 0, putErr
+	}
+
 	n, err = sw.compWriter.Write(p)
 	if err != nil {
 		sw.mu.Lock()
@@ -1407,15 +1491,6 @@ func (sw *streamWriter) Write(p []byte) (n int, err error) {
 		sw.mu.Unlock()
 	}
 	return n, err
-}
-
-// drainPutDone ensures exactly one consumer receives from putDone.
-// Safe to call from multiple goroutines; subsequent calls return cached result.
-func (sw *streamWriter) drainPutDone() error {
-	sw.putDrainOnce.Do(func() {
-		sw.putErr = <-sw.putDone
-	})
-	return sw.putErr
 }
 
 func (sw *streamWriter) Commit(ctx context.Context) (*DatasetSnapshot, error) {
@@ -1432,24 +1507,23 @@ func (sw *streamWriter) Commit(ctx context.Context) (*DatasetSnapshot, error) {
 	sw.closed = true
 	sw.mu.Unlock()
 
-	// Close compression writer (flushes final data)
+	// Close compression writer (flushes final data). A Put that already failed
+	// is the root cause of a failing close and is the error reported.
 	if err := sw.compWriter.Close(); err != nil {
-		_ = sw.pipeWriter.CloseWithError(err)
-		_ = sw.drainPutDone() // drain for cleanup; error irrelevant
-		_ = sw.ds.store.Delete(ctx, sw.filePath)
-		return nil, fmt.Errorf("lode: failed to close compressor: %w", err)
+		return nil, finalizeError(sw.put, "compressor", err, func(cause error) {
+			_ = sw.pipeWriter.CloseWithError(cause)
+			_ = sw.put.wait()
+		})
 	}
 
 	// Close pipe writer (signals EOF to store.Put)
 	if err := sw.pipeWriter.Close(); err != nil {
-		_ = sw.drainPutDone() // drain for cleanup; error irrelevant
-		_ = sw.ds.store.Delete(ctx, sw.filePath)
-		return nil, fmt.Errorf("lode: failed to close pipe: %w", err)
+		return nil, finalizeError(sw.put, "pipe", err, func(error) { _ = sw.put.wait() })
 	}
 
-	// Wait for store.Put to complete
-	if err := sw.drainPutDone(); err != nil {
-		_ = sw.ds.store.Delete(ctx, sw.filePath) // best-effort cleanup
+	// Wait for store.Put to complete. A failed Put leaves nothing behind
+	// (CONTRACT_STORAGE §Put), so there is nothing for the writer to clean up.
+	if err := sw.put.wait(); err != nil {
 		return nil, fmt.Errorf("lode: failed to write data: %w", err)
 	}
 
@@ -1476,7 +1550,7 @@ func (sw *streamWriter) Commit(ctx context.Context) (*DatasetSnapshot, error) {
 	return snapshot, nil
 }
 
-func (sw *streamWriter) Abort(ctx context.Context) error {
+func (sw *streamWriter) Abort(_ context.Context) error {
 	sw.mu.Lock()
 	if sw.committed {
 		sw.mu.Unlock()
@@ -1489,14 +1563,11 @@ func (sw *streamWriter) Abort(ctx context.Context) error {
 	sw.aborted = true
 	sw.mu.Unlock()
 
-	// Close pipe with error to cancel store.Put
+	// Close pipe with error to cancel store.Put, then wait for it to return.
+	// The failed Put leaves no object behind (CONTRACT_STORAGE §Put); nothing
+	// to delete.
 	_ = sw.pipeWriter.CloseWithError(errors.New("stream aborted"))
-
-	// Wait for store.Put to complete (safe: drainPutDone uses sync.Once)
-	_ = sw.drainPutDone() // error irrelevant during abort
-
-	// Best-effort cleanup of partial object
-	_ = sw.ds.store.Delete(ctx, sw.filePath)
+	_ = sw.put.wait()
 
 	return nil
 }
@@ -1530,4 +1601,24 @@ func (cw *countingWriter) Write(p []byte) (n int, err error) {
 	n, err = cw.w.Write(p)
 	cw.n += int64(n)
 	return n, err
+}
+
+// timestampRange accumulates the earliest and latest Timestamp over the
+// records it observes; records that are not Timestamped are ignored.
+type timestampRange struct {
+	min, max *time.Time
+}
+
+func (r *timestampRange) observe(record any) {
+	ts, ok := record.(Timestamped)
+	if !ok {
+		return
+	}
+	t := ts.Timestamp()
+	if r.min == nil || t.Before(*r.min) {
+		r.min = &t
+	}
+	if r.max == nil || t.After(*r.max) {
+		r.max = &t
+	}
 }
