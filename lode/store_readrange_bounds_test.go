@@ -47,8 +47,9 @@ func assertReadRangeBounds(t *testing.T, store Store) {
 		t.Fatalf("max length: got %q, want %q", data, content)
 	}
 
-	// A large valid length past EOF returns the available bytes.
-	data, err = store.ReadRange(ctx, "test.txt", 3, 1<<40)
+	// A large valid length past EOF returns the available bytes. Derived from
+	// the platform limit so the case stays valid where int is 32 bits.
+	data, err = store.ReadRange(ctx, "test.txt", 3, maxReadRangeLength/2)
 	if err != nil {
 		t.Fatalf("large length: unexpected error %v", err)
 	}
