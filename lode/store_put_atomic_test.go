@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -84,4 +86,47 @@ func TestFSStore_Put_AllOrNothing(t *testing.T) {
 
 func TestMemoryStore_Put_AllOrNothing(t *testing.T) {
 	assertPutAllOrNothing(t, NewMemory())
+}
+
+// When the partial object cannot be removed, Put reports both the original
+// failure and the removal failure rather than hiding either.
+func TestFSStore_Put_RemoveFailureIsReported(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("directory permissions do not bind root")
+	}
+	root := t.TempDir()
+	store, err := NewFS(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, "locked")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Make the directory read-only once the file exists, so os.Remove fails.
+	r := &lockingReader{dir: dir, inner: newFailingReader("partial")}
+	err = store.Put(t.Context(), "locked/obj", r)
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+	if !errors.Is(err, errReaderBoom) {
+		t.Fatalf("got %v, want the reader error in the chain", err)
+	}
+	if !errors.Is(err, os.ErrPermission) {
+		t.Fatalf("got %v, want the removal failure in the chain", err)
+	}
+}
+
+// lockingReader chmods dir read-only on first Read, after Put has created
+// the file inside it, then delegates to a failing reader.
+type lockingReader struct {
+	dir    string
+	inner  io.Reader
+	locked bool
+}
+
+func (l *lockingReader) Read(p []byte) (int, error) {
+	if !l.locked {
+		l.locked = true
+		_ = os.Chmod(l.dir, 0o555)
+	}
+	return l.inner.Read(p)
 }
