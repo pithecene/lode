@@ -3,7 +3,6 @@ package lode
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -38,7 +37,7 @@ type reader struct {
 //   - WithLayout(l) to use a different layout
 func NewDatasetReader(factory StoreFactory, opts ...Option) (DatasetReader, error) {
 	if factory == nil {
-		return nil, errors.New("lode: store factory is required")
+		return nil, invalidArgument("store factory is required")
 	}
 
 	store, err := factory()
@@ -46,7 +45,7 @@ func NewDatasetReader(factory StoreFactory, opts ...Option) (DatasetReader, erro
 		return nil, fmt.Errorf("lode: store factory failed: %w", err)
 	}
 	if store == nil {
-		return nil, errors.New("lode: store factory returned nil store")
+		return nil, invalidArgument("store factory returned nil store")
 	}
 
 	cfg := &readerConfig{
@@ -60,7 +59,7 @@ func NewDatasetReader(factory StoreFactory, opts ...Option) (DatasetReader, erro
 	}
 
 	if cfg.layout == nil {
-		return nil, errors.New("lode: layout must not be nil")
+		return nil, invalidArgument("layout must not be nil")
 	}
 
 	return &reader{
@@ -81,21 +80,10 @@ func (r *reader) ListDatasets(ctx context.Context, opts DatasetListOptions) ([]D
 
 	seen := make(map[DatasetID]bool)
 	var datasets []DatasetID
-
 	for _, p := range paths {
-		if !r.layout.isManifest(p) {
-			continue
-		}
-
-		datasetID := r.layout.parseDatasetID(p)
-		if datasetID == "" || seen[datasetID] {
-			continue
-		}
-		seen[datasetID] = true
-		datasets = append(datasets, datasetID)
-
-		if opts.Limit > 0 && len(datasets) >= opts.Limit {
-			break
+		if id := r.layout.parseDatasetID(p); id != "" && !seen[id] {
+			seen[id] = true
+			datasets = append(datasets, id)
 		}
 	}
 
@@ -104,7 +92,8 @@ func (r *reader) ListDatasets(ctx context.Context, opts DatasetListOptions) ([]D
 		return nil, ErrNoManifests
 	}
 
-	return datasets, nil
+	sort.Slice(datasets, func(i, j int) bool { return datasets[i] < datasets[j] })
+	return cursorWindow(datasets, func(id DatasetID) bool { return id > opts.StartAfter }, opts.Limit), nil
 }
 
 func (r *reader) ListPartitions(ctx context.Context, dataset DatasetID, opts PartitionListOptions) ([]PartitionRef, error) {
@@ -119,7 +108,7 @@ func (r *reader) ListPartitions(ctx context.Context, dataset DatasetID, opts Par
 
 	// Partition-first layouts put every segment under its partition, so a
 	// partition prefix is a storage prefix (CONTRACT_LAYOUT §Hive-style).
-	prefix := r.layout.segmentsPrefixForPartition(dataset, "")
+	prefix := r.layout.snapshotsPrefixForPartition(dataset, "")
 	if opts.Prefix != "" {
 		prefix = r.layout.partitionsPrefix(dataset, opts.Prefix)
 	}
@@ -157,7 +146,7 @@ func (r *reader) ListPartitions(ctx context.Context, dataset DatasetID, opts Par
 }
 
 func (r *reader) ListManifests(ctx context.Context, dataset DatasetID, partition string, opts ManifestListOptions) ([]ManifestRef, error) {
-	listing, err := r.listManifests(ctx, r.layout.segmentsPrefixForPartition(dataset, partition))
+	listing, err := r.listManifests(ctx, r.layout.snapshotsPrefixForPartition(dataset, partition))
 	if err != nil {
 		return nil, err
 	}
@@ -221,7 +210,7 @@ func (r *reader) listManifests(ctx context.Context, prefix string) (manifestList
 			continue
 		}
 		listing.any = true
-		id := r.layout.parseSegmentID(p)
+		id := r.layout.parseSnapshotID(p)
 		partition := r.layout.parsePartitionFromManifest(p)
 		if id == "" || (r.layout.supportsPartitions() && partition == "") {
 			continue
@@ -328,9 +317,6 @@ func (r *reader) loadManifest(ctx context.Context, manifestPath string) (*Manife
 // -----------------------------------------------------------------------------
 // Manifest Validation
 // -----------------------------------------------------------------------------
-
-// ErrManifestInvalid indicates a manifest failed validation.
-var ErrManifestInvalid = errors.New("invalid manifest")
 
 // manifestValidationError provides details about manifest validation failures.
 type manifestValidationError struct {

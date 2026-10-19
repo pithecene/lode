@@ -120,7 +120,7 @@ func TestFlatLayout_PathGeneration(t *testing.T) {
 		},
 		{
 			name: "segments prefix",
-			got:  fl.segmentsPrefix(dataset),
+			got:  fl.snapshotsPrefix(dataset),
 			want: "myds/",
 		},
 		{
@@ -146,8 +146,8 @@ func TestFlatLayout_PathGeneration(t *testing.T) {
 	if got := fl.parseDatasetID(manifestP); got != dataset {
 		t.Errorf("parseDatasetID: got %q, want %q", got, dataset)
 	}
-	if got := fl.parseSegmentID(manifestP); got != segment {
-		t.Errorf("parseSegmentID: got %q, want %q", got, segment)
+	if got := fl.parseSnapshotID(manifestP); got != segment {
+		t.Errorf("parseSnapshotID: got %q, want %q", got, segment)
 	}
 
 	// Verify non-manifest path

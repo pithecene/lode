@@ -22,7 +22,7 @@ These indicate a requested resource does not exist.
 | Error | Source | Meaning |
 |-------|--------|---------|
 | `lode.ErrNotFound` | Storage | Object path does not exist |
-| `lode.ErrNotFound` | Read API | Dataset or segment not found (no manifests) |
+| `lode.ErrNotFound` | Read API | Dataset or snapshot not found (no manifests) |
 | `lode.ErrNoSnapshots` | Dataset, Volume | Dataset or Volume exists but has no committed snapshots |
 | `lode.ErrNoManifests` | Read API | Storage contains objects but no valid manifests |
 
@@ -101,7 +101,7 @@ These indicate storage-level failures.
 | Error | Source | Meaning |
 |-------|--------|---------|
 | `lode.ErrPathExists` | Storage | Attempt to write to existing path (immutability violation) |
-| `lode.ErrInvalidPath` | Storage | Path escapes storage root or is empty |
+| `lode.ErrInvalidPath` | Storage, Read API | Key is empty or escapes the root; partition prefix is not a canonical relative path; `ReadRange` bounds are negative or overflow |
 | `lode.ErrRangeReadNotSupported` | Read API | Store doesn't support range reads |
 
 **Behavior**:
@@ -130,15 +130,21 @@ Threshold values are adapter-specific; consult adapter documentation.
 
 ### 5. Configuration Errors
 
-These indicate invalid configuration at setup time.
+These indicate a caller-supplied value that cannot be used. They are not
+retry-safe: the call must change.
 
 | Error | Source | Meaning |
 |-------|--------|---------|
-| Error | DatasetReader/Dataset | Nil store provided |
+| `lode.ErrInvalidArgument` | Constructors | Nil store factory, factory returned nil store, nil layout or compressor, empty volume ID, non-positive total length, option value out of range (`WithRetry*`), `NewHiveLayout` without keys, raw blob mode with a partitioning layout |
+| `lode.ErrInvalidArgument` | Dataset | `Write` in raw blob mode without exactly one `[]byte`; `StreamWriteRecords` without a codec |
+| `lode.ErrInvalidArgument` | Volume | Negative offset, non-positive length, empty block, block or read outside the address space, block path not produced by the volume, commit with no new block |
+| `lode.ErrOptionNotValidForDataset`, `…DatasetReader`, `…Volume` | Constructors | Option used with a constructor it does not apply to |
 
 **Behavior**:
-- `NewDatasetReader(nil)` returns error.
-- `NewDataset(id, nil)` returns error.
+- Every argument check above MUST return an error matching
+  `ErrInvalidArgument` under `errors.Is`, and the message MUST name the
+  rejected value.
+- Argument errors are returned before any store call is made.
 
 ---
 

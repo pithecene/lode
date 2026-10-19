@@ -76,13 +76,13 @@ func toVolumeSnapshot(s *snapshot[VolumeSnapshotID, VolumeManifest]) *VolumeSnap
 // NewVolume creates a volume with a fixed total length.
 func NewVolume(id VolumeID, storeFactory StoreFactory, totalLength int64, opts ...Option) (Volume, error) {
 	if storeFactory == nil {
-		return nil, errors.New("lode: store factory must not be nil")
+		return nil, invalidArgument("store factory must not be nil")
 	}
 	if id == "" {
-		return nil, errors.New("lode: volume ID must not be empty")
+		return nil, invalidArgument("volume ID must not be empty")
 	}
 	if totalLength <= 0 {
-		return nil, errors.New("lode: total length must be positive")
+		return nil, invalidArgument("total length must be positive")
 	}
 
 	store, err := storeFactory()
@@ -90,7 +90,7 @@ func NewVolume(id VolumeID, storeFactory StoreFactory, totalLength int64, opts .
 		return nil, fmt.Errorf("lode: failed to create store: %w", err)
 	}
 	if store == nil {
-		return nil, errors.New("lode: store factory returned nil store")
+		return nil, invalidArgument("store factory returned nil store")
 	}
 
 	cfg := &volumeConfig{
@@ -143,7 +143,7 @@ func volumeLatestPointerPath(id VolumeID) string {
 // Staged data is not visible until Commit is called.
 func (v *volume) StageWriteAt(ctx context.Context, offset int64, r io.Reader) (BlockRef, error) {
 	if offset < 0 {
-		return BlockRef{}, errors.New("lode: offset must be non-negative")
+		return BlockRef{}, invalidArgument("offset must be non-negative")
 	}
 
 	data, err := io.ReadAll(r)
@@ -153,10 +153,10 @@ func (v *volume) StageWriteAt(ctx context.Context, offset int64, r io.Reader) (B
 
 	length := int64(len(data))
 	if length == 0 {
-		return BlockRef{}, errors.New("lode: block data must not be empty")
+		return BlockRef{}, invalidArgument("block data must not be empty")
 	}
 	if length > v.totalLength-offset {
-		return BlockRef{}, fmt.Errorf("lode: block exceeds volume address space (offset=%d, length=%d, totalLength=%d)", offset, length, v.totalLength)
+		return BlockRef{}, invalidArgument("block exceeds volume address space (offset=%d, length=%d, totalLength=%d)", offset, length, v.totalLength)
 	}
 
 	blockPath := volumeBlockPath(v.id, offset, length)
@@ -188,24 +188,24 @@ func (v *volume) Commit(ctx context.Context, blocks []BlockRef, metadata Metadat
 		metadata = Metadata{}
 	}
 	if len(blocks) == 0 {
-		return nil, errors.New("lode: commit must include at least one new block")
+		return nil, invalidArgument("commit must include at least one new block")
 	}
 
 	// Validate all new blocks have required fields, conform to fixed layout, and are within bounds.
 	// This is invariant across retries — checked once before the commit loop.
 	for _, b := range blocks {
 		if b.Offset < 0 {
-			return nil, fmt.Errorf("lode: block offset must be non-negative (offset=%d)", b.Offset)
+			return nil, invalidArgument("block offset must be non-negative (offset=%d)", b.Offset)
 		}
 		if b.Length <= 0 {
-			return nil, fmt.Errorf("lode: block length must be positive (length=%d)", b.Length)
+			return nil, invalidArgument("block length must be positive (length=%d)", b.Length)
 		}
 		if b.Length > v.totalLength-b.Offset {
-			return nil, fmt.Errorf("lode: block exceeds volume address space (offset=%d, length=%d, totalLength=%d)", b.Offset, b.Length, v.totalLength)
+			return nil, invalidArgument("block exceeds volume address space (offset=%d, length=%d, totalLength=%d)", b.Offset, b.Length, v.totalLength)
 		}
 		expectedPath := volumeBlockPath(v.id, b.Offset, b.Length)
 		if b.Path != expectedPath {
-			return nil, fmt.Errorf("lode: block path %q does not match expected layout path %q", b.Path, expectedPath)
+			return nil, invalidArgument("block path %q does not match expected layout path %q", b.Path, expectedPath)
 		}
 	}
 
@@ -221,7 +221,7 @@ func (v *volume) Commit(ctx context.Context, blocks []BlockRef, metadata Metadat
 			existing, parentID = parent.Manifest.Blocks, parent.ID
 		}
 		if !hasNewBlock(existing, blocks) {
-			return errors.New("lode: commit must include at least one new block (all provided blocks already committed)")
+			return invalidArgument("commit must include at least one new block (all provided blocks already committed)")
 		}
 
 		// Cumulative block set, sorted by offset for O(log B) lookups: existing
@@ -340,13 +340,13 @@ func validateNoOverlaps(blocks []BlockRef) error {
 // ReadAt reads a fully committed range from a snapshot.
 func (v *volume) ReadAt(ctx context.Context, snapshotID VolumeSnapshotID, offset, length int64) ([]byte, error) {
 	if offset < 0 {
-		return nil, errors.New("lode: offset must be non-negative")
+		return nil, invalidArgument("offset must be non-negative")
 	}
 	if length <= 0 {
-		return nil, errors.New("lode: length must be positive")
+		return nil, invalidArgument("length must be positive")
 	}
 	if length > v.totalLength-offset {
-		return nil, fmt.Errorf("lode: read exceeds volume address space (offset=%d, length=%d, totalLength=%d)", offset, length, v.totalLength)
+		return nil, invalidArgument("read exceeds volume address space (offset=%d, length=%d, totalLength=%d)", offset, length, v.totalLength)
 	}
 
 	snapshot, err := v.Snapshot(ctx, snapshotID)
@@ -360,7 +360,7 @@ func (v *volume) ReadAt(ctx context.Context, snapshotID VolumeSnapshotID, offset
 	}
 
 	if length > math.MaxInt {
-		return nil, fmt.Errorf("lode: read length %d exceeds maximum allocation size", length)
+		return nil, invalidArgument("read length %d exceeds maximum allocation size", length)
 	}
 	result := make([]byte, int(length))
 	for _, b := range covering {

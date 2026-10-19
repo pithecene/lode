@@ -470,6 +470,33 @@ var (
 	// was resolved. Retry-safe: re-read Latest(), merge state, re-commit.
 	// Only returned when the store implements ConditionalWriter.
 	ErrSnapshotConflict = errSnapshotConflict{}
+
+	// ErrInvalidArgument indicates a caller-supplied value that cannot be
+	// used: a nil store factory, a negative offset, a block outside the
+	// volume, a blob write without exactly one []byte. The message names the
+	// value. Not retry-safe; fix the call.
+	ErrInvalidArgument = errInvalidArgument{}
+
+	// ErrInvalidPath indicates a storage path or range the store refuses:
+	// a key that is empty or escapes the root, a partition prefix that is not
+	// a canonical relative path, or a ReadRange with negative or overflowing
+	// bounds.
+	ErrInvalidPath = errInvalidPath{}
+
+	// ErrManifestInvalid indicates a manifest failed validation.
+	ErrManifestInvalid = errManifestInvalid{}
+
+	// ErrOptionNotValidForDataset indicates an option was used with NewDataset
+	// that only applies to NewDatasetReader.
+	ErrOptionNotValidForDataset = errOptionNotValidForDataset{}
+
+	// ErrOptionNotValidForDatasetReader indicates an option was used with
+	// NewDatasetReader that only applies to NewDataset.
+	ErrOptionNotValidForDatasetReader = errOptionNotValidForDatasetReader{}
+
+	// ErrOptionNotValidForVolume indicates an option was used with NewVolume
+	// that only applies to Dataset or DatasetReader.
+	ErrOptionNotValidForVolume = errOptionNotValidForVolume{}
 )
 
 type errNotFound struct{}
@@ -530,6 +557,30 @@ type errSnapshotConflict struct{}
 
 func (errSnapshotConflict) Error() string { return "snapshot conflict: another writer committed" }
 
+type errInvalidArgument struct{}
+
+func (errInvalidArgument) Error() string { return "invalid argument" }
+
+type errInvalidPath struct{}
+
+func (errInvalidPath) Error() string { return "invalid path" }
+
+type errManifestInvalid struct{}
+
+func (errManifestInvalid) Error() string { return "invalid manifest" }
+
+type errOptionNotValidForDataset struct{}
+
+func (errOptionNotValidForDataset) Error() string { return "option not valid for dataset" }
+
+type errOptionNotValidForDatasetReader struct{}
+
+func (errOptionNotValidForDatasetReader) Error() string { return "option not valid for reader" }
+
+type errOptionNotValidForVolume struct{}
+
+func (errOptionNotValidForVolume) Error() string { return "option not valid for volume" }
+
 // -----------------------------------------------------------------------------
 // DatasetReader interface
 // -----------------------------------------------------------------------------
@@ -564,10 +615,17 @@ type ObjectRef struct {
 }
 
 // DatasetListOptions controls dataset listing.
+//
+// Results are returned in lexicographic order of DatasetID. Limit bounds the
+// result set, not the number of store calls.
 type DatasetListOptions struct {
 	// Limit is the maximum number of results to return.
 	// Zero means no limit.
 	Limit int
+
+	// StartAfter resumes listing after this dataset ID (exclusive). The last
+	// result from a previous call is a valid cursor. Empty disables the cursor.
+	StartAfter DatasetID
 }
 
 // PartitionListOptions controls partition listing.

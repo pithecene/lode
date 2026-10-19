@@ -1,7 +1,6 @@
 package lode
 
 import (
-	"errors"
 	"path"
 	"strings"
 )
@@ -13,20 +12,20 @@ type layout interface {
 	supportsDatasetEnumeration() bool
 	supportsPartitions() bool
 	datasetsPrefix() string
-	segmentsPrefix(dataset DatasetID) string
-	segmentsPrefixForPartition(dataset DatasetID, partition string) string
+	snapshotsPrefix(dataset DatasetID) string
+	snapshotsPrefixForPartition(dataset DatasetID, partition string) string
 	// partitionsPrefix returns the storage prefix covering every segment whose
 	// partition path starts with partitionPrefix (a raw string prefix, no
 	// key boundary implied). Only meaningful when supportsPartitions().
 	partitionsPrefix(dataset DatasetID, partitionPrefix string) string
 	isManifest(p string) bool
 	parseDatasetID(manifestPath string) DatasetID
-	parseSegmentID(manifestPath string) DatasetSnapshotID
+	parseSnapshotID(manifestPath string) DatasetSnapshotID
 	parsePartitionFromManifest(manifestPath string) string
 	extractPartitionPath(filePath string) string
-	manifestPath(dataset DatasetID, segment DatasetSnapshotID) string
-	manifestPathInPartition(dataset DatasetID, segment DatasetSnapshotID, partition string) string
-	dataFilePath(dataset DatasetID, segment DatasetSnapshotID, partition, filename string) string
+	manifestPath(dataset DatasetID, snapshot DatasetSnapshotID) string
+	manifestPathInPartition(dataset DatasetID, snapshot DatasetSnapshotID, partition string) string
+	dataFilePath(dataset DatasetID, snapshot DatasetSnapshotID, partition, filename string) string
 	latestPointerPath(dataset DatasetID) string
 
 	// Partitioning (unified with layout)
@@ -228,7 +227,7 @@ func NewDefaultLayout() layout {
 //	// Records will be partitioned by day=<value>/region=<value>
 func NewHiveLayout(keys ...string) (layout, error) {
 	if len(keys) == 0 {
-		return nil, errors.New("NewHiveLayout requires at least one partition key; use NewDefaultLayout for unpartitioned data")
+		return nil, invalidArgument("NewHiveLayout requires at least one partition key; use NewDefaultLayout for unpartitioned data")
 	}
 	return &pathLayout{
 		grammar: pathGrammar{root: datasetsDir, snapshotDir: segmentsDir, partitioned: true},
@@ -258,41 +257,41 @@ func (l *pathLayout) datasetsPrefix() string {
 	return l.grammar.root + "/"
 }
 
-// segmentsPrefix covers every manifest of the dataset. On a partitioned
+// snapshotsPrefix covers every manifest of the dataset. On a partitioned
 // grammar that is the whole dataset directory (partitions sit inside it).
-func (l *pathLayout) segmentsPrefix(dataset DatasetID) string {
+func (l *pathLayout) snapshotsPrefix(dataset DatasetID) string {
 	if l.grammar.partitioned {
 		return l.grammar.datasetDir(dataset) + "/"
 	}
 	return l.grammar.snapshotDirFor(dataset, "") + "/"
 }
 
-func (l *pathLayout) segmentsPrefixForPartition(dataset DatasetID, partition string) string {
+func (l *pathLayout) snapshotsPrefixForPartition(dataset DatasetID, partition string) string {
 	if partition == "" || !l.grammar.partitioned {
-		return l.segmentsPrefix(dataset)
+		return l.snapshotsPrefix(dataset)
 	}
 	return l.grammar.snapshotDirFor(dataset, partition) + "/"
 }
 
 func (l *pathLayout) partitionsPrefix(dataset DatasetID, partitionPrefix string) string {
 	if !l.grammar.partitioned {
-		return l.segmentsPrefix(dataset) // callers guard on supportsPartitions()
+		return l.snapshotsPrefix(dataset) // callers guard on supportsPartitions()
 	}
 	// Raw concatenation, not path.Join: a partial final token such as
 	// "day=2026-10" must stay a prefix of "day=2026-10-18".
 	return join(l.grammar.root, string(dataset), partitionsDir) + "/" + partitionPrefix
 }
 
-func (l *pathLayout) manifestPath(dataset DatasetID, segment DatasetSnapshotID) string {
-	return l.grammar.objectPath(dataset, "", segment, "", manifestFile)
+func (l *pathLayout) manifestPath(dataset DatasetID, snapshot DatasetSnapshotID) string {
+	return l.grammar.objectPath(dataset, "", snapshot, "", manifestFile)
 }
 
-func (l *pathLayout) manifestPathInPartition(dataset DatasetID, segment DatasetSnapshotID, partition string) string {
-	return l.grammar.objectPath(dataset, partition, segment, "", manifestFile)
+func (l *pathLayout) manifestPathInPartition(dataset DatasetID, snapshot DatasetSnapshotID, partition string) string {
+	return l.grammar.objectPath(dataset, partition, snapshot, "", manifestFile)
 }
 
-func (l *pathLayout) dataFilePath(dataset DatasetID, segment DatasetSnapshotID, partition, filename string) string {
-	return l.grammar.objectPath(dataset, partition, segment, dataDir, filename)
+func (l *pathLayout) dataFilePath(dataset DatasetID, snapshot DatasetSnapshotID, partition, filename string) string {
+	return l.grammar.objectPath(dataset, partition, snapshot, dataDir, filename)
 }
 
 func (l *pathLayout) latestPointerPath(dataset DatasetID) string {
@@ -316,7 +315,7 @@ func (l *pathLayout) parseDatasetID(manifestPath string) DatasetID {
 	return l.manifest(manifestPath).dataset
 }
 
-func (l *pathLayout) parseSegmentID(manifestPath string) DatasetSnapshotID {
+func (l *pathLayout) parseSnapshotID(manifestPath string) DatasetSnapshotID {
 	return l.manifest(manifestPath).snapshot
 }
 

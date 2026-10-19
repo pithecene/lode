@@ -392,7 +392,7 @@ Common errors when using streaming APIs:
 - `WithHiveLayout` requires at least one partition key (validated on apply).
 - `ListDatasets` returns `ErrNoManifests` when storage has objects but no manifests.
 - Layouts that do not model datasets (e.g., flat) return `ErrDatasetsNotModeled`.
-- `ListPartitions` results are lexicographic by `Path`; `ListManifests` results are ordered by `(Partition, ID)`. `StartAfter` resumes strictly after a previous result; `Limit` bounds results, not store calls.
+- `ListDatasets` results are lexicographic by ID; `ListPartitions` results are lexicographic by `Path`; `ListManifests` results are ordered by `(Partition, ID)`. `StartAfter` resumes strictly after a previous result; `Limit` bounds results, not store calls.
 - `PartitionListOptions.Prefix` is a raw path prefix (`day=2026-10` matches `day=2026-10-18`) and requires a partition-aware layout (`ErrPartitionPrefixNotSupported` otherwise). It must be a canonical relative fragment — no leading `/`, no `.`/`..`/empty segments — or `ErrInvalidPath` is returned. An empty result under a prefix is not an error.
 - `ReaderAt` may return an `io.ReaderAt` that also implements `io.Closer`; close it when done.
 - Checksums are computed and recorded in manifests only when configured.
@@ -673,7 +673,8 @@ if errors.Is(err, lode.ErrNoSnapshots) {
 | `ErrNoSnapshots` | Dataset or Volume has no committed snapshots | Dataset, Volume |
 | `ErrNoManifests` | Storage has objects but no valid manifests | DatasetReader |
 | `ErrPathExists` | Write to existing path (immutability violation) | Storage |
-| `ErrInvalidPath` | Path escapes root or has invalid parameters | Storage |
+| `ErrInvalidPath` | Key escapes root or is empty; prefix not canonical; bad `ReadRange` bounds | Storage, DatasetReader |
+| `ErrInvalidArgument` | Caller-supplied value cannot be used (nil factory, bad offset, blob write shape, …) | Dataset, DatasetReader, Volume |
 | `ErrDatasetsNotModeled` | Layout doesn't support dataset enumeration | DatasetReader |
 | `ErrPartitionPrefixNotSupported` | `Prefix` set on a layout without partitions | DatasetReader |
 | `ErrManifestInvalid` | Manifest fails validation | DatasetReader |
@@ -700,6 +701,7 @@ if errors.Is(err, lode.ErrNoSnapshots) {
 
 **Non-retry (configuration/logic error):**
 - `ErrDatasetsNotModeled` — reconfigure with different layout
+- `ErrInvalidArgument` — fix the call; the message names the value
 - `ErrManifestInvalid` — data corruption, investigate source
 - `ErrPathExists` — logic error (double-write attempt)
 - Component mismatch — reconfigure dataset or use matching snapshot

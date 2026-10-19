@@ -38,18 +38,6 @@ type Option interface {
 	applyVolume(*volumeConfig) error
 }
 
-// ErrOptionNotValidForDatasetReader indicates an option was used with NewDatasetReader
-// that only applies to NewDataset.
-var ErrOptionNotValidForDatasetReader = errors.New("option not valid for reader")
-
-// ErrOptionNotValidForDataset indicates an option was used with NewDataset
-// that only applies to NewDatasetReader.
-var ErrOptionNotValidForDataset = errors.New("option not valid for dataset")
-
-// ErrOptionNotValidForVolume indicates an option was used with NewVolume
-// that only applies to Dataset or DatasetReader.
-var ErrOptionNotValidForVolume = errors.New("option not valid for volume")
-
 // layoutOption implements Option for WithLayout.
 type layoutOption struct {
 	layout layout
@@ -225,7 +213,7 @@ func WithRetryCount(n int) Option {
 		name: "WithRetryCount",
 		apply: func(r *retryConfig) error {
 			if n < 0 {
-				return errors.New("WithRetryCount: n must be non-negative")
+				return invalidArgument("WithRetryCount: n must be non-negative")
 			}
 			r.maxAttempts = n
 			return nil
@@ -241,7 +229,7 @@ func WithRetryBaseDelay(d time.Duration) Option {
 		name: "WithRetryBaseDelay",
 		apply: func(r *retryConfig) error {
 			if d <= 0 {
-				return errors.New("WithRetryBaseDelay: delay must be positive")
+				return invalidArgument("WithRetryBaseDelay: delay must be positive")
 			}
 			r.baseDelay = d
 			return nil
@@ -256,7 +244,7 @@ func WithRetryMaxDelay(d time.Duration) Option {
 		name: "WithRetryMaxDelay",
 		apply: func(r *retryConfig) error {
 			if d <= 0 {
-				return errors.New("WithRetryMaxDelay: delay must be positive")
+				return invalidArgument("WithRetryMaxDelay: delay must be positive")
 			}
 			r.maxDelay = d
 			return nil
@@ -272,7 +260,7 @@ func WithRetryJitter(j float64) Option {
 		name: "WithRetryJitter",
 		apply: func(r *retryConfig) error {
 			if j < 0 || j > 1 {
-				return errors.New("WithRetryJitter: jitter must be between 0.0 and 1.0")
+				return invalidArgument("WithRetryJitter: jitter must be between 0.0 and 1.0")
 			}
 			r.jitter = j
 			return nil
@@ -293,7 +281,7 @@ func WithRetryObserver(fn func(attempt int)) Option {
 		name: "WithRetryObserver",
 		apply: func(r *retryConfig) error {
 			if fn == nil {
-				return errors.New("WithRetryObserver: fn must not be nil")
+				return invalidArgument("WithRetryObserver: fn must not be nil")
 			}
 			r.observer = fn
 			return nil
@@ -326,7 +314,7 @@ type datasetKind struct {
 	layout layout
 }
 
-func (k datasetKind) snapshotsPrefix() string { return k.layout.segmentsPrefix(k.id) }
+func (k datasetKind) snapshotsPrefix() string { return k.layout.snapshotsPrefix(k.id) }
 func (k datasetKind) pointerPath() string     { return k.layout.latestPointerPath(k.id) }
 func (k datasetKind) manifestPath(id DatasetSnapshotID) string {
 	return k.layout.manifestPath(k.id, id)
@@ -336,7 +324,7 @@ func (k datasetKind) parseManifest(p string) (DatasetSnapshotID, bool) {
 	if !k.layout.isManifest(p) {
 		return "", false
 	}
-	id := k.layout.parseSegmentID(p)
+	id := k.layout.parseSnapshotID(p)
 	return id, id != ""
 }
 
@@ -369,7 +357,7 @@ func toDatasetSnapshot(s *snapshot[DatasetSnapshotID, Manifest]) *DatasetSnapsho
 //   - WithChecksum(c) to enable file checksums
 func NewDataset(id DatasetID, factory StoreFactory, opts ...Option) (Dataset, error) {
 	if factory == nil {
-		return nil, errors.New("lode: store factory is required")
+		return nil, invalidArgument("store factory is required")
 	}
 
 	store, err := factory()
@@ -377,7 +365,7 @@ func NewDataset(id DatasetID, factory StoreFactory, opts ...Option) (Dataset, er
 		return nil, fmt.Errorf("lode: store factory failed: %w", err)
 	}
 	if store == nil {
-		return nil, errors.New("lode: store factory returned nil store")
+		return nil, invalidArgument("store factory returned nil store")
 	}
 
 	cfg := &datasetConfig{
@@ -394,14 +382,14 @@ func NewDataset(id DatasetID, factory StoreFactory, opts ...Option) (Dataset, er
 	}
 
 	if cfg.layout == nil {
-		return nil, errors.New("lode: layout must not be nil")
+		return nil, invalidArgument("layout must not be nil")
 	}
 	if cfg.compressor == nil {
-		return nil, errors.New("lode: compressor must not be nil")
+		return nil, invalidArgument("compressor must not be nil")
 	}
 	// Raw blob mode (no codec) cannot use partitioning - there are no record fields to extract keys from
 	if cfg.codec == nil && !cfg.layout.partitioner().isNoop() {
-		return nil, errors.New("lode: raw blob mode (no codec) requires a layout with noop partitioner")
+		return nil, invalidArgument("raw blob mode (no codec) requires a layout with noop partitioner")
 	}
 
 	return &dataset{
@@ -526,7 +514,7 @@ func (d *dataset) StreamWriteRecords(ctx context.Context, records RecordIterator
 		return nil, ErrNilIterator
 	}
 	if d.codec == nil {
-		return nil, errors.New("lode: StreamWriteRecords requires a codec")
+		return nil, invalidArgument("StreamWriteRecords requires a codec")
 	}
 	streamCodec, ok := d.codec.(StreamingRecordCodec)
 	if !ok {

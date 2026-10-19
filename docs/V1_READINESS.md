@@ -76,7 +76,7 @@ as `(private)` instead of by number.
 > Summary: —
 > Issue: #___
 
-- [ ] No new sentinel errors added for 4+ weeks after first downstream integration
+- [ ] No new sentinel errors added for 4+ weeks after first downstream integration (freeze window reset: v0.10.0 added `ErrInvalidArgument`)
 
 > **Evidence:** _not yet recorded_
 > Date: — | Observer: — | Project: —

@@ -15,9 +15,6 @@ import (
 	"github.com/pithecene-io/lode/internal/storepath"
 )
 
-// ErrInvalidPath indicates a path that would escape the storage root.
-var ErrInvalidPath = errors.New("invalid path: escapes storage root")
-
 // maxReadRangeLength is the largest ReadRange length a store accepts
 // (storepath.MaxRangeLength): what a []byte can address on this platform.
 const maxReadRangeLength = storepath.MaxRangeLength

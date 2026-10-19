@@ -116,6 +116,7 @@ This layer understands Lode’s layout and semantics but performs **no interpret
 Store listing order is unspecified (CONTRACT_STORAGE §List), so the read API
 imposes its own:
 
+- `ListDatasets` MUST return results in lexicographic order of `DatasetID`.
 - `ListPartitions` MUST return results in lexicographic order of
   `PartitionRef.Path`.
 - `ListManifests` MUST return results ordered by `(Partition, ID)`,

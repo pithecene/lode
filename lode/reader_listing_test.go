@@ -426,3 +426,78 @@ func TestDatasetReader_ListManifests_SmallestParsedPartition_NotPathOrder(t *tes
 		}
 	}
 }
+
+// writeDatasets writes one valid manifest per dataset ID into a memory store
+// and returns a reader over it.
+func writeDatasets(t *testing.T, ids ...DatasetID) DatasetReader {
+	t.Helper()
+	store := NewMemory()
+	for _, id := range ids {
+		m := validTestManifest()
+		m.DatasetID = id
+		writeManifest(t.Context(), t, store, m)
+	}
+	reader, err := NewDatasetReader(NewMemoryFactoryFrom(store))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return reader
+}
+
+// TestDatasetReader_ListDatasets_Sorted verifies results are lexicographic by
+// ID regardless of write or store order.
+func TestDatasetReader_ListDatasets_Sorted(t *testing.T) {
+	reader := writeDatasets(t, "ds-b", "ds-c", "ds-a")
+
+	got, err := reader.ListDatasets(t.Context(), DatasetListOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []DatasetID{"ds-a", "ds-b", "ds-c"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+	}
+}
+
+// TestDatasetReader_ListDatasets_StartAfter_Pages walks the listing one
+// dataset at a time using the last result as the cursor.
+func TestDatasetReader_ListDatasets_StartAfter_Pages(t *testing.T) {
+	reader := writeDatasets(t, "ds-b", "ds-c", "ds-a")
+
+	var pages [][]DatasetID
+	opts := DatasetListOptions{Limit: 1}
+	for {
+		page, err := reader.ListDatasets(t.Context(), opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(page) == 0 {
+			break
+		}
+		pages = append(pages, page)
+		opts.StartAfter = page[len(page)-1]
+	}
+	want := []DatasetID{"ds-a", "ds-b", "ds-c"}
+	if len(pages) != len(want) {
+		t.Fatalf("got pages %v, want one per dataset %v", pages, want)
+	}
+	for i, page := range pages {
+		if len(page) != 1 || page[0] != want[i] {
+			t.Errorf("page %d: got %v, want [%s]", i, page, want[i])
+		}
+	}
+
+	// A cursor matching no element resumes at the next greater ID.
+	got, err := reader.ListDatasets(t.Context(), DatasetListOptions{StartAfter: "ds-ab"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0] != "ds-b" || got[1] != "ds-c" {
+		t.Errorf("StartAfter ds-ab: got %v, want [ds-b ds-c]", got)
+	}
+}
