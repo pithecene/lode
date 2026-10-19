@@ -76,18 +76,27 @@ func (f *fsStore) Put(_ context.Context, path string, r io.Reader) error {
 		return fmt.Errorf("lode: fs put: %w", err)
 	}
 	if _, err = io.Copy(file, r); err != nil {
-		// Put is all-or-nothing (CONTRACT_STORAGE §Put): this call created the
-		// file, so this call removes it. The caller never has to guess whether
-		// a failed Put left an object behind, or whose it is. Close before
-		// removing (an open file cannot be removed on every platform); a failed
-		// removal is reported alongside the original error, never hidden.
+		// Close before removing: an open file cannot be removed on every platform.
 		_ = file.Close()
-		if rmErr := os.Remove(fullPath); rmErr != nil {
-			return errors.Join(fmt.Errorf("lode: fs put: %w", err), fmt.Errorf("lode: fs put: remove partial object: %w", rmErr))
-		}
-		return fmt.Errorf("lode: fs put: %w", err)
+		return failPut(fullPath, err)
 	}
-	return file.Close()
+	// A delayed write error surfaces at Close; the object is still incomplete.
+	if err := file.Close(); err != nil {
+		return failPut(fullPath, err)
+	}
+	return nil
+}
+
+// failPut finishes a Put that created the object and then failed: it removes
+// the object so the path is as it was (CONTRACT_STORAGE §Put all-or-nothing)
+// and returns the cause, joined with the removal error if that fails too.
+// The caller never has to guess whether a failed Put left an object behind.
+func failPut(fullPath string, cause error) error {
+	wrapped := fmt.Errorf("lode: fs put: %w", cause)
+	if rmErr := os.Remove(fullPath); rmErr != nil {
+		return errors.Join(wrapped, fmt.Errorf("lode: fs put: remove partial object: %w", rmErr))
+	}
+	return wrapped
 }
 
 func (f *fsStore) Get(_ context.Context, path string) (io.ReadCloser, error) {
