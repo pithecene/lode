@@ -1,6 +1,6 @@
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/lode-splash-dark.svg">
-  <img alt="Lode — a layered seam of ore running through rock: the strata are immutable snapshots, the breaks are partitions, the bright line is the latest pointer" src="docs/assets/lode-splash-light.svg" width="100%">
+  <img alt="Lode — an engraved geological cross-section: folded strata as fine contour lines, two faults offsetting them, and one luminous ore vein following the crest of the fold" src="docs/assets/lode-splash-light.svg" width="100%">
 </picture>
 
 # Lode
