@@ -906,14 +906,13 @@ func (d *dataset) StreamWriteRecords(ctx context.Context, records RecordIterator
 
 	// Close pipe (signals EOF to store.Put)
 	if err := pw.Close(); err != nil {
-		<-putDone
-		_ = d.store.Delete(ctx, filePath)
+		deleteUnlessForeign(ctx, d.store, filePath, <-putDone)
 		return nil, fmt.Errorf("lode: failed to close pipe: %w", err)
 	}
 
 	// Wait for store.Put to complete
 	if err := <-putDone; err != nil {
-		_ = d.store.Delete(ctx, filePath)
+		deleteUnlessForeign(ctx, d.store, filePath, err)
 		return nil, fmt.Errorf("lode: failed to write data: %w", err)
 	}
 
@@ -945,10 +944,22 @@ func cleanupStreamWrite(ctx context.Context, store Store, filePath string, encod
 	if pw != nil {
 		_ = pw.CloseWithError(cause)
 	}
+	var putErr error
 	if putDone != nil {
-		<-putDone
+		putErr = <-putDone
 	}
-	_ = store.Delete(ctx, filePath)
+	deleteUnlessForeign(ctx, store, filePath, putErr)
+}
+
+// deleteUnlessForeign removes a partial data object after a failed stream.
+// A Put that reported ErrPathExists never created the object: it belongs to
+// another writer, and data files are immutable (CONTRACT_CORE), so cleanup
+// must leave it alone.
+func deleteUnlessForeign(ctx context.Context, store Store, path string, putErr error) {
+	if errors.Is(putErr, ErrPathExists) {
+		return
+	}
+	_ = store.Delete(ctx, path)
 }
 
 // commitWithRetry resolves the parent, builds a manifest, and commits.
@@ -1445,21 +1456,19 @@ func (sw *streamWriter) Commit(ctx context.Context) (*DatasetSnapshot, error) {
 	// Close compression writer (flushes final data)
 	if err := sw.compWriter.Close(); err != nil {
 		_ = sw.pipeWriter.CloseWithError(err)
-		_ = sw.drainPutDone() // drain for cleanup; error irrelevant
-		_ = sw.ds.store.Delete(ctx, sw.filePath)
+		deleteUnlessForeign(ctx, sw.ds.store, sw.filePath, sw.drainPutDone())
 		return nil, fmt.Errorf("lode: failed to close compressor: %w", err)
 	}
 
 	// Close pipe writer (signals EOF to store.Put)
 	if err := sw.pipeWriter.Close(); err != nil {
-		_ = sw.drainPutDone() // drain for cleanup; error irrelevant
-		_ = sw.ds.store.Delete(ctx, sw.filePath)
+		deleteUnlessForeign(ctx, sw.ds.store, sw.filePath, sw.drainPutDone())
 		return nil, fmt.Errorf("lode: failed to close pipe: %w", err)
 	}
 
 	// Wait for store.Put to complete
 	if err := sw.drainPutDone(); err != nil {
-		_ = sw.ds.store.Delete(ctx, sw.filePath) // best-effort cleanup
+		deleteUnlessForeign(ctx, sw.ds.store, sw.filePath, err) // best-effort cleanup
 		return nil, fmt.Errorf("lode: failed to write data: %w", err)
 	}
 
@@ -1502,11 +1511,10 @@ func (sw *streamWriter) Abort(ctx context.Context) error {
 	// Close pipe with error to cancel store.Put
 	_ = sw.pipeWriter.CloseWithError(errors.New("stream aborted"))
 
-	// Wait for store.Put to complete (safe: drainPutDone uses sync.Once)
-	_ = sw.drainPutDone() // error irrelevant during abort
-
-	// Best-effort cleanup of partial object
-	_ = sw.ds.store.Delete(ctx, sw.filePath)
+	// Wait for store.Put to complete (safe: drainPutDone uses sync.Once),
+	// then best-effort cleanup of the partial object — unless Put reported
+	// the path already existed, in which case the object is not ours.
+	deleteUnlessForeign(ctx, sw.ds.store, sw.filePath, sw.drainPutDone())
 
 	return nil
 }
