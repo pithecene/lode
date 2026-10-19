@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **Filesystem `List` prefix semantics**: `NewFS` treated the prefix as a directory, so a partial final token (`day=2024-01`) listed nothing while the memory and S3 stores matched it as a string prefix. All stores now agree; `CONTRACT_STORAGE.md` §List states the string-prefix rule.
+- **`Put` is all-or-nothing**: `NewFS` left a partial object behind when the supplied reader failed mid-copy; it now removes what it created. `CONTRACT_STORAGE.md` §Put makes the rule normative for every adapter: on error the path is left as it was, callers never clean up after a failed `Put`, and a path whose `Put` returned `ErrPathExists` belongs to another writer.
 
 ---
 

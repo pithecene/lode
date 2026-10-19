@@ -24,6 +24,20 @@ It is authoritative for any implementation of the `Store` interface.
 - If an existing path is detected, MUST return `ErrPathExists`.
 - Detection mechanism and guarantee vary by upload path (see table below).
 - On paths with TOCTOU windows, existence may not be detected under concurrent writers.
+- MUST be all-or-nothing wherever the outcome is known to the adapter: on an
+  error the adapter can observe (including an error from the supplied
+  reader), the path MUST be left as it was before the call, and a Put that
+  created an object and then failed MUST remove it. If that removal itself
+  fails, Put MUST return an error that reports both failures.
+- A remote backend can accept an object and then lose the response (network
+  or context timeout). The adapter MUST NOT attempt to reconcile such an
+  indeterminate outcome by deleting the key: it cannot know whether the object
+  there is its own. The object is then an orphan — referenced by no manifest,
+  invisible to readers — and is reclaimed by the retention sweep
+  (`CONTRACT_RETENTION.md`).
+- Callers never clean up after a failed Put: they MUST NOT touch a path whose
+  Put returned an error. A path whose Put returned `ErrPathExists` belongs to
+  another writer.
 
 #### Put Upload Paths
 

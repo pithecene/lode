@@ -75,12 +75,28 @@ func (f *fsStore) Put(_ context.Context, path string, r io.Reader) error {
 		}
 		return fmt.Errorf("lode: fs put: %w", err)
 	}
-	defer closer(file)()
-
 	if _, err = io.Copy(file, r); err != nil {
-		return fmt.Errorf("lode: fs put: %w", err)
+		// Close before removing: an open file cannot be removed on every platform.
+		_ = file.Close()
+		return failPut(fullPath, err)
+	}
+	// A delayed write error surfaces at Close; the object is still incomplete.
+	if err := file.Close(); err != nil {
+		return failPut(fullPath, err)
 	}
 	return nil
+}
+
+// failPut finishes a Put that created the object and then failed: it removes
+// the object so the path is as it was (CONTRACT_STORAGE §Put all-or-nothing)
+// and returns the cause, joined with the removal error if that fails too.
+// The caller never has to guess whether a failed Put left an object behind.
+func failPut(fullPath string, cause error) error {
+	wrapped := fmt.Errorf("lode: fs put: %w", cause)
+	if rmErr := os.Remove(fullPath); rmErr != nil {
+		return errors.Join(wrapped, fmt.Errorf("lode: fs put: remove partial object: %w", rmErr))
+	}
+	return wrapped
 }
 
 func (f *fsStore) Get(_ context.Context, path string) (io.ReadCloser, error) {
