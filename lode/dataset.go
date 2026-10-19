@@ -838,17 +838,30 @@ func (d *dataset) StreamWriteRecords(ctx context.Context, records RecordIterator
 
 	// Stream records through encoder, tracking count and timestamps
 	var rowCount int64
-	var minTs, maxTs *time.Time
+	var ts timestampRange
 
-	for records.Next() {
-		record := records.Record()
-
-		// A buffering compressor can absorb records without touching the pipe,
-		// so a Put that has already failed must be noticed here rather than
-		// after an iterator that may never end.
+	// A buffering compressor can absorb records without touching the pipe, so a
+	// Put that has already failed must be noticed before every iterator call
+	// (which may block) and before accepting each record — never only after an
+	// iterator that may never end.
+	putFailed := func() error {
 		if finished, putErr := put.poll(); finished && putErr != nil {
 			cleanupStreamWrite(encoder, compWriter, pw, put, putErr)
-			return nil, fmt.Errorf("lode: failed to write data: %w", putErr)
+			return fmt.Errorf("lode: failed to write data: %w", putErr)
+		}
+		return nil
+	}
+	if err := putFailed(); err != nil {
+		return nil, err
+	}
+	for records.Next() {
+		// Before and after Record(), which a producer-backed iterator may block in.
+		if err := putFailed(); err != nil {
+			return nil, err
+		}
+		record := records.Record()
+		if err := putFailed(); err != nil {
+			return nil, err
 		}
 
 		if err := encoder.WriteRecord(record); err != nil {
@@ -857,30 +870,23 @@ func (d *dataset) StreamWriteRecords(ctx context.Context, records RecordIterator
 		}
 
 		rowCount++
+		ts.observe(record)
 
-		// Track timestamps from Timestamped records
-		if ts, ok := record.(Timestamped); ok {
-			t := ts.Timestamp()
-			if minTs == nil || t.Before(*minTs) {
-				minTs = &t
-			}
-			if maxTs == nil || t.After(*maxTs) {
-				maxTs = &t
-			}
+		// Before the next (possibly blocking) call into the iterator.
+		if err := putFailed(); err != nil {
+			return nil, err
 		}
 	}
 
 	// A Put that failed while the iterator was finishing is the root cause and
 	// takes precedence over whatever the iterator reports. Check before calling
 	// Err, which may block, and again after, since Put may complete during it.
-	if finished, putErr := put.poll(); finished && putErr != nil {
-		cleanupStreamWrite(encoder, compWriter, pw, put, putErr)
-		return nil, fmt.Errorf("lode: failed to write data: %w", putErr)
+	if err := putFailed(); err != nil {
+		return nil, err
 	}
 	iterErr := records.Err()
-	if finished, putErr := put.poll(); finished && putErr != nil {
-		cleanupStreamWrite(encoder, compWriter, pw, put, putErr)
-		return nil, fmt.Errorf("lode: failed to write data: %w", putErr)
+	if err := putFailed(); err != nil {
+		return nil, err
 	}
 	if iterErr != nil {
 		cleanupStreamWrite(encoder, compWriter, pw, put, iterErr)
@@ -930,7 +936,7 @@ func (d *dataset) StreamWriteRecords(ctx context.Context, records RecordIterator
 
 	// Commit with retry. Data file is already persisted; on conflict we
 	// only re-parent the manifest and retry the pointer CAS.
-	return d.commitWithRetry(ctx, snapshotID, []FileRef{fileRef}, []string{""}, metadata, rowCount, d.codec.Name(), minTs, maxTs, filePath)
+	return d.commitWithRetry(ctx, snapshotID, []FileRef{fileRef}, []string{""}, metadata, rowCount, d.codec.Name(), ts.min, ts.max, filePath)
 }
 
 // cleanupStreamWrite tears down the streaming write pipeline on error and
@@ -1589,4 +1595,24 @@ func (cw *countingWriter) Write(p []byte) (n int, err error) {
 	n, err = cw.w.Write(p)
 	cw.n += int64(n)
 	return n, err
+}
+
+// timestampRange accumulates the earliest and latest Timestamp over the
+// records it observes; records that are not Timestamped are ignored.
+type timestampRange struct {
+	min, max *time.Time
+}
+
+func (r *timestampRange) observe(record any) {
+	ts, ok := record.(Timestamped)
+	if !ok {
+		return
+	}
+	t := ts.Timestamp()
+	if r.min == nil || t.Before(*r.min) {
+		r.min = &t
+	}
+	if r.max == nil || t.After(*r.max) {
+		r.max = &t
+	}
 }
