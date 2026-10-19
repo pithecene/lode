@@ -1001,7 +1001,7 @@ func (d *dataset) commitWithRetry(
 
 		manifest := d.buildManifest(snapshotID, parentID, metadata, files, rowCount, codec, minTs, maxTs)
 
-		result, err := d.commitSnapshot(ctx, expectedPointer, snapshotID, manifest, partitionKeys, "")
+		result, err := d.commitSnapshot(ctx, expectedPointer, snapshotID, manifest, partitionKeys)
 		if err == nil {
 			return result, nil
 		}
@@ -1038,24 +1038,18 @@ func (d *dataset) partitionRecords(records []any) (map[string][]any, error) {
 }
 
 // commitSnapshot writes the latest pointer and manifest, updates in-memory
-// state, and returns the completed snapshot. If cleanupPath is non-empty,
-// the data file is deleted on error (best-effort).
-func (d *dataset) commitSnapshot(ctx context.Context, expectedPointer string, snapshotID DatasetSnapshotID, manifest *Manifest, partitionKeys []string, cleanupPath string) (*DatasetSnapshot, error) {
+// state, and returns the completed snapshot. Data-file cleanup on failure is
+// the caller's responsibility (see cleanupDataFile in the Write retry loop).
+func (d *dataset) commitSnapshot(ctx context.Context, expectedPointer string, snapshotID DatasetSnapshotID, manifest *Manifest, partitionKeys []string) (*DatasetSnapshot, error) {
 	// Pointer must be written before manifest to prevent stale-but-existing
 	// pointers on cold start. If this fails, no manifest is written and the
 	// commit is aborted. A pointer referencing a not-yet-existing snapshot is
 	// harmless (Exists check falls through to scan on the next cold start).
 	if err := d.writeLatestPointer(ctx, expectedPointer, snapshotID); err != nil {
-		if cleanupPath != "" {
-			_ = d.store.Delete(ctx, cleanupPath)
-		}
 		return nil, fmt.Errorf("lode: failed to update latest pointer: %w", err)
 	}
 
 	if err := d.writeManifests(ctx, snapshotID, manifest, partitionKeys); err != nil {
-		if cleanupPath != "" {
-			_ = d.store.Delete(ctx, cleanupPath)
-		}
 		return nil, fmt.Errorf("lode: failed to write manifest: %w", err)
 	}
 	d.lastSnapshotID = snapshotID
