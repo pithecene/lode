@@ -840,15 +840,25 @@ func (d *dataset) StreamWriteRecords(ctx context.Context, records RecordIterator
 	var rowCount int64
 	var minTs, maxTs *time.Time
 
+	// A buffering compressor can absorb records without touching the pipe, so a
+	// Put that has already failed must be noticed before every iterator call
+	// (which may block) and before accepting each record — never only after an
+	// iterator that may never end.
+	putFailed := func() error {
+		if finished, putErr := put.poll(); finished && putErr != nil {
+			cleanupStreamWrite(encoder, compWriter, pw, put, putErr)
+			return fmt.Errorf("lode: failed to write data: %w", putErr)
+		}
+		return nil
+	}
+	if err := putFailed(); err != nil {
+		return nil, err
+	}
 	for records.Next() {
 		record := records.Record()
 
-		// A buffering compressor can absorb records without touching the pipe,
-		// so a Put that has already failed must be noticed here rather than
-		// after an iterator that may never end.
-		if finished, putErr := put.poll(); finished && putErr != nil {
-			cleanupStreamWrite(encoder, compWriter, pw, put, putErr)
-			return nil, fmt.Errorf("lode: failed to write data: %w", putErr)
+		if err := putFailed(); err != nil {
+			return nil, err
 		}
 
 		if err := encoder.WriteRecord(record); err != nil {
@@ -868,19 +878,22 @@ func (d *dataset) StreamWriteRecords(ctx context.Context, records RecordIterator
 				maxTs = &t
 			}
 		}
+
+		// Before the next (possibly blocking) call into the iterator.
+		if err := putFailed(); err != nil {
+			return nil, err
+		}
 	}
 
 	// A Put that failed while the iterator was finishing is the root cause and
 	// takes precedence over whatever the iterator reports. Check before calling
 	// Err, which may block, and again after, since Put may complete during it.
-	if finished, putErr := put.poll(); finished && putErr != nil {
-		cleanupStreamWrite(encoder, compWriter, pw, put, putErr)
-		return nil, fmt.Errorf("lode: failed to write data: %w", putErr)
+	if err := putFailed(); err != nil {
+		return nil, err
 	}
 	iterErr := records.Err()
-	if finished, putErr := put.poll(); finished && putErr != nil {
-		cleanupStreamWrite(encoder, compWriter, pw, put, putErr)
-		return nil, fmt.Errorf("lode: failed to write data: %w", putErr)
+	if err := putFailed(); err != nil {
+		return nil, err
 	}
 	if iterErr != nil {
 		cleanupStreamWrite(encoder, compWriter, pw, put, iterErr)
