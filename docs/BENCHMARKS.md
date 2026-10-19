@@ -16,8 +16,11 @@ Both: linux/amd64, Go 1.25, Docker-local S3 backends.
 ### In-memory
 
 Workstation, v0.10.0 (`99cb592`, 2026-10-19), `-count=10`, benchstat medians.
-The CI rows are the last CI run recorded (v0.8.0) and are kept for the
-cross-machine ratio only.
+The CI rows are historical values from the v0.8.0 run and are not comparable
+with the v0.10.0 workstation rows (the same workstation benchmark moved from
+135,400 to 183,200 ns/op between those revisions as the benchmark and the
+write path changed); a cross-machine ratio needs both machines on one
+revision, which the next CI benchmark run will provide.
 
 | Benchmark | Machine | ns/op | B/op | allocs/op |
 |-----------|---------|------:|-----:|----------:|
