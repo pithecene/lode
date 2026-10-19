@@ -11,9 +11,12 @@ import (
 )
 
 // Key normalizes an object key: cleaned, slash-separated, no leading slash.
-// It rejects the empty key, "." and anything that would escape the root.
+// It rejects the empty key, ".", a backslash anywhere (keys are
+// slash-separated on every platform, so a backslash is never a spelling of a
+// parent directory that one adapter sees and another does not) and anything
+// that would escape the root.
 func Key(key string) (string, bool) {
-	if key == "" {
+	if key == "" || strings.ContainsRune(key, '\\') {
 		return "", false
 	}
 	cleaned := clean(key)
@@ -29,6 +32,9 @@ func Key(key string) (string, bool) {
 func Prefix(prefix string) (string, bool) {
 	if prefix == "" {
 		return "", true
+	}
+	if strings.ContainsRune(prefix, '\\') {
+		return "", false
 	}
 	cleaned := clean(prefix)
 	if escapes(cleaned) {

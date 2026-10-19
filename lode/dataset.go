@@ -400,7 +400,7 @@ func NewDataset(id DatasetID, factory StoreFactory, opts ...Option) (Dataset, er
 		codec:      cfg.codec,
 		checksum:   cfg.checksum,
 		retry:      cfg.retry,
-		history:    newHistory(store, datasetKind{id: id, layout: cfg.layout}),
+		history:    newHistory(store, datasetKind{id: id, layout: cfg.layout}, "manifest"),
 	}, nil
 }
 
