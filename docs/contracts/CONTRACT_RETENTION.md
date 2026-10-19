@@ -85,9 +85,18 @@ manifest of the dataset.
 
 ### Unreferenced object
 
-A data object under the dataset's data prefixes that no existing manifest
-references. Produced by aborted streams (see PUBLIC_API.md §Cleanup Behavior)
+A data object under one of the dataset's `segments/<snapshot ID>/data/`
+prefixes (canonical or per-partition) whose snapshot ID names no existing
+manifest. Produced by aborted streams (see PUBLIC_API.md §Cleanup Behavior)
 and by expiries interrupted after the tombstone was written.
+
+Reclaim granularity is the **snapshot, not the file**: an object under a live
+snapshot's data prefix is never unreferenced, whether or not that snapshot's
+`Files[]` lists it. PUBLIC_API.md presents a file inventory kept in
+`Manifest.Metadata` as a correct pattern, so `Files[]` membership cannot be
+the test for liveness. Objects anywhere else under the dataset (partition-level
+sidecars, pointers, tombstones) are outside the sweep's scan and are never
+touched.
 
 ---
 
@@ -268,10 +277,14 @@ MUST run at most one retention operation per dataset at a time.
    in the reference union in step 2 and none of its objects are reclaimed in
    this run. A manifest that can still be loaded always protects the objects
    it describes.
-2. **Reclaim orphans.** List data objects under the dataset's data prefixes,
-   subtract the union of `Files[]` across all existing manifests (settled
-   snapshots have none left), and report or delete the remainder subject to
-   the grace period.
+2. **Reclaim orphans.** List data objects under the dataset's
+   `segments/<snapshot ID>/data/` prefixes, group them by the snapshot ID in
+   their path, and drop every group whose snapshot ID has an existing manifest
+   (settled snapshots have none left). The remainder — objects of snapshots
+   that were never committed or have been settled — is reported or deleted
+   subject to the grace period. `Files[]` is consulted only to delete a
+   settled snapshot's objects in step 1; it never decides reclaim inside a
+   live snapshot (§Unreferenced object).
 
 ### Grace period
 
@@ -394,17 +407,20 @@ contract above is agnostic.
 3. Tombstone retention: tombstones are tiny but unbounded. Proposed: callers
    may `Sweep` tombstones older than a second, longer grace period in a later
    revision.
-4. Caller-owned sidecar objects. A consumer (quarry) writes auxiliary objects
-   under a partition prefix via `Store.Put`, outside `Manifest.Files`, tracked
-   only in `Manifest.Metadata`. Under this draft they are never references:
-   with no snapshot ID in the path they land in `Unparseable` (reported, never
-   reclaimed); with one, they are reclaimed as orphans after the grace period.
-   Recording them in `Manifest.Files` at flush time is insufficient because
-   objects written before a run's first flush are tracked nowhere, so a run
-   killed pre-flush orphans them. Options requested: (a) a metadata-declared
-   reference list that joins the reference union, or (b) a preserve/reclaim
-   prefix option on `Sweep`. Proposed: out of scope for the first revision;
-   tracked in a separate issue once the consumer picks between (a) and (b).
+4. Reclaiming caller-owned sidecar objects. A consumer (quarry) writes
+   auxiliary objects via `Store.Put`, outside `Manifest.Files`, tracked only in
+   `Manifest.Metadata`. This draft is safe for them by construction, in both
+   places they can live: inside a live snapshot's data prefix they are kept by
+   the snapshot-granularity rule (§Unreferenced object) and reclaimed only
+   when that snapshot is expired and settled; outside the data topology (for
+   example `partitions/<k=v>/files/<name>`) they are never scanned, so never
+   reclaimed. What is open is **reclaim**, not protection: out-of-topology
+   sidecars accumulate forever, and recording them in `Manifest.Files` at
+   flush time does not help because objects written before a run's first
+   flush are tracked nowhere. Options requested: (a) a metadata-declared
+   reference list that extends the scan, or (b) a reclaim-prefix option on
+   `Sweep`. Proposed: out of scope for the first revision; tracked in a
+   separate issue once the consumer picks between (a) and (b).
 
 ---
 
