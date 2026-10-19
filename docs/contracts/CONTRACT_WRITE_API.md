@@ -55,6 +55,9 @@ It is authoritative for any `Dataset` implementation.
 - If the store's `Put` returns before consuming the stream (for example with
   `ErrPathExists`), subsequent `Write` and `Commit` calls MUST fail with that
   error; they MUST NOT block.
+- Cleanup after a failed stream MUST NOT delete the data object when `Put`
+  failed with `ErrPathExists`: the object was written by another writer and
+  data files are immutable.
 
 ### StreamWriteRecords Semantics
 
@@ -71,7 +74,8 @@ It is authoritative for any `Dataset` implementation.
 - On error (iterator failure, codec error, storage error), no manifest is written
   and best-effort cleanup of partial objects is attempted.
 - If the store's `Put` returns before consuming the stream, `StreamWriteRecords`
-  MUST return that error; it MUST NOT block.
+  MUST return that error; it MUST NOT block. When that error is `ErrPathExists`,
+  cleanup MUST NOT delete the existing object.
 - Row/event count MUST equal the total number of records consumed.
 - When a checksum component is configured, the checksum MUST be computed during
   streaming and recorded in the manifest for each file written.

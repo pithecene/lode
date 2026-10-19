@@ -510,3 +510,63 @@ func TestStreamWriteRecords_DataPutFailsFast_ReturnsError(t *testing.T) {
 		t.Errorf("expected ErrNoSnapshots after failed stream, got: %v", err)
 	}
 }
+
+// When Put reports ErrPathExists the object belongs to another writer; the
+// failed stream must not delete it (data files are immutable).
+func assertNoDataDelete(t *testing.T, fs *faultStore) {
+	t.Helper()
+	for _, p := range fs.DeleteCalls() {
+		if strings.Contains(p, "/data/") {
+			t.Fatalf("cleanup deleted a foreign data object: %v", fs.DeleteCalls())
+		}
+	}
+}
+
+func TestStreamWrite_PutPathExists_DoesNotDeleteForeignObject(t *testing.T) {
+	for _, finish := range []struct {
+		name string
+		fn   func(ctx context.Context, sw StreamWriter) error
+	}{
+		{"commit", func(ctx context.Context, sw StreamWriter) error { _, err := sw.Commit(ctx); return err }},
+		{"abort", func(ctx context.Context, sw StreamWriter) error { return sw.Abort(ctx) }},
+	} {
+		ctx := t.Context()
+		fs := newFaultStore(NewMemory())
+		fs.SetPutError(ErrPathExists, "/data/")
+		ds, err := NewDataset("test-ds", newFaultStoreFactory(fs))
+		if err != nil {
+			t.Fatal(err)
+		}
+		sw, err := ds.StreamWrite(t.Context(), Metadata{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = awaitOrFail(t, func() error {
+			if _, werr := sw.Write(make([]byte, 1<<20)); werr != nil {
+				return finish.fn(ctx, sw)
+			}
+			return finish.fn(ctx, sw)
+		})
+		assertNoDataDelete(t, fs)
+		if _, err := ds.Latest(t.Context()); !errors.Is(err, ErrNoSnapshots) {
+			t.Fatalf("%s: expected ErrNoSnapshots, got %v", finish.name, err)
+		}
+	}
+}
+
+func TestStreamWriteRecords_PutPathExists_DoesNotDeleteForeignObject(t *testing.T) {
+	fs := newFaultStore(NewMemory())
+	fs.SetPutError(ErrPathExists, "/data/")
+	ds, err := NewDataset("test-ds", newFaultStoreFactory(fs), WithCodec(NewJSONLCodec()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = awaitOrFail(t, func() error {
+		_, werr := ds.StreamWriteRecords(t.Context(), &sliceIterator{records: []any{D{"id": "1"}}}, Metadata{})
+		return werr
+	})
+	if !errors.Is(err, ErrPathExists) {
+		t.Fatalf("got %v, want ErrPathExists", err)
+	}
+	assertNoDataDelete(t, fs)
+}
