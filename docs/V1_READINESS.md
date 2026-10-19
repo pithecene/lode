@@ -83,6 +83,13 @@ as `(private)` instead of by number.
 > Summary: —
 > Issue: #___
 
+- [ ] Every candidate in `docs/V1_API_DECISIONS.md` is marked accepted (and shipped) or rejected; none is left open
+
+> **Evidence:** _not yet recorded_
+> Date: — | Observer: — | Project: —
+> Summary: —
+> Issue: #___
+
 - [ ] `PUBLIC_API.md` matches exported symbols in `lode/api.go` with zero discrepancies
 
 > **Evidence:** _not yet recorded_
@@ -332,6 +339,7 @@ These may become goals for v1.1+ but must not gate the initial stability release
 ## References
 
 - `PUBLIC_API.md` — public API shape and defaults
+- `docs/V1_API_DECISIONS.md` — breaking API candidates held for v1.0
 - `docs/contracts/CONTRACT_CORE.md` — core model invariants
 - `docs/contracts/CONTRACT_WRITE_API.md` — write API semantics
 - `docs/contracts/CONTRACT_READ_API.md` — read API contract

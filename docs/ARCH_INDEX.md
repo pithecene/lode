@@ -32,6 +32,7 @@ Plans, contracts, and research notes. Contracts define **system behavior**.
 
 - `IMPLEMENTATION_PLAN.md` — contract-first, phased implementation plan
 - `V1_READINESS.md` — v1.0 release criteria and dogfooding evidence
+- `V1_API_DECISIONS.md` — breaking API changes held for v1.0, decided once
 - `contracts/CONTRACT_CORE.md` — core model invariants and immutability
 - `contracts/CONTRACT_WRITE_API.md` — write API semantics and errors
 - `contracts/CONTRACT_STORAGE.md` — storage adapter obligations
