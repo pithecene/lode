@@ -766,3 +766,56 @@ func TestStreamWriteRecords_PutFailureTakesPrecedenceOverIteratorError(t *testin
 	}
 	assertNoDataDelete(t, fs)
 }
+
+// errAfterGateIterator yields one record, ends, and makes Err() wait for the
+// gate before reporting its own error — so Put can complete while Err runs.
+type errAfterGateIterator struct {
+	gate <-chan struct{}
+	n    int
+}
+
+func (e *errAfterGateIterator) Next() bool {
+	if e.n == 0 {
+		e.n++
+		return true
+	}
+	return false
+}
+func (e *errAfterGateIterator) Record() any { return D{"id": e.n} }
+func (e *errAfterGateIterator) Err() error {
+	<-e.gate
+	return errors.New("iterator failure")
+}
+
+// A Put that fails while records.Err() is running is still the reported
+// error: the Put result is rechecked after Err returns.
+func TestStreamWriteRecords_PutFailureDuringIteratorErr_TakesPrecedence(t *testing.T) {
+	fs := newFaultStore(NewMemory())
+	fs.SetPutError(ErrPathExists, "/data/")
+	putReturned := make(chan struct{})
+	fs.SetAfterPut(func(path string, _ error) {
+		if strings.Contains(path, "/data/") {
+			close(putReturned)
+		}
+	})
+	ds, err := NewDataset("test-ds", newFaultStoreFactory(fs), WithCodec(NewJSONLCodec()), WithCompressor(NewZstdCompressor()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The faultStore signals from inside Put, just before it returns; the
+	// result is published a moment later. Wait for publication explicitly so
+	// the test exercises the re-check rather than a lucky schedule.
+	gate := make(chan struct{})
+	go func() {
+		<-putReturned
+		time.Sleep(10 * time.Millisecond)
+		close(gate)
+	}()
+	err = awaitOrFail(t, func() error {
+		_, werr := ds.StreamWriteRecords(t.Context(), &errAfterGateIterator{gate: gate}, Metadata{})
+		return werr
+	})
+	if !errors.Is(err, ErrPathExists) {
+		t.Fatalf("got %v, want ErrPathExists to take precedence", err)
+	}
+}
