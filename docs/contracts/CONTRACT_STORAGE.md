@@ -21,6 +21,9 @@ It is authoritative for any implementation of the `Store` interface.
 
 **Behavior**:
 - MUST write data to the given path.
+- Paths are slash-separated on every platform. A path that is empty, escapes
+  the root, or contains a backslash MUST return `ErrInvalidPath`; adapters
+  MUST NOT read a backslash as a separator.
 - If an existing path is detected, MUST return `ErrPathExists`.
 - Detection mechanism and guarantee vary by upload path (see table below).
 - On paths with TOCTOU windows, existence may not be detected under concurrent writers.

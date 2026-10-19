@@ -72,3 +72,17 @@ func TestRangeValid(t *testing.T) {
 		}
 	}
 }
+
+// A backslash is never a separator and never a key character: on Windows
+// filepath would read `..\secret` as a parent reference, on Linux it would be
+// an odd file name, and the adapters must agree. Both forms are rejected.
+func TestKeyAndPrefix_RejectBackslash(t *testing.T) {
+	for _, in := range []string{`..\secret`, `a\b`, `\`, `dir/..\x`} {
+		if _, ok := Key(in); ok {
+			t.Errorf("Key(%q) accepted", in)
+		}
+		if _, ok := Prefix(in); ok {
+			t.Errorf("Prefix(%q) accepted", in)
+		}
+	}
+}

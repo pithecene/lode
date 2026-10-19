@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"strings"
 	"testing"
 )
 
@@ -27,7 +28,7 @@ func (f failingStore) Get(context.Context, string) (io.ReadCloser, error) { retu
 func (f failingStore) List(context.Context, string) ([]string, error)     { return nil, f.err }
 
 func datasetHistory(store Store) history[DatasetSnapshotID, Manifest] {
-	return newHistory(store, datasetKind{id: "ds", layout: NewDefaultLayout()})
+	return newHistory(store, datasetKind{id: "ds", layout: NewDefaultLayout()}, "manifest")
 }
 
 // Refresh after a conflict must tolerate an empty history (nothing to
@@ -45,5 +46,40 @@ func TestHistory_Refresh_StoreErrorSurfaces(t *testing.T) {
 	err := h.Refresh(t.Context())
 	if !errors.Is(err, boom) {
 		t.Fatalf("Refresh: got %v, want the store error", err)
+	}
+}
+
+// manifestPutFailStore fails every Put of a manifest so Advance's wording can
+// be observed for each kind.
+type manifestPutFailStore struct {
+	Store
+	err error
+}
+
+func (f manifestPutFailStore) Put(ctx context.Context, path string, r io.Reader) error {
+	if strings.HasSuffix(path, "manifest.json") {
+		return f.err
+	}
+	return f.Store.Put(ctx, path, r)
+}
+
+// The shared protocol must keep each kind's wording: a Volume manifest
+// failure says "volume manifest", a Dataset one says "manifest".
+func TestHistory_Advance_ErrorNamesTheKind(t *testing.T) {
+	boom := errors.New("disk full")
+	cases := []struct {
+		name, noun, want string
+	}{
+		{"dataset", "manifest", "lode: failed to write manifest: disk full"},
+		{"volume", "volume manifest", "lode: failed to write volume manifest: disk full"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			h := newHistory(manifestPutFailStore{Store: NewMemory(), err: boom}, datasetKind{id: "ds", layout: NewDefaultLayout()}, c.noun)
+			err := h.Advance(t.Context(), "", "s1", &Manifest{}, []string{"datasets/ds/snapshots/s1/manifest.json"})
+			if err == nil || err.Error() != c.want {
+				t.Fatalf("got %v, want %q", err, c.want)
+			}
+		})
 	}
 }
