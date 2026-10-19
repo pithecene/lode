@@ -56,11 +56,11 @@ It is authoritative for any `Dataset` implementation.
   `ErrPathExists`), `Write` calls issued after it returned and `Commit` MUST
   fail with that error, even when a compressor would buffer the bytes; they
   MUST NOT block.
-- Cleanup after a failed stream MUST NOT delete the data object when `Put`
-  returned `ErrPathExists` while the stream was intact: the object was written
-  by another writer and data files are immutable. An `ErrPathExists` that `Put`
-  reports after the stream itself failed (iterator or encoder error) is the
-  stream's error and does not count.
+- After a failed `Put` the writer MUST NOT touch the data path. `Put` is
+  all-or-nothing (`CONTRACT_STORAGE.md` §Put), so a failed stream leaves no
+  object of its own, and a path whose `Put` returned `ErrPathExists` belongs
+  to another writer. Data-file cleanup applies only to objects whose `Put`
+  succeeded and whose commit then failed.
 
 ### StreamWriteRecords Semantics
 
@@ -74,11 +74,12 @@ It is authoritative for any `Dataset` implementation.
 - Streamed record writes MUST be single-pass writes to the final object path.
 - Streamed record writes MUST NOT mutate existing objects; all writes are new paths.
 - On success, the manifest is written and the new snapshot is returned.
-- On error (iterator failure, codec error, storage error), no manifest is written
-  and best-effort cleanup of partial objects is attempted.
+- On error (iterator failure, codec error, storage error), no manifest is written.
+  A failed `Put` leaves nothing behind (`CONTRACT_STORAGE.md` §Put); a data
+  object whose `Put` succeeded but whose commit failed is deleted best-effort.
 - If the store's `Put` returns before consuming the stream, `StreamWriteRecords`
-  MUST return that error; it MUST NOT block. When that error is `ErrPathExists`,
-  cleanup MUST NOT delete the existing object.
+  MUST return that error (ahead of any iterator error reported afterwards); it
+  MUST NOT block. The writer MUST NOT touch the path afterwards.
 - Row/event count MUST equal the total number of records consumed.
 - When a checksum component is configured, the checksum MUST be computed during
   streaming and recorded in the manifest for each file written.
