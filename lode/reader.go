@@ -54,7 +54,7 @@ func NewDatasetReader(factory StoreFactory, opts ...Option) (DatasetReader, erro
 
 	for _, opt := range opts {
 		if err := opt.applyReader(cfg); err != nil {
-			return nil, fmt.Errorf("lode: %w", err)
+			return nil, err // option errors carry the lode: prefix
 		}
 	}
 

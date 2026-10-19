@@ -98,7 +98,7 @@ func NewVolume(id VolumeID, storeFactory StoreFactory, totalLength int64, opts .
 	}
 	for _, opt := range opts {
 		if err := opt.applyVolume(cfg); err != nil {
-			return nil, fmt.Errorf("lode: %w", err)
+			return nil, err // option errors carry the lode: prefix
 		}
 	}
 
@@ -348,6 +348,9 @@ func (v *volume) ReadAt(ctx context.Context, snapshotID VolumeSnapshotID, offset
 	if length > v.totalLength-offset {
 		return nil, invalidArgument("read exceeds volume address space (offset=%d, length=%d, totalLength=%d)", offset, length, v.totalLength)
 	}
+	if length > math.MaxInt {
+		return nil, invalidArgument("read length %d exceeds maximum allocation size", length)
+	}
 
 	snapshot, err := v.Snapshot(ctx, snapshotID)
 	if err != nil {
@@ -359,9 +362,6 @@ func (v *volume) ReadAt(ctx context.Context, snapshotID VolumeSnapshotID, offset
 		return nil, err
 	}
 
-	if length > math.MaxInt {
-		return nil, invalidArgument("read length %d exceeds maximum allocation size", length)
-	}
 	result := make([]byte, int(length))
 	for _, b := range covering {
 		// Compute the intersection of [offset, offset+length) and [b.Offset, b.Offset+b.Length).
