@@ -235,33 +235,87 @@ func (h *history[ID, M]) Latest(ctx context.Context) (*snapshot[ID, M], error) {
 	return s, nil
 }
 
-// Resolve returns the snapshot a new commit parents on ("" for the first) and
-// the pointer content a CAS advance must expect. Order: the in-process memory
+// Resolve returns the ID a new commit parents on ("" for the first) and the
+// pointer content a CAS advance must expect. Order: the in-process memory
 // (authoritative within one writer), then the pointer when its manifest
 // exists (one Exists call on cold start), then scan. A pointer naming a
 // missing snapshot is stale: its content is still what CAS must expect, but
 // the parent comes from the scan.
 func (h *history[ID, M]) Resolve(ctx context.Context) (parent ID, expected string, err error) {
+	id, _, expected, err := h.resolve(ctx, h.verifyExists)
+	return id, expected, err
+}
+
+// ResolveParent is Resolve for containers whose commit needs the parent's
+// manifest (a Volume merges its blocks): the parent is loaded, never
+// re-fetched, and a remembered head whose manifest is gone is forgotten so
+// storage is consulted instead. parent is nil for the first commit.
+func (h *history[ID, M]) ResolveParent(ctx context.Context) (parent *snapshot[ID, M], expected string, err error) {
+	for {
+		id, loaded, expected, err := h.resolve(ctx, h.verifyLoad)
+		if err != nil || id == "" || loaded != nil {
+			return loaded, expected, err
+		}
+		// The head came from memory; load it, dropping the memory if stale.
+		loaded, err = h.Snapshot(ctx, id)
+		if err == nil {
+			return loaded, expected, nil
+		}
+		if !errors.Is(err, ErrNotFound) {
+			return nil, "", fmt.Errorf("lode: failed to load parent snapshot: %w", err)
+		}
+		h.Forget()
+	}
+}
+
+// resolve walks memory → pointer → scan. verify decides whether the pointer's
+// snapshot exists and may load it on the way; loaded is whatever verify or
+// the scan produced (nil on the memory path, which never touches storage).
+func (h *history[ID, M]) resolve(ctx context.Context, verify func(context.Context, ID) (*snapshot[ID, M], bool, error)) (id ID, loaded *snapshot[ID, M], expected string, err error) {
 	if h.head != "" {
-		return h.head, h.pointer, nil
+		return h.head, nil, h.pointer, nil
 	}
 
 	var observed string
 	if id, err := h.readPointer(ctx); err == nil {
-		if exists, err := h.store.Exists(ctx, h.kind.manifestPath(id)); err == nil && exists {
-			return id, string(id), nil
+		s, ok, err := verify(ctx, id)
+		if err != nil {
+			return "", nil, "", err
+		}
+		if ok {
+			return id, s, string(id), nil
 		}
 		observed = string(id)
 	}
 
 	s, err := h.scan(ctx)
 	if errors.Is(err, ErrNoSnapshots) {
-		return "", observed, nil
+		return "", nil, observed, nil
 	}
 	if err != nil {
-		return "", "", fmt.Errorf("lode: failed to get latest snapshot: %w", err)
+		return "", nil, "", fmt.Errorf("lode: failed to get latest snapshot: %w", err)
 	}
-	return s.ID, observed, nil
+	return s.ID, s, observed, nil
+}
+
+// verifyExists confirms a snapshot by its canonical manifest's existence;
+// a failed check counts as stale.
+func (h *history[ID, M]) verifyExists(ctx context.Context, id ID) (*snapshot[ID, M], bool, error) { //nolint:unparam // shares the verifier signature with verifyLoad, which does return a snapshot
+	exists, err := h.store.Exists(ctx, h.kind.manifestPath(id))
+	return nil, err == nil && exists, nil
+}
+
+// verifyLoad confirms a snapshot by loading it; a missing manifest is stale,
+// any other failure is an error.
+func (h *history[ID, M]) verifyLoad(ctx context.Context, id ID) (*snapshot[ID, M], bool, error) {
+	s, err := h.Snapshot(ctx, id)
+	if err == nil {
+		return s, true, nil
+	}
+	if errors.Is(err, ErrNotFound) {
+		return nil, false, nil
+	}
+	return nil, false, fmt.Errorf("lode: failed to load snapshot: %w", err)
 }
 
 // Advance commits a snapshot: the pointer first (CAS against expected), then

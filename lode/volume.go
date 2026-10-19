@@ -211,7 +211,7 @@ func (v *volume) Commit(ctx context.Context, blocks []BlockRef, metadata Metadat
 
 	var result *VolumeSnapshot
 	err := v.history.CommitLoop(ctx, &v.retry, func() error {
-		parent, expectedPointer, err := v.resolveParent(ctx)
+		parent, expectedPointer, err := v.history.ResolveParent(ctx)
 		if err != nil {
 			return err
 		}
@@ -276,27 +276,6 @@ func (v *volume) buildManifest(snapshotID, parentID VolumeSnapshotID, metadata M
 		Blocks:            blocks,
 		ParentSnapshotID:  parentID,
 		ChecksumAlgorithm: checksumAlgorithm,
-	}
-}
-
-// resolveParent returns the snapshot a new commit parents on (nil for the
-// first) and the pointer content a CAS advance must expect. Unlike a dataset,
-// a volume needs the parent's blocks, so the parent is loaded; a remembered
-// head whose manifest is gone is forgotten and storage consulted instead.
-func (v *volume) resolveParent(ctx context.Context) (*VolumeSnapshot, string, error) {
-	for {
-		id, pointer, err := v.history.Resolve(ctx)
-		if err != nil || id == "" {
-			return nil, pointer, err
-		}
-		parent, err := v.Snapshot(ctx, id)
-		if err == nil {
-			return parent, pointer, nil
-		}
-		if !errors.Is(err, ErrNotFound) {
-			return nil, "", fmt.Errorf("lode: failed to load parent snapshot: %w", err)
-		}
-		v.history.Forget()
 	}
 }
 
@@ -514,14 +493,6 @@ func validateVolumeManifest(m *VolumeManifest) error {
 	if m == nil {
 		return &manifestValidationError{Field: "manifest", Message: "is nil"}
 	}
-	// Table-driven field validation. Each entry maps a boolean condition
-	// (true = invalid) to the field name and error message.
-	type fieldCheck struct {
-		invalid bool
-		field   string
-		message string
-	}
-
 	checks := []fieldCheck{
 		{m.SchemaName == "", "schema_name", "is required"},
 		{m.FormatVersion == "", "format_version", "is required"},
@@ -532,38 +503,20 @@ func validateVolumeManifest(m *VolumeManifest) error {
 		{m.Blocks == nil, "blocks", "must not be nil (use empty slice for no blocks)"},
 		{m.TotalLength <= 0, "total_length", "must be positive"},
 	}
-
-	for _, c := range checks {
-		if c.invalid {
-			return &manifestValidationError{Field: c.field, Message: c.message}
-		}
+	if err := firstInvalid(checks); err != nil {
+		return err
 	}
-
+	// Block checks run only once total_length is known valid.
 	for i, b := range m.Blocks {
-		if b.Offset < 0 {
-			return &manifestValidationError{
-				Field:   fmt.Sprintf("blocks[%d].offset", i),
-				Message: "must be non-negative",
-			}
-		}
-		if b.Length <= 0 {
-			return &manifestValidationError{
-				Field:   fmt.Sprintf("blocks[%d].length", i),
-				Message: "must be positive",
-			}
-		}
-		if b.Path == "" {
-			return &manifestValidationError{
-				Field:   fmt.Sprintf("blocks[%d].path", i),
-				Message: "is required",
-			}
-		}
-		if b.Length > m.TotalLength-b.Offset {
-			return &manifestValidationError{
-				Field:   fmt.Sprintf("blocks[%d]", i),
-				Message: fmt.Sprintf("exceeds total_length (offset=%d, length=%d, total_length=%d)", b.Offset, b.Length, m.TotalLength),
-			}
-		}
+		checks = append(checks,
+			fieldCheck{b.Offset < 0, fmt.Sprintf("blocks[%d].offset", i), "must be non-negative"},
+			fieldCheck{b.Length <= 0, fmt.Sprintf("blocks[%d].length", i), "must be positive"},
+			fieldCheck{b.Path == "", fmt.Sprintf("blocks[%d].path", i), "is required"},
+			fieldCheck{b.Length > m.TotalLength-b.Offset, fmt.Sprintf("blocks[%d]", i), fmt.Sprintf("exceeds total_length (offset=%d, length=%d, total_length=%d)", b.Offset, b.Length, m.TotalLength)},
+		)
+	}
+	if err := firstInvalid(checks); err != nil {
+		return err
 	}
 
 	// Sort blocks by offset at load time so downstream consumers
