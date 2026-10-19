@@ -25,12 +25,13 @@ func encodeSingle(t *testing.T, fieldType ParquetType, val any) error {
 	return codec.Encode(&buf, []any{map[string]any{"val": val}})
 }
 
-func assertBoundaryCases(t *testing.T, fieldType ParquetType, cases []struct {
+type boundaryCase struct {
 	name    string
 	val     any
 	wantErr bool
-},
-) {
+}
+
+func assertBoundaryCases(t *testing.T, fieldType ParquetType, cases []boundaryCase) {
 	t.Helper()
 	for _, c := range cases {
 		err := encodeSingle(t, fieldType, c.val)
@@ -47,15 +48,9 @@ func TestParquetCodec_Int32_ExactBounds(t *testing.T) {
 	// Runtime values rather than constants so the +1/-1 cases compile on
 	// every int width.
 	hi, lo := int64(math.MaxInt32), int64(math.MinInt32)
-	assertBoundaryCases(t, ParquetInt32, []struct {
-		name    string
-		val     any
-		wantErr bool
-	}{
+	cases := []boundaryCase{
 		{"int at max", int(hi), false},
-		{"int above max", int(hi + 1), true},
 		{"int at min", int(lo), false},
-		{"int below min", int(lo - 1), true},
 		{"int64 at max", hi, false},
 		{"int64 above max", hi + 1, true},
 		{"int64 at min", lo, false},
@@ -65,16 +60,21 @@ func TestParquetCodec_Int32_ExactBounds(t *testing.T) {
 		{"float64 at min", float64(lo), false},
 		{"float64 below min", float64(lo) - 1, true},
 		{"int32 passthrough", int32(math.MaxInt32), false},
-	})
+	}
+	// An int one past the int32 range only exists where int is 64 bits; on
+	// 32-bit targets the conversion wraps into range.
+	if math.MaxInt == math.MaxInt64 {
+		cases = append(cases,
+			boundaryCase{"int above max", int(hi + 1), true},
+			boundaryCase{"int below min", int(lo - 1), true},
+		)
+	}
+	assertBoundaryCases(t, ParquetInt32, cases)
 }
 
 func TestParquetCodec_Int64_ExactSafeFloatBounds(t *testing.T) {
 	safe := float64(1 << 53)
-	assertBoundaryCases(t, ParquetInt64, []struct {
-		name    string
-		val     any
-		wantErr bool
-	}{
+	assertBoundaryCases(t, ParquetInt64, []boundaryCase{
 		{"float64 at +2^53", safe, false},
 		{"float64 at -2^53", -safe, false},
 		{"float64 above +2^53", safe * 2, true},
