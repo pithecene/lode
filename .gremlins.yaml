@@ -26,8 +26,9 @@ unleash:
     - examples/
     - internal/testutil/
   # Baseline (2026-10-20, gremlins v0.6.0, whole module after the history
-  # core and retry config moved to internal/, produced by `task mutate` with
-  # exactly this file — workers 2, timeout-coefficient 20, no test-cpu):
+  # core, retry config and validation errors moved to internal/, produced by
+  # `task mutate` with exactly this file — workers 2, timeout-coefficient 20,
+  # no test-cpu — and reproduced exactly on a second run):
   # killed 575, lived 48, not covered 26, timed out 3 → efficacy 92.30%,
   # mutant coverage 95.99%. The four LIVED in internal/ are the equivalent
   # mutants documented in internal/history and internal/retry test headers.
