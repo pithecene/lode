@@ -440,7 +440,10 @@ manifest and data object of the layout). It then performs, in order:
      group the listing shows without a manifest is live too when a
      manifest exists at its canonical path or at a manifest path derived
      from its objects' paths; Sweep MUST check those paths before
-     reclaiming an orphaned group, since a listing may omit a manifest;
+     reclaiming an orphaned group, since a listing may omit a manifest.
+     Commit writes a manifest copy in every partition that holds its data
+     (legacy partition-only snapshots included), so every listed object
+     derives a path at which its snapshot's manifest would be found;
    - **held** when its snapshot's tombstone was rejected in step 1 (invalid,
      or contradicted by a manifest copy) or its snapshot is protected —
      never touched, even past the grace period, because a tombstone Lode
@@ -461,9 +464,11 @@ and, not having been listed, is not counted.
 `Sweep` reads the pointer once, before step 1, and never settles the
 snapshot it names. When the pointer is absent, or names an ID with no
 manifest in the listing, the newest listed snapshot that is not expired is
-protected the same way (the snapshot a scan would return); a tombstoned
-candidate whose canonical manifest the listing omits is checked in the
-store before it is passed over. `Expire` writes a tombstone only
+protected the same way (the snapshot a scan would return). Candidates are
+the snapshots with a listed manifest and the tombstoned ones with listed
+data, since a listing may omit manifests; a tombstoned candidate whose
+canonical manifest the listing omits is checked in the store before it is
+passed over. `Expire` writes a tombstone only
 for a snapshot observed as non-head (§Head protection), so this guard never
 fires for tombstones Lode wrote; it keeps a misplaced object under
 `expired/` from ever removing the head. A protected tombstoned snapshot is
