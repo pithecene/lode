@@ -367,8 +367,8 @@ func (r expiryRun) plan(ctx context.Context, c expiryCandidate) (plan expiryPlan
 	if !recorded {
 		t = newTombstone(c.id, m.Files)
 	}
-	// A tombstone left by an earlier snapshot with the same ID (the clock
-	// repeated an instant) must never steer deletes of this one.
+	// A tombstone left by an earlier snapshot with the same ID (a legacy
+	// clock-only ID repeated an instant) must never steer deletes of this one.
 	if !sameInventory(t.Files, m.Files) {
 		return plan, false, fmt.Errorf("lode: tombstone for %s records a different inventory than its manifest", c.id)
 	}

@@ -2,6 +2,7 @@ package lode
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -629,9 +630,11 @@ func TestExpire_TombstoneOfAnotherInventory_IsRefused(t *testing.T) {
 }
 
 // racingStore records a tombstone for the same snapshot just before the
-// first tombstone CAS, as a concurrent expiry of the same ID would.
+// first tombstone CAS, as a concurrent expiry of the same ID would. With
+// rival set, the raced tombstone is rival instead of this run's own.
 type racingStore struct {
 	*hookStore
+	rival string
 	raced bool
 }
 
@@ -639,7 +642,7 @@ func (r *racingStore) CompareAndSwap(ctx context.Context, p, expected, replaceme
 	cw := r.Store.(ConditionalWriter)
 	if !r.raced && strings.Contains(p, "/expired/") {
 		r.raced = true
-		if err := cw.CompareAndSwap(ctx, p, "", replacement); err != nil {
+		if err := cw.CompareAndSwap(ctx, p, "", cmp.Or(r.rival, replacement)); err != nil {
 			return err
 		}
 	}
@@ -661,6 +664,24 @@ func TestExpire_ConcurrentTombstone_IsAccepted(t *testing.T) {
 		t.Errorf("Expired = %v, want [%s]", report.Expired, first.ID)
 	}
 	assertGone(t, mem, ds, first)
+}
+
+func TestExpire_ConcurrentTombstoneOfAnotherInventory_IsRefused(t *testing.T) {
+	mem := NewMemory()
+	rs := &racingStore{hookStore: &hookStore{Store: mem}}
+	ds := newDefaultRetention(t, rs)
+	first := writeRecord(t, ds, 1)
+	writeRecord(t, ds, 2)
+	rival, err := json.Marshal(newTombstone(first.ID, []FileRef{{Path: "datasets/events/snapshots/" + string(first.ID) + "/data/old", SizeBytes: 1}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rs.rival = string(rival)
+
+	if _, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{first.ID}}); err == nil || !rs.raced {
+		t.Fatalf("Expire = %v (raced %v), want the rival tombstone refused", err, rs.raced)
+	}
+	assertPresent(t, ds, first)
 }
 
 func TestSnapshot_IDNotInGeneratedForm_IsNotExpired(t *testing.T) {

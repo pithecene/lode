@@ -50,7 +50,7 @@ func (ts tombstones) path(id DatasetSnapshotID) (p string, ok bool) {
 }
 
 // record creates the tombstone, or accepts the one an earlier or concurrent
-// run recorded for the same snapshot.
+// run recorded for the same snapshot with the same inventory.
 func (ts tombstones) record(ctx context.Context, t tombstone) error {
 	p, ok := ts.path(t.SnapshotID)
 	if !ok {
@@ -62,13 +62,27 @@ func (ts tombstones) record(ctx context.Context, t tombstone) error {
 	}
 	err = ts.create(ctx, p, data)
 	if errors.Is(err, ErrSnapshotConflict) || errors.Is(err, ErrPathExists) {
-		if _, found, err := ts.lookup(ctx, t.SnapshotID); err != nil || found {
-			return err
-		}
-		return fmt.Errorf("lode: tombstone %s exists but reads as absent", p)
+		return ts.matchRecorded(ctx, p, t)
 	}
 	if err != nil {
 		return fmt.Errorf("lode: failed to write tombstone %s: %w", p, err)
+	}
+	return nil
+}
+
+// matchRecorded accepts the tombstone that won the create at p only if it
+// records the inventory t would have: a different one must never stand as
+// the record of the files this run deletes.
+func (ts tombstones) matchRecorded(ctx context.Context, p string, t tombstone) error {
+	existing, found, err := ts.lookup(ctx, t.SnapshotID)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return fmt.Errorf("lode: tombstone %s exists but reads as absent", p)
+	}
+	if !sameInventory(existing.Files, t.Files) {
+		return fmt.Errorf("lode: tombstone %s records a different inventory than its manifest", p)
 	}
 	return nil
 }
