@@ -9,6 +9,10 @@ import (
 	"io"
 	"sort"
 	"time"
+
+	"github.com/pithecene-io/lode/internal/history"
+	"github.com/pithecene-io/lode/internal/retry"
+	"github.com/pithecene-io/lode/internal/validate"
 )
 
 const (
@@ -26,16 +30,16 @@ type datasetConfig struct {
 	compressor Compressor
 	codec      Codec
 	checksum   Checksum
-	retry      retryConfig
+	retry      retry.Config
 }
 
-// Option configures dataset, reader, or volume construction.
+// Option configures dataset or reader construction.
 // Options implement methods for the constructors they support.
 // Using an option with an unsupported constructor returns an error.
+// Volumes take their own options (package lode/volume).
 type Option interface {
 	applyDataset(*datasetConfig) error
 	applyReader(*readerConfig) error
-	applyVolume(*volumeConfig) error
 }
 
 // layoutOption implements Option for WithLayout.
@@ -58,10 +62,6 @@ func (o *layoutOption) applyDataset(cfg *datasetConfig) error {
 func (o *layoutOption) applyReader(cfg *readerConfig) error {
 	cfg.layout = o.layout
 	return nil
-}
-
-func (o *layoutOption) applyVolume(*volumeConfig) error {
-	return fmt.Errorf("lode: WithLayout: %w", ErrOptionNotValidForVolume)
 }
 
 // hiveLayoutOption implements Option for WithHiveLayout.
@@ -102,10 +102,6 @@ func (o *hiveLayoutOption) applyReader(cfg *readerConfig) error {
 	return nil
 }
 
-func (o *hiveLayoutOption) applyVolume(*volumeConfig) error {
-	return fmt.Errorf("lode: WithHiveLayout: %w", ErrOptionNotValidForVolume)
-}
-
 // compressorOption implements Option for WithCompressor (dataset-only).
 type compressorOption struct {
 	compressor Compressor
@@ -125,10 +121,6 @@ func (o *compressorOption) applyDataset(cfg *datasetConfig) error {
 
 func (o *compressorOption) applyReader(*readerConfig) error {
 	return fmt.Errorf("lode: WithCompressor: %w", ErrOptionNotValidForDatasetReader)
-}
-
-func (o *compressorOption) applyVolume(*volumeConfig) error {
-	return fmt.Errorf("lode: WithCompressor: %w", ErrOptionNotValidForVolume)
 }
 
 // codecOption implements Option for WithCodec (dataset-only).
@@ -156,10 +148,6 @@ func (o *codecOption) applyReader(*readerConfig) error {
 	return fmt.Errorf("lode: WithCodec: %w", ErrOptionNotValidForDatasetReader)
 }
 
-func (o *codecOption) applyVolume(*volumeConfig) error {
-	return fmt.Errorf("lode: WithCodec: %w", ErrOptionNotValidForVolume)
-}
-
 // checksumOption implements Option for WithChecksum (dataset-only).
 type checksumOption struct {
 	checksum Checksum
@@ -184,21 +172,24 @@ func (o *checksumOption) applyReader(*readerConfig) error {
 	return fmt.Errorf("lode: WithChecksum: %w", ErrOptionNotValidForDatasetReader)
 }
 
-func (o *checksumOption) applyVolume(cfg *volumeConfig) error {
-	cfg.checksum = o.checksum
+// retryOption implements Option for all WithRetry* constructors.
+// Retry options apply to datasets and are never valid for readers. set is
+// the retry.Config setter, which package lode/volume's options share, so a
+// validation failure reads the same in both: an invalid argument named after
+// the option.
+type retryOption struct {
+	name string
+	set  func(*retry.Config) error
+}
+
+func (o *retryOption) apply(r *retry.Config) error {
+	if err := o.set(r); err != nil {
+		return validate.Argument("%s: %v", o.name, err)
+	}
 	return nil
 }
 
-// retryOption implements Option for all WithRetry* constructors.
-// Retry options apply identically to datasets and volumes (both have a
-// retryConfig), and are never valid for readers.
-type retryOption struct {
-	name  string
-	apply func(*retryConfig) error
-}
-
 func (o *retryOption) applyDataset(cfg *datasetConfig) error { return o.apply(&cfg.retry) }
-func (o *retryOption) applyVolume(cfg *volumeConfig) error   { return o.apply(&cfg.retry) }
 
 func (o *retryOption) applyReader(*readerConfig) error {
 	return fmt.Errorf("lode: %s: %w", o.name, ErrOptionNotValidForDatasetReader)
@@ -211,13 +202,7 @@ func (o *retryOption) applyReader(*readerConfig) error {
 func WithRetryCount(n int) Option {
 	return &retryOption{
 		name: "WithRetryCount",
-		apply: func(r *retryConfig) error {
-			if n < 0 {
-				return invalidArgument("WithRetryCount: n must be non-negative")
-			}
-			r.maxAttempts = n
-			return nil
-		},
+		set:  func(r *retry.Config) error { return r.SetMaxAttempts(n) },
 	}
 }
 
@@ -227,13 +212,7 @@ func WithRetryCount(n int) Option {
 func WithRetryBaseDelay(d time.Duration) Option {
 	return &retryOption{
 		name: "WithRetryBaseDelay",
-		apply: func(r *retryConfig) error {
-			if d <= 0 {
-				return invalidArgument("WithRetryBaseDelay: delay must be positive")
-			}
-			r.baseDelay = d
-			return nil
-		},
+		set:  func(r *retry.Config) error { return r.SetBaseDelay(d) },
 	}
 }
 
@@ -242,13 +221,7 @@ func WithRetryBaseDelay(d time.Duration) Option {
 func WithRetryMaxDelay(d time.Duration) Option {
 	return &retryOption{
 		name: "WithRetryMaxDelay",
-		apply: func(r *retryConfig) error {
-			if d <= 0 {
-				return invalidArgument("WithRetryMaxDelay: delay must be positive")
-			}
-			r.maxDelay = d
-			return nil
-		},
+		set:  func(r *retry.Config) error { return r.SetMaxDelay(d) },
 	}
 }
 
@@ -258,13 +231,7 @@ func WithRetryMaxDelay(d time.Duration) Option {
 func WithRetryJitter(j float64) Option {
 	return &retryOption{
 		name: "WithRetryJitter",
-		apply: func(r *retryConfig) error {
-			if j < 0 || j > 1 {
-				return invalidArgument("WithRetryJitter: jitter must be between 0.0 and 1.0")
-			}
-			r.jitter = j
-			return nil
-		},
+		set:  func(r *retry.Config) error { return r.SetJitter(j) },
 	}
 }
 
@@ -279,13 +246,7 @@ func WithRetryJitter(j float64) Option {
 func WithRetryObserver(fn func(attempt int)) Option {
 	return &retryOption{
 		name: "WithRetryObserver",
-		apply: func(r *retryConfig) error {
-			if fn == nil {
-				return invalidArgument("WithRetryObserver: fn must not be nil")
-			}
-			r.observer = fn
-			return nil
-		},
+		set:  func(r *retry.Config) error { return r.SetObserver(fn) },
 	}
 }
 
@@ -301,10 +262,10 @@ type dataset struct {
 	compressor Compressor
 	codec      Codec
 	checksum   Checksum
-	retry      retryConfig
+	retry      retry.Config
 
-	// history owns the snapshot sequence and its head pointer (history.go).
-	history history[DatasetSnapshotID, Manifest]
+	// history owns the snapshot sequence and its head pointer (internal/history).
+	history history.History[DatasetSnapshotID, Manifest]
 }
 
 // datasetKind is the dataset's snapshot grammar for history: paths come from
@@ -312,15 +273,16 @@ type dataset struct {
 type datasetKind struct {
 	id     DatasetID
 	layout layout
+	store  Store // read for tombstones: retention's expiries hide snapshots from the scan
 }
 
-func (k datasetKind) snapshotsPrefix() string { return k.layout.snapshotsPrefix(k.id) }
-func (k datasetKind) pointerPath() string     { return k.layout.latestPointerPath(k.id) }
-func (k datasetKind) manifestPath(id DatasetSnapshotID) string {
+func (k datasetKind) SnapshotsPrefix() string { return k.layout.snapshotsPrefix(k.id) }
+func (k datasetKind) PointerPath() string     { return k.layout.latestPointerPath(k.id) }
+func (k datasetKind) ManifestPath(id DatasetSnapshotID) string {
 	return k.layout.manifestPath(k.id, id)
 }
 
-func (k datasetKind) parseManifest(p string) (DatasetSnapshotID, bool) {
+func (k datasetKind) ParseManifest(p string) (DatasetSnapshotID, bool) {
 	if !k.layout.isManifest(p) {
 		return "", false
 	}
@@ -328,22 +290,22 @@ func (k datasetKind) parseManifest(p string) (DatasetSnapshotID, bool) {
 	return id, id != ""
 }
 
-// notExpired is false only for an expired snapshot: one with a tombstone
+// NotExpired is false only for an expired snapshot: one with a tombstone
 // and no canonical manifest (CONTRACT_RETENTION §Expired snapshot). An
 // expiring snapshot, its canonical manifest still present, is readable.
-func (k datasetKind) notExpired(ctx context.Context, store Store, id DatasetSnapshotID) (bool, error) {
-	absent, err := tombstones{store: store, layout: k.layout, dataset: k.id}.absent(ctx, id)
+func (k datasetKind) NotExpired(ctx context.Context, id DatasetSnapshotID) (bool, error) {
+	absent, err := tombstones{store: k.store, layout: k.layout, dataset: k.id}.absent(ctx, id)
 	if err != nil || absent {
 		return absent, err
 	}
-	present, err := store.Exists(ctx, k.manifestPath(id))
+	present, err := k.store.Exists(ctx, k.ManifestPath(id))
 	if err != nil {
 		return false, fmt.Errorf("lode: failed to check manifest: %w", err)
 	}
 	return present, nil
 }
 
-func (k datasetKind) decode(r io.Reader) (*Manifest, error) {
+func (k datasetKind) Decode(r io.Reader) (*Manifest, error) {
 	var m Manifest
 	if err := json.NewDecoder(r).Decode(&m); err != nil {
 		return nil, fmt.Errorf("lode: failed to decode manifest: %w", err)
@@ -351,10 +313,10 @@ func (k datasetKind) decode(r io.Reader) (*Manifest, error) {
 	return &m, nil
 }
 
-// datasetKind is a snapshotKind; stated so the methods are visibly used.
-var _ snapshotKind[DatasetSnapshotID, Manifest] = datasetKind{}
+// datasetKind is a history.Kind; stated so the methods are visibly used.
+var _ history.Kind[DatasetSnapshotID, Manifest] = datasetKind{}
 
-func toDatasetSnapshot(s *snapshot[DatasetSnapshotID, Manifest]) *DatasetSnapshot {
+func toDatasetSnapshot(s *history.Snapshot[DatasetSnapshotID, Manifest]) *DatasetSnapshot {
 	return &DatasetSnapshot{ID: s.ID, Manifest: s.Manifest}
 }
 
@@ -372,14 +334,14 @@ func toDatasetSnapshot(s *snapshot[DatasetSnapshotID, Manifest]) *DatasetSnapsho
 //   - WithChecksum(c) to enable file checksums
 func NewDataset(id DatasetID, factory StoreFactory, opts ...Option) (Dataset, error) {
 	if factory == nil {
-		return nil, invalidArgument("store factory is required")
+		return nil, validate.Argument("store factory is required")
 	}
 
 	cfg := &datasetConfig{
 		layout:     NewDefaultLayout(),
 		compressor: NewNoOpCompressor(),
 		codec:      nil,
-		retry:      defaultRetryConfig(),
+		retry:      retry.Default(),
 	}
 
 	for _, opt := range opts {
@@ -389,14 +351,14 @@ func NewDataset(id DatasetID, factory StoreFactory, opts ...Option) (Dataset, er
 	}
 
 	if cfg.layout == nil {
-		return nil, invalidArgument("layout must not be nil")
+		return nil, validate.Argument("layout must not be nil")
 	}
 	if cfg.compressor == nil {
-		return nil, invalidArgument("compressor must not be nil")
+		return nil, validate.Argument("compressor must not be nil")
 	}
 	// Raw blob mode (no codec) cannot use partitioning - there are no record fields to extract keys from
 	if cfg.codec == nil && !cfg.layout.partitioner().isNoop() {
-		return nil, invalidArgument("raw blob mode (no codec) requires a layout with noop partitioner")
+		return nil, validate.Argument("raw blob mode (no codec) requires a layout with noop partitioner")
 	}
 
 	// Arguments are checked before any store work (CONTRACT_ERRORS §5).
@@ -405,7 +367,7 @@ func NewDataset(id DatasetID, factory StoreFactory, opts ...Option) (Dataset, er
 		return nil, fmt.Errorf("lode: store factory failed: %w", err)
 	}
 	if store == nil {
-		return nil, invalidArgument("store factory returned nil store")
+		return nil, validate.Argument("store factory returned nil store")
 	}
 
 	return &dataset{
@@ -416,7 +378,7 @@ func NewDataset(id DatasetID, factory StoreFactory, opts ...Option) (Dataset, er
 		codec:      cfg.codec,
 		checksum:   cfg.checksum,
 		retry:      cfg.retry,
-		history:    newHistory(store, datasetKind{id: id, layout: cfg.layout}, "manifest"),
+		history:    history.New(store, datasetKind{id: id, layout: cfg.layout, store: store}, "manifest", historyErrors),
 	}, nil
 }
 
@@ -444,7 +406,7 @@ func (d *dataset) Snapshot(ctx context.Context, id DatasetSnapshotID) (*DatasetS
 		if expired := d.tombstones().expiredError(ctx, id); expired != nil {
 			return nil, expired
 		}
-		s, err = d.history.find(ctx, id)
+		s, err = d.history.Find(ctx, id)
 	}
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
@@ -535,7 +497,7 @@ func (d *dataset) StreamWriteRecords(ctx context.Context, records RecordIterator
 		return nil, ErrNilIterator
 	}
 	if d.codec == nil {
-		return nil, invalidArgument("StreamWriteRecords requires a codec")
+		return nil, validate.Argument("StreamWriteRecords requires a codec")
 	}
 	streamCodec, ok := d.codec.(StreamingRecordCodec)
 	if !ok {
@@ -618,4 +580,13 @@ func (d *dataset) validateComponentsMatch(m *Manifest) error {
 			m.Compressor, d.compressor.Name())
 	}
 	return nil
+}
+
+// historyErrors are the sentinels every history in this package returns, so
+// history errors keep lode's public identities.
+var historyErrors = history.Errors{
+	NotFound:         ErrNotFound,
+	NoSnapshots:      ErrNoSnapshots,
+	SnapshotConflict: ErrSnapshotConflict,
+	HeadUncommitted:  ErrHeadUncommitted,
 }

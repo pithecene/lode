@@ -21,8 +21,6 @@ func TestSentinelErrors_ErrorMessages(t *testing.T) {
 		{"ErrSchemaViolation", ErrSchemaViolation, "parquet: schema violation"},
 		{"ErrInvalidFormat", ErrInvalidFormat, "parquet: invalid format"},
 		{"ErrSnapshotConflict", ErrSnapshotConflict, "snapshot conflict: another writer committed"},
-		{"ErrRangeMissing", ErrRangeMissing, "range missing: requested range is not fully committed"},
-		{"ErrOverlappingBlocks", ErrOverlappingBlocks, "overlapping blocks in cumulative manifest"},
 		{"ErrDatasetsNotModeled", ErrDatasetsNotModeled, "datasets not modeled by this layout"},
 	}
 

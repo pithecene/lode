@@ -3,7 +3,7 @@
 This document defines the contract for the `Volume` persistence paradigm.
 It is authoritative for all Volume implementations.
 
-Status: **Active** (v0.8.0)
+Status: **Active, experimental API** (v0.8.0; package `lode/volume` and experimental since D9)
 
 ---
 
@@ -27,15 +27,15 @@ Status: **Active** (v0.8.0)
 
 ### Volume
 
-A logical byte address space `[0..N)` identified by `VolumeID` and `TotalLength`.
+A logical byte address space `[0..N)` identified by `ID` and `TotalLength`.
 
-### VolumeSnapshot
+### Snapshot
 
 An immutable commit that records the **cumulative** set of all verified
 committed blocks across the volume's history. Each snapshot is self-contained:
 its manifest is the sole authority for read visibility at that point in time.
 
-### VolumeSnapshotID
+### SnapshotID
 
 A stable identifier for a committed Volume snapshot, generated in the same
 form as `DatasetSnapshotID` (CONTRACT_CORE §Snapshot ID).
@@ -146,15 +146,23 @@ Required behavior:
 
 ## Public API Surface
 
-The public Volume API is explicit, minimal, and composed from
-`VolumeWriter` + `VolumeReader` sub-interfaces:
+Volume is **experimental** (`docs/V1_API_DECISIONS.md` D9): it lives in
+package `lode/volume` and is outside the v1.0 compatibility promise until it
+passes its own stability gate (`docs/V1_READINESS.md` §4). This contract
+binds its behavior in every release; the API shape may change between
+releases. The persisted format (Storage Layout, Manifest Requirements) is
+not experimental: data written by any release stays readable.
+
+The public Volume API is explicit, minimal, and composed from `Writer` +
+`Reader` sub-interfaces (package `volume`; `lode.` names are the shared
+types it uses):
 
 ```go
-// VolumeID uniquely identifies a volume.
-type VolumeID string
+// ID uniquely identifies a volume.
+type ID string
 
-// VolumeSnapshotID uniquely identifies an immutable volume snapshot.
-type VolumeSnapshotID string
+// SnapshotID uniquely identifies an immutable volume snapshot.
+type SnapshotID string
 
 // BlockRef references a staged or committed byte block within a volume.
 type BlockRef struct {
@@ -164,14 +172,14 @@ type BlockRef struct {
     Checksum string // populated when WithChecksum is configured
 }
 
-// VolumeSnapshot represents an immutable point-in-time view of a volume.
-type VolumeSnapshot struct {
-    ID       VolumeSnapshotID
-    Manifest *VolumeManifest
+// Snapshot represents an immutable point-in-time view of a volume.
+type Snapshot struct {
+    ID       SnapshotID
+    Manifest *Manifest
 }
 
-// VolumeWriter defines the write surface for a volume.
-type VolumeWriter interface {
+// Writer defines the write surface for a volume.
+type Writer interface {
     // StageWriteAt writes data at an offset and returns a block handle.
     // Staged data is not visible until Commit is called.
     StageWriteAt(ctx context.Context, offset int64, r io.Reader) (BlockRef, error)
@@ -179,51 +187,51 @@ type VolumeWriter interface {
     // Commit records the provided blocks into a new immutable snapshot.
     // The resulting manifest is cumulative: it includes all previously committed
     // blocks plus the new blocks. Commit MUST include at least one new block.
-    Commit(ctx context.Context, blocks []BlockRef, metadata Metadata) (*VolumeSnapshot, error)
+    Commit(ctx context.Context, blocks []BlockRef, metadata lode.Metadata) (*Snapshot, error)
 }
 
-// VolumeReader defines the read surface for a volume.
-type VolumeReader interface {
+// Reader defines the read surface for a volume.
+type Reader interface {
     // ReadAt reads a fully committed range from a snapshot.
-    ReadAt(ctx context.Context, snapshotID VolumeSnapshotID, offset, length int64) ([]byte, error)
+    ReadAt(ctx context.Context, snapshotID SnapshotID, offset, length int64) ([]byte, error)
 
     // Latest returns the most recently committed snapshot.
-    // Returns ErrNoSnapshots if no snapshots exist.
-    Latest(ctx context.Context) (*VolumeSnapshot, error)
+    // Returns lode.ErrNoSnapshots if no snapshots exist.
+    Latest(ctx context.Context) (*Snapshot, error)
 
     // Snapshots lists all committed snapshots.
-    Snapshots(ctx context.Context) ([]*VolumeSnapshot, error)
+    Snapshots(ctx context.Context) ([]*Snapshot, error)
 
     // Snapshot retrieves a specific snapshot by ID.
-    // Returns ErrNotFound if the snapshot does not exist.
-    Snapshot(ctx context.Context, id VolumeSnapshotID) (*VolumeSnapshot, error)
+    // Returns lode.ErrNotFound if the snapshot does not exist.
+    Snapshot(ctx context.Context, id SnapshotID) (*Snapshot, error)
 }
 
 // Volume composes the full read/write surface for a sparse byte space.
 type Volume interface {
-    VolumeWriter
-    VolumeReader
-    ID() VolumeID
+    Writer
+    Reader
+    ID() ID
 }
 
-// NewVolume creates a volume with a fixed total length.
-func NewVolume(id VolumeID, storeFactory StoreFactory, totalLength int64, opts ...Option) (Volume, error)
+// New creates a volume with a fixed total length.
+func New(id ID, storeFactory lode.StoreFactory, totalLength int64, opts ...Option) (Volume, error)
 ```
 
 ### Volume Options
 
-Volume accepts the unified `Option` interface (shared with Dataset).
-Applicable options:
+Volume has its own `Option` type; Dataset and DatasetReader options are a
+different type and are rejected at compile time. Options:
 
-- `WithChecksum(c Checksum)` — opt-in integrity checksums on staged blocks.
+- `WithChecksum(c lode.Checksum)` — opt-in integrity checksums on staged blocks.
 - `WithRetryCount(n)` — bounded automatic CAS retry on commit conflict.
 - `WithRetryBaseDelay(d)`, `WithRetryMaxDelay(d)`, `WithRetryJitter(j)` —
   backoff tuning for CAS retry.
 - `WithRetryObserver(fn)` — per-retry callback for observability; same
   semantics as Dataset (see `CONTRACT_WRITE_API.md` §Retry observer).
 
-Options that only apply to Dataset or DatasetReader return an error at
-construction time.
+Retry options share Dataset's defaults and validation: an out-of-range value
+returns `lode.ErrInvalidArgument` with the same message.
 
 ### API Constraints
 
@@ -231,23 +239,23 @@ construction time.
 - `Commit` MUST be manifest-driven and immutable.
 - `Commit` MUST include at least one new block.
 - `Commit` MUST validate no overlaps in the full cumulative block set.
-- `ReadAt` MUST return `ErrRangeMissing` if any sub-range is uncommitted.
-- `VolumeReader` methods parallel Dataset's read surface.
-- `Volume` composes `VolumeWriter` + `VolumeReader`.
+- `ReadAt` MUST return `volume.ErrRangeMissing` if any sub-range is uncommitted.
+- `Reader` methods parallel Dataset's read surface.
+- `Volume` composes `Writer` + `Reader`.
 
 ---
 
 ## Error Semantics
 
-- Missing committed range MUST return `ErrRangeMissing`.
-- Overlapping blocks at Commit MUST return `ErrOverlappingBlocks`.
+- Missing committed range MUST return `volume.ErrRangeMissing`.
+- Overlapping blocks at Commit MUST return `volume.ErrOverlappingBlocks`.
 - Empty block list at Commit MUST return an error.
-- `nil` metadata at Commit MUST be coalesced to empty (`Metadata{}`).
+- `nil` metadata at Commit MUST be coalesced to empty (`lode.Metadata{}`).
 - Range reads MUST NOT return partial data without error.
-- `Latest` on empty volume MUST return `ErrNoSnapshots`.
-- `Snapshot` for unknown ID MUST return `ErrNotFound`.
-- Stale parent at Commit MUST return `ErrSnapshotConflict` when the store
-  implements `ConditionalWriter`.
+- `Latest` on empty volume MUST return `lode.ErrNoSnapshots`.
+- `Snapshot` for unknown ID MUST return `lode.ErrNotFound`.
+- Stale parent at Commit MUST return `lode.ErrSnapshotConflict` when the store
+  implements `lode.ConditionalWriter`.
 
 ---
 
@@ -333,7 +341,8 @@ volumes/<volume_id>/data/<offset>-<length>.bin
 
 ## Dataset Boundary
 
-`Dataset` and `Volume` are coequal abstractions with distinct semantics:
+`Dataset` and `Volume` are distinct containers over one snapshot-history core
+(the snapshot chain, latest pointer and CAS commit), with distinct semantics:
 
 - Dataset streaming: atomic construction of complete objects
 - Volume streaming: incremental commitment of partial truth

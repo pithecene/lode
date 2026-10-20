@@ -24,9 +24,9 @@ tasks:
       - go test -race -count=1 ./...
 
   mutate:
-    desc: Run mutation tests on ./lode (gremlins; config in .gremlins.yaml)
+    desc: Run mutation tests on the module (lode, internal; gremlins; config in .gremlins.yaml)
     cmds:
-      - gremlins unleash ./lode/
+      - gremlins unleash .
 
   build:
     desc: Build all packages

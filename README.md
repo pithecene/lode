@@ -14,9 +14,9 @@
 
 Lode is an embeddable Go persistence framework that brings snapshots,
 metadata, and safe write semantics to object storage—without running a
-database. It offers two coequal persistence paradigms: **Datasets** for
-structured collections of named objects, and **Volumes** for sparse,
-resumable byte-range storage.
+database. It offers **Datasets** for structured collections of named
+objects and, as an experimental package (`lode/volume`), **Volumes** for
+sparse, resumable byte-range storage.
 
 ---
 
@@ -65,7 +65,7 @@ Lode is built around a small set of invariants:
 - **Snapshots reference manifests** that describe data files and metadata
 - **Storage, format, compression, and partitioning are orthogonal**
 
-**Volume** (sparse byte ranges):
+**Volume** (sparse byte ranges; experimental package `lode/volume`, outside the v1.0 compatibility promise):
 - **Volumes are sparse, resumable byte address spaces**
 - **Volume commits track which byte ranges exist** — gaps are explicit, never zero-filled
 - **Each commit produces a cumulative manifest** covering all committed blocks
@@ -145,16 +145,16 @@ sw.Write([]byte("... large data ..."))
 snap, _ := sw.Commit(ctx)
 ```
 
-### Write sparse byte ranges (Volume)
+### Write sparse byte ranges (Volume, experimental)
 
 <!-- illustrative: shows API pattern; see examples/ for runnable code -->
 ```go
-// Volume: sparse, resumable byte-range persistence
-vol, _ := lode.NewVolume("disk-image", lode.NewFSFactory("/tmp/lode-demo"), 1024)
+// Volume: sparse, resumable byte-range persistence (package lode/volume)
+vol, _ := volume.New("disk-image", lode.NewFSFactory("/tmp/lode-demo"), 1024)
 
 // Stage a byte range and commit
 blk, _ := vol.StageWriteAt(ctx, 0, bytes.NewReader(data))
-snap, _ := vol.Commit(ctx, []lode.BlockRef{blk}, lode.Metadata{"step": "boot"})
+snap, _ := vol.Commit(ctx, []volume.BlockRef{blk}, lode.Metadata{"step": "boot"})
 
 // Read it back
 result, _ := vol.ReadAt(ctx, snap.ID, 0, len(data))
@@ -171,13 +171,13 @@ See [`examples/`](#examples) for complete runnable code.
 | Dataset | `Write` | In-memory data, small batches | ✅ Optional | ✅ Supported |
 | Dataset | `StreamWrite` | Large binary payloads (GB+) | ❌ Raw only | ❌ Not supported |
 | Dataset | `StreamWriteRecords` | Large record streams | ✅ Required (streaming) | ❌ Not supported |
-| Volume | `StageWriteAt` + `Commit` | Sparse byte ranges, resumable | ❌ Raw only | ❌ Not applicable |
+| Volume (experimental) | `StageWriteAt` + `Commit` | Sparse byte ranges, resumable | ❌ Raw only | ❌ Not applicable |
 
 **Decision flow:**
 1. Is the data already in memory? → Use `Write`
 2. Is it a large binary blob (no structure)? → Use `StreamWrite`
 3. Is it a large stream of records? → Use `StreamWriteRecords` with a streaming codec
-4. Is it a sparse/resumable byte address space? → Use `Volume`
+4. Is it a sparse/resumable byte address space? → Use `volume.Volume` (experimental)
 
 ---
 

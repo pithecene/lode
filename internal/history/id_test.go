@@ -1,4 +1,4 @@
-package lode
+package history
 
 import (
 	"testing"
@@ -9,7 +9,7 @@ import (
 // §Snapshot ID).
 func TestSnapshotID(t *testing.T) {
 	t.Run("instant only from the generated form", func(t *testing.T) {
-		for id, want := range map[DatasetSnapshotID]bool{
+		for id, want := range map[string]bool{
 			"1792459022524750970":                   true,
 			"0":                                     true,
 			"1792459022524750970-0123456789abcdef":  true,
@@ -27,20 +27,30 @@ func TestSnapshotID(t *testing.T) {
 			"abc":                                   false,
 			"":                                      false,
 		} {
-			if _, ok := snapshotInstant(id); ok != want {
-				t.Errorf("snapshotInstant(%q) ok = %v, want %v", id, ok, want)
+			if _, ok := Instant(id); ok != want {
+				t.Errorf("Instant(%q) ok = %v, want %v", id, ok, want)
 			}
 		}
 	})
 
 	t.Run("format round-trips the instant", func(t *testing.T) {
 		at := time.Unix(0, 1792459022524750970)
-		id := DatasetSnapshotID(formatSnapshotID(at, [nonceBytes]byte{0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef}))
+		id := FormatID(at, [NonceBytes]byte{0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef})
 		if id != "1792459022524750970-0123456789abcdef" {
-			t.Fatalf("formatSnapshotID = %q", id)
+			t.Fatalf("FormatID = %q", id)
 		}
-		if got, ok := snapshotInstant(id); !ok || !got.Equal(at) {
-			t.Fatalf("snapshotInstant(%q) = %v, %v; want %v, true", id, got, ok, at)
+		if got, ok := Instant(id); !ok || !got.Equal(at) {
+			t.Fatalf("Instant(%q) = %v, %v; want %v, true", id, got, ok, at)
+		}
+	})
+
+	t.Run("new IDs carry the clock", func(t *testing.T) {
+		before := time.Now()
+		a, b := NewID(), NewID()
+		at, okA := Instant(a)
+		bt, okB := Instant(b)
+		if !okA || !okB || at.Before(before.Truncate(time.Nanosecond)) || bt.Before(at) {
+			t.Fatalf("IDs %q, %q: want instants from the clock, in order", a, b)
 		}
 	})
 
@@ -49,13 +59,13 @@ func TestSnapshotID(t *testing.T) {
 		const n = 1000
 		seen := make(map[string]bool, n)
 		for range n {
-			id := generateID()
+			id := NewID()
 			if seen[id] {
-				t.Fatalf("generateID repeated %q", id)
+				t.Fatalf("NewID repeated %q", id)
 			}
 			seen[id] = true
-			if _, ok := snapshotInstant(DatasetSnapshotID(id)); !ok {
-				t.Fatalf("generateID returned %q, not in the generated form", id)
+			if _, ok := Instant(id); !ok {
+				t.Fatalf("NewID returned %q, not in the generated form", id)
 			}
 		}
 	})
@@ -63,16 +73,16 @@ func TestSnapshotID(t *testing.T) {
 	// String order is instant order, and a legacy ID sorts before a new ID with
 	// the same instant.
 	t.Run("string order follows the instant", func(t *testing.T) {
-		var zero, ones [nonceBytes]byte
+		var zero, ones [NonceBytes]byte
 		for i := range ones {
 			ones[i] = 0xff
 		}
 		ordered := []string{
 			"1792459022524750969",
-			formatSnapshotID(time.Unix(0, 1792459022524750969), ones),
+			FormatID(time.Unix(0, 1792459022524750969), ones),
 			"1792459022524750970",
-			formatSnapshotID(time.Unix(0, 1792459022524750970), zero),
-			formatSnapshotID(time.Unix(0, 1792459022524750971), zero),
+			FormatID(time.Unix(0, 1792459022524750970), zero),
+			FormatID(time.Unix(0, 1792459022524750971), zero),
 		}
 		for i := 1; i < len(ordered); i++ {
 			if ordered[i-1] >= ordered[i] {

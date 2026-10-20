@@ -8,6 +8,9 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/pithecene-io/lode/internal/history"
+	"github.com/pithecene-io/lode/internal/validate"
 )
 
 // Sweep completes interrupted expiries and reclaims never-committed data
@@ -16,7 +19,7 @@ import (
 func (d *dataset) Sweep(ctx context.Context, req SweepRequest) (*SweepReport, error) {
 	report := &SweepReport{}
 	if req.Grace <= 0 {
-		return report, invalidArgument("Sweep grace must be positive, got %s", req.Grace)
+		return report, validate.Argument("Sweep grace must be positive, got %s", req.Grace)
 	}
 	inv, err := d.sweepInventory(ctx)
 	report.Unparseable = inv.invalidTombstones // examined before any later failure
@@ -137,7 +140,7 @@ func (g headGuardian) holdsObjects(id DatasetSnapshotID) bool {
 //   - with no pointer, a dataset showing a manifest or a tombstone is
 //     refused with ErrHeadUncommitted, and one showing neither has no head.
 func (d *dataset) sweepGuard(ctx context.Context, inv sweepInventory) (headGuardian, error) {
-	head, err := d.history.readPointer(ctx)
+	head, err := d.history.ReadPointer(ctx)
 	if errors.Is(err, ErrNotFound) {
 		if len(inv.manifests) > 0 || len(inv.tombstones) > 0 || len(inv.invalidTombstones) > 0 {
 			return headGuardian{}, fmt.Errorf("lode: latest pointer is absent: %w", ErrHeadUncommitted)
@@ -148,7 +151,7 @@ func (d *dataset) sweepGuard(ctx context.Context, inv sweepInventory) (headGuard
 		return headGuardian{}, fmt.Errorf("lode: failed to resolve head: %w", err)
 	}
 	// One pointer read decides: the value just read is the one confirmed.
-	err = d.history.confirmCommitted(ctx, head)
+	err = d.history.ConfirmCommitted(ctx, head)
 	if errors.Is(err, ErrHeadUncommitted) {
 		return headGuardian{named: head, inFlight: true}, nil
 	}
@@ -291,7 +294,7 @@ func (r sweepRun) classify(id DatasetSnapshotID) objectClass {
 	if _, live := r.inv.manifests[id]; live || r.inv.guard.holdsObjects(id) {
 		return classKept
 	}
-	began, ok := snapshotInstant(id)
+	began, ok := history.Instant(id)
 	if !ok {
 		return classUnparseable
 	}
