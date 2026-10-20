@@ -30,15 +30,21 @@ const sweepGrace = 24 * time.Hour
 
 // listInjector adds raw keys to listings, as a store that does not
 // normalize its keys might return, hides keys from them, as a lagging
-// listing would, and records deletes.
+// listing would, fails one prefix's listing, and records deletes.
 type listInjector struct {
 	Store
-	extra   []string
-	hidden  []string
-	deleted []string
+	extra      []string
+	hidden     []string
+	deleted    []string
+	failPrefix string // a listing of exactly this prefix fails
 }
 
+var errListFailed = errors.New("list failed")
+
 func (l *listInjector) List(ctx context.Context, prefix string) ([]string, error) {
+	if l.failPrefix != "" && prefix == l.failPrefix {
+		return nil, errListFailed
+	}
 	keys, err := l.Store.List(ctx, prefix)
 	keys = slices.DeleteFunc(keys, func(k string) bool { return slices.Contains(l.hidden, k) })
 	for _, k := range l.extra {
@@ -120,6 +126,27 @@ func TestSweep_Request(t *testing.T) {
 		}
 		if wet.Objects != 2 || wet.Orphans != 1 || len(wet.Settled) != 1 {
 			t.Errorf("real run = %+v, want one settled snapshot and one orphan", wet)
+		}
+	})
+
+	t.Run("a listing failure still reports invalid tombstones", func(t *testing.T) {
+		mem := NewMemory()
+		lister := &listInjector{Store: mem}
+		ds := newDefaultRetention(t, lister)
+		first := writeRecord(t, ds, 1)
+		writeRecord(t, ds, 2)
+		tomb := "datasets/events/expired/" + string(first.ID)
+		if err := mem.Put(t.Context(), tomb, strings.NewReader("{}")); err != nil {
+			t.Fatal(err)
+		}
+		lister.failPrefix = "datasets/events/snapshots/"
+
+		report, err := ds.Sweep(t.Context(), SweepRequest{Grace: sweepGrace})
+		if !errors.Is(err, errListFailed) {
+			t.Fatalf("Sweep = %v, want the listing failure", err)
+		}
+		if !slices.Equal(report.Unparseable, []string{tomb}) {
+			t.Errorf("Unparseable = %v, want the invalid tombstone examined before the failure", report.Unparseable)
 		}
 	})
 
@@ -452,6 +479,33 @@ func TestSweep_Head(t *testing.T) {
 		if !slices.Equal(report.Settled, []DatasetSnapshotID{gone.ID}) || exists(t, mem, leftover) {
 			t.Errorf("report = %+v, leftover present %v; want the expired leftover settled", report, exists(t, mem, leftover))
 		}
+	})
+
+	t.Run("without a pointer an expiring head the listing half shows is held", func(t *testing.T) {
+		mem := NewMemory()
+		lister := &listInjector{Store: mem}
+		ds := newHiveRetention(t, lister)
+		writeRun(t, ds, "a", "x")
+		head := writeRun(t, ds, "b", "x")
+		putTombstone(t, mem, head.ID, newTombstone(head.ID, head.Manifest)) // misplaced
+		if err := mem.Delete(t.Context(), "datasets/events/latest"); err != nil {
+			t.Fatal(err)
+		}
+		// The listing shows a partition copy but omits the canonical one.
+		for _, k := range storeKeys(t, mem) {
+			if strings.Contains(k, string(head.ID)) && strings.HasSuffix(k, manifestFile) && !strings.Contains(k, "partitions/") {
+				lister.hidden = append(lister.hidden, k)
+			}
+		}
+
+		report, err := ds.Sweep(t.Context(), SweepRequest{Grace: sweepGrace})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(report.Settled) != 0 || report.Objects != 0 {
+			t.Errorf("report = %+v, want the head held", report)
+		}
+		assertPresent(t, ds, head)
 	})
 
 	t.Run("a held tombstone keeps its data", func(t *testing.T) {
