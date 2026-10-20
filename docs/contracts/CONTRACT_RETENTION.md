@@ -104,8 +104,10 @@ the test for liveness. Every other object under the dataset that is not one
 of its manifests (partition-level sidecars such as
 `partitions/<k=v>/run.json`, the pointer, tombstones) is outside retention's
 scope: a store listing of the dataset MAY return them, but `Sweep` and
-`Expire` MUST NOT report or delete them. Manifests are deleted only as
-§Order of operations prescribes. This scope is a
+`Expire` MUST NOT delete them, and MUST NOT report them unless a manifest
+names them (a `FileRef.Path` that fails the step-4 guard is reported in
+`Skipped`, never deleted). Manifests are deleted only as §Order of
+operations prescribes. This scope is a
 consumer dependency (quarry keeps its run record there), not an
 implementation detail.
 
@@ -445,7 +447,7 @@ selects, T the tombstones, D the objects deleted.
 
 | Operation | Store Calls | Memory |
 |-----------|-------------|--------|
-| `Expire` | 1 List (the `Partition` subtree, else the snapshot prefix) + (K + 1) pointer Gets, each followed by at most one `Exists` + K manifest Gets + K tombstone writes + Σ(manifests + files) Deletes; +1 List when the pointer is absent | O(N + K × manifest) |
+| `Expire` | 1 List (the `Partition` subtree, else the snapshot prefix) + (K + 1) pointer Gets, each followed by at most one `Exists` + K manifest Gets + K tombstone writes (each + at most 1 read-back Get when it already exists) + Σ(manifests + files) Deletes; +1 List when the pointer is absent | O(N + K × manifest) |
 | `Sweep` | 2 Lists (tombstones, snapshot prefix) + 1 pointer Get + T tombstone Gets + D Deletes | O(N + T) |
 | `Snapshot(id)`, `Read(id)` expired path | +1 Get (tombstone) | O(1) |
 
