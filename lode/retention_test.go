@@ -434,6 +434,40 @@ func TestExpire_Partition(t *testing.T) {
 		}
 	})
 
+	t.Run("a resumed expiry is checked against the partition", func(t *testing.T) {
+		mem := NewMemory()
+		hs := &hookStore{Store: mem}
+		ds := newHiveRetention(t, casHookStore{hs})
+		both, err := ds.Write(t.Context(), R(D{"run_id": "a", "event_type": "x"}, D{"run_id": "b", "event_type": "x"}), Metadata{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeRun(t, ds, "c", "x") // head
+		putTombstone(t, mem, both.ID, newTombstone(both.ID, both.Manifest))
+		// Another expiry removes every manifest right after this listing.
+		hs.onList = func(string, []string) {
+			hs.onList = nil
+			for _, k := range storeKeys(t, mem) {
+				if strings.Contains(k, string(both.ID)) && strings.HasSuffix(k, manifestFile) {
+					_ = mem.Delete(t.Context(), k)
+				}
+			}
+		}
+
+		report, err := ds.Expire(t.Context(), ExpireRequest{Partition: "run_id=a"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(report.Mixed, []DatasetSnapshotID{both.ID}) || len(report.Expired) != 0 {
+			t.Errorf("report = %+v, want the snapshot reported mixed, not expired", report)
+		}
+		for _, f := range both.Manifest.Files {
+			if ok, _ := mem.Exists(t.Context(), f.Path); !ok {
+				t.Errorf("%s was deleted by a run scoped to run_id=a", f.Path)
+			}
+		}
+	})
+
 	t.Run("mixed snapshot is kept", func(t *testing.T) {
 		ds := newHiveRetention(t, NewMemory())
 		mixed := writeRun(t, ds, "a", "x")
@@ -1336,6 +1370,31 @@ func TestEnumeration_ToleratesDeletion(t *testing.T) {
 		parts, err := reader.ListPartitions(t.Context(), "events", PartitionListOptions{})
 		if err != nil || len(parts) != 1 || parts[0].Path != "run_id=b/event_type=x" {
 			t.Errorf("ListPartitions = %v, %v; want only run_id=b", parts, err)
+		}
+	})
+
+	t.Run("latest scan falls back to another copy of a snapshot", func(t *testing.T) {
+		mem := NewMemory()
+		hs := &hookStore{Store: mem}
+		ds := newHiveRetention(t, casHookStore{hs})
+		writeRun(t, ds, "a", "x")
+		newest := writeRun(t, ds, "b", "x", "y")
+		if err := mem.Delete(t.Context(), "datasets/events/latest"); err != nil {
+			t.Fatal(err)
+		}
+		var copies []string
+		for _, k := range storeKeys(t, mem) {
+			if strings.Contains(k, string(newest.ID)) && strings.HasSuffix(k, manifestFile) {
+				copies = append(copies, k)
+			}
+		}
+		slices.Sort(copies)
+		vanishOnList(t, hs, copies[0]) // the copy the scan would load first
+
+		ds = newHiveRetention(t, casHookStore{hs})
+		latest, err := ds.Latest(t.Context())
+		if err != nil || latest.ID != newest.ID {
+			t.Errorf("Latest = %v, %v; want %s from a surviving copy", latest, err, newest.ID)
 		}
 	})
 

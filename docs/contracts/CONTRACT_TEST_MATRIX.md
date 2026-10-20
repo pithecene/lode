@@ -282,7 +282,7 @@ All error sentinels covered ✅
 | Empty request, malformed or unsupported `Partition` rejected before any store call | `TestExpire_Validation` | ✅ |
 | Expiry removes manifests and data, keeps a tombstone; `Snapshot`/`Read` return `ErrSnapshotExpired` | `TestExpire_Selection/by_ID_removes_manifest_and_data`, `TestExpire_Selection/flat_layout` | ✅ |
 | `Partition` matches whole segments | `TestExpire_Partition/matches_whole_segments`, `TestExpire_Partition/a_trailing_slash_is_valid` | ✅ |
-| Mixed snapshots kept under `Partition`, expirable by `IDs` | `TestExpire_Partition/mixed_snapshot_is_kept` | ✅ |
+| Mixed snapshots kept under `Partition`, expirable by `IDs` | `TestExpire_Partition/mixed_snapshot_is_kept`, `TestExpire_Partition/a_resumed_expiry_is_checked_against_the_partition` | ✅ |
 | `Before` selects by snapshot ID instant; selectors intersect | `TestExpire_Selection/before_uses_the_snapshot_ID_instant`, `TestExpire_Selection/selectors_intersect` | ✅ |
 | Head retained and reported, no tombstone written for it; a head superseded mid-run stays retained | `TestExpire_Head/retained_and_reported`, `TestExpire_Head/without_a_pointer_the_scanned_head_is_protected`, `TestExpire_Head/superseded_mid-run_stays_retained` | ✅ |
 | Uncommitted head stops expiry, including at a retained head's recheck; report lists completed work | `TestExpire_Head/uncommitted_expires_nothing`, `TestExpire_Head/uncommitted_mid-run_reports_completed_work`, `TestExpire_Head/uncommitted_before_a_retained_head_stops_the_run` | ✅ |
@@ -294,7 +294,7 @@ All error sentinels covered ✅
 | Expired snapshot not resurrected by the scan fallback; rerun completes | `TestExpire_Resumption/interrupted_after_the_canonical_delete_is_not_resurrected` | ✅ |
 | Foreign `Files[]` paths reported in `Skipped`, never deleted; no derived path escapes the dataset | `TestExpire_PathSafety/foreign_FileRef_is_skipped`, `TestExpire_PathSafety/a_snapshot_left_unexpired_reports_no_skipped_paths`, `TestExpire_PathSafety/a_failed_expiry_reports_no_skipped_paths`, `TestExpire_Partition/a_foreign_file_does_not_make_a_snapshot_mixed`, `TestExpire_PathSafety/traversal_in_a_FileRef_deletes_nothing_outside` | ✅ |
 | A legacy head with only partition manifests is committed | `TestExpire_Head/legacy_partition-only_head_is_committed` | ✅ |
-| Enumeration skips manifests deleted after listing | `TestEnumeration_ToleratesDeletion/listings_skip_a_manifest_deleted_after_listing`, `TestEnumeration_ToleratesDeletion/latest_scan_skips_a_manifest_deleted_after_listing` | ✅ |
+| Enumeration skips manifests deleted after listing | `TestEnumeration_ToleratesDeletion/listings_skip_a_manifest_deleted_after_listing`, `TestEnumeration_ToleratesDeletion/latest_scan_skips_a_manifest_deleted_after_listing`, `TestEnumeration_ToleratesDeletion/latest_scan_falls_back_to_another_copy_of_a_snapshot` | ✅ |
 
 ---
 

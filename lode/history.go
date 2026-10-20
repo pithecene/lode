@@ -89,9 +89,9 @@ func (h *history[ID, M]) Snapshot(ctx context.Context, id ID) (*snapshot[ID, M],
 
 // manifests lists every manifest path with the snapshot ID it names, one
 // entry per snapshot, in no particular order. A snapshot may have several
-// manifest copies (canonical plus one per partition); the lexicographically
-// smallest path is kept so the same storage state always yields the same
-// entries. One pass, no sort: a dataset prefix covers every data file too,
+// manifest copies (canonical plus one per partition); all are kept, the
+// lexicographically smallest first, so the same storage state always loads
+// the same copy and a copy deleted after the listing falls back to another. One pass, no sort: a dataset prefix covers every data file too,
 // and CONTRACT_COMPLEXITY bounds degraded Latest/Snapshot at O(N) in listed
 // keys. Snapshots orders the entries itself, within its own S log S bound.
 func (h *history[ID, M]) manifests(ctx context.Context) ([]manifestEntry[ID], error) {
@@ -99,26 +99,47 @@ func (h *history[ID, M]) manifests(ctx context.Context) ([]manifestEntry[ID], er
 	if err != nil {
 		return nil, fmt.Errorf("lode: failed to list snapshots: %w", err)
 	}
-	byID := make(map[ID]string)
+	byID := make(map[ID][]string)
 	for _, p := range paths {
-		id, ok := h.kind.parseManifest(p)
-		if !ok {
-			continue
-		}
-		if cur, seen := byID[id]; !seen || p < cur {
-			byID[id] = p
+		if id, ok := h.kind.parseManifest(p); ok {
+			byID[id] = smallestFirst(append(byID[id], p))
 		}
 	}
 	out := make([]manifestEntry[ID], 0, len(byID))
-	for id, p := range byID {
-		out = append(out, manifestEntry[ID]{id, p})
+	for id, copies := range byID {
+		out = append(out, manifestEntry[ID]{id, copies})
 	}
 	return out, nil
 }
 
+// smallestFirst moves the last path to the front when it is the smallest,
+// so the front is always the minimum without sorting the rest.
+func smallestFirst(paths []string) []string {
+	if last := len(paths) - 1; paths[last] < paths[0] {
+		paths[0], paths[last] = paths[last], paths[0]
+	}
+	return paths
+}
+
+// manifestEntry is one snapshot a listing found, with every manifest copy
+// it showed, smallest path first.
 type manifestEntry[ID ~string] struct {
-	id   ID
-	path string
+	id    ID
+	paths []string
+}
+
+// loadEntry loads the snapshot from the first of its listed copies that is
+// still present. ErrNotFound means an expiry removed every copy after the
+// listing, which enumeration skips rather than reports
+// (CONTRACT_RETENTION §Lineage).
+func (h *history[ID, M]) loadEntry(ctx context.Context, e manifestEntry[ID]) (*snapshot[ID, M], error) {
+	for _, p := range e.paths {
+		s, err := h.load(ctx, e.id, p)
+		if !errors.Is(err, ErrNotFound) {
+			return s, err
+		}
+	}
+	return nil, fmt.Errorf("lode: snapshot %s: every listed manifest is gone: %w", e.id, ErrNotFound)
 }
 
 // Snapshots loads every snapshot, ordered by ID so that callers sorting on
@@ -133,7 +154,7 @@ func (h *history[ID, M]) Snapshots(ctx context.Context) ([]*snapshot[ID, M], err
 	for _, e := range entries {
 		// A manifest an expiry deleted after the listing is skipped, not
 		// reported (CONTRACT_RETENTION §Lineage).
-		s, err := h.load(ctx, e.id, e.path)
+		s, err := h.loadEntry(ctx, e)
 		if errors.Is(err, ErrNotFound) {
 			continue
 		}
@@ -154,7 +175,7 @@ func (h *history[ID, M]) find(ctx context.Context, id ID) (*snapshot[ID, M], err
 	}
 	for _, e := range entries {
 		if e.id == id {
-			return h.load(ctx, e.id, e.path)
+			return h.loadEntry(ctx, e)
 		}
 	}
 	return nil, ErrNotFound
@@ -176,7 +197,7 @@ func (h *history[ID, M]) scan(ctx context.Context) (*snapshot[ID, M], error) {
 	heap.Init(&byNewest)
 	for byNewest.Len() > 0 {
 		e := heap.Pop(&byNewest).(manifestEntry[ID])
-		s, err := h.load(ctx, e.id, e.path)
+		s, err := h.loadEntry(ctx, e)
 		if errors.Is(err, ErrNotFound) {
 			continue
 		}

@@ -332,7 +332,9 @@ func (r expiryRun) expire(ctx context.Context, c expiryCandidate) (expiryOutcome
 		return out, err
 	}
 	split := r.ds.splitFiles(c.id, plan.tomb.Files)
-	if plan.manifest != nil && r.sel.spansOutside(r.ds.layout, split.owned) {
+	// A tombstone's inventory is the whole snapshot, so a resumed expiry is
+	// checked against the partition too.
+	if r.sel.spansOutside(r.ds.layout, split.owned) {
 		out.verdict = verdictMixed
 		return out, nil
 	}
