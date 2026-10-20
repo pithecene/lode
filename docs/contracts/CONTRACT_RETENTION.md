@@ -349,7 +349,12 @@ manifest and data object of the layout). It then performs, in order:
    Notes) — is not a tombstone and is neither reported nor deleted. Load
    each tombstone and verify it is non-empty, records the snapshot ID in
    its path, and carries an inventory; a tombstone that fails validation
-   MUST be reported under `Unparseable` and MUST NOT settle anything. For
+   MUST be reported under `Unparseable` and MUST NOT settle anything. When
+   a manifest of the snapshot still loads, the tombstone's inventory MUST
+   equal its `Files[]` (paths and sizes), as in step 1 of §Order of
+   operations; otherwise the tombstone belongs to an earlier snapshot with
+   the same ID, MUST be reported under `Unparseable`, and MUST NOT settle
+   the snapshot or reclaim its objects. For
    every valid tombstoned ID, perform steps 2–3 of §Order of operations.
    Only once **every** manifest of that snapshot is confirmed absent is the
    snapshot *settled*; `Settled` reports the snapshots whose manifests this
@@ -448,7 +453,7 @@ type SweepReport struct {
     Bytes       int64               // recorded sizes of those a tombstone inventory lists
     Unsized     int                 // of Objects, those with no recorded size
     Orphans     int                 // of Unsized, those of snapshots never committed
-    Unparseable []string            // invalid tombstones; orphaned objects without an ID instant
+    Unparseable []string            // invalid or mismatched tombstones; orphaned objects without an ID instant
 }
 ```
 
@@ -498,7 +503,7 @@ selects, T the tombstones, D the objects deleted.
 | Operation | Store Calls | Memory |
 |-----------|-------------|--------|
 | `Expire` | 1 List (the `Partition` subtree, else the snapshot prefix) + (K + 1) pointer Gets, each followed by at most one `Exists` + K manifest Gets + K tombstone Gets (the recorded inventory, if any; also one per requested ID with no manifest) + K tombstone writes (each + at most 1 read-back Get when it already exists) + Σ(manifests + files) Deletes; +1 List when the pointer is absent | O(N + K × manifest) |
-| `Sweep` | 2 Lists (tombstones, snapshot prefix) + 1 pointer Get + T tombstone Gets + D Deletes | O(N + T) |
+| `Sweep` | 2 Lists (tombstones, snapshot prefix) + 1 pointer Get + T tombstone Gets + 1 manifest Get per tombstoned snapshot with a manifest left (more only when its copies are deleted while loading) + D Deletes | O(N + T) |
 | `Snapshot(id)`, `Read(id)` expired path | +1 Get (tombstone) | O(1) |
 
 Pointer Gets: one preflight read plus one re-read immediately before each
