@@ -81,6 +81,17 @@ func (h *history[ID, M]) load(ctx context.Context, id ID, path string) (*snapsho
 	return &snapshot[ID, M]{ID: id, Manifest: m}, nil
 }
 
+// loadListed loads a manifest a listing returned. ok is false when it was
+// deleted after the listing: an expiry removed it, which enumeration skips
+// rather than reports (CONTRACT_RETENTION §Lineage).
+func (h *history[ID, M]) loadListed(ctx context.Context, e manifestEntry[ID]) (s *snapshot[ID, M], ok bool, err error) {
+	s, err = h.load(ctx, e.id, e.path)
+	if errors.Is(err, ErrNotFound) {
+		return nil, false, nil
+	}
+	return s, err == nil, err
+}
+
 // Snapshot loads a snapshot by ID from its canonical manifest.
 func (h *history[ID, M]) Snapshot(ctx context.Context, id ID) (*snapshot[ID, M], error) {
 	return h.load(ctx, id, h.kind.manifestPath(id))
@@ -130,11 +141,13 @@ func (h *history[ID, M]) Snapshots(ctx context.Context) ([]*snapshot[ID, M], err
 	slices.SortFunc(entries, func(a, b manifestEntry[ID]) int { return strings.Compare(string(a.id), string(b.id)) })
 	out := make([]*snapshot[ID, M], 0, len(entries))
 	for _, e := range entries {
-		s, err := h.load(ctx, e.id, e.path)
+		s, ok, err := h.loadListed(ctx, e)
 		if err != nil {
 			return nil, fmt.Errorf("lode: failed to load snapshot %s: %w", e.id, err)
 		}
-		out = append(out, s)
+		if ok {
+			out = append(out, s)
+		}
 	}
 	return out, nil
 }
@@ -155,27 +168,40 @@ func (h *history[ID, M]) find(ctx context.Context, id ID) (*snapshot[ID, M], err
 }
 
 // scan finds the latest snapshot by listing: IDs are nanosecond timestamps,
-// so the lexicographically largest ID is the latest. Returns ErrNoSnapshots
-// when the container is empty.
+// so the lexicographically largest ID is the latest. A manifest expired
+// after the listing is passed over for the next largest. Returns
+// ErrNoSnapshots when the container is empty.
 func (h *history[ID, M]) scan(ctx context.Context) (*snapshot[ID, M], error) {
 	entries, err := h.manifests(ctx)
 	if err != nil {
 		return nil, err
 	}
-	var latest *manifestEntry[ID]
+	// A max search per attempt, not a sort: CONTRACT_COMPLEXITY bounds the
+	// degraded path at O(N), and a manifest vanishing mid-scan is rare.
+	for len(entries) > 0 {
+		i := latestEntry(entries)
+		s, ok, err := h.loadListed(ctx, entries[i])
+		if err != nil {
+			return nil, fmt.Errorf("lode: failed to load latest snapshot: %w", err)
+		}
+		if ok {
+			return s, nil
+		}
+		entries = slices.Delete(entries, i, i+1)
+	}
+	return nil, ErrNoSnapshots
+}
+
+// latestEntry is the index of the entry with the largest ID; entries must
+// be non-empty.
+func latestEntry[ID ~string](entries []manifestEntry[ID]) int {
+	latest := 0
 	for i := range entries {
-		if latest == nil || entries[i].id > latest.id {
-			latest = &entries[i]
+		if entries[i].id > entries[latest].id {
+			latest = i
 		}
 	}
-	if latest == nil {
-		return nil, ErrNoSnapshots
-	}
-	s, err := h.load(ctx, latest.id, latest.path)
-	if err != nil {
-		return nil, fmt.Errorf("lode: failed to load latest snapshot: %w", err)
-	}
-	return s, nil
+	return latest
 }
 
 // -----------------------------------------------------------------------------
@@ -199,6 +225,45 @@ func (h *history[ID, M]) readPointer(ctx context.Context) (ID, error) {
 		return "", ErrNotFound
 	}
 	return id, nil
+}
+
+// CommittedHead returns the head retention must never remove: the snapshot
+// the pointer names, or, with no pointer, the one a scan returns ("" for an
+// empty history). known is a head an earlier call confirmed; a pointer still
+// naming it, or still absent, costs no further call. A pointer naming a
+// snapshot without a canonical manifest is a commit in flight, whose parent
+// the pointer no longer names: ErrHeadUncommitted.
+func (h *history[ID, M]) CommittedHead(ctx context.Context, known ID) (ID, error) {
+	id, err := h.readPointer(ctx)
+	if errors.Is(err, ErrNotFound) {
+		if known != "" {
+			return known, nil
+		}
+		return h.scannedHead(ctx)
+	}
+	if err != nil {
+		return "", fmt.Errorf("lode: failed to resolve head: %w", err)
+	}
+	if id == known {
+		return id, nil
+	}
+	exists, err := h.store.Exists(ctx, h.kind.manifestPath(id))
+	if err != nil {
+		return "", fmt.Errorf("lode: failed to resolve head: %w", err)
+	}
+	if !exists {
+		return "", fmt.Errorf("lode: latest pointer names %s: %w", id, ErrHeadUncommitted)
+	}
+	return id, nil
+}
+
+// scannedHead is the ID a scan would return, without loading its manifest.
+func (h *history[ID, M]) scannedHead(ctx context.Context) (ID, error) {
+	entries, err := h.manifests(ctx)
+	if err != nil || len(entries) == 0 {
+		return "", err
+	}
+	return entries[latestEntry(entries)].id, nil
 }
 
 // writePointer persists id as the pointer. With a ConditionalWriter the write

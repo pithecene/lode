@@ -262,6 +262,27 @@ All error sentinels covered ✅
 | ErrPartitioningNotSupported | `TestDataset_StreamWriteRecords_WithPartitioner_ReturnsError` |
 | ErrRangeMissing | `TestVolume_ReadAt_MissingRange_ReturnsErrRangeMissing`, `TestVolume_ReadAt_GapAtStart_ReturnsErrRangeMissing`, `TestVolume_ReadAt_GapInMiddle_ReturnsErrRangeMissing` |
 | ErrOverlappingBlocks | `TestVolume_Commit_OverlappingBlocks_ReturnsErrOverlappingBlocks`, `TestVolume_Commit_ContainedBlock_Overlap`, `TestVolume_Commit_SameStartOffset_Overlap`, `TestVolume_Commit_OverlapWithExisting_Rejected`, `TestVolume_Commit_ThreeBlockOverlap` |
+| ErrSnapshotExpired | `TestExpire_ByID_RemovesManifestAndData`, `TestExpire_InterruptedAfterCanonicalDelete_IsNotResurrected` |
+| ErrHeadUncommitted | `TestExpire_UncommittedHead_ExpiresNothing`, `TestExpire_UncommittedHeadMidRun_ReportsCompletedWork` |
+
+---
+
+### CONTRACT_RETENTION.md — Snapshot Expiry
+
+| Requirement | Test | Status |
+|-------------|------|--------|
+| Empty request, malformed or unsupported `Partition` rejected before any store call | `TestExpire_Validation` | ✅ |
+| Expiry removes manifests and data, keeps a tombstone; `Snapshot`/`Read` return `ErrSnapshotExpired` | `TestExpire_ByID_RemovesManifestAndData`, `TestExpire_FlatLayout` | ✅ |
+| `Partition` matches whole segments | `TestExpire_Partition_MatchesWholeSegments`, `TestExpire_TrailingSlashPartitionIsValid` | ✅ |
+| Mixed snapshots kept under `Partition`, expirable by `IDs` | `TestExpire_Partition_MixedSnapshotIsKept` | ✅ |
+| `Before` selects by snapshot ID instant; selectors intersect | `TestExpire_Before_UsesSnapshotIDInstant`, `TestExpire_IntersectsSelectors` | ✅ |
+| Head retained and reported, no tombstone written for it | `TestExpire_HeadIsRetainedAndReported`, `TestExpire_NoPointer_ProtectsScannedHead` | ✅ |
+| Uncommitted head stops expiry; report lists completed work | `TestExpire_UncommittedHead_ExpiresNothing`, `TestExpire_UncommittedHeadMidRun_ReportsCompletedWork` | ✅ |
+| Dry run writes and deletes nothing | `TestExpire_DryRun_ChangesNothing` | ✅ |
+| Existing tombstone: same ID resumes, other ID fails (CAS and non-CAS) | `TestExpire_ExistingTombstone` | ✅ |
+| Expired snapshot not resurrected by the scan fallback; rerun completes | `TestExpire_InterruptedAfterCanonicalDelete_IsNotResurrected` | ✅ |
+| Foreign `Files[]` paths reported in `Skipped`, never deleted | `TestExpire_ForeignFileRef_IsSkipped` | ✅ |
+| Enumeration skips manifests deleted after listing | `TestEnumeration_SkipsManifestDeletedAfterListing`, `TestLatestScan_SkipsManifestDeletedAfterListing` | ✅ |
 
 ---
 

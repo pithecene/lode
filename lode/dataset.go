@@ -421,9 +421,14 @@ func (d *dataset) Write(ctx context.Context, data []any, metadata Metadata) (*Da
 
 // Snapshot loads a snapshot by ID. A dataset written before canonical
 // manifests existed is found by scan when the canonical path is absent.
+// An expired snapshot is reported before that scan: its partition manifests
+// may outlive the canonical one, and the scan would resurrect it.
 func (d *dataset) Snapshot(ctx context.Context, id DatasetSnapshotID) (*DatasetSnapshot, error) {
 	s, err := d.history.Snapshot(ctx, id)
 	if errors.Is(err, ErrNotFound) {
+		if expired := d.tombstones().expiredError(ctx, id); expired != nil {
+			return nil, expired
+		}
 		s, err = d.history.find(ctx, id)
 	}
 	if err != nil {

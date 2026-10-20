@@ -120,6 +120,8 @@ func TestSentinels_Messages(t *testing.T) {
 		{ErrOptionNotValidForDataset, "option not valid for dataset"},
 		{ErrOptionNotValidForDatasetReader, "option not valid for reader"},
 		{ErrOptionNotValidForVolume, "option not valid for volume"},
+		{ErrSnapshotExpired, "snapshot expired"},
+		{ErrHeadUncommitted, "head snapshot is not committed yet"},
 	}
 	for _, c := range cases {
 		if c.err.Error() != c.want {

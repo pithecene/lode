@@ -27,6 +27,15 @@ type layout interface {
 	manifestPathInPartition(dataset DatasetID, snapshot DatasetSnapshotID, partition string) string
 	dataFilePath(dataset DatasetID, snapshot DatasetSnapshotID, partition, filename string) string
 	latestPointerPath(dataset DatasetID) string
+	// tombstonePath is where Dataset.Expire records an expired snapshot;
+	// tombstonesPrefix lists every tombstone of a dataset.
+	tombstonePath(dataset DatasetID, snapshot DatasetSnapshotID) string
+	tombstonesPrefix(dataset DatasetID) string
+	// parse reads a path as a manifest or data object of this layout.
+	parse(p string) (snapshotPath, bool)
+	// isDataObjectOf reports whether p is, in canonical form, a data object
+	// of this snapshot of this dataset.
+	isDataObjectOf(dataset DatasetID, snapshot DatasetSnapshotID, p string) bool
 
 	// Partitioning (unified with layout)
 	partitioner() partitioner
@@ -41,6 +50,7 @@ const (
 	partitionsDir = "partitions"
 	segmentsDir   = "segments"
 	latestFile    = "latest"
+	tombstonesDir = "expired"
 )
 
 // -----------------------------------------------------------------------------
@@ -296,6 +306,32 @@ func (l *pathLayout) dataFilePath(dataset DatasetID, snapshot DatasetSnapshotID,
 
 func (l *pathLayout) latestPointerPath(dataset DatasetID) string {
 	return join(l.grammar.root, string(dataset), latestFile)
+}
+
+func (l *pathLayout) tombstonePath(dataset DatasetID, snapshot DatasetSnapshotID) string {
+	return join(l.grammar.datasetDir(dataset), tombstonesDir, string(snapshot))
+}
+
+func (l *pathLayout) tombstonesPrefix(dataset DatasetID) string {
+	return join(l.grammar.datasetDir(dataset), tombstonesDir) + "/"
+}
+
+func (l *pathLayout) parse(p string) (snapshotPath, bool) {
+	return l.grammar.parse(p)
+}
+
+func (l *pathLayout) isDataObjectOf(dataset DatasetID, snapshot DatasetSnapshotID, p string) bool {
+	sp, ok := l.grammar.parse(p)
+	if !ok || sp.kind != dataLeaf || sp.dataset != dataset || sp.snapshot != snapshot {
+		return false
+	}
+	return l.dataFilePath(dataset, snapshot, sp.partition, path.Base(p)) == p
+}
+
+// withinPartition reports whether partition p is partition or lies beneath
+// it, comparing whole segments: "run_id=1" does not contain "run_id=10".
+func withinPartition(p, partition string) bool {
+	return p == partition || strings.HasPrefix(p, partition+"/")
 }
 
 // manifest parses p as a manifest path of this layout; the zero snapshotPath

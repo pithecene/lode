@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Snapshot expiry**: `Dataset.Expire(ctx, ExpireRequest)` removes snapshots selected by `IDs`, `Partition` (whole-segment, Hive only) or `Before` (snapshot ID instant), with a `DryRun` preview. The head is never expired and is reported in `ExpireReport.RetainedHead`; snapshots with files outside the selected partition are kept and reported in `Mixed`. Each expiry writes a tombstone first, so `Snapshot` and `Read` on an expired ID return the new `ErrSnapshotExpired` (which also matches `ErrNotFound`), and an interrupted expiry resumes on the next run. The new `ErrHeadUncommitted` reports a commit in flight. ([#174](https://github.com/pithecene-io/lode/issues/174))
+
+### Changed
+
+- **Enumeration tolerates deletion**: `Snapshots`, the scan behind `Latest`, `ListManifests` and `ListPartitions` skip a manifest deleted between listing and loading instead of failing.
+
 ---
 
 ## [0.10.0] - 2026-10-19

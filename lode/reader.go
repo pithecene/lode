@@ -3,6 +3,7 @@ package lode
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -128,9 +129,12 @@ func (r *reader) ListPartitions(ctx context.Context, dataset DatasetID, opts Par
 	seen := make(map[string]bool)
 	var partitions []PartitionRef
 	for _, m := range listing.manifests {
-		manifest, err := r.loadManifest(ctx, m.path)
+		manifest, ok, err := r.loadListed(ctx, m)
 		if err != nil {
-			return nil, fmt.Errorf("failed to load manifest %s: %w", m.path, err)
+			return nil, err
+		}
+		if !ok {
+			continue
 		}
 		for _, f := range manifest.Files {
 			p := r.layout.extractPartitionPath(f.Path)
@@ -159,10 +163,13 @@ func (r *reader) ListManifests(ctx context.Context, dataset DatasetID, partition
 	// smallest-partition one, which the listing order guarantees comes first.
 	refs := make([]ManifestRef, 0, len(listing.manifests))
 	for _, m := range listing.manifests {
-		if _, err := r.loadManifest(ctx, m.path); err != nil {
-			return nil, fmt.Errorf("failed to load manifest %s: %w", m.path, err)
+		_, ok, err := r.loadListed(ctx, m)
+		if err != nil {
+			return nil, err
 		}
-		refs = append(refs, ManifestRef{ID: m.id, Partition: m.partition})
+		if ok {
+			refs = append(refs, ManifestRef{ID: m.id, Partition: m.partition})
+		}
 	}
 	// A layout without partitions has no snapshot in any named partition: the
 	// selector matches nothing (the dataset itself was found and validated).
@@ -294,6 +301,20 @@ func (r *reader) OpenObject(ctx context.Context, obj ObjectRef) (io.ReadCloser, 
 
 func (r *reader) ReaderAt(ctx context.Context, obj ObjectRef) (io.ReaderAt, error) {
 	return r.store.ReaderAt(ctx, obj.Path)
+}
+
+// loadListed loads and validates a manifest a listing returned. ok is false
+// when it was deleted after the listing: an expiry removed it, which
+// enumeration skips rather than reports (CONTRACT_RETENTION §Lineage).
+func (r *reader) loadListed(ctx context.Context, m listedManifest) (manifest *Manifest, ok bool, err error) {
+	manifest, err = r.loadManifest(ctx, m.path)
+	if errors.Is(err, ErrNotFound) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to load manifest %s: %w", m.path, err)
+	}
+	return manifest, true, nil
 }
 
 func (r *reader) loadManifest(ctx context.Context, manifestPath string) (*Manifest, error) {
