@@ -75,10 +75,16 @@ The `expired/` directory is reserved for Lode: callers MUST NOT write under
 it.
 
 Contents: the snapshot ID, the UTC instant the expiry was requested, and the
-**planned** object count and byte total taken from the manifest's `Files[]`.
-A tombstone records intent, not outcome; completion is observable only as the
-absence of the snapshot's manifests and objects. Tombstones are immutable once
-written and are the only persisted record of an expiry.
+snapshot's **inventory** — its manifest's `Files[]` (path and size of every
+data object), copied when the expiry is recorded.
+
+The tombstone is the expiry's own record of what it removes. It is written
+before anything is deleted and outlives every manifest, so each later step —
+in the same run, a repeated `Expire`, or `Sweep` — works from the tombstone,
+never from manifests that may already be gone. A tombstone records intent,
+not outcome; completion is observable only as the absence of the snapshot's
+manifests and objects. Tombstones are immutable once written, are never
+removed (§Deferred), and are the only persisted record of an expiry.
 
 ### Head
 
@@ -131,9 +137,10 @@ reclaiming as unreferenced.
 Expiry operates on an explicit set of snapshot IDs. `ExpireRequest` fields
 that resolve to a set:
 
-- `IDs` — explicit snapshot IDs. An ID with no manifest left is not
-  selected: there is no `Files[]` left to act on, and `Sweep` reclaims what
-  remains of it.
+- `IDs` — explicit snapshot IDs: each that has a manifest, and each that
+  has a valid tombstone, whose recorded expiry the request completes from
+  the tombstone's inventory (§Order of operations). `Partition` and `Before`
+  select from manifests only.
 - `Partition` — a partition path (Hive layouts only; see CONTRACT_LAYOUT).
   Resolves to every snapshot that has a partition manifest in that partition
   or beneath it. Matching is **whole-segment**: `run_id=run-1` selects
@@ -216,15 +223,18 @@ Before step 1, re-read the pointer (§Head protection). If it names this
 snapshot, the snapshot is retained and none of the steps run for it; if it
 names an uncommitted ID, `Expire` stops with `ErrHeadUncommitted`.
 
-1. Write the tombstone `expired/<id>`. When the store implements
+1. Write the tombstone `expired/<id>`, recording the inventory from the
+   manifest. When the store implements
    `ConditionalWriter`, the write MUST be an atomic conditional create
    (`CompareAndSwap` from absent); an `ErrSnapshotConflict` result means the
    tombstone already exists. Otherwise `Store.Put` is used; its create-only
    guarantee is best-effort (CONTRACT_STORAGE §Put) and `ErrPathExists`
    means the tombstone already exists. In both cases an existing tombstone
    MUST be read back and, if it names this snapshot ID, treated as success:
-   the same expiry is already recorded. A tombstone naming a different ID is
-   corruption and MUST fail the operation.
+   the same expiry is already recorded, by an earlier or concurrent run, and
+   steps 2–4 use **its** inventory. A snapshot selected by its tombstone
+   alone (no manifest left) starts here, with the read-back. A tombstone
+   naming a different ID is corruption and MUST fail the operation.
    Tombstone content is never empty. `CompareAndSwap` with `expected == ""`
    also matches an existing zero-length object (CONTRACT_STORAGE
    §ConditionalWriter); replacing one is acceptable because a zero-length
@@ -232,9 +242,11 @@ names an uncommitted ID, `Expire` stops with `ErrHeadUncommitted`.
    goes through the read-back validation above.
 2. Delete the canonical manifest. From this point `Snapshot(ctx, id)`
    misses and the snapshot is **expired**.
-3. Delete every partition manifest for the snapshot. From this point the
+3. Delete every partition manifest for the snapshot: one per partition of
+   the inventory's files (only paths that are canonical manifest paths of
+   this snapshot), and any other the listing found. From this point the
    snapshot is absent from enumeration.
-4. Delete every data object listed in the snapshot's `Files[]` whose path
+4. Delete every data object in the tombstone's inventory whose path
    is canonical, lies under this dataset's data prefixes for the current
    layout, and parses to this snapshot's ID. Layouts place every data object
    under its own snapshot's segment directory (CONTRACT_LAYOUT §Path
@@ -247,9 +259,9 @@ names an uncommitted ID, `Expire` stops with `ErrHeadUncommitted`.
 Each step MUST be idempotent; a step that finds its target already absent
 succeeds. If the process stops after step 1 the snapshot is still readable
 and consistent (expiring). If it stops after step 2 or later the snapshot is
-expired and its remaining manifests and objects are reclaimed by `Sweep`
-(below), or by re-running `Expire` with the same ID while any of its
-manifests remain.
+expired and its remaining manifests and objects are reclaimed by re-running
+`Expire` with the same ID, or by `Sweep` (below): both work from the
+tombstone, so neither depends on a manifest surviving.
 
 Manifests are deleted **before** data so that any manifest loaded **after**
 the manifest delete describes only objects that still exist. This does not
@@ -320,12 +332,19 @@ MUST run at most one retention operation per dataset at a time.
 tombstones under `expired/`, and the dataset's snapshot prefix (every
 manifest and data object of the layout). It then performs, in order:
 
-1. **Complete expiries.** Load each tombstone and verify it is non-empty and
-   records the snapshot ID in its path; a tombstone that fails validation
+1. **Complete expiries.** A tombstone is an object directly under
+   `expired/` whose name is a snapshot ID exactly as Lode generates one
+   (decimal, no sign or leading zero); any other object there — such as the
+   filesystem store's `.lock` companions (CONTRACT_STORAGE §Implementation
+   Notes) — is not a tombstone and is neither reported nor deleted. Load
+   each tombstone and verify it is non-empty, records the snapshot ID in
+   its path, and carries an inventory; a tombstone that fails validation
    MUST be reported under `Unparseable` and MUST NOT settle anything. For
-   every valid tombstoned ID, perform steps 2–3 of §Order of operations on
-   the manifests the listing found for it. Only once **every** manifest of
-   that snapshot is confirmed absent is the snapshot *settled*. If any
+   every valid tombstoned ID, perform steps 2–3 of §Order of operations.
+   Only once **every** manifest of that snapshot is confirmed absent is the
+   snapshot *settled*; `Settled` reports the snapshots whose manifests this
+   run removed, so a snapshot settled by an earlier run is not reported
+   again. If any
    manifest delete fails, the snapshot is **not** settled: it keeps its
    surviving manifests and none of its objects are reclaimed in this run. A
    manifest that can still be loaded always protects the objects it
@@ -338,10 +357,11 @@ manifest and data object of the layout). It then performs, in order:
    - **orphaned** otherwise (a snapshot that was never committed) — deleted
      only when its ID instant is older than the grace period.
 
-`Files[]` is never consulted by `Sweep`. Reclaim is per snapshot
-(§Unreferenced object), so a settled snapshot's objects include any its
-`Files[]` did not list: partial objects of an aborted stream, and caller
-objects inside its data prefix.
+Reclaim is per snapshot (§Unreferenced object): a settled snapshot's objects
+are every object under its data prefixes, including any its inventory does
+not list (partial objects of an aborted stream, caller objects inside its
+data prefix). The inventory decides only how they are counted
+(§Accounting), never whether they are deleted.
 
 `Sweep` reads the pointer once, before step 1, and never settles the
 snapshot it names. When the pointer is absent, or names an ID with no
@@ -408,20 +428,36 @@ type ExpireReport struct {
     Mixed        []DatasetSnapshotID // selected by Partition, have files outside it; kept
     RetainedHead DatasetSnapshotID   // the head, when the selection included it; "" otherwise
     Objects      int                 // data objects deleted (or that would be)
-    Bytes        int64               // sum of FileRef.SizeBytes over those objects
-    Skipped      []string            // Files[] paths that failed the step-4 guard; left in place
+    Bytes        int64               // their recorded sizes
+    Skipped      []string            // inventory paths that failed the step-4 guard; left in place
 }
 
 type SweepReport struct {
-    Settled     []DatasetSnapshotID // tombstoned snapshots settled this run, oldest first
+    Settled     []DatasetSnapshotID // tombstoned snapshots whose manifests this run removed, oldest first
     Objects     int                 // data objects deleted (or that would be)
-    Orphans     int                 // of Objects, those reclaimed as orphaned
+    Bytes       int64               // recorded sizes of those a tombstone inventory lists
+    Unsized     int                 // of Objects, those with no recorded size
+    Orphans     int                 // of Unsized, those of snapshots never committed
     Unparseable []string            // invalid tombstones; orphaned objects without an ID instant
 }
 ```
 
-`SweepReport` has no byte total: the `Store` interface has no size query,
-and adding one for this purpose is out of scope.
+### Accounting
+
+Both reports meter what the run deletes, so totals across runs add up and a
+resumed expiry is never counted twice:
+
+- `Objects` counts data objects the run deleted that its listing showed
+  present. An object already gone (deleted by an earlier, interrupted run)
+  is not counted again.
+- `Bytes` sums the sizes recorded for those objects in the tombstone's
+  inventory. Every object `Expire` deletes is in the inventory, so its
+  `Bytes` is exact.
+- `Unsized` (`Sweep` only) counts deleted objects with no recorded size:
+  orphans, whose write never committed, and objects in a settled
+  snapshot's data prefix that its inventory does not list. Lode never
+  recorded their size, and the `Store` interface has no size query; adding
+  one is out of scope. They are counted, never estimated.
 
 Both methods return a non-nil report, also on error. On error the report
 describes the work completed before the error; the dataset is left in a
@@ -451,7 +487,7 @@ selects, T the tombstones, D the objects deleted.
 
 | Operation | Store Calls | Memory |
 |-----------|-------------|--------|
-| `Expire` | 1 List (the `Partition` subtree, else the snapshot prefix) + (K + 1) pointer Gets, each followed by at most one `Exists` + K manifest Gets + K tombstone writes (each + at most 1 read-back Get when it already exists) + Σ(manifests + files) Deletes; +1 List when the pointer is absent | O(N + K × manifest) |
+| `Expire` | 1 List (the `Partition` subtree, else the snapshot prefix) + (K + 1) pointer Gets, each followed by at most one `Exists` + K manifest Gets + 1 tombstone Get per requested ID with no manifest + K tombstone writes (each + at most 1 read-back Get when it already exists) + Σ(manifests + files) Deletes; +1 List when the pointer is absent | O(N + K × manifest) |
 | `Sweep` | 2 Lists (tombstones, snapshot prefix) + 1 pointer Get + T tombstone Gets + D Deletes | O(N + T) |
 | `Snapshot(id)`, `Read(id)` expired path | +1 Get (tombstone) | O(1) |
 
