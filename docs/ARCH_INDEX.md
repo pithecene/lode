@@ -62,6 +62,7 @@ Public API surface.
 
 - `api.go` — core public interfaces, types, and error sentinels
 - `s3/` — S3-compatible storage adapter
+- `volume/` — Volume: sparse byte-range persistence (experimental; outside the v1.0 promise, `V1_API_DECISIONS.md` D9)
 
 ---
 

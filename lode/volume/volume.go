@@ -1,4 +1,4 @@
-package lode
+package volume
 
 import (
 	"bytes"
@@ -15,6 +15,7 @@ import (
 
 	"github.com/pithecene-io/lode/internal/history"
 	"github.com/pithecene-io/lode/internal/retry"
+	"github.com/pithecene-io/lode/lode"
 )
 
 const (
@@ -24,28 +25,28 @@ const (
 
 // volume implements the Volume interface.
 type volume struct {
-	id          VolumeID
-	store       Store
+	id          ID
+	store       lode.Store
 	totalLength int64
-	checksum    Checksum
+	checksum    lode.Checksum
 	retry       retry.Config
 
 	// history owns the snapshot sequence and its head pointer (internal/history).
-	history history.History[VolumeSnapshotID, VolumeManifest]
+	history history.History[SnapshotID, Manifest]
 }
 
 // volumeKind is the volume's snapshot grammar for history: a fixed layout
 // (CONTRACT_VOLUME.md), and manifests validated against this volume on read.
 type volumeKind struct {
-	id          VolumeID
+	id          ID
 	totalLength int64
 }
 
-func (k volumeKind) SnapshotsPrefix() string                 { return volumeSnapshotsPrefix(k.id) }
-func (k volumeKind) PointerPath() string                     { return volumeLatestPointerPath(k.id) }
-func (k volumeKind) ManifestPath(id VolumeSnapshotID) string { return volumeManifestPath(k.id, id) }
+func (k volumeKind) SnapshotsPrefix() string           { return volumeSnapshotsPrefix(k.id) }
+func (k volumeKind) PointerPath() string               { return volumeLatestPointerPath(k.id) }
+func (k volumeKind) ManifestPath(id SnapshotID) string { return volumeManifestPath(k.id, id) }
 
-func (k volumeKind) ParseManifest(p string) (VolumeSnapshotID, bool) {
+func (k volumeKind) ParseManifest(p string) (SnapshotID, bool) {
 	if !strings.HasSuffix(p, "manifest.json") {
 		return "", false
 	}
@@ -53,8 +54,8 @@ func (k volumeKind) ParseManifest(p string) (VolumeSnapshotID, bool) {
 	return id, id != ""
 }
 
-func (k volumeKind) Decode(r io.Reader) (*VolumeManifest, error) {
-	var m VolumeManifest
+func (k volumeKind) Decode(r io.Reader) (*Manifest, error) {
+	var m Manifest
 	if err := json.NewDecoder(r).Decode(&m); err != nil {
 		return nil, fmt.Errorf("lode: failed to decode volume manifest: %w", err)
 	}
@@ -70,14 +71,14 @@ func (k volumeKind) Decode(r io.Reader) (*VolumeManifest, error) {
 	return &m, nil
 }
 
-var _ history.Kind[VolumeSnapshotID, VolumeManifest] = volumeKind{}
+var _ history.Kind[SnapshotID, Manifest] = volumeKind{}
 
-func toVolumeSnapshot(s *history.Snapshot[VolumeSnapshotID, VolumeManifest]) *VolumeSnapshot {
-	return &VolumeSnapshot{ID: s.ID, Manifest: s.Manifest}
+func toVolumeSnapshot(s *history.Snapshot[SnapshotID, Manifest]) *Snapshot {
+	return &Snapshot{ID: s.ID, Manifest: s.Manifest}
 }
 
-// NewVolume creates a volume with a fixed total length.
-func NewVolume(id VolumeID, storeFactory StoreFactory, totalLength int64, opts ...Option) (Volume, error) {
+// New creates a volume with a fixed total length.
+func New(id ID, storeFactory lode.StoreFactory, totalLength int64, opts ...Option) (Volume, error) {
 	if storeFactory == nil {
 		return nil, invalidArgument("store factory must not be nil")
 	}
@@ -88,11 +89,11 @@ func NewVolume(id VolumeID, storeFactory StoreFactory, totalLength int64, opts .
 		return nil, invalidArgument("total length must be positive")
 	}
 
-	cfg := &volumeConfig{
+	cfg := &config{
 		retry: retry.Default(),
 	}
 	for _, opt := range opts {
-		if err := opt.applyVolume(cfg); err != nil {
+		if err := opt.apply(cfg); err != nil {
 			return nil, err // option errors carry the lode: prefix
 		}
 	}
@@ -117,25 +118,25 @@ func NewVolume(id VolumeID, storeFactory StoreFactory, totalLength int64, opts .
 }
 
 // ID returns the volume's identifier.
-func (v *volume) ID() VolumeID { return v.id }
+func (v *volume) ID() ID { return v.id }
 
 // -----------------------------------------------------------------------------
 // Path helpers (fixed layout per CONTRACT_VOLUME.md)
 // -----------------------------------------------------------------------------
 
-func volumeSnapshotsPrefix(id VolumeID) string {
+func volumeSnapshotsPrefix(id ID) string {
 	return path.Join("volumes", string(id), "snapshots") + "/"
 }
 
-func volumeManifestPath(id VolumeID, snapID VolumeSnapshotID) string {
+func volumeManifestPath(id ID, snapID SnapshotID) string {
 	return path.Join("volumes", string(id), "snapshots", string(snapID), "manifest.json")
 }
 
-func volumeBlockPath(id VolumeID, offset, length int64) string {
+func volumeBlockPath(id ID, offset, length int64) string {
 	return path.Join("volumes", string(id), "data", fmt.Sprintf("%d-%d.bin", offset, length))
 }
 
-func volumeLatestPointerPath(id VolumeID) string {
+func volumeLatestPointerPath(id ID) string {
 	return path.Join("volumes", string(id), "latest")
 }
 
@@ -187,9 +188,9 @@ func (v *volume) StageWriteAt(ctx context.Context, offset int64, r io.Reader) (B
 }
 
 // Commit records the provided blocks into a new immutable snapshot.
-func (v *volume) Commit(ctx context.Context, blocks []BlockRef, metadata Metadata) (*VolumeSnapshot, error) {
+func (v *volume) Commit(ctx context.Context, blocks []BlockRef, metadata lode.Metadata) (*Snapshot, error) {
 	if metadata == nil {
-		metadata = Metadata{}
+		metadata = lode.Metadata{}
 	}
 	if len(blocks) == 0 {
 		return nil, invalidArgument("commit must include at least one new block")
@@ -213,14 +214,14 @@ func (v *volume) Commit(ctx context.Context, blocks []BlockRef, metadata Metadat
 		}
 	}
 
-	var result *VolumeSnapshot
+	var result *Snapshot
 	err := v.history.CommitLoop(ctx, &v.retry, func() error {
 		parent, expectedPointer, err := v.history.ResolveParent(ctx)
 		if err != nil {
 			return err
 		}
 		var existing []BlockRef
-		var parentID VolumeSnapshotID
+		var parentID SnapshotID
 		if parent != nil {
 			existing, parentID = parent.Manifest.Blocks, parent.ID
 		}
@@ -236,11 +237,11 @@ func (v *volume) Commit(ctx context.Context, blocks []BlockRef, metadata Metadat
 			return err
 		}
 
-		manifest := v.buildManifest(VolumeSnapshotID(history.NewID()), parentID, metadata, cumulative)
+		manifest := v.buildManifest(SnapshotID(history.NewID()), parentID, metadata, cumulative)
 		if err := v.history.Advance(ctx, expectedPointer, manifest.SnapshotID, manifest, []string{volumeManifestPath(v.id, manifest.SnapshotID)}); err != nil {
 			return err
 		}
-		result = &VolumeSnapshot{ID: manifest.SnapshotID, Manifest: manifest}
+		result = &Snapshot{ID: manifest.SnapshotID, Manifest: manifest}
 		return nil
 	})
 	if err != nil {
@@ -264,12 +265,12 @@ func hasNewBlock(existing, blocks []BlockRef) bool {
 }
 
 // buildManifest constructs the manifest for a snapshot of this volume.
-func (v *volume) buildManifest(snapshotID, parentID VolumeSnapshotID, metadata Metadata, blocks []BlockRef) *VolumeManifest {
+func (v *volume) buildManifest(snapshotID, parentID SnapshotID, metadata lode.Metadata, blocks []BlockRef) *Manifest {
 	var checksumAlgorithm string
 	if v.checksum != nil {
 		checksumAlgorithm = v.checksum.Name()
 	}
-	return &VolumeManifest{
+	return &Manifest{
 		SchemaName:        volumeManifestSchemaName,
 		FormatVersion:     volumeManifestFormatVersion,
 		VolumeID:          v.id,
@@ -342,7 +343,7 @@ func validateNoOverlaps(blocks []BlockRef) error {
 // -----------------------------------------------------------------------------
 
 // ReadAt reads a fully committed range from a snapshot.
-func (v *volume) ReadAt(ctx context.Context, snapshotID VolumeSnapshotID, offset, length int64) ([]byte, error) {
+func (v *volume) ReadAt(ctx context.Context, snapshotID SnapshotID, offset, length int64) ([]byte, error) {
 	if offset < 0 {
 		return nil, invalidArgument("offset must be non-negative")
 	}
@@ -429,7 +430,7 @@ func findCoveringBlocks(blocks []BlockRef, offset, length int64) ([]BlockRef, er
 }
 
 // Latest returns the head snapshot.
-func (v *volume) Latest(ctx context.Context) (*VolumeSnapshot, error) {
+func (v *volume) Latest(ctx context.Context) (*Snapshot, error) {
 	s, err := v.history.Latest(ctx)
 	if err != nil {
 		return nil, err
@@ -438,12 +439,12 @@ func (v *volume) Latest(ctx context.Context) (*VolumeSnapshot, error) {
 }
 
 // Snapshots lists every snapshot, oldest first.
-func (v *volume) Snapshots(ctx context.Context) ([]*VolumeSnapshot, error) {
+func (v *volume) Snapshots(ctx context.Context) ([]*Snapshot, error) {
 	all, err := v.history.Snapshots(ctx)
 	if err != nil {
 		return nil, err
 	}
-	snapshots := make([]*VolumeSnapshot, len(all))
+	snapshots := make([]*Snapshot, len(all))
 	for i, s := range all {
 		snapshots[i] = toVolumeSnapshot(s)
 	}
@@ -454,10 +455,10 @@ func (v *volume) Snapshots(ctx context.Context) ([]*VolumeSnapshot, error) {
 }
 
 // Snapshot loads a snapshot by ID.
-func (v *volume) Snapshot(ctx context.Context, id VolumeSnapshotID) (*VolumeSnapshot, error) {
+func (v *volume) Snapshot(ctx context.Context, id SnapshotID) (*Snapshot, error) {
 	s, err := v.history.Snapshot(ctx, id)
 	if err != nil {
-		if errors.Is(err, ErrNotFound) {
+		if errors.Is(err, lode.ErrNotFound) {
 			return nil, err
 		}
 		return nil, fmt.Errorf("lode: failed to get volume manifest: %w", err)
@@ -467,13 +468,13 @@ func (v *volume) Snapshot(ctx context.Context, id VolumeSnapshotID) (*VolumeSnap
 
 // parseVolumeSnapshotID extracts the snapshot ID from a volume manifest path.
 // Expected format: volumes/<id>/snapshots/<snapID>/manifest.json
-func parseVolumeSnapshotID(p string) VolumeSnapshotID {
+func parseVolumeSnapshotID(p string) SnapshotID {
 	parts := strings.Split(p, "/")
 	// volumes/<id>/snapshots/<snapID>/manifest.json → 5 parts
 	if len(parts) < 5 {
 		return ""
 	}
-	return VolumeSnapshotID(parts[len(parts)-2])
+	return SnapshotID(parts[len(parts)-2])
 }
 
 // -----------------------------------------------------------------------------
@@ -516,7 +517,7 @@ func ensureBlocksSortedByOffset(blocks []BlockRef) {
 
 // validateVolumeManifest checks that a volume manifest contains all required
 // fields per CONTRACT_VOLUME.md.
-func validateVolumeManifest(m *VolumeManifest) error {
+func validateVolumeManifest(m *Manifest) error {
 	if m == nil {
 		return &manifestValidationError{Field: "manifest", Message: "is nil"}
 	}

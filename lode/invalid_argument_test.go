@@ -1,7 +1,6 @@
 package lode
 
 import (
-	"bytes"
 	"errors"
 	"strings"
 	"testing"
@@ -10,25 +9,13 @@ import (
 // Every caller-supplied value Lode refuses is reported as ErrInvalidArgument
 // (CONTRACT_ERRORS.md §Configuration Errors), so callers classify with
 // errors.Is instead of matching message text. Each case names the value in
-// its message.
+// its message. Volume's cases live in package lode/volume.
 func TestErrInvalidArgument_Classification(t *testing.T) {
 	ctx := t.Context()
 	factory := NewMemoryFactoryFrom(NewMemory())
 	nilStore := func() (Store, error) { return nil, nil } //nolint:nilnil // the misbehaving factory under test
 
 	blobDataset, err := NewDataset("blob", factory)
-	if err != nil {
-		t.Fatal(err)
-	}
-	vol, err := NewVolume("vol", factory, 16)
-	if err != nil {
-		t.Fatal(err)
-	}
-	staged, err := vol.StageWriteAt(ctx, 0, bytes.NewReader([]byte("0123")))
-	if err != nil {
-		t.Fatal(err)
-	}
-	snap, err := vol.Commit(ctx, []BlockRef{staged}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,34 +49,6 @@ func TestErrInvalidArgument_Classification(t *testing.T) {
 			_, err := blobDataset.StreamWriteRecords(ctx, &sliceIterator{}, nil)
 			return err
 		}, "requires a codec"},
-		{"NewVolume nil factory", func() error { _, err := NewVolume("v", nil, 1); return err }, "store factory"},
-		{"NewVolume empty ID", func() error { _, err := NewVolume("", factory, 1); return err }, "volume ID"},
-		{"NewVolume non-positive length", func() error { _, err := NewVolume("v", factory, 0); return err }, "total length"},
-		{"NewVolume nil store", func() error { _, err := NewVolume("v", nilStore, 1); return err }, "nil store"},
-		{"StageWriteAt negative offset", func() error { _, err := vol.StageWriteAt(ctx, -1, bytes.NewReader([]byte("x"))); return err }, "offset"},
-		{"StageWriteAt empty block", func() error { _, err := vol.StageWriteAt(ctx, 0, bytes.NewReader(nil)); return err }, "must not be empty"},
-		{"StageWriteAt beyond volume", func() error { _, err := vol.StageWriteAt(ctx, 15, bytes.NewReader([]byte("xy"))); return err }, "address space"},
-		{"Commit no blocks", func() error { _, err := vol.Commit(ctx, nil, nil); return err }, "at least one new block"},
-		{"Commit already committed", func() error { _, err := vol.Commit(ctx, []BlockRef{staged}, nil); return err }, "already committed"},
-		{"Commit negative offset", func() error {
-			_, err := vol.Commit(ctx, []BlockRef{{Offset: -1, Length: 1, Path: "p"}}, nil)
-			return err
-		}, "offset"},
-		{"Commit non-positive length", func() error {
-			_, err := vol.Commit(ctx, []BlockRef{{Offset: 4, Length: 0, Path: "p"}}, nil)
-			return err
-		}, "length"},
-		{"Commit beyond volume", func() error {
-			_, err := vol.Commit(ctx, []BlockRef{{Offset: 4, Length: 100, Path: "p"}}, nil)
-			return err
-		}, "address space"},
-		{"Commit foreign path", func() error {
-			_, err := vol.Commit(ctx, []BlockRef{{Offset: 4, Length: 4, Path: "elsewhere"}}, nil)
-			return err
-		}, "layout path"},
-		{"ReadAt negative offset", func() error { _, err := vol.ReadAt(ctx, snap.ID, -1, 1); return err }, "offset"},
-		{"ReadAt non-positive length", func() error { _, err := vol.ReadAt(ctx, snap.ID, 0, 0); return err }, "length"},
-		{"ReadAt beyond volume", func() error { _, err := vol.ReadAt(ctx, snap.ID, 0, 17); return err }, "address space"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -119,7 +78,6 @@ func TestSentinels_Messages(t *testing.T) {
 		{ErrManifestInvalid, "invalid manifest"},
 		{ErrOptionNotValidForDataset, "option not valid for dataset"},
 		{ErrOptionNotValidForDatasetReader, "option not valid for reader"},
-		{ErrOptionNotValidForVolume, "option not valid for volume"},
 	}
 	for _, c := range cases {
 		if c.err.Error() != c.want {
@@ -139,10 +97,6 @@ func TestOptionErrors_SinglePrefix(t *testing.T) {
 	if got, want := err.Error(), "lode: WithCodec: option not valid for reader"; got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
-	_, err = NewVolume("v", factory, 1, WithCodec(NewJSONLCodec()))
-	if got, want := err.Error(), "lode: WithCodec: option not valid for volume"; got != want {
-		t.Errorf("got %q, want %q", got, want)
-	}
 }
 
 // Argument errors come before any store work: an invalid option is reported
@@ -157,7 +111,6 @@ func TestErrInvalidArgument_BeforeStoreFactory(t *testing.T) {
 	}{
 		{"NewDataset", func() error { _, err := NewDataset("d", failing, WithRetryCount(-1)); return err }},
 		{"NewDatasetReader", func() error { _, err := NewDatasetReader(failing, WithLayout(nil)); return err }},
-		{"NewVolume", func() error { _, err := NewVolume("v", failing, 1, WithRetryCount(-1)); return err }},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -183,7 +136,6 @@ func TestMovedSentinels_StaticTypeIsError(t *testing.T) {
 		"ErrManifestInvalid":                &ErrManifestInvalid,
 		"ErrOptionNotValidForDataset":       &ErrOptionNotValidForDataset,
 		"ErrOptionNotValidForDatasetReader": &ErrOptionNotValidForDatasetReader,
-		"ErrOptionNotValidForVolume":        &ErrOptionNotValidForVolume,
 	} {
 		if _, ok := ptr.(*error); !ok {
 			t.Errorf("%s is declared as %T, want *error", name, ptr)

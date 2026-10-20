@@ -32,13 +32,13 @@ type datasetConfig struct {
 	retry      retry.Config
 }
 
-// Option configures dataset, reader, or volume construction.
+// Option configures dataset or reader construction.
 // Options implement methods for the constructors they support.
 // Using an option with an unsupported constructor returns an error.
+// Volumes take their own options (package lode/volume).
 type Option interface {
 	applyDataset(*datasetConfig) error
 	applyReader(*readerConfig) error
-	applyVolume(*volumeConfig) error
 }
 
 // layoutOption implements Option for WithLayout.
@@ -61,10 +61,6 @@ func (o *layoutOption) applyDataset(cfg *datasetConfig) error {
 func (o *layoutOption) applyReader(cfg *readerConfig) error {
 	cfg.layout = o.layout
 	return nil
-}
-
-func (o *layoutOption) applyVolume(*volumeConfig) error {
-	return fmt.Errorf("lode: WithLayout: %w", ErrOptionNotValidForVolume)
 }
 
 // hiveLayoutOption implements Option for WithHiveLayout.
@@ -105,10 +101,6 @@ func (o *hiveLayoutOption) applyReader(cfg *readerConfig) error {
 	return nil
 }
 
-func (o *hiveLayoutOption) applyVolume(*volumeConfig) error {
-	return fmt.Errorf("lode: WithHiveLayout: %w", ErrOptionNotValidForVolume)
-}
-
 // compressorOption implements Option for WithCompressor (dataset-only).
 type compressorOption struct {
 	compressor Compressor
@@ -128,10 +120,6 @@ func (o *compressorOption) applyDataset(cfg *datasetConfig) error {
 
 func (o *compressorOption) applyReader(*readerConfig) error {
 	return fmt.Errorf("lode: WithCompressor: %w", ErrOptionNotValidForDatasetReader)
-}
-
-func (o *compressorOption) applyVolume(*volumeConfig) error {
-	return fmt.Errorf("lode: WithCompressor: %w", ErrOptionNotValidForVolume)
 }
 
 // codecOption implements Option for WithCodec (dataset-only).
@@ -159,10 +147,6 @@ func (o *codecOption) applyReader(*readerConfig) error {
 	return fmt.Errorf("lode: WithCodec: %w", ErrOptionNotValidForDatasetReader)
 }
 
-func (o *codecOption) applyVolume(*volumeConfig) error {
-	return fmt.Errorf("lode: WithCodec: %w", ErrOptionNotValidForVolume)
-}
-
 // checksumOption implements Option for WithChecksum (dataset-only).
 type checksumOption struct {
 	checksum Checksum
@@ -187,16 +171,11 @@ func (o *checksumOption) applyReader(*readerConfig) error {
 	return fmt.Errorf("lode: WithChecksum: %w", ErrOptionNotValidForDatasetReader)
 }
 
-func (o *checksumOption) applyVolume(cfg *volumeConfig) error {
-	cfg.checksum = o.checksum
-	return nil
-}
-
 // retryOption implements Option for all WithRetry* constructors.
-// Retry options apply identically to datasets and volumes (both have a
-// retry.Config), and are never valid for readers. set is the retry.Config
-// setter; its validation failure is reported as an invalid argument named
-// after the option.
+// Retry options apply to datasets and are never valid for readers. set is
+// the retry.Config setter, which package lode/volume's options share, so a
+// validation failure reads the same in both: an invalid argument named after
+// the option.
 type retryOption struct {
 	name string
 	set  func(*retry.Config) error
@@ -210,7 +189,6 @@ func (o *retryOption) apply(r *retry.Config) error {
 }
 
 func (o *retryOption) applyDataset(cfg *datasetConfig) error { return o.apply(&cfg.retry) }
-func (o *retryOption) applyVolume(cfg *volumeConfig) error   { return o.apply(&cfg.retry) }
 
 func (o *retryOption) applyReader(*readerConfig) error {
 	return fmt.Errorf("lode: %s: %w", o.name, ErrOptionNotValidForDatasetReader)
