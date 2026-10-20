@@ -46,12 +46,17 @@ never choose one. From v0.11.0 an ID has the form `<instant>-<nonce>`:
 Uniqueness does not depend on the clock: two IDs coincide only when two
 writes begin in the same nanosecond *and* draw the same 64-bit nonce, a
 probability of 2⁻⁶⁴ for each such pair, however often the clock repeats or
-rolls back. Lode does not reserve IDs against existing ones; should IDs
-coincide anyway, create-only writes refuse a reused path while the earlier
-snapshot exists, and retention refuses a tombstone that does not describe
-the manifest (CONTRACT_RETENTION §Tombstone). IDs are opaque strings to
-callers and MUST NOT be parsed as numbers. Compared as strings, IDs order by instant (the instant has a fixed
-19 digits from 2001 through 2286); IDs with the same instant order by nonce.
+rolls back. Lode does not reserve IDs against existing ones. Should IDs
+coincide anyway, the colliding commit fails on its create-only manifest
+write while the earlier snapshot exists, but only after the pointer has
+moved (pointer before manifest), so the pointer can be left naming the
+earlier snapshot until the next commit replaces it; and retention refuses
+a tombstone that does not describe the manifest (CONTRACT_RETENTION
+§Tombstone). Instant-only IDs written before v0.11.0 collided whenever two
+writes shared a nanosecond, with the same effect. IDs are opaque strings to
+callers and MUST NOT be parsed as numbers. Compared as strings, IDs order
+by instant (the instant has a fixed 19 digits from 2001 through 2286); IDs
+with the same instant order by nonce.
 
 IDs written before v0.11.0 are `<instant>` alone. They remain valid and
 are read, selected and retained exactly like new IDs. An ID is in the

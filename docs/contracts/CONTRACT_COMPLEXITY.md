@@ -81,7 +81,7 @@ Parent resolution MUST NOT use List when a valid pointer exists.
 | Latest (warm) | Hot | 2 (pointer + manifest) | O(manifest) | O(1) |
 | Latest (cold) | Degraded | 1 List + 1 Get + 1 tombstone Exists per snapshot scanned (+1 canonical-manifest Exists per scanned snapshot that has a tombstone) | O(N) | O(N) |
 | Snapshot(id) | Hot | 1 Get | O(manifest) | O(1) |
-| Snapshot(id) fallback | Degraded | 1 List + scan | O(N) | O(N) |
+| Snapshot(id) fallback | Degraded | 1 Get (canonical miss) + 1 tombstone Exists + 1 List + scan | O(N) | O(N) |
 | Snapshots() | Cold | 1 List + S Gets | O(S × manifest) | O(S × B_avg + S log S) |
 | Read(id) | Hot | 1 + F Gets | O(R_total) | O(R_total) |
 
