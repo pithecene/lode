@@ -50,7 +50,9 @@ commits never mutate existing state. Retention does not weaken this:
   exposure is the window while the reusing write is staging data, before
   any manifest of it exists: nothing yet tells that data from the expired
   snapshot's leftovers, so a `Sweep`, or an `Expire` naming the ID, can
-  delete it then. Lode accepts this 2⁻⁶⁴ event rather than check every
+  delete it then. A tombstone also cannot
+  tell the two snapshots apart if both commits landed in the same nanosecond
+  with the same files. Lode accepts these 2⁻⁶⁴ events rather than check every
   write against the tombstones.
 
 Immutable means *unchanging while it exists*, not *unremovable*.
@@ -270,7 +272,8 @@ names an uncommitted ID, `Expire` stops with `ErrHeadUncommitted`.
    means the tombstone already exists. In both cases an existing tombstone
    MUST be read back and, if it names this snapshot ID, treated as success:
    the same expiry is already recorded, by an earlier or concurrent run, and
-   steps 2–4 use **its** inventory. A tombstone recorded before this run
+   steps 2–4 use **its** inventory. The tombstone — recorded before this run,
+   or the one this run is about to write —
    MUST describe (§Tombstone) every manifest copy that still loads at a
    path this expiry would delete — the canonical path, every copy the
    listing found, and every partition copy derived from the tombstone's
@@ -368,6 +371,17 @@ both create the tombstone; the deletes remain idempotent, so no data is lost,
 but tombstone immutability is best-effort. This mirrors the single-writer
 requirement in CONTRACT_WRITE_API §Concurrency: callers on non-CAS stores
 MUST run at most one retention operation per dataset at a time.
+
+A commit writes the pointer, then the canonical manifest, then its partition
+manifests one by one (the pointer-before-manifest protocol). If a later commit
+advances the pointer while an earlier one is still writing partition
+manifests, an `Expire` that selects the earlier snapshot can remove it and
+the slow writer can then add a partition manifest after the expiry. The
+tombstone describes that manifest, so the next `Sweep` or `Expire` of the ID
+removes it; until then a partition listing can show a manifest whose data is
+gone. Retention adds no lock against in-flight commits: selecting a snapshot
+younger than the slowest commit is the caller's choice, and `Before` with a
+margin avoids it.
 
 ---
 
@@ -561,7 +575,7 @@ selects, T the tombstones, D the objects deleted (manifests and data alike).
 
 | Operation | Store Calls | Memory |
 |-----------|-------------|--------|
-| `Expire` | 1 List (the `Partition` subtree, else the snapshot prefix) + (K + 1) pointer Gets, each followed by at most one `Exists` (and one List of the snapshot prefix when the named snapshot has no canonical manifest, to find a legacy partition-only copy) + K manifest Gets + K tombstone Gets (the recorded inventory, if any; also one per requested ID with no manifest) + 1 Get per manifest copy of a snapshot whose tombstone was already recorded + K tombstone writes (each + at most 1 read-back Get when it already exists) + Σ(manifests + files) Deletes; +1 List when the pointer is absent | O(N + K × manifest) |
+| `Expire` | 1 List (the `Partition` subtree, else the snapshot prefix) + (K + 1) pointer Gets, each followed by at most one `Exists` (and one List of the snapshot prefix when the named snapshot has no canonical manifest, to find a legacy partition-only copy) + K manifest Gets + K tombstone Gets (the recorded inventory, if any; also one per requested ID with no manifest) + 1 Get per manifest path of each selected snapshot (every copy is checked against the tombstone before it is written) + K tombstone writes (each + at most 1 read-back Get when it already exists) + Σ(manifests + files) Deletes; +1 List when the pointer is absent | O(N + K × manifest) |
 | `Sweep` | 2 Lists (tombstones, snapshot prefix) + 1 pointer Get + T tombstone Gets + 1 Get per manifest path of each tombstoned snapshot with anything left in the listing + 1 `Exists` per manifest path of each orphaned group about to be reclaimed (stopping at the first present) + D Deletes | O(N + Σ tombstone inventories) |
 | `Snapshot(id)`, `Read(id)` expired path | +1 Get (tombstone) | O(1) |
 

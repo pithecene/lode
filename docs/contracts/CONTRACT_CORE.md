@@ -36,7 +36,7 @@ Immutable point-in-time state of a dataset. Each snapshot has a stable
 
 ### Snapshot ID
 Lode generates every snapshot ID, for Datasets and Volumes alike; callers
-never choose one. An ID has the form `<instant>-<nonce>`:
+never choose one. From v0.11.0 an ID has the form `<instant>-<nonce>`:
 
 - `<instant>` — the Unix time in nanoseconds when the write begins, in
   decimal with no sign or leading zero.
