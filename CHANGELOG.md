@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking
+
+- **Volume moved to the experimental package `lode/volume`** (`V1_API_DECISIONS.md` D9). Volume is outside the v1.0 compatibility promise until it passes its own stability gate (`V1_READINESS.md` §4); `PUBLIC_API.md` §Compatibility scope states what the promise covers. Names drop the prefix the package now carries:
+
+  | Before (`lode`) | After (`volume`) |
+  |---|---|
+  | `NewVolume` | `New` |
+  | `Volume`, `VolumeWriter`, `VolumeReader` | `Volume`, `Writer`, `Reader` |
+  | `VolumeID`, `VolumeSnapshotID` | `ID`, `SnapshotID` |
+  | `VolumeSnapshot`, `VolumeManifest` | `Snapshot`, `Manifest` |
+  | `BlockRef` | `BlockRef` |
+  | `ErrRangeMissing`, `ErrOverlappingBlocks` | `ErrRangeMissing`, `ErrOverlappingBlocks` |
+  | `lode.WithChecksum`, `lode.WithRetry*` passed to `NewVolume` | `volume.WithChecksum`, `volume.WithRetry*` |
+
+  Volume has its own `Option` type, so dataset options no longer compile as Volume options and `ErrOptionNotValidForVolume` is removed. Behavior, error messages, the shared sentinels (`lode.ErrNotFound`, `ErrNoSnapshots`, `ErrSnapshotConflict`, `ErrInvalidArgument`, `ErrManifestInvalid`), the on-disk path grammar and the manifest JSON are unchanged: Volumes written by earlier releases read as before. Migration is mechanical: import `github.com/pithecene-io/lode/lode/volume` and rename per the table.
+
 ### Added
 
 - **Snapshot expiry**: `Dataset.Expire(ctx, ExpireRequest)` removes snapshots selected by `IDs`, `Partition` (whole-segment, Hive only) or `Before` (snapshot ID instant), with a `DryRun` preview. The head is never expired and is reported in `ExpireReport.RetainedHead`; snapshots with files outside the selected partition are kept and reported in `Mixed`. Each expiry writes a tombstone first, so `Snapshot` and `Read` on an expired ID return the new `ErrSnapshotExpired` (which also matches `ErrNotFound`), and an interrupted expiry resumes on the next run. The new `ErrHeadUncommitted` reports a commit in flight, or a dataset with snapshots but no `latest` pointer (written before the pointer existed): any commit creates the pointer, after which retention runs. ([#174](https://github.com/pithecene-io/lode/issues/174))
@@ -17,6 +33,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Unique snapshot IDs**: Dataset and Volume snapshot IDs are now `<instant>-<nonce>` — the write-start Unix nanoseconds followed by 16 random hex digits — so a repeated or rolled-back clock can no longer issue an ID twice, which retention needs to never act on a reused ID. IDs still order by instant when compared as strings. Existing instant-only IDs remain valid; code that parsed an ID as an integer must treat it as an opaque string (CONTRACT_CORE §Snapshot ID).
 - **Enumeration tolerates deletion**: `Snapshots`, the scan behind `Latest`, `ListManifests` and `ListPartitions` skip a manifest deleted between listing and loading instead of failing; the scan behind `Latest` also passes over an expired snapshot, and falls back to another manifest copy when one vanishes.
+- **Shared internals**: the snapshot-history core (snapshot chain, latest pointer, CAS commit loop) moved to `internal/history`, the retry configuration and backoff to `internal/retry`, the argument and manifest validation errors to `internal/validate`, and the fault-injection test store to `internal/testutil`. `ErrInvalidArgument` and `ErrManifestInvalid` are re-exported from `internal/validate`: same values, same static type `error`, same messages. No API or behavior change; this lets a second package share them ahead of `V1_API_DECISIONS.md` D9.
+- **Mutation gate covers the module**: `task mutate` and the nightly job now run gremlins over the whole module (examples and `internal/testutil` excluded) rather than `./lode` only, so the moved internals stay gated. `internal/history` gains its own unit tests; gremlins measures coverage per package.
 
 ---
 

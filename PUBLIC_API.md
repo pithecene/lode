@@ -13,6 +13,14 @@ datasets, snapshots, manifests, metadata, and safe write semantics.
 
 Execution, scheduling, and query planning are out of scope.
 
+### Compatibility scope
+
+The v1.0 compatibility promise covers packages `lode` and `lode/s3`.
+Package `lode/volume` is **experimental** and excluded until it passes its
+own stability gate (`docs/V1_API_DECISIONS.md` D9; `docs/V1_READINESS.md`
+§4). Persisted data is covered either way: no release orphans data an
+earlier release wrote (D8).
+
 ---
 
 ## Construction Overview
@@ -63,18 +71,30 @@ reader, _ := lode.NewDatasetReader(
 )
 ```
 
-### Volume
+### Volume (experimental, package `lode/volume`)
 
-`NewVolume(id, storeFactory, totalLength, opts...)` creates a sparse, range-addressable
+> **Experimental.** Volume lives in package `github.com/pithecene-io/lode/lode/volume`
+> and is outside the v1.0 compatibility promise until it passes its own
+> stability gate (`docs/V1_READINESS.md` §4, `docs/V1_API_DECISIONS.md` D9).
+> Its API may change in any release. Data it has persisted stays readable:
+> its path grammar and manifest format are persisted formats (D8).
+
+`volume.New(id, storeFactory, totalLength, opts...)` creates a sparse, range-addressable
 byte space with manifest-driven commit semantics.
 
-Volume is a coequal persistence paradigm alongside Dataset. Dataset builds
-complete objects before committing; Volume commits truth incrementally via
-sparse byte ranges.
+Dataset builds complete objects before committing; Volume commits truth
+incrementally via sparse byte ranges. It suits a byte object of known
+length, immutable once written, filled in pieces (in parallel, out of order,
+or across restarts); committed ranges never overlap.
 
 <!-- illustrative -->
 ```go
-vol, _ := lode.NewVolume(
+import (
+    "github.com/pithecene-io/lode/lode"
+    "github.com/pithecene-io/lode/lode/volume"
+)
+
+vol, _ := volume.New(
     "archive",
     lode.NewFSFactory("/data"),
     10<<30, // 10 GB total length
@@ -84,7 +104,7 @@ vol, _ := lode.NewVolume(
 blk, _ := vol.StageWriteAt(ctx, 0, bytes.NewReader(chunk))
 
 // Commit staged blocks into an immutable snapshot
-snapshot, _ := vol.Commit(ctx, []lode.BlockRef{blk}, lode.Metadata{"source": "peer-1"})
+snapshot, _ := vol.Commit(ctx, []volume.BlockRef{blk}, lode.Metadata{"source": "peer-1"})
 
 // Read committed range
 data, _ := vol.ReadAt(ctx, snapshot.ID, 0, int64(len(chunk)))
@@ -96,9 +116,12 @@ latest, _ := vol.Latest(ctx)
 Volume uses a fixed internal storage layout (`volumes/<id>/...`). The
 `Layout` abstraction is Dataset-specific and does not apply to Volume.
 
-**Volume options:**
-- `WithChecksum(c)` — opt-in integrity checksums on staged blocks
-- `WithRetryCount(n)` — opt-in automatic CAS retry on commit conflict
+**Volume options** (package `volume`, a separate `volume.Option` type; lode's
+dataset options do not compile as Volume options):
+- `volume.WithChecksum(c)` — opt-in integrity checksums on staged blocks
+- `volume.WithRetryCount(n)`, `WithRetryBaseDelay(d)`, `WithRetryMaxDelay(d)`,
+  `WithRetryJitter(j)`, `WithRetryObserver(fn)` — CAS retry on commit
+  conflict, with the same defaults and validation as lode's
 
 *Contract reference: [`CONTRACT_VOLUME.md`](docs/contracts/CONTRACT_VOLUME.md)*
 
@@ -114,21 +137,21 @@ not apply to the target (dataset vs reader) returns an error.
 
 ### Option Applicability Matrix
 
-| Option | Dataset | DatasetReader | Volume | Notes |
-|--------|:-------:|:------:|:------:|-------|
-| `WithHiveLayout(keys...)` | ✅ | ✅ | ❌ | Preferred for Hive layout |
-| `WithLayout(layout)` | ✅ | ✅ | ❌ | For any layout |
-| `WithCompressor(c)` | ✅ | ❌ | ❌ | Write-time compression |
-| `WithCodec(c)` | ✅ | ❌ | ❌ | Record encoding |
-| `WithChecksum(c)` | ✅ | ❌ | ✅ | File / block checksums |
-| `WithRetryCount(n)` | ✅ | ❌ | ✅ | Bounded CAS retry on conflict |
-| `WithRetryBaseDelay(d)` | ✅ | ❌ | ✅ | Backoff base delay (default: 10ms) |
-| `WithRetryMaxDelay(d)` | ✅ | ❌ | ✅ | Backoff cap (default: 2s) |
-| `WithRetryJitter(j)` | ✅ | ❌ | ✅ | Jitter factor 0.0–1.0 (default: 1.0) |
-| `WithRetryObserver(fn)` | ✅ | ❌ | ✅ | Per-retry callback for observability |
+| Option | Dataset | DatasetReader | Notes |
+|--------|:-------:|:------:|-------|
+| `WithHiveLayout(keys...)` | ✅ | ✅ | Preferred for Hive layout |
+| `WithLayout(layout)` | ✅ | ✅ | For any layout |
+| `WithCompressor(c)` | ✅ | ❌ | Write-time compression |
+| `WithCodec(c)` | ✅ | ❌ | Record encoding |
+| `WithChecksum(c)` | ✅ | ❌ | File checksums |
+| `WithRetryCount(n)` | ✅ | ❌ | Bounded CAS retry on conflict |
+| `WithRetryBaseDelay(d)` | ✅ | ❌ | Backoff base delay (default: 10ms) |
+| `WithRetryMaxDelay(d)` | ✅ | ❌ | Backoff cap (default: 2s) |
+| `WithRetryJitter(j)` | ✅ | ❌ | Jitter factor 0.0–1.0 (default: 1.0) |
+| `WithRetryObserver(fn)` | ✅ | ❌ | Per-retry callback for observability |
 
-Passing an inapplicable option to `NewDatasetReader` or `NewVolume` returns
-an error at construction time.
+Passing an inapplicable option to `NewDatasetReader` returns an error at
+construction time. Volume has its own option type (see §Volume).
 
 *Contract reference: [`CONTRACT_WRITE_API.md`](docs/contracts/CONTRACT_WRITE_API.md), [`CONTRACT_READ_API.md`](docs/contracts/CONTRACT_READ_API.md)*
 
@@ -730,16 +753,18 @@ if errors.Is(err, lode.ErrNoSnapshots) {
 | `ErrNilIterator` | Nil iterator passed to StreamWriteRecords | Dataset |
 | `ErrOptionNotValidForDataset` | Option not applicable to Dataset | Dataset |
 | `ErrOptionNotValidForDatasetReader` | Option not applicable to DatasetReader | DatasetReader |
-| `ErrOptionNotValidForVolume` | Option not applicable to Volume | Volume |
 | `ErrPartitioningNotSupported` | StreamWriteRecords with partitioning | Dataset |
 | `ErrRangeReadNotSupported` | Store doesn't support range reads | Storage |
-| `ErrRangeMissing` | Volume ReadAt range not fully committed | Volume |
-| `ErrOverlappingBlocks` | Committed blocks overlap in cumulative manifest | Volume |
 | `ErrSnapshotConflict` | Another writer committed since parent was resolved (CAS) | Dataset, Volume |
 | `ErrSnapshotExpired` | Snapshot was removed by `Expire`; also matches `ErrNotFound` | Dataset |
 | `ErrHeadUncommitted` | Latest pointer names a snapshot whose manifest is not written yet, or is missing beside existing snapshots | Dataset.Expire |
 | `ErrSchemaViolation` | Record doesn't conform to Parquet schema | Parquet Codec |
 | `ErrInvalidFormat` | Malformed or corrupted Parquet file | Parquet Codec |
+
+Volume (experimental) adds two sentinels in package `volume`:
+`volume.ErrRangeMissing` (a `ReadAt` range is not fully committed) and
+`volume.ErrOverlappingBlocks` (committed blocks overlap in the cumulative
+manifest). It also returns the shared sentinels above where they apply.
 
 ### Error Handling Guidelines
 

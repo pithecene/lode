@@ -63,6 +63,11 @@ order by nonce, which is not commit order. The pointer names the head;
 `Latest` and parent resolution fall back to the largest ID only when the
 pointer is missing or names a snapshot with no manifest (a crash, a hand
 edit, or the moment of a non-CAS Delete+Put), and then take it as the head.
+`Latest` creates a missing pointer from that result but never rewrites an
+existing one: a pointer naming a snapshot with no manifest may be a commit
+in flight (the pointer is written before the manifests), and rewriting it
+would roll the head back over that commit. The next commit replaces a
+stale pointer through its CAS.
 With a rolled-back clock, or two commits that began in the same nanosecond,
 that may not be the last commit. Instant-only IDs had the same limit, and
 same-nanosecond writes then shared one ID outright. Retention never uses

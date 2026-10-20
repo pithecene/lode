@@ -1,4 +1,4 @@
-package lode
+package retry
 
 import (
 	"context"
@@ -18,7 +18,7 @@ import (
 //   - `c.jitter <= 0` → `<`: a zero jitter portion yields the same delay.
 
 func TestDefaultRetryConfig_Values(t *testing.T) {
-	cfg := defaultRetryConfig()
+	cfg := Default()
 	if cfg.maxAttempts != 0 {
 		t.Errorf("maxAttempts: got %d, want 0 (retries are opt-in)", cfg.maxAttempts)
 	}
@@ -38,7 +38,7 @@ func TestDefaultRetryConfig_Values(t *testing.T) {
 
 func TestJitteredBackoff(t *testing.T) {
 	t.Run("bounds", func(t *testing.T) {
-		cfg := retryConfig{
+		cfg := Config{
 			baseDelay: 10 * time.Millisecond,
 			maxDelay:  2 * time.Second,
 			jitter:    1.0,
@@ -56,7 +56,7 @@ func TestJitteredBackoff(t *testing.T) {
 	})
 
 	t.Run("no jitter deterministic", func(t *testing.T) {
-		cfg := retryConfig{
+		cfg := Config{
 			baseDelay: 10 * time.Millisecond,
 			maxDelay:  2 * time.Second,
 			jitter:    0.0,
@@ -79,7 +79,7 @@ func TestJitteredBackoff(t *testing.T) {
 	})
 
 	t.Run("capped at max delay", func(t *testing.T) {
-		cfg := retryConfig{
+		cfg := Config{
 			baseDelay: 100 * time.Millisecond,
 			maxDelay:  500 * time.Millisecond,
 			jitter:    0.0,
@@ -95,7 +95,7 @@ func TestJitteredBackoff(t *testing.T) {
 	// Full jitter draws uniformly from [0, schedule): the schedule itself is
 	// never returned, and the cap applies before the draw.
 	t.Run("full jitter strictly below schedule", func(t *testing.T) {
-		cfg := retryConfig{
+		cfg := Config{
 			baseDelay: 10 * time.Millisecond,
 			maxDelay:  2 * time.Second,
 			jitter:    1.0,
@@ -114,7 +114,7 @@ func TestJitteredBackoff(t *testing.T) {
 	// jitter=0.5 keeps half the schedule deterministic and randomizes the rest:
 	// attempt 1 at 100ms base lands in [50ms, 100ms).
 	t.Run("partial jitter splits delay", func(t *testing.T) {
-		cfg := retryConfig{
+		cfg := Config{
 			baseDelay: 100 * time.Millisecond,
 			maxDelay:  time.Second,
 			jitter:    0.5,
@@ -130,7 +130,7 @@ func TestJitteredBackoff(t *testing.T) {
 	// Shifting a 10ms base past 63 bits wraps negative (attempt 41) and then to
 	// zero (attempt >= 64); both must cap at maxDelay rather than return garbage.
 	t.Run("overflow caps at max delay", func(t *testing.T) {
-		cfg := retryConfig{
+		cfg := Config{
 			baseDelay: 10 * time.Millisecond,
 			maxDelay:  2 * time.Second,
 			jitter:    0,
@@ -145,7 +145,7 @@ func TestJitteredBackoff(t *testing.T) {
 	// A jitter portion that truncates to zero must skip the random draw
 	// (rand.Int64N(0) panics) and leave the whole delay deterministic.
 	t.Run("sub nanosecond jitter portion", func(t *testing.T) {
-		cfg := retryConfig{
+		cfg := Config{
 			baseDelay: time.Nanosecond,
 			maxDelay:  time.Second,
 			jitter:    0.5,
@@ -158,7 +158,7 @@ func TestJitteredBackoff(t *testing.T) {
 
 func TestRetryBackoff(t *testing.T) {
 	t.Run("context canceled", func(t *testing.T) {
-		cfg := retryConfig{
+		cfg := Config{
 			baseDelay: 10 * time.Second, // long delay so context cancels first
 			maxDelay:  10 * time.Second,
 			jitter:    0.0,
@@ -167,7 +167,7 @@ func TestRetryBackoff(t *testing.T) {
 		ctx, cancel := context.WithCancel(t.Context())
 		cancel()
 
-		err := cfg.retryBackoff(ctx, 1)
+		err := cfg.Backoff(ctx, 1)
 		if err == nil {
 			t.Fatal("expected context canceled error")
 		}
@@ -177,14 +177,14 @@ func TestRetryBackoff(t *testing.T) {
 	// sleep for that attempt begins.
 	t.Run("observer once per attempt in order", func(t *testing.T) {
 		var seen []int
-		cfg := retryConfig{
+		cfg := Config{
 			baseDelay: time.Nanosecond,
 			maxDelay:  time.Nanosecond,
 			jitter:    0,
 			observer:  func(attempt int) { seen = append(seen, attempt) },
 		}
 		for attempt := 1; attempt <= 3; attempt++ {
-			if err := cfg.retryBackoff(t.Context(), attempt); err != nil {
+			if err := cfg.Backoff(t.Context(), attempt); err != nil {
 				t.Fatalf("attempt %d: %v", attempt, err)
 			}
 		}
@@ -197,7 +197,7 @@ func TestRetryBackoff(t *testing.T) {
 	// already canceled and the wait returns immediately with ctx.Err().
 	t.Run("observer fires before canceled wait", func(t *testing.T) {
 		calls := 0
-		cfg := retryConfig{
+		cfg := Config{
 			baseDelay: 10 * time.Second,
 			maxDelay:  10 * time.Second,
 			jitter:    0,
@@ -206,7 +206,7 @@ func TestRetryBackoff(t *testing.T) {
 		ctx, cancel := context.WithCancel(t.Context())
 		cancel()
 
-		err := cfg.retryBackoff(ctx, 1)
+		err := cfg.Backoff(ctx, 1)
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("got %v, want context.Canceled", err)
 		}
@@ -214,4 +214,69 @@ func TestRetryBackoff(t *testing.T) {
 			t.Fatalf("observer calls: got %d, want 1", calls)
 		}
 	})
+}
+
+// The setters are the single validation point for the WithRetry* options of
+// every container; each bound is checked at its edge.
+func TestConfig_Setters(t *testing.T) {
+	cases := []struct {
+		name    string
+		set     func(*Config) error
+		wantErr error
+	}{
+		{"attempts zero", func(c *Config) error { return c.SetMaxAttempts(0) }, nil},
+		{"attempts negative", func(c *Config) error { return c.SetMaxAttempts(-1) }, errNegativeAttempts},
+		{"base delay smallest", func(c *Config) error { return c.SetBaseDelay(time.Nanosecond) }, nil},
+		{"base delay zero", func(c *Config) error { return c.SetBaseDelay(0) }, errNonPositiveDelay},
+		{"max delay smallest", func(c *Config) error { return c.SetMaxDelay(time.Nanosecond) }, nil},
+		{"max delay zero", func(c *Config) error { return c.SetMaxDelay(0) }, errNonPositiveDelay},
+		{"jitter zero", func(c *Config) error { return c.SetJitter(0) }, nil},
+		{"jitter one", func(c *Config) error { return c.SetJitter(1) }, nil},
+		{"jitter below", func(c *Config) error { return c.SetJitter(-0.01) }, errJitterRange},
+		{"jitter above", func(c *Config) error { return c.SetJitter(1.01) }, errJitterRange},
+		{"observer set", func(c *Config) error { return c.SetObserver(func(int) {}) }, nil},
+		{"observer nil", func(c *Config) error { return c.SetObserver(nil) }, errNilObserver},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Default()
+			if err := tc.set(&cfg); !errors.Is(err, tc.wantErr) {
+				t.Fatalf("got %v, want %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// A setter that accepts its value stores it; one that rejects leaves the
+// config unchanged.
+func TestConfig_SettersStore(t *testing.T) {
+	cfg := Default()
+	observed := 0
+	for _, err := range []error{
+		cfg.SetMaxAttempts(3),
+		cfg.SetBaseDelay(time.Millisecond),
+		cfg.SetMaxDelay(time.Second),
+		cfg.SetJitter(0.5),
+		cfg.SetObserver(func(int) { observed++ }),
+	} {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if cfg.MaxAttempts() != 3 || cfg.baseDelay != time.Millisecond || cfg.maxDelay != time.Second || cfg.jitter != 0.5 {
+		t.Fatalf("setters did not store: %+v", cfg)
+	}
+	cfg.observer(1)
+	if observed != 1 {
+		t.Fatal("observer not stored")
+	}
+
+	before := cfg
+	_ = cfg.SetMaxAttempts(-1)
+	_ = cfg.SetBaseDelay(0)
+	_ = cfg.SetMaxDelay(0)
+	_ = cfg.SetJitter(2)
+	if cfg.maxAttempts != before.maxAttempts || cfg.baseDelay != before.baseDelay || cfg.maxDelay != before.maxDelay || cfg.jitter != before.jitter {
+		t.Fatalf("rejected value changed the config: %+v", cfg)
+	}
 }

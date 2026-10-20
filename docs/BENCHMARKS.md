@@ -81,11 +81,11 @@ is part of the release checklist.
 | `BenchmarkS3_WriteRoundTrip/MinIO` | `lode/s3/bench_integration_test.go` | MinIO | Done |
 | `BenchmarkDataset_Read` | `lode/bench_test.go` | In-memory | Done |
 | `BenchmarkDataset_StreamWrite` | `lode/bench_test.go` | In-memory | Done |
-| `BenchmarkVolume_ReadAt` | `lode/bench_test.go` | In-memory (10 committed blocks) | Done |
+| `BenchmarkVolume_ReadAt` | `lode/volume/bench_test.go` | In-memory (10 committed blocks) | Done |
 | `BenchmarkParquetCodec_Encode` | `lode/bench_test.go` | In-memory | Done |
 | `BenchmarkParquetCodec_Decode` | `lode/bench_test.go` | In-memory | Done |
-| `BenchmarkFindCoveringBlocks` | `lode/volume_test.go` | In-memory | Done |
-| `BenchmarkMergeBlocks` | `lode/volume_test.go` | In-memory | Done |
+| `BenchmarkFindCoveringBlocks` | `lode/volume/volume_test.go` | In-memory | Done |
+| `BenchmarkMergeBlocks` | `lode/volume/volume_test.go` | In-memory | Done |
 
 ### Planned
 

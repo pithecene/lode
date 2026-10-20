@@ -10,6 +10,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/pithecene-io/lode/internal/history"
 )
 
 // tombstone is the persisted record of an expiry (CONTRACT_RETENTION
@@ -63,7 +65,7 @@ func (d *dataset) tombstones() tombstones {
 // the generated form: only such an ID names a tombstone, and no other
 // caller-supplied string is ever turned into a store path.
 func (ts tombstones) path(id DatasetSnapshotID) (p string, ok bool) {
-	if _, generated := snapshotInstant(id); !generated {
+	if !history.IsGeneratedID(id) {
 		return "", false
 	}
 	return ts.layout.tombstonePath(ts.dataset, id), true
@@ -122,8 +124,7 @@ func (ts tombstones) list(ctx context.Context) ([]string, error) {
 // a snapshot ID exactly as Lode generates one. Anything else there (the
 // filesystem store's CAS .lock companions) is not a tombstone at all.
 func isTombstoneName(key, prefix string) bool {
-	_, ok := snapshotInstant(DatasetSnapshotID(strings.TrimPrefix(key, prefix)))
-	return ok
+	return history.IsGeneratedID(strings.TrimPrefix(key, prefix))
 }
 
 // create writes p only if it is absent: atomically when the store is a
