@@ -421,7 +421,8 @@ type ExpireRequest struct {
 type SweepRequest struct {
 	// Grace is how old an unreferenced object must be before it is deleted,
 	// measured from when its write began. It must exceed the longest write
-	// in flight, and must be positive; there is no default.
+	// in flight plus the largest clock difference between a writing host
+	// and the sweeping one, and must be positive; there is no default.
 	Grace time.Duration
 
 	// DryRun reports what would be reclaimed, without deleting anything.
@@ -471,9 +472,9 @@ type ExpireReport struct {
 	// The head is never expired. Empty otherwise.
 	RetainedHead DatasetSnapshotID
 
-	// Objects counts the data objects this run deleted. An object an
-	// earlier, interrupted run already deleted is not counted again, so
-	// totals across runs add up.
+	// Objects counts the data objects this run deleted that its listing
+	// showed. An object an earlier, interrupted run already deleted is not
+	// counted again; runs that overlap can both count one.
 	Objects int
 
 	// Bytes sums the sizes the snapshots' inventories record for those
