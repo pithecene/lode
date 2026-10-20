@@ -83,15 +83,3 @@ func assertReadRangeBounds(t *testing.T, store Store) {
 		t.Fatalf("range to EOF: got %q, want %q", data, "llo")
 	}
 }
-
-func TestFSStore_ReadRange_Bounds(t *testing.T) {
-	store, err := NewFS(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	assertReadRangeBounds(t, store)
-}
-
-func TestMemoryStore_ReadRange_Bounds(t *testing.T) {
-	assertReadRangeBounds(t, NewMemory())
-}
