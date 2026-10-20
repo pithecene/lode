@@ -483,7 +483,32 @@ func TestSweep_Head(t *testing.T) {
 		assertPresent(t, ds, head)
 	})
 
-	t.Run("without a pointer the scanned head is held", func(t *testing.T) {
+	t.Run("a held tombstone keeps its data", func(t *testing.T) {
+		store := NewMemory()
+		ds := newDefaultRetention(t, store)
+		writeRecord(t, ds, 1)
+		// A misplaced tombstone names the pointer's snapshot, whose manifest is
+		// gone: the guard holds it back, and its data must stay too.
+		held := idAt(time.Now().Add(-48 * time.Hour))
+		data := "datasets/events/snapshots/" + string(held) + "/data/x"
+		putObject(t, store, data)
+		putTombstone(t, store, held, foreignTombstone(held, nil))
+		setPointer(t, store, string(held))
+
+		report, err := ds.Sweep(t.Context(), SweepRequest{Grace: sweepGrace})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(report.Settled) != 0 || report.Objects != 0 || !exists(t, store, data) {
+			t.Errorf("report = %+v, want the held snapshot and its data untouched", report)
+		}
+	})
+}
+
+// TestSweep_ScannedHead covers datasets with no pointer, whose head Sweep
+// finds by scanning.
+func TestSweep_ScannedHead(t *testing.T) {
+	t.Run("is held", func(t *testing.T) {
 		store := NewMemory()
 		ds := newDefaultRetention(t, store)
 		first := writeRecord(t, ds, 1)
@@ -501,7 +526,7 @@ func TestSweep_Head(t *testing.T) {
 		assertPresent(t, ds, head)
 	})
 
-	t.Run("without a pointer an expired leftover is settled", func(t *testing.T) {
+	t.Run("an expired leftover is settled", func(t *testing.T) {
 		mem := NewMemory()
 		ds := newHiveRetention(t, mem)
 		live := writeRun(t, ds, "a", "x")
@@ -532,7 +557,7 @@ func TestSweep_Head(t *testing.T) {
 		}
 	})
 
-	t.Run("without a pointer an expiring head the listing half shows is held", func(t *testing.T) {
+	t.Run("an expiring head the listing half shows is held", func(t *testing.T) {
 		mem := NewMemory()
 		lister := &listInjector{Store: mem}
 		ds := newHiveRetention(t, lister)
@@ -571,25 +596,29 @@ func TestSweep_Head(t *testing.T) {
 		}
 	})
 
-	t.Run("a held tombstone keeps its data", func(t *testing.T) {
-		store := NewMemory()
-		ds := newDefaultRetention(t, store)
-		writeRecord(t, ds, 1)
-		// A misplaced tombstone names the pointer's snapshot, whose manifest is
-		// gone: the guard holds it back, and its data must stay too.
-		held := idAt(time.Now().Add(-48 * time.Hour))
-		data := "datasets/events/snapshots/" + string(held) + "/data/x"
-		putObject(t, store, data)
-		putTombstone(t, store, held, foreignTombstone(held, nil))
-		setPointer(t, store, string(held))
+	t.Run("a head the listing shows only data of is held", func(t *testing.T) {
+		mem := NewMemory()
+		lister := &listInjector{Store: mem}
+		ds := newDefaultRetention(t, lister)
+		older := writeRecord(t, ds, 1)
+		head := writeRecord(t, ds, 2)
+		legacyize(t, mem, older, head)
+		putTombstone(t, mem, head.ID, newTombstone(head.ID, head.Manifest)) // misplaced
+		// The listing shows the head's data but none of its manifests.
+		for _, k := range storeKeys(t, mem) {
+			if strings.Contains(k, string(head.ID)) && strings.HasSuffix(k, manifestFile) {
+				lister.hidden = append(lister.hidden, k)
+			}
+		}
 
 		report, err := ds.Sweep(t.Context(), SweepRequest{Grace: sweepGrace})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(report.Settled) != 0 || report.Objects != 0 || !exists(t, store, data) {
-			t.Errorf("report = %+v, want the held snapshot and its data untouched", report)
+		if len(report.Settled) != 0 || report.Objects != 0 {
+			t.Errorf("report = %+v, want the head held", report)
 		}
+		assertPresent(t, ds, head)
 	})
 }
 

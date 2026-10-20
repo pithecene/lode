@@ -68,7 +68,7 @@ func (d *dataset) sweepInventory(ctx context.Context) (sweepInventory, error) {
 	for _, g := range inv.objects {
 		inv.dataOf[g.id] = g.paths
 	}
-	inv.protected, err = d.sweepProtected(ctx, inv.manifests, d.tombstonedIDs(inv))
+	inv.protected, err = d.sweepProtected(ctx, inv, d.tombstonedIDs(inv))
 	return inv, err
 }
 
@@ -113,16 +113,16 @@ func (d *dataset) rejectedTombstoneIDs(keys []string) map[DatasetSnapshotID]bool
 // scan serves once expired leftovers are passed over. Lode never tombstones
 // a head, so this only keeps a misplaced object under expired/ from
 // removing one.
-func (d *dataset) sweepProtected(ctx context.Context, manifests map[DatasetSnapshotID][]string, tombstoned map[DatasetSnapshotID]bool) (map[DatasetSnapshotID]bool, error) {
+func (d *dataset) sweepProtected(ctx context.Context, inv sweepInventory, tombstoned map[DatasetSnapshotID]bool) (map[DatasetSnapshotID]bool, error) {
 	id, err := d.history.readPointer(ctx)
 	if err != nil && !errors.Is(err, ErrNotFound) {
 		return nil, fmt.Errorf("lode: failed to resolve head: %w", err)
 	}
 	protected := map[DatasetSnapshotID]bool{id: true}
-	if _, committed := manifests[id]; committed {
+	if _, committed := inv.manifests[id]; committed {
 		return protected, nil
 	}
-	head, err := d.newestNotExpired(ctx, manifests, tombstoned)
+	head, err := d.newestNotExpired(ctx, inv, tombstoned)
 	if errors.Is(err, ErrNotFound) {
 		return protected, nil
 	}
@@ -140,15 +140,15 @@ func (d *dataset) sweepProtected(ctx context.Context, manifests map[DatasetSnaps
 
 // newestNotExpired is the largest listed snapshot that is not expired: one
 // with no tombstone, or whose canonical manifest is present (an expiring
-// snapshot is fully readable). A listing may omit the canonical copy, so a
-// tombstoned candidate whose canonical copy was not listed is checked in the
-// store; only those cost a call. ErrNotFound means every one is expired.
-func (d *dataset) newestNotExpired(ctx context.Context, manifests map[DatasetSnapshotID][]string, tombstoned map[DatasetSnapshotID]bool) (DatasetSnapshotID, error) {
-	ids := slices.Collect(maps.Keys(manifests))
-	slices.SortFunc(ids, func(a, b DatasetSnapshotID) int { return strings.Compare(string(b), string(a)) })
-	for _, id := range ids {
+// snapshot is fully readable). A listing may omit manifests, so candidates
+// are the snapshots with a listed manifest and the tombstoned ones with
+// listed data, and a tombstoned candidate whose canonical copy was not
+// listed is checked in the store; only those cost a call. ErrNotFound means
+// every one is expired.
+func (d *dataset) newestNotExpired(ctx context.Context, inv sweepInventory, tombstoned map[DatasetSnapshotID]bool) (DatasetSnapshotID, error) {
+	for _, id := range headCandidates(inv, tombstoned) {
 		canonical := d.layout.manifestPath(d.id, id)
-		if !tombstoned[id] || slices.Contains(manifests[id], canonical) {
+		if !tombstoned[id] || slices.Contains(inv.manifests[id], canonical) {
 			return id, nil
 		}
 		present, err := d.store.Exists(ctx, canonical)
@@ -160,6 +160,20 @@ func (d *dataset) newestNotExpired(ctx context.Context, manifests map[DatasetSna
 		}
 	}
 	return "", fmt.Errorf("lode: no unexpired snapshot listed: %w", ErrNotFound)
+}
+
+// headCandidates is every snapshot that may be the head, newest first: those
+// with a listed manifest, and tombstoned ones with listed data whose
+// manifests the listing may have omitted.
+func headCandidates(inv sweepInventory, tombstoned map[DatasetSnapshotID]bool) []DatasetSnapshotID {
+	ids := slices.Collect(maps.Keys(inv.manifests))
+	for id := range inv.dataOf {
+		if _, listed := inv.manifests[id]; tombstoned[id] && !listed {
+			ids = append(ids, id)
+		}
+	}
+	slices.SortFunc(ids, func(a, b DatasetSnapshotID) int { return strings.Compare(string(b), string(a)) })
+	return ids
 }
 
 // tombstonedIDs is every snapshot the tombstone listing names, valid or not.
