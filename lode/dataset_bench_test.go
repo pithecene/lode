@@ -5,6 +5,8 @@ import (
 	"io"
 	"testing"
 	"time"
+
+	"github.com/pithecene-io/lode/internal/testutil"
 )
 
 // latencyStore wraps a Store and injects artificial latency on List and Get
@@ -91,7 +93,7 @@ func BenchmarkDataset_SequentialWrites(b *testing.B) {
 // pointer, only the cold-start write (no pointer yet) triggers a List call.
 // All subsequent writes resolve the parent via the pointer (Get only).
 func BenchmarkDataset_SequentialWrites_StoreCallCount(b *testing.B) {
-	fs := newFaultStore(NewMemory())
+	fs := testutil.NewFaultStore(NewMemory())
 	factory := newFaultStoreFactory(fs)
 
 	ds, err := NewDataset("bench-ds", factory, WithCodec(NewJSONLCodec()))

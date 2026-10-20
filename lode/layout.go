@@ -3,6 +3,8 @@ package lode
 import (
 	"path"
 	"strings"
+
+	"github.com/pithecene-io/lode/internal/validate"
 )
 
 // layout is the internal interface that combines path topology with partitioning.
@@ -227,7 +229,7 @@ func NewDefaultLayout() layout {
 //	// Records will be partitioned by day=<value>/region=<value>
 func NewHiveLayout(keys ...string) (layout, error) {
 	if len(keys) == 0 {
-		return nil, invalidArgument("NewHiveLayout requires at least one partition key; use NewDefaultLayout for unpartitioned data")
+		return nil, validate.Argument("NewHiveLayout requires at least one partition key; use NewDefaultLayout for unpartitioned data")
 	}
 	return &pathLayout{
 		grammar: pathGrammar{root: datasetsDir, snapshotDir: segmentsDir, partitioned: true},

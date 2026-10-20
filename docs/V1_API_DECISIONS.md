@@ -286,8 +286,8 @@ Holding v1.0 for this evidence would hold the Dataset surface, which has
 eight months of production evidence, behind a container nobody uses yet.
 
 **Two containers, not a family.** `Dataset` and `Volume` share one internal
-core, `history[ID, M]` (`lode/history.go`: the snapshot chain, the latest
-pointer, CAS). Each container supplies its own `snapshotKind` (its path
+core, `History[ID, M]` (`internal/history`: the snapshot chain, the latest
+pointer, CAS). Each container supplies its own `Kind` (its path
 grammar) and its own manifest type, and the manifests differ in kind:
 
 | Container | What a snapshot's manifest describes |

@@ -591,7 +591,7 @@ func TestDatasetReader_ListDatasets(t *testing.T) {
 // loads each manifest exactly once (M Gets), not twice (2M Gets via ListManifests + GetManifest).
 func TestDatasetReader_ListPartitions_SingleManifestLoad(t *testing.T) {
 	inner := NewMemory()
-	fs := newFaultStore(inner)
+	fs := testutil.NewFaultStore(inner)
 	factory := newFaultStoreFactory(fs)
 
 	// Write two snapshots with hive-partitioned data.

@@ -69,8 +69,11 @@ Public API surface.
 
 Internal implementations.
 
-- `testutil/` — internal test helpers
+- `testutil/` — internal test helpers, including the fault-injection store
 - `storepath/` — key, prefix, and range rules shared by every Store adapter
+- `history/` — snapshot-history core (snapshot chain, latest pointer, CAS commit loop) shared by every container
+- `retry/` — CAS-conflict retry configuration and backoff shared by every container
+- `validate/` — argument and manifest validation errors shared by every package (owns the sentinels `lode` re-exports as `ErrInvalidArgument`, `ErrManifestInvalid`)
 
 ---
 

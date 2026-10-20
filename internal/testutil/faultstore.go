@@ -1,4 +1,4 @@
-package lode
+package testutil
 
 import (
 	"context"
@@ -12,7 +12,7 @@ import (
 // Fault-Injection Store Wrapper (test-only)
 // -----------------------------------------------------------------------------
 //
-// faultStore wraps a Store and enables deterministic fault injection for testing
+// FaultStore wraps a Store and enables deterministic fault injection for testing
 // streaming failure paths. It provides:
 //   - Error injection on specific operations
 //   - Call observation/recording
@@ -21,8 +21,26 @@ import (
 // This is NOT production code. It exists solely to verify contract guarantees
 // under controlled failure conditions without relying on timing.
 
-// faultStore wraps a Store with fault injection capabilities.
-type faultStore struct {
+// Store is the method set of lode.Store, restated so this package does not
+// import lode (lode's own tests use it). Any lode.Store satisfies it, and a
+// *FaultStore satisfies lode.Store.
+type Store interface {
+	Put(ctx context.Context, path string, r io.Reader) error
+	Get(ctx context.Context, path string) (io.ReadCloser, error)
+	Exists(ctx context.Context, path string) (bool, error)
+	List(ctx context.Context, prefix string) ([]string, error)
+	Delete(ctx context.Context, path string) error
+	ReadRange(ctx context.Context, path string, offset, length int64) ([]byte, error)
+	ReaderAt(ctx context.Context, path string) (io.ReaderAt, error)
+}
+
+// conditionalWriter mirrors lode.ConditionalWriter.
+type conditionalWriter interface {
+	CompareAndSwap(ctx context.Context, path, expected, replacement string) error
+}
+
+// FaultStore wraps a Store with fault injection capabilities.
+type FaultStore struct {
 	inner Store
 
 	mu sync.Mutex
@@ -61,16 +79,16 @@ type faultStore struct {
 	beforeCAS   func(path string)
 }
 
-// newFaultStore creates a fault-injection wrapper around the given store.
-func newFaultStore(inner Store) *faultStore {
-	return &faultStore{inner: inner}
+// NewFaultStore creates a fault-injection wrapper around the given store.
+func NewFaultStore(inner Store) *FaultStore {
+	return &FaultStore{inner: inner}
 }
 
 // --- Fault injection setters ---
 
 // SetPutError sets an error to be returned by Put calls.
 // If match is non-empty, error is only returned for paths containing match.
-func (f *faultStore) SetPutError(err error, match ...string) {
+func (f *FaultStore) SetPutError(err error, match ...string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.putErr = err
@@ -82,7 +100,7 @@ func (f *faultStore) SetPutError(err error, match ...string) {
 }
 
 // SetDeleteError sets an error to be returned by all Delete calls.
-func (f *faultStore) SetDeleteError(err error) {
+func (f *FaultStore) SetDeleteError(err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.deleteErr = err
@@ -90,7 +108,7 @@ func (f *faultStore) SetDeleteError(err error) {
 
 // SetPutBlock sets a channel that Put will block on before proceeding.
 // Close the channel to unblock.
-func (f *faultStore) SetPutBlock(ch chan struct{}) {
+func (f *FaultStore) SetPutBlock(ch chan struct{}) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.putBlock = ch
@@ -98,21 +116,21 @@ func (f *faultStore) SetPutBlock(ch chan struct{}) {
 
 // SetBeforePut sets a hook called after recording but before blocking.
 // Use this for deterministic synchronization with blocking operations.
-func (f *faultStore) SetBeforePut(hook func(path string)) {
+func (f *FaultStore) SetBeforePut(hook func(path string)) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.beforePut = hook
 }
 
 // SetAfterPut sets a hook called after each Put completes.
-func (f *faultStore) SetAfterPut(hook func(path string, err error)) {
+func (f *FaultStore) SetAfterPut(hook func(path string, err error)) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.afterPut = hook
 }
 
 // SetAfterDelete sets a hook called after each Delete completes.
-func (f *faultStore) SetAfterDelete(hook func(path string, err error)) {
+func (f *FaultStore) SetAfterDelete(hook func(path string, err error)) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.afterDelete = hook
@@ -120,7 +138,7 @@ func (f *faultStore) SetAfterDelete(hook func(path string, err error)) {
 
 // SetCASError sets an error to be returned by CompareAndSwap calls.
 // If match is non-empty, error is only returned for paths containing match.
-func (f *faultStore) SetCASError(err error, match ...string) {
+func (f *FaultStore) SetCASError(err error, match ...string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.casErr = err
@@ -133,14 +151,14 @@ func (f *faultStore) SetCASError(err error, match ...string) {
 
 // SetCASBlock sets a channel that CompareAndSwap will block on before proceeding.
 // Close the channel to unblock.
-func (f *faultStore) SetCASBlock(ch chan struct{}) {
+func (f *FaultStore) SetCASBlock(ch chan struct{}) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.casBlock = ch
 }
 
 // SetBeforeCAS sets a hook called after recording but before blocking.
-func (f *faultStore) SetBeforeCAS(hook func(path string)) {
+func (f *FaultStore) SetBeforeCAS(hook func(path string)) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.beforeCAS = hook
@@ -149,42 +167,42 @@ func (f *faultStore) SetBeforeCAS(hook func(path string)) {
 // --- Call observation ---
 
 // PutCalls returns paths passed to Put.
-func (f *faultStore) PutCalls() []string {
+func (f *FaultStore) PutCalls() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]string(nil), f.putCalls...)
 }
 
 // DeleteCalls returns paths passed to Delete.
-func (f *faultStore) DeleteCalls() []string {
+func (f *FaultStore) DeleteCalls() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]string(nil), f.deleteCalls...)
 }
 
 // ListCalls returns prefixes passed to List.
-func (f *faultStore) ListCalls() []string {
+func (f *FaultStore) ListCalls() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]string(nil), f.listCalls...)
 }
 
 // GetCalls returns paths passed to Get.
-func (f *faultStore) GetCalls() []string {
+func (f *FaultStore) GetCalls() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]string(nil), f.getCalls...)
 }
 
 // CASCalls returns paths passed to CompareAndSwap.
-func (f *faultStore) CASCalls() []string {
+func (f *FaultStore) CASCalls() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]string(nil), f.casCalls...)
 }
 
 // Reset clears all recorded calls.
-func (f *faultStore) Reset() {
+func (f *FaultStore) Reset() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.putCalls = nil
@@ -197,7 +215,9 @@ func (f *faultStore) Reset() {
 
 // --- Store interface implementation ---
 
-func (f *faultStore) Put(ctx context.Context, path string, r io.Reader) error {
+// Put records the call, runs the put hooks and block, returns a matching
+// injected error, and otherwise forwards to the inner store.
+func (f *FaultStore) Put(ctx context.Context, path string, r io.Reader) error {
 	f.mu.Lock()
 	injectedErr := f.putErr
 	errMatch := f.putErrMatch
@@ -237,7 +257,8 @@ func (f *faultStore) Put(ctx context.Context, path string, r io.Reader) error {
 	return err
 }
 
-func (f *faultStore) Get(ctx context.Context, path string) (io.ReadCloser, error) {
+// Get records the call and forwards unless a get error is injected.
+func (f *FaultStore) Get(ctx context.Context, path string) (io.ReadCloser, error) {
 	f.mu.Lock()
 	injectedErr := f.getErr
 	f.getCalls = append(f.getCalls, path)
@@ -249,7 +270,8 @@ func (f *faultStore) Get(ctx context.Context, path string) (io.ReadCloser, error
 	return f.inner.Get(ctx, path)
 }
 
-func (f *faultStore) Exists(ctx context.Context, path string) (bool, error) {
+// Exists records the call and forwards unless an exists error is injected.
+func (f *FaultStore) Exists(ctx context.Context, path string) (bool, error) {
 	f.mu.Lock()
 	injectedErr := f.existsErr
 	f.existsCalls = append(f.existsCalls, path)
@@ -261,7 +283,8 @@ func (f *faultStore) Exists(ctx context.Context, path string) (bool, error) {
 	return f.inner.Exists(ctx, path)
 }
 
-func (f *faultStore) List(ctx context.Context, prefix string) ([]string, error) {
+// List records the call and forwards unless a list error is injected.
+func (f *FaultStore) List(ctx context.Context, prefix string) ([]string, error) {
 	f.mu.Lock()
 	injectedErr := f.listErr
 	f.listCalls = append(f.listCalls, prefix)
@@ -273,7 +296,9 @@ func (f *faultStore) List(ctx context.Context, prefix string) ([]string, error) 
 	return f.inner.List(ctx, prefix)
 }
 
-func (f *faultStore) Delete(ctx context.Context, path string) error {
+// Delete records the call, runs the delete block and hook, and forwards
+// unless a delete error is injected.
+func (f *FaultStore) Delete(ctx context.Context, path string) error {
 	f.mu.Lock()
 	injectedErr := f.deleteErr
 	block := f.deleteBlock
@@ -304,17 +329,19 @@ func (f *faultStore) Delete(ctx context.Context, path string) error {
 	return err
 }
 
-func (f *faultStore) ReadRange(ctx context.Context, path string, offset, length int64) ([]byte, error) {
+// ReadRange forwards to the inner store.
+func (f *FaultStore) ReadRange(ctx context.Context, path string, offset, length int64) ([]byte, error) {
 	return f.inner.ReadRange(ctx, path, offset, length)
 }
 
-func (f *faultStore) ReaderAt(ctx context.Context, path string) (io.ReaderAt, error) {
+// ReaderAt forwards to the inner store.
+func (f *FaultStore) ReaderAt(ctx context.Context, path string) (io.ReaderAt, error) {
 	return f.inner.ReaderAt(ctx, path)
 }
 
 // CompareAndSwap forwards to the inner store's ConditionalWriter implementation
 // with full fault injection support (error injection, blocking, hooks).
-func (f *faultStore) CompareAndSwap(ctx context.Context, path, expected, replacement string) error {
+func (f *FaultStore) CompareAndSwap(ctx context.Context, path, expected, replacement string) error {
 	f.mu.Lock()
 	injectedErr := f.casErr
 	errMatch := f.casErrMatch
@@ -339,21 +366,14 @@ func (f *faultStore) CompareAndSwap(ctx context.Context, path, expected, replace
 		return injectedErr
 	}
 
-	return f.inner.(ConditionalWriter).CompareAndSwap(ctx, path, expected, replacement)
-}
-
-// --- Factory helper ---
-
-// newFaultStoreFactory creates a StoreFactory that returns the given faultStore.
-func newFaultStoreFactory(fs *faultStore) StoreFactory {
-	return func() (Store, error) {
-		return fs, nil
-	}
+	return f.inner.(conditionalWriter).CompareAndSwap(ctx, path, expected, replacement)
 }
 
 // --- Sentinel errors for injection ---
 
 var (
-	errInjectedPut    = errors.New("injected: put error")
-	errInjectedDelete = errors.New("injected: delete error")
+	// ErrInjectedPut is a ready-made error for SetPutError.
+	ErrInjectedPut = errors.New("injected: put error")
+	// ErrInjectedDelete is a ready-made error for SetDeleteError.
+	ErrInjectedDelete = errors.New("injected: delete error")
 )

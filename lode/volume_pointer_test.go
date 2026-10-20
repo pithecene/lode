@@ -3,6 +3,8 @@ package lode
 import (
 	"bytes"
 	"testing"
+
+	"github.com/pithecene-io/lode/internal/testutil"
 )
 
 // A fresh Volume instance resolves its parent from the persisted pointer
@@ -10,7 +12,7 @@ import (
 // cold-start tests assert the parent linkage but not the absence of a scan,
 // so negating the pointer check was unobserved.
 func TestVolume_Commit_ColdStart_ValidPointer_SkipsScan(t *testing.T) {
-	fs := newFaultStore(NewMemory())
+	fs := testutil.NewFaultStore(NewMemory())
 	first := newTestVolume(t, "test-vol", newFaultStoreFactory(fs), 20)
 	blk := stageBlock(t, first, 0, bytes.Repeat([]byte("A"), 10))
 	snap1 := commitBlocks(t, first, []BlockRef{blk}, Metadata{})
