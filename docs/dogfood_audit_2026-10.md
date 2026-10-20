@@ -150,7 +150,10 @@ is in no dataset in the bucket. Not seen since.
 
 ### F5 — Unreferenced data objects are 54% of data bytes · LIMITATION
 
-48,102 data objects (2.07 GB) are referenced by no manifest:
+48,102 data objects (2.07 GB) are referenced by no manifest. Only objects
+Lode's write path stores (`segments/<id>/data/`) are counted. Caller-managed
+files that `Store.Put` writes outside that path (Quarry's sidecars, tracked in
+snapshot `Metadata`) are classified separately, and none remain in the dataset:
 
 | 2026-02 | 2026-03 | 2026-05 – 2026-10 |
 |--------:|--------:|------------------:|
