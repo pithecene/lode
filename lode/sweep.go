@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -24,7 +25,7 @@ func (d *dataset) Sweep(ctx context.Context, req SweepRequest) (*SweepReport, er
 	report.Unparseable = inv.invalidTombstones
 	run := sweepRun{
 		ds: d, inv: inv, dryRun: req.DryRun, cutoff: time.Now().Add(-req.Grace),
-		settled: make(map[DatasetSnapshotID]tombstone), held: make(map[DatasetSnapshotID]bool),
+		settled: make(map[DatasetSnapshotID]tombstone), held: d.rejectedTombstoneIDs(inv.invalidTombstones),
 	}
 	if err := run.settle(ctx, report); err != nil {
 		return report, err
@@ -88,6 +89,18 @@ func (d *dataset) inventoryTombstones(ctx context.Context) (valid []tombstone, i
 	return valid, invalid, nil
 }
 
+// rejectedTombstoneIDs is the snapshots whose tombstone failed validation,
+// named by key. They are held: a tombstone Lode cannot trust says nothing
+// about whether the snapshot's objects are garbage.
+func (d *dataset) rejectedTombstoneIDs(keys []string) map[DatasetSnapshotID]bool {
+	prefix := d.layout.tombstonesPrefix(d.id)
+	held := make(map[DatasetSnapshotID]bool, len(keys))
+	for _, k := range keys {
+		held[DatasetSnapshotID(strings.TrimPrefix(k, prefix))] = true
+	}
+	return held
+}
+
 // sweepProtected is the head guard of a sweep: the snapshot the pointer
 // names and, when the pointer is absent or names a snapshot without a
 // manifest, the one a scan would return. Lode never tombstones a head, so
@@ -115,32 +128,52 @@ type sweepRun struct {
 	dryRun  bool
 	cutoff  time.Time                       // an orphan whose write began before this is reclaimed
 	settled map[DatasetSnapshotID]tombstone // settled this run or earlier, with its inventory
-	held    map[DatasetSnapshotID]bool      // tombstoned but protected: left unsettled
+	held    map[DatasetSnapshotID]bool      // protected, or its tombstone rejected: never touched
 }
 
 // settle removes the remaining manifests of every tombstoned snapshot,
 // canonical first (§Order of operations, steps 2–3). A snapshot is settled
-// only once all of them are gone; a dry run settles virtually. Only
-// snapshots that still had manifests are reported: one settled by an
-// earlier run is settled already.
+// only once all of them are gone; a dry run settles virtually.
 func (r sweepRun) settle(ctx context.Context, report *SweepReport) error {
 	for _, t := range r.inv.tombstones {
-		id := t.SnapshotID
-		if r.inv.protected[id] {
-			r.held[id] = true
-			continue
-		}
-		listed, pending := r.inv.manifests[id]
-		if pending && !r.dryRun {
-			if err := deleteObjects(ctx, r.ds.store, r.ds.allManifestPaths(id, listed, t.Files)); err != nil {
-				return err
-			}
-		}
-		r.settled[id] = t
-		if pending {
-			report.Settled = append(report.Settled, id)
+		if err := r.settleOne(ctx, t, report); err != nil {
+			return err
 		}
 	}
+	return nil
+}
+
+// settleOne settles one tombstoned snapshot. A protected one is held; one
+// with no manifest left was settled by an earlier run and is not reported;
+// one with a manifest copy its tombstone does not describe is held and
+// reported, because that tombstone belongs to another snapshot.
+func (r sweepRun) settleOne(ctx context.Context, t tombstone, report *SweepReport) error {
+	id := t.SnapshotID
+	if r.inv.protected[id] {
+		r.held[id] = true
+		return nil
+	}
+	listed, pending := r.inv.manifests[id]
+	if !pending {
+		r.settled[id] = t
+		return nil
+	}
+	matches, err := r.ds.copiesMatch(ctx, id, r.ds.allManifestPaths(id, listed, t.Files), t.Files)
+	if err != nil {
+		return err
+	}
+	if !matches {
+		r.held[id] = true
+		report.Unparseable = append(report.Unparseable, r.ds.layout.tombstonePath(r.ds.id, id))
+		return nil
+	}
+	if !r.dryRun {
+		if err := deleteObjects(ctx, r.ds.store, r.ds.allManifestPaths(id, listed, t.Files)); err != nil {
+			return err
+		}
+	}
+	r.settled[id] = t
+	report.Settled = append(report.Settled, id)
 	return nil
 }
 
@@ -165,8 +198,9 @@ var objectActions = map[objectClass]struct{ reclaim, orphan, report bool }{
 	classUnparseable: {report: true},
 }
 
-// classify decides by settlement, liveness and age. A tombstoned snapshot
-// the head guard held back keeps its objects; otherwise the guard is not
+// classify decides by settlement, liveness and age. A held snapshot (one
+// the head guard held back, or whose tombstone was rejected) keeps its
+// objects; otherwise the guard is not
 // consulted, so a crashed commit's data, which the pointer may still name,
 // ages out like any other orphan.
 func (r sweepRun) classify(id DatasetSnapshotID) objectClass {

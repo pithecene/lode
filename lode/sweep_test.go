@@ -264,6 +264,73 @@ func TestSweep_HeldTombstoneKeepsItsData(t *testing.T) {
 	}
 }
 
+func TestSweep_TombstoneOfAnotherInventory_SettlesNothing(t *testing.T) {
+	store := NewMemory()
+	ds := newDefaultRetention(t, store)
+	live := writeRecord(t, ds, 1)
+	writeRecord(t, ds, 2)
+	// A tombstone left by an earlier snapshot with the live one's ID.
+	putTombstone(t, store, live.ID, live.ID, []FileRef{{Path: "datasets/events/snapshots/" + string(live.ID) + "/data/old", SizeBytes: 1}})
+
+	for _, dryRun := range []bool{true, false} {
+		report, err := ds.Sweep(t.Context(), SweepRequest{Grace: sweepGrace, DryRun: dryRun})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []string{"datasets/events/expired/" + string(live.ID)}
+		if len(report.Settled) != 0 || report.Objects != 0 || !slices.Equal(report.Unparseable, want) {
+			t.Errorf("Sweep(dry=%v) = %+v, want nothing settled and the tombstone reported", dryRun, report)
+		}
+	}
+	assertPresent(t, ds, live)
+}
+
+func TestSweep_TombstoneContradictedByAPartitionCopy_SettlesNothing(t *testing.T) {
+	store := NewMemory()
+	ds := newHiveRetention(t, store)
+	run := writeRun(t, ds, "a", "x", "y")
+	writeRun(t, ds, "b", "x")
+	// An interrupted expiry left the canonical copy; a partition copy left by
+	// an earlier snapshot with the same ID lists other objects.
+	putTombstone(t, store, run.ID, run.ID, run.Manifest.Files)
+	stray := "datasets/events/partitions/run_id=a/event_type=y/segments/" + string(run.ID) + "/manifest.json"
+	other := *run.Manifest
+	other.Files = []FileRef{{Path: "datasets/events/partitions/run_id=a/event_type=y/segments/" + string(run.ID) + "/data/old", SizeBytes: 1}}
+	rewriteManifest(t, store, stray, &other)
+
+	report, err := ds.Sweep(t.Context(), SweepRequest{Grace: sweepGrace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Settled) != 0 || report.Objects != 0 || !exists(t, store, stray) {
+		t.Errorf("report = %+v, want nothing settled and every copy kept", report)
+	}
+	assertPresent(t, ds, run)
+}
+
+func TestSweep_RejectedTombstoneHoldsItsData(t *testing.T) {
+	store := NewMemory()
+	ds := newDefaultRetention(t, store)
+	writeRecord(t, ds, 1)
+	// No manifest is left and the data is past grace, so it would age out
+	// as an orphan; the invalid tombstone holds it instead.
+	old := idAt(time.Now().Add(-48 * time.Hour))
+	data := "datasets/events/snapshots/" + string(old) + "/data/x"
+	putObject(t, store, data)
+	tomb := "datasets/events/expired/" + string(old)
+	if err := store.Put(t.Context(), tomb, strings.NewReader(`{"snapshot_id":"`+string(old)+`"}`)); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := ds.Sweep(t.Context(), SweepRequest{Grace: sweepGrace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Objects != 0 || !exists(t, store, data) || !slices.Equal(report.Unparseable, []string{tomb}) {
+		t.Errorf("report = %+v, want the tombstone reported and its data kept", report)
+	}
+}
+
 func TestSweep_NonCanonicalKeysAreOutOfScope(t *testing.T) {
 	mem := NewMemory()
 	listed := []string{

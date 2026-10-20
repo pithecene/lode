@@ -450,7 +450,8 @@ type SweepReport struct {
 	// Orphans counts, of Unsized, those of snapshots never committed.
 	Orphans int
 
-	// Unparseable lists invalid tombstones, and unreferenced data objects
+	// Unparseable lists invalid tombstones, tombstones whose inventory
+	// differs from a manifest still present, and unreferenced data objects
 	// whose snapshot ID carries no instant. Nothing listed is deleted.
 	Unparseable []string
 }
