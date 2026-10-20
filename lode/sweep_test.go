@@ -331,6 +331,23 @@ func TestSweep_RejectedTombstoneHoldsItsData(t *testing.T) {
 	}
 }
 
+func TestSweep_ContradictedTombstoneOfTheHead_IsReported(t *testing.T) {
+	store := NewMemory()
+	ds := newDefaultRetention(t, store)
+	head := writeRecord(t, ds, 1)
+	tomb := "datasets/events/expired/" + string(head.ID)
+	putTombstone(t, store, head.ID, head.ID, []FileRef{{Path: "datasets/events/snapshots/" + string(head.ID) + "/data/old", SizeBytes: 1}})
+
+	report, err := ds.Sweep(t.Context(), SweepRequest{Grace: sweepGrace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Settled) != 0 || !slices.Equal(report.Unparseable, []string{tomb}) {
+		t.Errorf("report = %+v, want the head kept and its contradicted tombstone reported", report)
+	}
+	assertPresent(t, ds, head)
+}
+
 func TestSweep_NonCanonicalKeysAreOutOfScope(t *testing.T) {
 	mem := NewMemory()
 	listed := []string{

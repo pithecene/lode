@@ -143,28 +143,27 @@ func (r sweepRun) settle(ctx context.Context, report *SweepReport) error {
 	return nil
 }
 
-// settleOne settles one tombstoned snapshot. A protected one is held; one
-// with no manifest left was settled by an earlier run and is not reported;
-// one with a manifest copy its tombstone does not describe is held and
-// reported, because that tombstone belongs to another snapshot.
+// settleOne settles one tombstoned snapshot. One with a manifest copy its
+// tombstone does not describe is held and reported, protected or not,
+// because that tombstone belongs to another snapshot; a protected one is
+// held; one with no manifest left was settled by an earlier run and is not
+// reported.
 func (r sweepRun) settleOne(ctx context.Context, t tombstone, report *SweepReport) error {
 	id := t.SnapshotID
-	if r.inv.protected[id] {
-		r.held[id] = true
-		return nil
-	}
 	listed, pending := r.inv.manifests[id]
-	if !pending {
-		r.settled[id] = t
-		return nil
-	}
-	matches, err := r.ds.copiesMatch(ctx, id, r.ds.allManifestPaths(id, listed, t.Files), t.Files)
+	contradicted, err := r.contradicted(ctx, t, listed, pending)
 	if err != nil {
 		return err
 	}
-	if !matches {
-		r.held[id] = true
+	if contradicted {
 		report.Unparseable = append(report.Unparseable, r.ds.layout.tombstonePath(r.ds.id, id))
+	}
+	if contradicted || r.inv.protected[id] {
+		r.held[id] = true
+		return nil
+	}
+	if !pending {
+		r.settled[id] = t
 		return nil
 	}
 	if !r.dryRun {
@@ -175,6 +174,17 @@ func (r sweepRun) settleOne(ctx context.Context, t tombstone, report *SweepRepor
 	r.settled[id] = t
 	report.Settled = append(report.Settled, id)
 	return nil
+}
+
+// contradicted reports whether a manifest copy of t's snapshot that is
+// still present records another inventory. With none listed, there is
+// nothing to contradict it.
+func (r sweepRun) contradicted(ctx context.Context, t tombstone, listed []string, pending bool) (bool, error) {
+	if !pending {
+		return false, nil
+	}
+	matches, err := r.ds.copiesMatch(ctx, t.SnapshotID, r.ds.allManifestPaths(t.SnapshotID, listed, t.Files), t.Files)
+	return !matches, err
 }
 
 // -----------------------------------------------------------------------------
