@@ -302,7 +302,7 @@ All error sentinels covered ✅
 | Non-canonical listed keys and non-ID names under `expired/` (FS `.lock` companions) are out of scope; a finished expiry is not re-reported | `TestSweep_Reclaim/non-canonical_keys_are_out_of_scope`, `TestSweep_Reclaim/a_repeated_filesystem_run_is_quiet` | ✅ |
 | Sweep dry run reports the real run and changes nothing | `TestSweep_Request/dry_run_reports_the_real_run` | ✅ |
 | Sweep failure reports completed work | `TestSweep_Request/a_delete_failure_reports_completed_work`, `TestSweep_Request/a_listing_failure_still_reports_invalid_tombstones`, `TestSweep_Request/a_tombstone_read_failure_still_reports_earlier_invalid_ones` | ✅ |
-| Enumeration skips manifests deleted after listing | `TestEnumeration_ToleratesDeletion/listings_skip_a_manifest_deleted_after_listing`, `TestEnumeration_ToleratesDeletion/latest_scan_skips_a_manifest_deleted_after_listing`, `TestEnumeration_ToleratesDeletion/latest_scan_falls_back_to_another_copy_of_a_snapshot` | ✅ |
+| Enumeration skips manifests deleted after listing | `TestEnumeration_ToleratesDeletion/listings_skip_a_manifest_deleted_after_listing`, `TestLatestScan/skips_a_manifest_deleted_after_listing`, `TestLatestScan/falls_back_to_another_copy_of_a_snapshot`, `TestLatestScan/passes_over_an_expired_leftover` | ✅ |
 
 ---
 
