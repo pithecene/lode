@@ -12,7 +12,7 @@ Stability is proven by **usage and time**, not design review.
 - Every criterion below must be checked off with recorded evidence.
 - Evidence must reference a real downstream project (or redacted alias), real data, and a real observer.
 - No criterion may be waived — if it cannot be met, it must be renegotiated and this document updated.
-- The v1.0 tag is blocked until all criteria pass.
+- The v1.0 tag is blocked until all criteria pass, except §4: it is the Volume stability gate (`V1_API_DECISIONS.md` D9), which gates Volume leaving experimental, not the v1.0 tag.
 
 ---
 
@@ -27,11 +27,15 @@ Based on the full-history audit of the production dataset
   ID order does not match commit order, which breaks an assumption in the
   latest-by-scan fallback ([#208](https://github.com/pithecene/lode/issues/208)).
 - **Not yet met, time-gated:** API and sentinel freeze windows reopened by
-  v0.10.0 (earliest 2026-11-16, §1); `V1_API_DECISIONS.md` D1–D8 open.
-- **Not yet met, evidence missing:** Volume dogfooding (§4, and with it
-  `VolumeManifest` stability, §2), native AWS S3 (§6), steady-state snapshot
+  v0.10.0 (earliest 2026-11-16, §1); `V1_API_DECISIONS.md` D1–D8 open, and
+  D9's package structure open.
+- **Not yet met, evidence missing:** native AWS S3 (§6), steady-state snapshot
   reads (§3), checksum-backed corruption checks (no production file carries a
   checksum, §10).
+- **Renegotiated (D9):** Volume is experimental for v1.0. Volume dogfooding
+  (§4) and `VolumeManifest` stability (§2) gate Volume leaving experimental,
+  not the v1.0 tag. The experimental boundary itself must ship before v1.0
+  (§1, D9).
 - **Accepted limitations (GC and performance are out of scope):** 2.07 GB of
   unreferenced data objects with no sweep (lode#174); `ListManifests` and
   `ListPartitions` take hours at this size. As a result the consumer reads the
@@ -123,14 +127,14 @@ partitions, one dataset on R2.
 
 ### 1. API Surface Freeze
 
-- [ ] No public type, function, or method signature has changed for 4+ weeks after first downstream integration
+- [ ] No public type, function, or method signature in the v1.0-promised surface has changed for 4+ weeks after first downstream integration (experimental Volume excluded, D9)
 
 > **Evidence:** Window open. Last change: v0.10.0 (2026-10-19) added `DatasetListOptions.StartAfter`, `PartitionListOptions.Prefix`/`StartAfter`, `ManifestListOptions.StartAfter`. Earliest pass: 2026-11-16, if nothing changes. Quarry took v0.10.0 with no call-site changes.
 > Date: 2026-10-20 | Observer: @pithecene-io | Project: lode, quarry
 > Summary: Not met; window restarts on every API change.
 > Issue: lode#175
 
-- [ ] No new sentinel errors added for 4+ weeks after first downstream integration (freeze window reset: v0.10.0 added `ErrInvalidArgument`)
+- [ ] No new sentinel errors added to the v1.0-promised surface for 4+ weeks after first downstream integration (experimental Volume excluded, D9; freeze window reset: v0.10.0 added `ErrInvalidArgument`)
 
 > **Evidence:** Window open. v0.10.0 (2026-10-19) added `ErrInvalidArgument` and `ErrPartitionPrefixNotSupported`. Earliest pass: 2026-11-16.
 > Date: 2026-10-20 | Observer: @pithecene-io | Project: lode
@@ -139,7 +143,7 @@ partitions, one dataset on R2.
 
 - [ ] Every candidate in `docs/V1_API_DECISIONS.md` is marked accepted (and shipped) or rejected; none is left open
 
-> **Evidence:** D1–D8 all Open. Dogfooding now bears on D8: `private-A` reads the on-disk path grammar directly (audit F8), so the path-compatibility policy has a real consumer.
+> **Evidence:** D1–D8 all Open. D9 accepted in part: Volume is experimental for v1.0; its package structure (A/B/C) is open, and v1.0 stays blocked until that boundary ships and `PUBLIC_API.md` / `CONTRACT_VOLUME.md` mark Volume experimental. Dogfooding now bears on D8: `private-A` reads the on-disk path grammar directly (audit F8), so the path-compatibility policy has a real consumer.
 > Date: 2026-10-20 | Observer: @pithecene-io | Project: lode, private-A
 > Summary: Not met; D8 should be decided with the consumer's raw-layout reads in view.
 > Issue: —
@@ -151,7 +155,7 @@ partitions, one dataset on R2.
 > Summary: —
 > Issue: #___
 
-- [ ] Option surface has not expanded since v0.9.1 (freeze window reset: v0.9.1 added WithRetryObserver; v0.9.0 added WithRetryCount/BaseDelay/MaxDelay/Jitter, ErrOptionNotValidForVolume; removed VolumeOption, WithVolumeChecksum)
+- [ ] Option surface of the v1.0-promised API has not expanded since v0.9.1 (experimental Volume options excluded, D9; freeze window reset: v0.9.1 added WithRetryObserver; v0.9.0 added WithRetryCount/BaseDelay/MaxDelay/Jitter, ErrOptionNotValidForVolume; removed VolumeOption, WithVolumeChecksum)
 
 > **Evidence:** No option added in v0.10.0. Window since v0.9.1 (2026-10-18) passes 4 weeks on 2026-11-15. Both downstream-driven additions (`WithRetryCount`, `WithRetryObserver`) came from Quarry requests (lode#163, lode#169).
 > Date: 2026-10-20 | Observer: @pithecene-io | Project: lode, quarry
@@ -167,11 +171,11 @@ partitions, one dataset on R2.
 > Summary: Met; >8 months stable, 96,478 snapshots in production.
 > Issue: —
 
-- [ ] `VolumeManifest` struct fields unchanged for 4+ weeks
+- [x] ~~`VolumeManifest` struct fields unchanged for 4+ weeks~~ Reclassified: Volume stability gate (`V1_API_DECISIONS.md` D9)
 
-> **Evidence:** Fields unchanged in source since 2026-02-06 (#94). No downstream Volume data (§4).
+> **Evidence:** Fields unchanged in source since 2026-02-06 (#94). No downstream Volume data (§4). Volume is experimental for v1.0 (D9), so its manifest format is not frozen by the v1.0 tag; this criterion moves to the gate for Volume leaving experimental.
 > Date: 2026-10-20 | Observer: @pithecene-io | Project: lode
-> Summary: Not met: the gate rule needs real downstream data, and no consumer writes Volumes.
+> Summary: Not a v1.0 blocker. Still unmet for Volume's own gate: no consumer writes Volumes.
 > Issue: —
 
 - [ ] Owner sign-off on manifest JSON schema as v1.0 wire format
@@ -211,7 +215,12 @@ partitions, one dataset on R2.
 > Summary: Not met as worded: the API grew to support the integration, additively. Re-word to "no breaking changes", or accept that the window resets.
 > Issue: lode#174
 
-### 4. Volume Dogfooding
+### 4. Volume Dogfooding — Volume stability gate (not a v1.0 blocker)
+
+Volume is experimental for v1.0 (`V1_API_DECISIONS.md` D9). The criteria in
+this section gate Volume leaving experimental, not the v1.0 tag. They stay
+unchanged so evidence lands in one place when a consumer appears. The
+nearest candidate is pithecene/quarry#255.
 
 - [ ] At least one consumer using StageWriteAt + Commit with real data
 
@@ -241,6 +250,27 @@ partitions, one dataset on R2.
 > Summary: —
 > Issue: #___
 
+- [ ] Volume writes/reads on AWS S3 during dogfooding with no adapter errors (moved from §6, D9)
+
+> **Evidence:** _not yet recorded_
+> Date: — | Observer: — | Project: —
+> Summary: —
+> Issue: #___
+
+- [ ] Zero silent data corruption in Volume data during dogfooding, verified with checksums (moved from §10, D9)
+
+> **Evidence:** _not yet recorded_
+> Date: — | Observer: — | Project: —
+> Summary: —
+> Issue: #___
+
+- [ ] `VolumeManifest` struct fields unchanged for 4+ weeks with real downstream data (moved from §2, D9)
+
+> **Evidence:** Fields unchanged in source since 2026-02-06 (#94). No downstream Volume data.
+> Date: 2026-10-20 | Observer: @pithecene-io | Project: lode
+> Summary: Not met.
+> Issue: —
+
 ### 5. Error Path Validation
 
 - [x] ErrNoSnapshots observed and handled correctly by a downstream consumer
@@ -266,11 +296,11 @@ partitions, one dataset on R2.
 
 ### 6. S3 Backend Verification
 
-- [ ] AWS S3 used for Dataset and Volume writes/reads during dogfooding with no adapter errors
+- [ ] AWS S3 used for Dataset writes/reads during dogfooding with no adapter errors (Volume half moved to §4, D9)
 
-> **Evidence:** R2 only. Reads: 0 errors over ~0.5M `GetObject` calls and the full listing during the audit. Writes: Quarry recorded `lode_write_failure` at 1.8% of writes since May (F7), unclassified, so adapter errors cannot be ruled in or out. Native AWS S3 and Volume not exercised.
+> **Evidence:** R2 only. Reads: 0 errors over ~0.5M `GetObject` calls and the full listing during the audit. Writes: Quarry recorded `lode_write_failure` at 1.8% of writes since May (F7), unclassified, so adapter errors cannot be ruled in or out. Native AWS S3 not exercised.
 > Date: 2026-10-20 | Observer: @pithecene-io | Project: private-A
-> Summary: Partial. Needs AWS S3, Volume, and classified write failures.
+> Summary: Partial. Needs AWS S3 and classified write failures.
 > Issue: —
 
 - [ ] Non-AWS backend caveat documented in README and PUBLIC_API.md as known v1.0 limitation
@@ -350,11 +380,11 @@ partitions, one dataset on R2.
 
 ### 10. Data Correctness
 
-- [ ] Zero silent data corruption during dogfooding (Dataset or Volume)
+- [ ] Zero silent data corruption in Dataset data during dogfooding (Volume half moved to §4, D9)
 
 > **Evidence:** Full-history verification of 96,478 snapshots: every referenced data file matches its manifest size and parses as JSONL; row counts match where the manifest records them per file (single-file snapshots) ([`dogfood_audit_2026-10.md`](dogfood_audit_2026-10.md) F1). Limit: no file carries a checksum, so byte-level flips that keep size and JSON validity are not excluded.
 > Date: 2026-10-20 | Observer: @pithecene-io | Project: private-A
-> Summary: Partial. No corruption detected by size, row-count and parse checks (Dataset). Silent corruption cannot be ruled out until a consumer writes with `WithChecksum`. Volume has no production data.
+> Summary: Partial. No corruption detected by size, row-count and parse checks (Dataset). Silent corruption cannot be ruled out until a consumer writes with `WithChecksum`.
 > Issue: —
 
 - [x] Zero manifest deserialization failures on same-version data
@@ -385,6 +415,8 @@ The following are explicitly **not blockers** for the v1.0 release:
 - Compaction or garbage collection
 - Distributed coordination (consensus, lock management)
 - Query planning or execution
+- Volume API and `VolumeManifest` stability: Volume is experimental for
+  v1.0 (`V1_API_DECISIONS.md` D9; §4 is its own gate)
 
 These may become goals for v1.1+ but must not gate the initial stability release.
 
