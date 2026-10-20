@@ -274,19 +274,21 @@ func (r expiryRun) expire(ctx context.Context, c expiryCandidate) (expiryOutcome
 	}
 	owned, skipped := r.ds.splitFiles(c.id, m)
 	out.skipped = skipped
+	// Recheck the head immediately before the irreversible steps; a dry run
+	// rechecks too, so its report is the one a real run would produce.
+	if err := r.head.refresh(ctx); err != nil {
+		return out, err
+	}
+	if r.head.is(c.id) {
+		out.verdict = verdictRetained
+		return out, nil
+	}
 	if r.dryRun {
 		// A real run would fail on a tombstone recording another snapshot.
 		if err := r.ds.tombstones().check(ctx, c.id); err != nil {
 			return out, err
 		}
 		out.verdict, out.deleted = verdictExpired, owned
-		return out, nil
-	}
-	if err := r.head.refresh(ctx); err != nil {
-		return out, err
-	}
-	if r.head.is(c.id) {
-		out.verdict = verdictRetained
 		return out, nil
 	}
 	return r.ds.removeSnapshot(ctx, c, m, owned, out)
