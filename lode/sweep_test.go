@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"slices"
 	"strings"
 	"testing"
@@ -30,16 +31,28 @@ const sweepGrace = 24 * time.Hour
 
 // listInjector adds raw keys to listings, as a store that does not
 // normalize its keys might return, hides keys from them, as a lagging
-// listing would, fails one prefix's listing, and records deletes.
+// listing would, fails one prefix's listing or one path's Get, and records
+// deletes.
 type listInjector struct {
 	Store
 	extra      []string
 	hidden     []string
 	deleted    []string
 	failPrefix string // a listing of exactly this prefix fails
+	failGet    string // a Get of exactly this path fails
 }
 
-var errListFailed = errors.New("list failed")
+func (l *listInjector) Get(ctx context.Context, p string) (io.ReadCloser, error) {
+	if l.failGet != "" && p == l.failGet {
+		return nil, errGetFailed
+	}
+	return l.Store.Get(ctx, p)
+}
+
+var (
+	errListFailed = errors.New("list failed")
+	errGetFailed  = errors.New("get failed")
+)
 
 func (l *listInjector) List(ctx context.Context, prefix string) ([]string, error) {
 	if l.failPrefix != "" && prefix == l.failPrefix {
@@ -150,6 +163,29 @@ func TestSweep_Request(t *testing.T) {
 		}
 	})
 
+	t.Run("a tombstone read failure still reports earlier invalid ones", func(t *testing.T) {
+		mem := NewMemory()
+		lister := &listInjector{Store: mem}
+		ds := newDefaultRetention(t, lister)
+		first := writeRecord(t, ds, 1)
+		second := writeRecord(t, ds, 2)
+		writeRecord(t, ds, 3)
+		invalid := "datasets/events/expired/" + string(first.ID) // sorts first
+		if err := mem.Put(t.Context(), invalid, strings.NewReader("{}")); err != nil {
+			t.Fatal(err)
+		}
+		putTombstone(t, mem, second.ID, newTombstone(second.ID, second.Manifest))
+		lister.failGet = "datasets/events/expired/" + string(second.ID)
+
+		report, err := ds.Sweep(t.Context(), SweepRequest{Grace: sweepGrace})
+		if !errors.Is(err, errGetFailed) {
+			t.Fatalf("Sweep = %v, want the read failure", err)
+		}
+		if !slices.Equal(report.Unparseable, []string{invalid}) {
+			t.Errorf("Unparseable = %v, want the invalid tombstone examined first", report.Unparseable)
+		}
+	})
+
 	t.Run("a delete failure reports completed work", func(t *testing.T) {
 		mem := NewMemory()
 		hs := &hookStore{Store: mem}
@@ -199,6 +235,25 @@ func TestSweep_Settle(t *testing.T) {
 		}
 		if !slices.Equal(report.Settled, []DatasetSnapshotID{first.ID}) || exists(t, mem, manifest) {
 			t.Errorf("report = %+v, manifest present %v; want the hidden manifest removed and the snapshot settled", report, exists(t, mem, manifest))
+		}
+	})
+
+	t.Run("an inventory object the listing omits is still removed", func(t *testing.T) {
+		mem := NewMemory()
+		lister := &listInjector{Store: mem}
+		ds := newDefaultRetention(t, lister)
+		first := writeRecord(t, ds, 1)
+		writeRecord(t, ds, 2)
+		putTombstone(t, mem, first.ID, newTombstone(first.ID, first.Manifest))
+		data := first.Manifest.Files[0].Path
+		lister.hidden = []string{data}
+
+		report, err := ds.Sweep(t.Context(), SweepRequest{Grace: sweepGrace})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if exists(t, mem, data) || report.Objects != 0 {
+			t.Errorf("report = %+v, data present %v; want the unlisted object removed and not counted", report, exists(t, mem, data))
 		}
 	})
 

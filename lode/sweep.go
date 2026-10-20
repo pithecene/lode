@@ -25,7 +25,8 @@ func (d *dataset) Sweep(ctx context.Context, req SweepRequest) (*SweepReport, er
 	}
 	run := sweepRun{
 		ds: d, inv: inv, dryRun: req.DryRun, cutoff: time.Now().Add(-req.Grace),
-		settled: make(map[DatasetSnapshotID]tombstone), held: d.rejectedTombstoneIDs(inv.invalidTombstones),
+		settled: make(map[DatasetSnapshotID]tombstone), cleared: make(map[DatasetSnapshotID]bool),
+		held: d.rejectedTombstoneIDs(inv.invalidTombstones),
 	}
 	if err := run.settle(ctx, report); err != nil {
 		return report, err
@@ -87,7 +88,7 @@ func (d *dataset) inventoryTombstones(ctx context.Context) (valid []tombstone, i
 			continue
 		}
 		if err != nil {
-			return nil, nil, err
+			return valid, invalid, err // what was examined is still reported
 		}
 		valid = append(valid, t)
 	}
@@ -181,6 +182,7 @@ type sweepRun struct {
 	dryRun  bool
 	cutoff  time.Time                       // an orphan whose write began before this is reclaimed
 	settled map[DatasetSnapshotID]tombstone // settled this run or earlier, with its inventory
+	cleared map[DatasetSnapshotID]bool      // settled from what this run found, unlisted objects included
 	held    map[DatasetSnapshotID]bool      // protected, or its tombstone rejected: never touched
 }
 
@@ -228,7 +230,7 @@ func (r sweepRun) settleOne(ctx context.Context, t tombstone, report *SweepRepor
 			return err
 		}
 	}
-	r.settled[id] = t
+	r.settled[id], r.cleared[id] = t, true
 	if len(copies) > 0 {
 		report.Settled = append(report.Settled, id)
 	}
@@ -338,7 +340,34 @@ func (r sweepRun) reclaim(ctx context.Context, report *SweepReport) error {
 			report.count(p, sizes, act.orphan)
 		}
 	}
+	return r.reclaimUnlisted(ctx)
+}
+
+// reclaimUnlisted deletes the inventory objects of snapshots this run
+// settled that its listing did not show, so a lagging listing leaves no
+// expired data behind. They are not counted: counts follow the listing
+// (§Accounting).
+func (r sweepRun) reclaimUnlisted(ctx context.Context) error {
+	for _, id := range slices.Sorted(maps.Keys(r.cleared)) {
+		for _, p := range r.unlisted(id) {
+			if err := r.delete(ctx, p); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
+}
+
+// unlisted is the snapshot's own inventory objects its listing did not show.
+func (r sweepRun) unlisted(id DatasetSnapshotID) []string {
+	listed := r.inv.dataOf[id]
+	var out []string
+	for _, f := range r.ds.splitFiles(id, r.settled[id].Files).owned {
+		if !slices.Contains(listed, f.Path) {
+			out = append(out, f.Path)
+		}
+	}
+	return out
 }
 
 // actionFor is what to do with one group. An orphan is reclaimed only once
