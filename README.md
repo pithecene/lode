@@ -200,7 +200,7 @@ What Lode explicitly does NOT provide:
 | Distributed coordination | Lode detects conflicts (CAS) but does not provide locks, consensus, or leader election |
 | Query execution | Lode structures data; query engines consume it |
 | Background compaction | No implicit mutations; callers control lifecycle |
-| Automatic cleanup | Nothing is removed implicitly; `Expire` and `Sweep` remove snapshots and leftovers when the caller runs them |
+| Automatic cleanup | Nothing is removed implicitly; `Expire` and `Sweep` remove snapshots and leftovers when the caller runs them (see [the retention guide](docs/guides/retention.md)) |
 
 For full contract details: [`docs/contracts/`](docs/contracts/)
 
