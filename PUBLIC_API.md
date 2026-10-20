@@ -760,7 +760,7 @@ if errors.Is(err, lode.ErrNoSnapshots) {
 | `ErrOverlappingBlocks` | Committed blocks overlap in cumulative manifest | Volume |
 | `ErrSnapshotConflict` | Another writer committed since parent was resolved (CAS) | Dataset, Volume |
 | `ErrSnapshotExpired` | Snapshot was removed by `Expire`; also matches `ErrNotFound` | Dataset |
-| `ErrHeadUncommitted` | Latest pointer names a snapshot whose manifest is not written yet, or is missing beside existing snapshots | Dataset.Expire |
+| `ErrHeadUncommitted` | Latest pointer names a snapshot whose manifest is not written yet, or is missing beside existing snapshots | Dataset.Expire, Dataset.Sweep (missing pointer only) |
 | `ErrSchemaViolation` | Record doesn't conform to Parquet schema | Parquet Codec |
 | `ErrInvalidFormat` | Malformed or corrupted Parquet file | Parquet Codec |
 
@@ -770,7 +770,7 @@ if errors.Is(err, lode.ErrNoSnapshots) {
 - Storage I/O errors (network, timeout) — may retry
 - `ErrNotFound` during race — may retry if expecting eventual consistency
 - `ErrSnapshotConflict` — re-read `Latest()`, merge state, re-commit (or use `WithRetryCount` for automatic retry)
-- `ErrHeadUncommitted` — retry `Expire` once the in-flight commit completes; a dataset written before the pointer existed needs one commit, which creates it
+- `ErrHeadUncommitted` — retry `Expire` or `Sweep` once the in-flight commit completes; a dataset written before the pointer existed needs one commit, which creates it
 
 **Non-retry (configuration/logic error):**
 - `ErrDatasetsNotModeled` — reconfigure with different layout
