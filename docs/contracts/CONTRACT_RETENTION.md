@@ -255,7 +255,9 @@ names an uncommitted ID, `Expire` stops with `ErrHeadUncommitted`.
    also matches an existing zero-length object (CONTRACT_STORAGE
    §ConditionalWriter); replacing one is acceptable because a zero-length
    tombstone carries no information, and every non-empty existing tombstone
-   goes through the read-back validation above.
+   goes through the read-back validation above. With no manifest left to
+   record from, nothing can replace it: a zero-length tombstone is then
+   corruption and MUST fail the operation.
 2. Delete the canonical manifest. From this point `Snapshot(ctx, id)`
    misses and the snapshot is **expired**.
 3. Delete every partition manifest for the snapshot: one per partition of
@@ -508,7 +510,7 @@ store errors wrapped with the object path.
 ## Complexity Bounds
 
 N is the number of keys the operation lists, K the snapshots `Expire`
-selects, T the tombstones, D the objects deleted.
+selects, T the tombstones, D the objects deleted (manifests and data alike).
 
 | Operation | Store Calls | Memory |
 |-----------|-------------|--------|
