@@ -48,9 +48,9 @@ writes begin in the same nanosecond *and* draw the same 64-bit nonce, a
 probability of 2⁻⁶⁴ for each such pair, however often the clock repeats or
 rolls back. Lode does not reserve IDs against existing ones; should IDs
 coincide anyway, create-only writes refuse a reused path while the earlier
-snapshot exists, and retention refuses a tombstone whose inventory differs
-from the manifest (CONTRACT_RETENTION §Order of operations). IDs are opaque strings to callers and MUST NOT be parsed as
-numbers. Compared as strings, IDs order by instant (the instant has a fixed
+snapshot exists, and retention refuses a tombstone that does not describe
+the manifest (CONTRACT_RETENTION §Tombstone). IDs are opaque strings to
+callers and MUST NOT be parsed as numbers. Compared as strings, IDs order by instant (the instant has a fixed
 19 digits from 2001 through 2286); IDs with the same instant order by nonce.
 
 IDs written before v0.11.0 are `<instant>` alone. They remain valid and

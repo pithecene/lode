@@ -43,6 +43,10 @@ commits never mutate existing state. Retention does not weaken this:
 - Retention never reassigns a snapshot ID, and a tombstone is never removed.
   A write reuses an expired ID only on a 64-bit nonce collision within one
   nanosecond (CONTRACT_CORE §Snapshot ID), never because the clock repeats.
+  Should it happen, the old tombstone does not describe the new snapshot's
+  manifest (§Tombstone): retention refuses to act on it, so the new
+  snapshot is never deleted by it, and is instead held — reported, never
+  expired or reclaimed — since the tombstone cannot be removed.
 
 Immutable means *unchanging while it exists*, not *unremovable*.
 
@@ -74,9 +78,17 @@ A small object at a layout-defined path, one per expired snapshot:
 The `expired/` directory is reserved for Lode: callers MUST NOT write under
 it.
 
-Contents: the snapshot ID, the UTC instant the expiry was requested, and the
-snapshot's **inventory** — its manifest's `Files[]` (path and size of every
-data object), copied when the expiry is recorded.
+Contents: the snapshot ID, the UTC instant the expiry was requested, the
+manifest's `CreatedAt`, and the snapshot's **inventory** — its manifest's
+`Files[]` (path and size of every data object), copied when the expiry is
+recorded.
+
+A tombstone **describes** a manifest when both carry the same `CreatedAt`
+and the same `Files[]` (paths and sizes). Every copy of a snapshot's
+manifest is one serialization, so all copies agree; `CreatedAt` is the
+commit instant in nanoseconds, so a later snapshot that reused the ID is
+told apart even when it lists the same files. Retention acts on a tombstone
+only against manifests it describes.
 
 The tombstone is the expiry's own record of what it removes. It is written
 before anything is deleted and outlives every manifest, so each later step —
@@ -243,12 +255,13 @@ names an uncommitted ID, `Expire` stops with `ErrHeadUncommitted`.
    MUST be read back and, if it names this snapshot ID, treated as success:
    the same expiry is already recorded, by an earlier or concurrent run, and
    steps 2–4 use **its** inventory. A tombstone recorded before this run
-   MUST equal the `Files[]` (paths and sizes) of every manifest copy that
-   still loads at a path this expiry would delete — the canonical path,
-   every copy the listing found, and every partition copy derived from the
-   tombstone's inventory — whether or not the listing found any; one that wins a concurrent create MUST equal
-   the inventory this run read. Otherwise it belongs to an earlier snapshot
-   with the same ID and the operation MUST fail. A snapshot selected by its tombstone
+   MUST describe (§Tombstone) every manifest copy that still loads at a
+   path this expiry would delete — the canonical path, every copy the
+   listing found, and every partition copy derived from the tombstone's
+   inventory — whether or not the listing found any; one that wins a
+   concurrent create MUST describe the manifest this run read. Otherwise it
+   belongs to an earlier snapshot with the same ID and the operation MUST
+   fail. A snapshot selected by its tombstone
    alone (no manifest left) starts here, with the read-back. A tombstone
    naming a different ID is corruption and MUST fail the operation.
    Tombstone content is never empty. `CompareAndSwap` with `expected == ""`
@@ -356,11 +369,10 @@ manifest and data object of the layout). It then performs, in order:
    filesystem store's `.lock` companions (CONTRACT_STORAGE §Implementation
    Notes) — is not a tombstone and is neither reported nor deleted. Load
    each tombstone and verify it is non-empty, records the snapshot ID in
-   its path, and carries an inventory; a tombstone that fails validation
-   MUST be reported under `Unparseable` and MUST NOT settle anything. Every
-   manifest copy of the snapshot that still loads MUST record the
-   tombstone's inventory (paths and sizes), as in step 1 of §Order of
-   operations; otherwise the tombstone belongs to an earlier snapshot with
+   its path, and carries the manifest's `CreatedAt` and an inventory; a tombstone that fails validation
+   MUST be reported under `Unparseable` and MUST NOT settle anything. The
+   tombstone MUST describe (§Tombstone) every manifest copy of the snapshot
+   that still loads, as in step 1 of §Order of operations; otherwise the tombstone belongs to an earlier snapshot with
    the same ID, MUST be reported under `Unparseable`, and MUST NOT settle
    the snapshot or reclaim its objects. For
    every valid tombstoned ID, perform steps 2–3 of §Order of operations.
