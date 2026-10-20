@@ -37,8 +37,8 @@ its manifest is the sole authority for read visibility at that point in time.
 
 ### VolumeSnapshotID
 
-A stable identifier for a committed Volume snapshot. Generated using Unix
-nanoseconds (consistent with `DatasetSnapshotID`).
+A stable identifier for a committed Volume snapshot, generated in the same
+form as `DatasetSnapshotID` (CONTRACT_CORE §Snapshot ID).
 
 ### BlockRef
 

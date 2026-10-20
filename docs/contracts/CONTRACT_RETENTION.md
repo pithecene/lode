@@ -41,8 +41,8 @@ commits never mutate existing state. Retention does not weaken this:
 - Expiry is a **state transition on the dataset**, recorded by a new object
   (a tombstone), never by editing an existing one.
 - Retention never reassigns a snapshot ID, and a tombstone is never removed.
-  IDs are write-start nanosecond timestamps, so a new write reuses an
-  expired ID only if the clock repeats that instant.
+  Snapshot IDs are unique by construction (CONTRACT_CORE §Snapshot ID), so
+  no write reuses an expired ID.
 
 Immutable means *unchanging while it exists*, not *unremovable*.
 
@@ -140,7 +140,7 @@ that resolve to a set:
 - `IDs` — explicit snapshot IDs: each that has a manifest, and each that
   has a valid tombstone, whose recorded expiry the request completes from
   the tombstone's inventory (§Order of operations). Only an ID in the
-  generated form (§Definition) can name a tombstone; any other is never
+  generated form (CONTRACT_CORE §Snapshot ID) can name a tombstone; any other is never
   turned into a store path. `Partition` and `Before` select from manifests
   only.
 - `Partition` — a partition path (Hive layouts only; see CONTRACT_LAYOUT).
@@ -156,12 +156,12 @@ that resolve to a set:
   MUST lie beneath the selected dataset's partitions directory before it is
   used.
 - `Before` — an instant. Resolves to every snapshot whose **ID instant** is
-  strictly earlier. Dataset snapshot IDs are decimal nanosecond Unix
-  timestamps taken when the write begins (`dataset.go` `generateID`), before
-  any data object is written; `Manifest.CreatedAt` is set at commit and is
+  strictly earlier. A snapshot ID begins with the Unix nanosecond instant
+  taken when the write begins (CONTRACT_CORE §Snapshot ID), before any data
+  object is written; `Manifest.CreatedAt` is set at commit and is
   never earlier. Using the ID makes selection a listing, with no manifest
-  read per candidate. An ID that does not parse as a decimal integer is never
-  selected by `Before`.
+  read per candidate. An ID not in the generated form is never selected by
+  `Before`.
 
 Fields compose by intersection. A field at its zero value (`nil` or empty
 `IDs`, empty `Partition`, zero `Before`) is **unset** and does not constrain
@@ -338,8 +338,8 @@ tombstones under `expired/`, and the dataset's snapshot prefix (every
 manifest and data object of the layout). It then performs, in order:
 
 1. **Complete expiries.** A tombstone is an object directly under
-   `expired/` whose name is a snapshot ID exactly as Lode generates one
-   (decimal, no sign or leading zero); any other object there — such as the
+   `expired/` whose name is a snapshot ID in the generated form
+   (CONTRACT_CORE §Snapshot ID); any other object there — such as the
    filesystem store's `.lock` companions (CONTRACT_STORAGE §Implementation
    Notes) — is not a tombstone and is neither reported nor deleted. Load
    each tombstone and verify it is non-empty, records the snapshot ID in
@@ -397,8 +397,8 @@ returns `ErrInvalidArgument` before any listing or mutation. A zero grace
 would make every unreferenced object immediately eligible, which is never
 intended. 24h is a conservative starting value.
 
-An orphaned group whose snapshot ID does not parse as a decimal integer has
-no age: its object paths MUST be reported under `Unparseable` and MUST NOT be
+An orphaned group whose snapshot ID is not in the generated form has no
+age: its object paths MUST be reported under `Unparseable` and MUST NOT be
 deleted. Objects that do not parse as data objects of the layout are outside
 the sweep's scope (§Unreferenced object) and are neither reported nor
 deleted.

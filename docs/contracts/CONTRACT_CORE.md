@@ -34,6 +34,26 @@ Logical collection of snapshots. A dataset has a stable `DatasetID`.
 Immutable point-in-time state of a dataset. Each snapshot has a stable
 `SnapshotID` and (optionally) a parent snapshot ID.
 
+### Snapshot ID
+Lode generates every snapshot ID, for Datasets and Volumes alike; callers
+never choose one. An ID has the form `<instant>-<nonce>`:
+
+- `<instant>` — the Unix time in nanoseconds when the write begins, in
+  decimal with no sign or leading zero.
+- `<nonce>` — 16 lowercase hexadecimal digits from a cryptographically
+  secure random source.
+
+IDs are unique by construction: a repeated or rolled-back clock does not
+make Lode issue an ID twice, so no write reuses the ID of a live or expired
+snapshot. IDs are opaque strings to callers and MUST NOT be parsed as
+numbers. Compared as strings, IDs order by instant (the instant has a fixed
+19 digits from 2001 through 2286); IDs with the same instant order by nonce.
+
+IDs written before v0.11.0 are `<instant>` alone. They remain valid and
+are read, selected and retained exactly like new IDs. An ID is in the
+*generated form* when it is in either form; a legacy ID sorts before every
+new ID with the same instant.
+
 ### Manifest
 The authoritative description of a snapshot and its data files.
 
