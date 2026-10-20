@@ -159,8 +159,10 @@ func newDefaultTombstones(t *testing.T, ds Dataset) tombstones {
 	return d.tombstones()
 }
 
-func setPointer(t *testing.T, store Store, p, id string) {
+// setPointer points the events dataset's latest pointer at id.
+func setPointer(t *testing.T, store Store, id string) {
 	t.Helper()
+	const p = "datasets/events/latest"
 	if err := store.Delete(t.Context(), p); err != nil {
 		t.Fatal(err)
 	}
@@ -526,7 +528,7 @@ func TestExpire_Head(t *testing.T) {
 		ds := newDefaultRetention(t, store)
 		first := writeRecord(t, ds, 1)
 		writeRecord(t, ds, 2)
-		setPointer(t, store, "datasets/events/latest", "9999999999999999999")
+		setPointer(t, store, "9999999999999999999")
 		before := storeKeys(t, store)
 
 		report, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{first.ID}})
@@ -553,7 +555,7 @@ func TestExpire_Head(t *testing.T) {
 		// pointer moves to a snapshot without a manifest yet.
 		hs.onDelete = func(p string) error {
 			if strings.Contains(p, string(first.ID)+"/data/") {
-				setPointer(t, mem, "datasets/events/latest", "9999999999999999999")
+				setPointer(t, mem, "9999999999999999999")
 			}
 			return nil
 		}
@@ -578,7 +580,7 @@ func TestExpire_Head(t *testing.T) {
 		// reaches the head it already protects.
 		hs.onDelete = func(p string) error {
 			if strings.Contains(p, string(first.ID)+"/data/") {
-				setPointer(t, mem, "datasets/events/latest", "9999999999999999999")
+				setPointer(t, mem, "9999999999999999999")
 			}
 			return nil
 		}

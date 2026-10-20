@@ -389,7 +389,7 @@ func (r expiryRun) plan(ctx context.Context, c expiryCandidate) (expiryPlan, err
 	// A tombstone left by an earlier snapshot with the same ID must never
 	// steer deletes of this one, even when no copy was found above: every
 	// path this expiry would delete is checked.
-	matches, err := r.ds.copiesMatch(ctx, c.id, r.ds.allManifestPaths(c, t.Files), t.Files)
+	matches, err := r.ds.copiesMatch(ctx, c.id, r.ds.allManifestPaths(c.id, c.paths, t.Files), t.Files)
 	if err != nil {
 		return expiryPlan{}, err
 	}
@@ -431,7 +431,7 @@ func (r expiryRun) remove(ctx context.Context, c expiryCandidate, plan expiryPla
 			return out, err
 		}
 	}
-	manifests := d.allManifestPaths(c, plan.tomb.Files)
+	manifests := d.allManifestPaths(c.id, c.paths, plan.tomb.Files)
 	if err := deleteObject(ctx, d.store, manifests[0]); err != nil {
 		return out, err
 	}
@@ -509,18 +509,18 @@ func (d *dataset) splitFiles(id DatasetSnapshotID, files []FileRef) (owned []Fil
 }
 
 // allManifestPaths is every manifest path of the snapshot, canonical first:
-// the ones commit wrote for its inventory's partitions and any the listing
+// the ones commit wrote for its inventory's partitions and any a listing
 // found. A path derived from a malformed FileRef is dropped unless it is a
 // canonical manifest path of this snapshot.
-func (d *dataset) allManifestPaths(c expiryCandidate, files []FileRef) []string {
+func (d *dataset) allManifestPaths(id DatasetSnapshotID, listed []string, files []FileRef) []string {
 	partitions := make([]string, 0, len(files))
 	for _, f := range files {
 		partitions = append(partitions, d.layout.extractPartitionPath(f.Path))
 	}
-	paths := slices.DeleteFunc(d.manifestPaths(c.id, partitions), func(p string) bool {
-		return !d.layout.isObjectOf(d.id, c.id, manifestLeaf, p)
+	paths := slices.DeleteFunc(d.manifestPaths(id, partitions), func(p string) bool {
+		return !d.layout.isObjectOf(d.id, id, manifestLeaf, p)
 	})
-	for _, p := range c.paths {
+	for _, p := range listed {
 		if !slices.Contains(paths, p) {
 			paths = append(paths, p)
 		}
