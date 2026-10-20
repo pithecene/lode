@@ -25,7 +25,7 @@ Based on the full-history audit of the production dataset
   snapshots over 8 months on R2; `Manifest` format stable since 2026-02-06.
 - **Blocker:** one history fork under CAS + retry (2026-08-25, §10). Snapshot
   ID order does not match commit order, which breaks an assumption in the
-  latest-by-scan fallback ([#208](https://github.com/pithecene-io/lode/issues/208)).
+  latest-by-scan fallback ([#208](https://github.com/pithecene/lode/issues/208)).
 - **Not yet met, time-gated:** API and sentinel freeze windows reopened by
   v0.10.0 (earliest 2026-11-16, §1); `V1_API_DECISIONS.md` D1–D8 open.
 - **Not yet met, evidence missing:** Volume dogfooding (§4, and with it
@@ -369,7 +369,7 @@ partitions, one dataset on R2.
 > **Evidence:** 0 duplicate IDs. 2 missing parents (2026-02-12, Lode v0.7.3). 1,113 forks, of which 1,112 predate the consumer's CAS adoption (2026-03-08) and are expected without concurrency control. **1 fork happened under Lode v0.9.0 CAS + retry (2026-08-25)** ([`dogfood_audit_2026-10.md`](dogfood_audit_2026-10.md) F3). The same fork shows a child whose ID precedes its parent's: ID order is not commit order, which breaks the assumption in the latest-by-scan fallback (`history.go` `scan`, unchanged in v0.10.0). Candidate mechanism; not reproduced.
 > Date: 2026-10-20 | Observer: @pithecene-io | Project: private-A
 > Summary: Not met. Blocker until the CAS-era fork is explained and fixed or bounded.
-> Issue: [#208](https://github.com/pithecene-io/lode/issues/208)
+> Issue: [#208](https://github.com/pithecene/lode/issues/208)
 
 ---
 

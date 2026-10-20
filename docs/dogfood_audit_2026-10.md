@@ -141,7 +141,7 @@ scan fallback (pointer names a manifest not yet visible: the
 pointer-before-manifest window), it can choose a non-head parent while the
 CAS expectation still matches the pointer. This is a **candidate** mechanism
 consistent with the data. It is not reproduced. Tracked in
-[lode#208](https://github.com/pithecene-io/lode/issues/208).
+[lode#208](https://github.com/pithecene/lode/issues/208).
 
 ### F4 — Two snapshots reference a parent that does not exist · LIMITATION (historical)
 
@@ -223,7 +223,7 @@ policy) a real dependency, not a hypothetical one.
 
 ## Open Questions
 
-1. F3 ([#208](https://github.com/pithecene-io/lode/issues/208)): reproduce the scan-fallback fork (two writers, one landing in the
+1. F3 ([#208](https://github.com/pithecene/lode/issues/208)): reproduce the scan-fallback fork (two writers, one landing in the
    pointer-before-manifest window) and decide whether `scan` must order by
    commit (e.g. `CreatedAt` or the parent chain) instead of ID.
 2. F6: confirm whether the six snapshots `ListManifests` does not return are
