@@ -167,10 +167,13 @@ that resolve to a set:
 
 - `IDs` — explicit snapshot IDs: each that has a manifest, and each that
   has a valid tombstone, whose recorded expiry the request completes from
-  the tombstone's inventory (§Order of operations). Only an ID in the
-  generated form (CONTRACT_CORE §Snapshot ID) can name a tombstone; any other is never
-  turned into a store path. `Partition` and `Before` select from manifests
-  only.
+  the tombstone's inventory (§Order of operations). A requested ID selects a
+  snapshot only by matching one the dataset's own listing parsed, or, with
+  no manifest listed, by being in the generated form (CONTRACT_CORE
+  §Snapshot ID) and naming a tombstone. Paths are derived only from IDs
+  selected this way; any other value is never turned into a store path, so
+  no requested ID can reach another dataset. `Partition` and `Before`
+  select from manifests only.
 - `Partition` — a partition path (Hive layouts only; see CONTRACT_LAYOUT).
   Resolves to every snapshot that has a partition manifest in that partition
   or beneath it. Matching is **whole-segment**: `run_id=run-1` selects
