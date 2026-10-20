@@ -162,7 +162,7 @@ partitions, one dataset on R2.
 
 - [x] `Manifest` struct fields unchanged for 4+ weeks
 
-> **Evidence:** `Manifest` (and `FileRef`) fields unchanged since 2026-02-06 (#94). All 233,815 production manifest objects are `lode-manifest@1.0.0` and decode cleanly ([`dogfood_audit_2026-10.md`](dogfood_audit_2026-10.md) F1).
+> **Evidence:** `Manifest` fields unchanged since 2026-02-06 (#94); `FileRef` fields unchanged since 2026-02-06 (#103, which added `FileRef.Stats`). All 233,815 production manifest objects are `lode-manifest@1.0.0` and decode cleanly ([`dogfood_audit_2026-10.md`](dogfood_audit_2026-10.md) F1).
 > Date: 2026-10-20 | Observer: @pithecene-io | Project: lode, private-A
 > Summary: Met; >8 months stable, 96,478 snapshots in production.
 > Issue: —
