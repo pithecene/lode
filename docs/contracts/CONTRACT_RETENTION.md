@@ -41,8 +41,8 @@ commits never mutate existing state. Retention does not weaken this:
 - Expiry is a **state transition on the dataset**, recorded by a new object
   (a tombstone), never by editing an existing one.
 - Retention never reassigns a snapshot ID, and a tombstone is never removed.
-  Snapshot IDs are unique by construction (CONTRACT_CORE §Snapshot ID), so
-  no write reuses an expired ID.
+  A write reuses an expired ID only on a 64-bit nonce collision within one
+  nanosecond (CONTRACT_CORE §Snapshot ID), never because the clock repeats.
 
 Immutable means *unchanging while it exists*, not *unremovable*.
 
@@ -190,7 +190,12 @@ until something new is committed. A caller that needs a whole partition gone
 checks `RetainedHead` and runs the request again after a newer commit.
 
 When the pointer is absent (a dataset written before the pointer existed),
-the head is the snapshot a scan returns (CONTRACT_CORE: the largest ID).
+the head is the snapshot a scan returns: the largest snapshot ID
+(CONTRACT_WRITE_API §Parent Resolution, scan fallback). Retention protects
+the snapshot Lode serves as head — what `Latest` returns — not a
+reconstruction of commit order, so it never removes the state readers see
+as current. The next commit writes the pointer, after which the pointer
+alone defines the head.
 
 Rationale: the `latest` pointer is the live CAS target for every writer.
 Retention MUST never move it, and MUST never remove the manifest it names:

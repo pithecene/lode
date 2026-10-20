@@ -43,9 +43,13 @@ never choose one. An ID has the form `<instant>-<nonce>`:
 - `<nonce>` — 16 lowercase hexadecimal digits from a cryptographically
   secure random source.
 
-IDs are unique by construction: a repeated or rolled-back clock does not
-make Lode issue an ID twice, so no write reuses the ID of a live or expired
-snapshot. IDs are opaque strings to callers and MUST NOT be parsed as
+Uniqueness does not depend on the clock: two IDs coincide only when two
+writes begin in the same nanosecond *and* draw the same 64-bit nonce, a
+probability of 2⁻⁶⁴ for each such pair, however often the clock repeats or
+rolls back. Lode does not reserve IDs against existing ones; should IDs
+coincide anyway, create-only writes refuse a reused path while the earlier
+snapshot exists, and retention refuses a tombstone whose inventory differs
+from the manifest (CONTRACT_RETENTION §Order of operations). IDs are opaque strings to callers and MUST NOT be parsed as
 numbers. Compared as strings, IDs order by instant (the instant has a fixed
 19 digits from 2001 through 2286); IDs with the same instant order by nonce.
 
