@@ -316,7 +316,7 @@ These are returned by snapshot expiry and the unreferenced-object sweep
 ### Non-Retry Errors
 - `ErrDatasetsNotModeled` — reconfigure with different layout.
 - `ManifestValidationError` — data corruption, investigate source.
-- `ErrPathExists` — logic error in caller (double-write attempt).
+- `ErrPathExists` — logic error in caller (double-write attempt). Retention's tombstone create is the exception: there it means another run recorded the expiry first, which retention checks and accepts (`CONTRACT_RETENTION.md` §Order of operations).
 - `ErrOverlappingBlocks` — logic error in caller (overlapping byte ranges).
 - Component mismatch — reconfigure dataset or use matching snapshot.
 

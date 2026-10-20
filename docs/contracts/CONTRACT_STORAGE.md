@@ -40,7 +40,9 @@ It is authoritative for any implementation of the `Store` interface.
   (`CONTRACT_RETENTION.md`).
 - Callers never clean up after a failed Put: they MUST NOT touch a path whose
   Put returned an error. A path whose Put returned `ErrPathExists` belongs to
-  another writer.
+  another writer. The one exception is retention's tombstone create, which
+  reads the existing tombstone back to check it records the same expiry and
+  never writes or deletes it (`CONTRACT_RETENTION.md` §Order of operations).
 
 #### Put Upload Paths
 

@@ -73,7 +73,10 @@ any, are garbage that `Sweep` or a repeated `Expire` removes.
 A snapshot whose tombstone exists but whose canonical manifest still exists.
 This is the window between steps 1 and 2 below. The snapshot is still fully
 readable and consistent during this window; the tombstone records intent, not
-completion.
+completion. A snapshot written before canonical manifests existed has no
+canonical manifest, so it has no expiring window: its tombstone alone makes
+it expired, and `Snapshot` and `Read` return `ErrSnapshotExpired` from step 1
+on, while its partition manifests and data are removed by the later steps.
 
 ### Tombstone
 
@@ -282,7 +285,11 @@ names an uncommitted ID, `Expire` stops with `ErrHeadUncommitted`.
    tombstone already exists. Otherwise `Store.Put` is used; its create-only
    guarantee is best-effort (CONTRACT_STORAGE §Put) and `ErrPathExists`
    means the tombstone already exists. In both cases an existing tombstone
-   MUST be read back and, if it names this snapshot ID, treated as success:
+   MUST be read back and, if it names this snapshot ID, treated as success.
+   This read is the one exception to CONTRACT_STORAGE §Put's rule against
+   touching a path whose Put failed: a tombstone is written once and never
+   rewritten, so whatever another run created there is a complete record to
+   check, not an object to clean up:
    the same expiry is already recorded, by an earlier or concurrent run, and
    steps 2–4 use **its** inventory. The tombstone — recorded before this run,
    or the one this run is about to write —
@@ -320,7 +327,8 @@ names an uncommitted ID, `Expire` stops with `ErrHeadUncommitted`.
 
 Each step MUST be idempotent; a step that finds its target already absent
 succeeds. If the process stops after step 1 the snapshot is still readable
-and consistent (expiring). If it stops after step 2 or later the snapshot is
+and consistent (expiring), unless it never had a canonical manifest
+(§Expiring snapshot). If it stops after step 2 or later the snapshot is
 expired and its remaining manifests and objects are reclaimed by re-running
 `Expire` with the same ID, or by `Sweep` (below): both work from the
 tombstone, so neither depends on a manifest surviving.

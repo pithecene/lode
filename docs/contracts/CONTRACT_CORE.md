@@ -59,7 +59,11 @@ by instant: the instant has a fixed 19 digits from September 2001 until
 signed 64-bit nanoseconds run out in April 2262, so only an ID from a clock
 set before 2001-09-09 01:46:40 UTC (a shorter instant) would sort out of
 time order. IDs with the same instant
-order by nonce.
+order by nonce, which is not commit order. Nothing relies on it: the pointer
+names the head, and the pointer-less scan serves only datasets written
+before the pointer existed (instant-only IDs) or, on a store without
+`ConditionalWriter`, the moment between a single writer's Delete and Put,
+when no second writer resolves a parent.
 
 IDs written before v0.11.0 are `<instant>` alone. They remain valid and
 are read, selected and retained exactly like new IDs. An ID is in the
