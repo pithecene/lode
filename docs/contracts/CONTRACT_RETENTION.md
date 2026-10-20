@@ -50,7 +50,8 @@ commits never mutate existing state. Retention does not weaken this:
   exposure is the window while the reusing write is staging data, before
   any manifest of it exists: nothing yet tells that data from the expired
   snapshot's leftovers, so a `Sweep`, or an `Expire` naming the ID, can
-  delete it then. A tombstone also cannot
+  delete it then; so can an expiry already past its canonical delete, whose
+remaining steps work from the old inventory. A tombstone also cannot
   tell the two snapshots apart if both commits landed in the same nanosecond
   with the same files. Lode accepts these 2⁻⁶⁴ events rather than check every
   write against the tombstones.
@@ -218,7 +219,8 @@ commit creates the pointer and every later commit replaces it, so only a
 dataset written before the pointer existed lacks one for good, and its IDs
 are legacy instant-only ones. There the head is the snapshot a scan returns:
 the largest snapshot ID (CONTRACT_WRITE_API §Parent Resolution, scan
-fallback) that is not expired, which is exactly the head `Latest` serves.
+fallback) that is not expired, which is exactly the head `Latest` serves:
+the scan behind `Latest` passes over expired snapshots too.
 An interrupted expiry can leave a partition manifest of an expired snapshot
 behind, and that leftover is never the head; an expiring snapshot (its
 canonical manifest still present) is, being fully readable. A dataset whose
@@ -385,8 +387,9 @@ advances the pointer while an earlier one is still writing partition
 manifests, an `Expire` that selects the earlier snapshot can remove it and
 the slow writer can then add a partition manifest after the expiry. The
 tombstone describes that manifest, so the next `Sweep` or `Expire` of the ID
-removes it; until then a partition listing can show a manifest whose data is
-gone. Retention adds no lock against in-flight commits: selecting a snapshot
+removes it; until then `ListManifests` and `ListPartitions` can return that
+manifest, and reading it fails on the missing data. This is the one
+exception to listing completeness that retention introduces. Retention adds no lock against in-flight commits: selecting a snapshot
 younger than the slowest commit is the caller's choice, and `Before` with a
 margin avoids it.
 
@@ -451,12 +454,16 @@ Reclaim is per snapshot (§Unreferenced object): a settled snapshot's objects
 are every object under its data prefixes, including any its inventory does
 not list (partial objects of an aborted stream, caller objects inside its
 data prefix). The inventory decides only how they are counted
-(§Accounting), never whether they are deleted.
+(§Accounting), never whether they are deleted — with one addition: an
+object the inventory lists but a lagging listing omitted is deleted too,
+and, not having been listed, is not counted.
 
 `Sweep` reads the pointer once, before step 1, and never settles the
 snapshot it names. When the pointer is absent, or names an ID with no
-manifest in the listing, the largest listed manifest ID is protected the
-same way (the snapshot a scan would return). `Expire` writes a tombstone only
+manifest in the listing, the newest listed snapshot that is not expired is
+protected the same way (the snapshot a scan would return); a tombstoned
+candidate whose canonical manifest the listing omits is checked in the
+store before it is passed over. `Expire` writes a tombstone only
 for a snapshot observed as non-head (§Head protection), so this guard never
 fires for tombstones Lode wrote; it keeps a misplaced object under
 `expired/` from ever removing the head. A protected tombstoned snapshot is
@@ -464,7 +471,9 @@ left unsettled and its objects stay live.
 
 The data objects of an in-flight commit have no manifest yet and are
 orphaned by the definition above; the grace period protects them, not the
-pointer. `Sweep` therefore never returns `ErrHeadUncommitted`.
+pointer, so a pointer naming an uncommitted ID does not stop `Sweep`. A
+missing pointer beside `<instant>-<nonce>` IDs does (§Head protection):
+`Sweep` then returns `ErrHeadUncommitted`, like `Expire`.
 
 ### Grace period
 
@@ -569,7 +578,7 @@ rewrites or removes a tombstone to recover.
 
 | Error | Source | Condition |
 |-------|--------|-----------|
-| `ErrHeadUncommitted` | `Expire` | The pointer names a snapshot with no manifest (a commit in flight). At preflight nothing is expired; at a per-snapshot recheck the snapshots already expired stay expired and are reported |
+| `ErrHeadUncommitted` | `Expire`, `Sweep` | `Expire`: the pointer names a snapshot with no manifest (a commit in flight). At preflight nothing is expired; at a per-snapshot recheck the snapshots already expired stay expired and are reported. Both: the pointer is missing beside `<instant>-<nonce>` IDs (§Head protection); `Sweep` stops before deleting anything |
 | `ErrInvalidArgument` | `Expire`, `Sweep` | `ExpireRequest` with every selector field unset; `SweepRequest.Grace` zero or negative |
 | `ErrInvalidPath` | `Expire` | `Partition` is not a canonical relative partition path |
 | `ErrPartitionPrefixNotSupported` | `Expire` | `Partition` set on a layout without partitions (shared with `PartitionListOptions.Prefix`; distinct from the `StreamWriteRecords` error `ErrPartitioningNotSupported`) |
