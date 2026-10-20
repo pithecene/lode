@@ -207,7 +207,10 @@ Head is determined by reading the pointer, and the check MUST be repeated
 a writer may commit between selection and deletion, and a snapshot that was
 listed during selection may have become head in that window. A snapshot the
 recheck finds to be the head is retained and reported in `RetainedHead`
-exactly as at preflight, and no tombstone is written for it. Once a snapshot
+exactly as at preflight, and no tombstone is written for it. A snapshot
+already protected is retained without further steps, but its recheck still
+runs, so a commit that started mid-run stops `Expire` with
+`ErrHeadUncommitted` at any snapshot. Once a snapshot
 has been observed as non-head it can never become head later, because
 commits only ever advance the pointer to a newly created ID, so one recheck
 before the tombstone closes the race for every later step.
@@ -240,8 +243,10 @@ names an uncommitted ID, `Expire` stops with `ErrHeadUncommitted`.
    MUST be read back and, if it names this snapshot ID, treated as success:
    the same expiry is already recorded, by an earlier or concurrent run, and
    steps 2–4 use **its** inventory. A tombstone recorded before this run
-   MUST equal the `Files[]` (paths and sizes) of every manifest copy of the
-   snapshot that still loads; one that wins a concurrent create MUST equal
+   MUST equal the `Files[]` (paths and sizes) of every manifest copy that
+   still loads at a path this expiry would delete — the canonical path,
+   every copy the listing found, and every partition copy derived from the
+   tombstone's inventory — whether or not the listing found any; one that wins a concurrent create MUST equal
    the inventory this run read. Otherwise it belongs to an earlier snapshot
    with the same ID and the operation MUST fail. A snapshot selected by its tombstone
    alone (no manifest left) starts here, with the read-back. A tombstone
@@ -368,6 +373,10 @@ manifest and data object of the layout). It then performs, in order:
 2. **Reclaim objects.** Group the listed data objects by the snapshot ID in
    their path. A group is:
    - **live** when its snapshot ID still has a manifest — never touched;
+   - **held** when its snapshot's tombstone was rejected in step 1 (invalid,
+     or contradicted by a manifest copy) or its snapshot is protected —
+     never touched, even past the grace period, because a tombstone Lode
+     cannot trust says nothing about whether the objects are garbage;
    - **settled** when its snapshot was settled in step 1 — deleted without
      regard to the grace period;
    - **orphaned** otherwise (a snapshot that was never committed) — deleted
@@ -503,12 +512,12 @@ selects, T the tombstones, D the objects deleted.
 
 | Operation | Store Calls | Memory |
 |-----------|-------------|--------|
-| `Expire` | 1 List (the `Partition` subtree, else the snapshot prefix) + (K + 1) pointer Gets, each followed by at most one `Exists` + K manifest Gets + K tombstone Gets (the recorded inventory, if any; also one per requested ID with no manifest) + 1 Get per manifest copy of a snapshot whose tombstone was already recorded + K tombstone writes (each + at most 1 read-back Get when it already exists) + Σ(manifests + files) Deletes; +1 List when the pointer is absent | O(N + K × manifest) |
+| `Expire` | 1 List (the `Partition` subtree, else the snapshot prefix) + (K + 1) pointer Gets, each followed by at most one `Exists` (and one List of the snapshot prefix when the named snapshot has no canonical manifest, to find a legacy partition-only copy) + K manifest Gets + K tombstone Gets (the recorded inventory, if any; also one per requested ID with no manifest) + 1 Get per manifest copy of a snapshot whose tombstone was already recorded + K tombstone writes (each + at most 1 read-back Get when it already exists) + Σ(manifests + files) Deletes; +1 List when the pointer is absent | O(N + K × manifest) |
 | `Sweep` | 2 Lists (tombstones, snapshot prefix) + 1 pointer Get + T tombstone Gets + 1 Get per manifest copy of each tombstoned snapshot with a manifest left + D Deletes | O(N + Σ tombstone inventories) |
 | `Snapshot(id)`, `Read(id)` expired path | +1 Get (tombstone) | O(1) |
 
-Pointer Gets: one preflight read plus one re-read immediately before each
-snapshot's tombstone (§Head protection).
+Pointer Gets: one preflight read plus one re-read per selected snapshot,
+immediately before its tombstone or before retaining it (§Head protection).
 
 `Expire` and `Sweep` are cold-path administrative operations with cost
 proportional to history depth. Callers MUST NOT run them on hot paths.
