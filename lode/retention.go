@@ -449,14 +449,11 @@ func (r expiryRun) remove(ctx context.Context, c expiryCandidate, plan expiryPla
 // stopped after its canonical delete). ErrNotFound means every copy is gone.
 func (d *dataset) loadCandidate(ctx context.Context, c expiryCandidate) (*Manifest, error) {
 	for _, p := range d.manifestCopies(c.id, c.paths) {
-		s, err := d.history.load(ctx, c.id, p)
+		m, err := d.loadManifestAt(ctx, c.id, p)
 		if errors.Is(err, ErrNotFound) {
 			continue
 		}
-		if err != nil {
-			return nil, fmt.Errorf("lode: failed to load manifest %s: %w", p, err)
-		}
-		return s.Manifest, nil
+		return m, err
 	}
 	return nil, fmt.Errorf("lode: snapshot %s has no manifest: %w", c.id, ErrNotFound)
 }
@@ -479,16 +476,33 @@ func (d *dataset) describesEveryCopy(ctx context.Context, t tombstone, paths []s
 func (d *dataset) loadCopies(ctx context.Context, id DatasetSnapshotID, paths []string) ([]*Manifest, error) {
 	var copies []*Manifest
 	for _, p := range d.manifestCopies(id, paths) {
-		s, err := d.history.load(ctx, id, p)
+		m, err := d.loadManifestAt(ctx, id, p)
 		if errors.Is(err, ErrNotFound) {
 			continue
 		}
 		if err != nil {
-			return nil, fmt.Errorf("lode: failed to load manifest %s: %w", p, err)
+			return nil, err
 		}
-		copies = append(copies, s.Manifest)
+		copies = append(copies, m)
 	}
 	return copies, nil
+}
+
+// loadManifestAt loads and validates the manifest copy at p. ErrNotFound
+// means it is absent. An invalid manifest is an error: nothing is expired
+// or recorded from it.
+func (d *dataset) loadManifestAt(ctx context.Context, id DatasetSnapshotID, p string) (*Manifest, error) {
+	s, err := d.history.load(ctx, id, p)
+	if errors.Is(err, ErrNotFound) {
+		return nil, err
+	}
+	if err == nil {
+		err = validateManifest(s.Manifest)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("lode: failed to load manifest %s: %w", p, err)
+	}
+	return s.Manifest, nil
 }
 
 // manifestCopies is where snapshot id's manifest may be: the canonical path

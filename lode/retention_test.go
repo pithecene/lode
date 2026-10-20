@@ -813,6 +813,33 @@ func TestExpire_Tombstone(t *testing.T) {
 	})
 }
 
+// TestExpire_InvalidManifest covers manifests that decode but break the
+// manifest invariants: nothing is recorded or deleted from them.
+func TestExpire_InvalidManifest(t *testing.T) {
+	for name, corrupt := range map[string]func(*Manifest){
+		"zero created at": func(m *Manifest) { m.CreatedAt = time.Time{} },
+		"negative size":   func(m *Manifest) { m.Files[0].SizeBytes = -1 },
+	} {
+		t.Run(name, func(t *testing.T) {
+			mem := NewMemory()
+			ds := newDefaultRetention(t, mem)
+			first := writeRecord(t, ds, 1)
+			writeRecord(t, ds, 2)
+			m := *first.Manifest
+			m.Files = slices.Clone(m.Files)
+			corrupt(&m)
+			rewriteManifest(t, mem, "datasets/events/snapshots/"+string(first.ID)+"/manifest.json", &m)
+
+			if _, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{first.ID}}); err == nil {
+				t.Fatal("Expire expired a snapshot from an invalid manifest")
+			}
+			if ok, _ := mem.Exists(t.Context(), "datasets/events/expired/"+string(first.ID)); ok {
+				t.Error("a tombstone was recorded from an invalid manifest")
+			}
+		})
+	}
+}
+
 // TestExpire_CorruptTombstone covers tombstones no manifest can stand in
 // for: each fails the run rather than steering a delete.
 func TestExpire_CorruptTombstone(t *testing.T) {
