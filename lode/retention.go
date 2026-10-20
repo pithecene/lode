@@ -314,7 +314,7 @@ func (d *dataset) loadCandidate(ctx context.Context, c expiryCandidate) (m *Mani
 // path a manifest lists, which is reported and left in place.
 func (d *dataset) splitFiles(id DatasetSnapshotID, m *Manifest) (owned []FileRef, skipped []string) {
 	for _, f := range m.Files {
-		if d.layout.isDataObjectOf(d.id, id, f.Path) {
+		if d.layout.isObjectOf(d.id, id, dataLeaf, f.Path) {
 			owned = append(owned, f)
 			continue
 		}
@@ -349,12 +349,16 @@ func (d *dataset) removeSnapshot(ctx context.Context, c expiryCandidate, m *Mani
 
 // allManifestPaths is every manifest path of the snapshot, canonical first:
 // the ones commit wrote for its files' partitions and any the listing found.
+// A path derived from a malformed FileRef is dropped unless it is a
+// canonical manifest path of this snapshot.
 func (d *dataset) allManifestPaths(c expiryCandidate, m *Manifest) []string {
 	partitions := make([]string, 0, len(m.Files))
 	for _, f := range m.Files {
 		partitions = append(partitions, d.layout.extractPartitionPath(f.Path))
 	}
-	paths := d.manifestPaths(c.id, partitions)
+	paths := slices.DeleteFunc(d.manifestPaths(c.id, partitions), func(p string) bool {
+		return !d.layout.isObjectOf(d.id, c.id, manifestLeaf, p)
+	})
 	for _, p := range c.paths {
 		if !slices.Contains(paths, p) {
 			paths = append(paths, p)

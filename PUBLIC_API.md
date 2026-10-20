@@ -685,7 +685,9 @@ if report.RetainedHead != "" {
 - **Expiry is recorded.** `Snapshot` and `Read` on an expired ID return
   `ErrSnapshotExpired`, which also matches `ErrNotFound`.
 - **Expiry is resumable.** The report is non-nil on error and lists the
-  work done; running the same request again completes the rest.
+  work done; running the same request again completes the rest while any
+  of a snapshot's manifests remain. Data objects left after its last
+  manifest is deleted are no longer described by any snapshot.
 - **Lode deletes only what it wrote.** Objects a caller put next to the
   dataset through `Store.Put` (sidecar files) are never deleted by
   `Expire`; delete them after their snapshots are expired.

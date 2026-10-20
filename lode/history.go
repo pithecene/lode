@@ -248,8 +248,8 @@ func (h *history[ID, M]) readPointer(ctx context.Context) (ID, error) {
 // the pointer names, or, with no pointer, the one a scan returns ("" for an
 // empty history). known is a head an earlier call confirmed; a pointer still
 // naming it, or still absent, costs no further call. A pointer naming a
-// snapshot without a canonical manifest is a commit in flight, whose parent
-// the pointer no longer names: ErrHeadUncommitted.
+// snapshot with no manifest is a commit in flight, whose parent the pointer
+// no longer names: ErrHeadUncommitted.
 func (h *history[ID, M]) CommittedHead(ctx context.Context, known ID) (ID, error) {
 	id, err := h.readPointer(ctx)
 	if errors.Is(err, ErrNotFound) {
@@ -264,14 +264,29 @@ func (h *history[ID, M]) CommittedHead(ctx context.Context, known ID) (ID, error
 	if id == known {
 		return id, nil
 	}
-	exists, err := h.store.Exists(ctx, h.kind.manifestPath(id))
+	committed, err := h.hasManifest(ctx, id)
 	if err != nil {
 		return "", fmt.Errorf("lode: failed to resolve head: %w", err)
 	}
-	if !exists {
+	if !committed {
 		return "", fmt.Errorf("lode: latest pointer names %s: %w", id, ErrHeadUncommitted)
 	}
 	return id, nil
+}
+
+// hasManifest reports whether snapshot id has any manifest: its canonical
+// one (one Exists), or, for data written before canonical manifests, any
+// listed copy (one List, only on that miss).
+func (h *history[ID, M]) hasManifest(ctx context.Context, id ID) (bool, error) {
+	exists, err := h.store.Exists(ctx, h.kind.manifestPath(id))
+	if err != nil || exists {
+		return exists, err
+	}
+	entries, err := h.manifests(ctx)
+	if err != nil {
+		return false, err
+	}
+	return slices.ContainsFunc(entries, func(e manifestEntry[ID]) bool { return e.id == id }), nil
 }
 
 // scannedHead is the ID a scan would return, without loading its manifest.

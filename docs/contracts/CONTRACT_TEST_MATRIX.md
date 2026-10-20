@@ -281,7 +281,8 @@ All error sentinels covered ✅
 | Dry run writes and deletes nothing, and fails where a real run would | `TestExpire_DryRun_ChangesNothing`, `TestExpire_DryRun_FailsWhereARealRunWould` | ✅ |
 | Existing tombstone: same ID resumes, other ID fails (CAS and non-CAS); tombstone records the whole `Files[]` | `TestExpire_ExistingTombstone`, `TestExpire_TombstoneRecordsWholeManifest` | ✅ |
 | Expired snapshot not resurrected by the scan fallback; rerun completes | `TestExpire_InterruptedAfterCanonicalDelete_IsNotResurrected` | ✅ |
-| Foreign `Files[]` paths reported in `Skipped`, never deleted | `TestExpire_ForeignFileRef_IsSkipped` | ✅ |
+| Foreign `Files[]` paths reported in `Skipped`, never deleted; no derived path escapes the dataset | `TestExpire_ForeignFileRef_IsSkipped`, `TestExpire_TraversalInFileRef_DeletesNothingOutside` | ✅ |
+| A legacy head with only partition manifests is committed | `TestExpire_LegacyPartitionOnlyHead_IsCommitted` | ✅ |
 | Enumeration skips manifests deleted after listing | `TestEnumeration_SkipsManifestDeletedAfterListing`, `TestLatestScan_SkipsManifestDeletedAfterListing` | ✅ |
 
 ---

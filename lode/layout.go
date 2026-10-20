@@ -33,9 +33,9 @@ type layout interface {
 	tombstonesPrefix(dataset DatasetID) string
 	// parse reads a path as a manifest or data object of this layout.
 	parse(p string) (snapshotPath, bool)
-	// isDataObjectOf reports whether p is, in canonical form, a data object
-	// of this snapshot of this dataset.
-	isDataObjectOf(dataset DatasetID, snapshot DatasetSnapshotID, p string) bool
+	// isObjectOf reports whether p is, in canonical form, an object of the
+	// given kind (manifest or data) of this snapshot of this dataset.
+	isObjectOf(dataset DatasetID, snapshot DatasetSnapshotID, kind pathKind, p string) bool
 
 	// Partitioning (unified with layout)
 	partitioner() partitioner
@@ -320,12 +320,18 @@ func (l *pathLayout) parse(p string) (snapshotPath, bool) {
 	return l.grammar.parse(p)
 }
 
-func (l *pathLayout) isDataObjectOf(dataset DatasetID, snapshot DatasetSnapshotID, p string) bool {
+// leafDir is the directory under a snapshot that holds each kind of leaf.
+var leafDir = map[pathKind]string{manifestLeaf: "", dataLeaf: dataDir}
+
+// isObjectOf parses p and rebuilds it from the parse: only a path that
+// survives the round trip unchanged is canonical, so no "..", empty or
+// foreign segment can make a delete land outside the snapshot.
+func (l *pathLayout) isObjectOf(dataset DatasetID, snapshot DatasetSnapshotID, kind pathKind, p string) bool {
 	sp, ok := l.grammar.parse(p)
-	if !ok || sp.kind != dataLeaf || sp.dataset != dataset || sp.snapshot != snapshot {
+	if !ok || sp.kind != kind || sp.dataset != dataset || sp.snapshot != snapshot {
 		return false
 	}
-	return l.dataFilePath(dataset, snapshot, sp.partition, path.Base(p)) == p
+	return l.grammar.objectPath(dataset, sp.partition, snapshot, leafDir[kind], path.Base(p)) == p
 }
 
 // withinPartition reports whether partition p is partition or lies beneath

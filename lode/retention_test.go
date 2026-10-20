@@ -519,6 +519,53 @@ func TestExpire_TombstoneRecordsWholeManifest(t *testing.T) {
 	}
 }
 
+func TestExpire_TraversalInFileRef_DeletesNothingOutside(t *testing.T) {
+	store := NewMemory()
+	ds := newHiveRetention(t, store)
+	run := writeRun(t, ds, "a", "x")
+	writeRun(t, ds, "b", "x")
+
+	victim := "datasets/other/partitions/x/segments/" + string(run.ID) + "/manifest.json"
+	if err := store.Put(t.Context(), victim, strings.NewReader("{}")); err != nil {
+		t.Fatal(err)
+	}
+	m := *run.Manifest
+	escape := "datasets/events/partitions/run_id=a/../../../other/partitions/x/segments/" + string(run.ID) + "/data/f"
+	m.Files = append(m.Files, FileRef{Path: escape})
+	rewriteManifest(t, store, "datasets/events/segments/"+string(run.ID)+"/manifest.json", &m)
+
+	report, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{run.ID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(report.Skipped, escape) {
+		t.Errorf("Skipped = %v, want the traversal path", report.Skipped)
+	}
+	if ok, _ := store.Exists(t.Context(), victim); !ok {
+		t.Error("a manifest outside the dataset was deleted")
+	}
+}
+
+func TestExpire_LegacyPartitionOnlyHead_IsCommitted(t *testing.T) {
+	store := NewMemory()
+	ds := newHiveRetention(t, store)
+	first := writeRun(t, ds, "a", "x")
+	head := writeRun(t, ds, "b", "x")
+	// Data written before canonical manifests existed has only partition
+	// copies, and the pointer may name such a snapshot after self-heal.
+	if err := store.Delete(t.Context(), "datasets/events/segments/"+string(head.ID)+"/manifest.json"); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := ds.Expire(t.Context(), ExpireRequest{Before: time.Now().Add(time.Hour)})
+	if err != nil {
+		t.Fatalf("Expire = %v, want the legacy head treated as committed", err)
+	}
+	if report.RetainedHead != head.ID || !slices.Equal(report.Expired, []DatasetSnapshotID{first.ID}) {
+		t.Errorf("report = %+v, want %s retained and %s expired", report, head.ID, first.ID)
+	}
+}
+
 func newDefaultTombstones(t *testing.T, ds Dataset) tombstones {
 	t.Helper()
 	d, ok := ds.(*dataset)
