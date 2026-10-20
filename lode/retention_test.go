@@ -312,8 +312,8 @@ func TestExpire_Partition_MatchesWholeSegments(t *testing.T) {
 	if !slices.Equal(report.Expired, []DatasetSnapshotID{run1.ID}) {
 		t.Errorf("Expired = %v, want [%s]", report.Expired, run1.ID)
 	}
-	if report.Objects != 2 {
-		t.Errorf("Objects = %d, want 2 (one per event type)", report.Objects)
+	if report.Objects != 2 || len(report.Mixed) != 0 {
+		t.Errorf("Objects = %d, Mixed = %v; want 2 (one per event type) and none mixed", report.Objects, report.Mixed)
 	}
 	assertGone(t, store, ds, run1)
 	assertPresent(t, ds, run10)
@@ -593,6 +593,74 @@ func TestExpire_ResumesFromTombstoneWithNoManifestLeft(t *testing.T) {
 	if err != nil || third.Objects != 0 {
 		t.Errorf("third run = %+v, %v; want nothing left to count", third, err)
 	}
+}
+
+func TestExpire_IDNotInGeneratedForm_NeverReachesAPath(t *testing.T) {
+	mem := NewMemory()
+	ds := newDefaultRetention(t, mem)
+	writeRecord(t, ds, 1)
+	victim := "victim"
+	if err := mem.Put(t.Context(), victim, strings.NewReader(`{"snapshot_id":"../../../victim","files":[]}`)); err != nil {
+		t.Fatal(err)
+	}
+	report, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{"../../../victim"}})
+	if err != nil || len(report.Expired) != 0 {
+		t.Errorf("Expire = %+v, %v; want nothing selected", report, err)
+	}
+	if ok, _ := mem.Exists(t.Context(), victim); !ok {
+		t.Error("an object outside the dataset was deleted")
+	}
+}
+
+func TestExpire_TombstoneOfAnotherInventory_IsRefused(t *testing.T) {
+	mem := NewMemory()
+	ds := newDefaultRetention(t, mem)
+	first := writeRecord(t, ds, 1)
+	writeRecord(t, ds, 2)
+	// An earlier snapshot with the same ID, expired long ago, left this.
+	putTombstone(t, mem, first.ID, first.ID, []FileRef{{Path: "datasets/events/snapshots/" + string(first.ID) + "/data/old", SizeBytes: 1}})
+
+	for _, dryRun := range []bool{true, false} {
+		if _, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{first.ID}, DryRun: dryRun}); err == nil {
+			t.Errorf("Expire(dry=%v) used a tombstone that does not match the manifest", dryRun)
+		}
+	}
+	assertPresent(t, ds, first)
+}
+
+// racingStore records a tombstone for the same snapshot just before the
+// first tombstone CAS, as a concurrent expiry of the same ID would.
+type racingStore struct {
+	*hookStore
+	raced bool
+}
+
+func (r *racingStore) CompareAndSwap(ctx context.Context, p, expected, replacement string) error {
+	cw := r.Store.(ConditionalWriter)
+	if !r.raced && strings.Contains(p, "/expired/") {
+		r.raced = true
+		if err := cw.CompareAndSwap(ctx, p, "", replacement); err != nil {
+			return err
+		}
+	}
+	return cw.CompareAndSwap(ctx, p, expected, replacement)
+}
+
+func TestExpire_ConcurrentTombstone_IsAccepted(t *testing.T) {
+	mem := NewMemory()
+	rs := &racingStore{hookStore: &hookStore{Store: mem}}
+	ds := newDefaultRetention(t, rs)
+	first := writeRecord(t, ds, 1)
+	writeRecord(t, ds, 2)
+
+	report, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{first.ID}})
+	if err != nil || !rs.raced {
+		t.Fatalf("Expire = %v (raced %v), want the concurrent tombstone accepted", err, rs.raced)
+	}
+	if !slices.Equal(report.Expired, []DatasetSnapshotID{first.ID}) {
+		t.Errorf("Expired = %v, want [%s]", report.Expired, first.ID)
+	}
+	assertGone(t, mem, ds, first)
 }
 
 func TestExpire_TombstoneWithoutInventory_IsCorrupt(t *testing.T) {

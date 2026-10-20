@@ -198,7 +198,9 @@ func (d *dataset) expiryListing(ctx context.Context, sel selection) (expiryListi
 func (d *dataset) tombstoneCandidates(ctx context.Context, sel selection, withManifest map[DatasetSnapshotID]bool) ([]expiryCandidate, error) {
 	var out []expiryCandidate
 	for _, id := range sel.byTombstone {
-		if withManifest[id] {
+		// Only an ID in the generated form can name a tombstone; any other
+		// never reaches a store path (CONTRACT_RETENTION §Definition).
+		if _, generated := snapshotInstant(id); withManifest[id] || !generated {
 			continue
 		}
 		t, found, err := d.tombstones().lookup(ctx, id)
@@ -377,7 +379,18 @@ func (r expiryRun) plan(ctx context.Context, c expiryCandidate) (plan expiryPlan
 	if !recorded {
 		t = newTombstone(c.id, m.Files)
 	}
+	// A tombstone left by an earlier snapshot with the same ID (the clock
+	// repeated an instant) must never steer deletes of this one.
+	if !sameInventory(t.Files, m.Files) {
+		return plan, false, fmt.Errorf("lode: tombstone for %s records a different inventory than its manifest", c.id)
+	}
 	return expiryPlan{tomb: t, recorded: recorded, manifest: m}, true, nil
+}
+
+// sameInventory reports whether two inventories list the same paths with
+// the same sizes, in order.
+func sameInventory(a, b []FileRef) bool {
+	return slices.EqualFunc(a, b, func(x, y FileRef) bool { return x.Path == y.Path && x.SizeBytes == y.SizeBytes })
 }
 
 // present meters files: those the run's listing showed, so an object an
