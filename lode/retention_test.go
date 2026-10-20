@@ -1030,6 +1030,29 @@ func TestExpire_CorruptTombstone(t *testing.T) {
 		}
 	})
 
+	t.Run("a corrupt one does not expire a legacy snapshot", func(t *testing.T) {
+		mem := NewMemory()
+		ds := newHiveRetention(t, mem)
+		legacy := writeRun(t, ds, "a", "x")
+		writeRun(t, ds, "b", "x")
+		// Written before canonical manifests: only partition copies exist.
+		for _, k := range storeKeys(t, mem) {
+			if strings.Contains(k, string(legacy.ID)) && strings.HasSuffix(k, manifestFile) && !strings.Contains(k, "partitions/") {
+				if err := mem.Delete(t.Context(), k); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		if err := mem.Put(t.Context(), "datasets/events/expired/"+string(legacy.ID), strings.NewReader("{}")); err != nil {
+			t.Fatal(err)
+		}
+
+		_, err := newHiveRetention(t, mem).Snapshot(t.Context(), legacy.ID)
+		if err == nil || errors.Is(err, ErrSnapshotExpired) {
+			t.Errorf("Snapshot = %v, want the corrupt tombstone surfaced, not an expiry", err)
+		}
+	})
+
 	t.Run("no commit instant", func(t *testing.T) {
 		mem := NewMemory()
 		ds := newDefaultRetention(t, mem)

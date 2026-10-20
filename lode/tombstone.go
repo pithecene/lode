@@ -207,16 +207,18 @@ func (ts tombstones) expiredError(ctx context.Context, id DatasetSnapshotID) err
 	return fmt.Errorf("lode: snapshot %s: %w", id, ErrSnapshotExpired)
 }
 
-// absent reports whether snapshot id has no tombstone. An ID outside the
-// generated form never has one.
+// absent reports whether snapshot id has no valid tombstone. An ID outside
+// the generated form never has one.
 func (ts tombstones) absent(ctx context.Context, id DatasetSnapshotID) (bool, error) {
-	p, ok := ts.path(id)
-	if !ok {
+	// Only a valid tombstone expires a snapshot: an empty placeholder records
+	// nothing, and anything else at the path is corruption, surfaced rather
+	// than read as an expiry.
+	_, err := ts.lookup(ctx, id)
+	if errors.Is(err, ErrNotFound) || errors.Is(err, errEmptyTombstone) {
 		return true, nil
 	}
-	exists, err := ts.store.Exists(ctx, p)
 	if err != nil {
 		return false, fmt.Errorf("lode: failed to check tombstone: %w", err)
 	}
-	return !exists, nil
+	return false, nil
 }
