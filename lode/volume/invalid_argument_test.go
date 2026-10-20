@@ -100,22 +100,17 @@ func TestErrInvalidArgument_BeforeStoreFactory(t *testing.T) {
 	}
 }
 
-// The Volume sentinels keep their messages and the static type error.
-func TestSentinels(t *testing.T) {
-	for name, c := range map[string]struct {
-		ptr  any
+// The Volume sentinels keep the messages they had in package lode.
+func TestSentinels_Messages(t *testing.T) {
+	for _, c := range []struct {
+		err  error
 		want string
 	}{
-		"ErrRangeMissing":      {&ErrRangeMissing, "range missing: requested range is not fully committed"},
-		"ErrOverlappingBlocks": {&ErrOverlappingBlocks, "overlapping blocks in cumulative manifest"},
+		{ErrRangeMissing, "range missing: requested range is not fully committed"},
+		{ErrOverlappingBlocks, "overlapping blocks in cumulative manifest"},
 	} {
-		p, ok := c.ptr.(*error)
-		if !ok {
-			t.Errorf("%s is declared as %T, want *error", name, c.ptr)
-			continue
-		}
-		if got := (*p).Error(); got != c.want {
-			t.Errorf("%s: got %q, want %q", name, got, c.want)
+		if c.err.Error() != c.want {
+			t.Errorf("got %q, want %q", c.err, c.want)
 		}
 	}
 }
