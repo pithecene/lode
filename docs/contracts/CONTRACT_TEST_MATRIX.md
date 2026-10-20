@@ -270,8 +270,8 @@ All error sentinels covered ✅
 | ErrPartitioningNotSupported | `TestDataset_StreamWriteRecords_WithPartitioner_ReturnsError` |
 | ErrRangeMissing | `TestVolume_ReadAt_MissingRange_ReturnsErrRangeMissing`, `TestVolume_ReadAt_GapAtStart_ReturnsErrRangeMissing`, `TestVolume_ReadAt_GapInMiddle_ReturnsErrRangeMissing` |
 | ErrOverlappingBlocks | `TestVolume_Commit_OverlappingBlocks_ReturnsErrOverlappingBlocks`, `TestVolume_Commit_ContainedBlock_Overlap`, `TestVolume_Commit_SameStartOffset_Overlap`, `TestVolume_Commit_OverlapWithExisting_Rejected`, `TestVolume_Commit_ThreeBlockOverlap` |
-| ErrSnapshotExpired | `TestExpire_ByID_RemovesManifestAndData`, `TestExpire_InterruptedAfterCanonicalDelete_IsNotResurrected` |
-| ErrHeadUncommitted | `TestExpire_UncommittedHead_ExpiresNothing`, `TestExpire_UncommittedHeadMidRun_ReportsCompletedWork` |
+| ErrSnapshotExpired | `TestExpire_Selection/by_ID_removes_manifest_and_data`, `TestExpire_Resumption/interrupted_after_the_canonical_delete_is_not_resurrected` |
+| ErrHeadUncommitted | `TestExpire_Head/uncommitted_expires_nothing`, `TestExpire_Head/uncommitted_mid-run_reports_completed_work` |
 
 ---
 
@@ -280,21 +280,21 @@ All error sentinels covered ✅
 | Requirement | Test | Status |
 |-------------|------|--------|
 | Empty request, malformed or unsupported `Partition` rejected before any store call | `TestExpire_Validation` | ✅ |
-| Expiry removes manifests and data, keeps a tombstone; `Snapshot`/`Read` return `ErrSnapshotExpired` | `TestExpire_ByID_RemovesManifestAndData`, `TestExpire_FlatLayout` | ✅ |
-| `Partition` matches whole segments | `TestExpire_Partition_MatchesWholeSegments`, `TestExpire_TrailingSlashPartitionIsValid` | ✅ |
-| Mixed snapshots kept under `Partition`, expirable by `IDs` | `TestExpire_Partition_MixedSnapshotIsKept` | ✅ |
-| `Before` selects by snapshot ID instant; selectors intersect | `TestExpire_Before_UsesSnapshotIDInstant`, `TestExpire_IntersectsSelectors` | ✅ |
-| Head retained and reported, no tombstone written for it; a head superseded mid-run stays retained | `TestExpire_HeadIsRetainedAndReported`, `TestExpire_NoPointer_ProtectsScannedHead`, `TestExpire_HeadSupersededMidRun_StaysRetained` | ✅ |
-| Uncommitted head stops expiry, including at a retained head's recheck; report lists completed work | `TestExpire_UncommittedHead_ExpiresNothing`, `TestExpire_UncommittedHeadMidRun_ReportsCompletedWork`, `TestExpire_UncommittedHeadBeforeRetainedHead_Stops` | ✅ |
-| Dry run writes and deletes nothing, and fails where a real run would | `TestExpire_DryRun_ChangesNothing`, `TestExpire_DryRun_FailsWhereARealRunWould` | ✅ |
-| Existing tombstone: same ID resumes, other ID fails (CAS and non-CAS); tombstone records the whole `Files[]`, and one whose inventory is missing or fails FileRef validation is corrupt | `TestExpire_ExistingTombstone`, `TestExpire_ZeroLengthTombstone`, `TestExpire_TombstoneRecordsTheInventory`, `TestExpire_TombstoneWithInvalidInventory_IsCorrupt` | ✅ |
-| A recorded expiry resumes from its tombstone with no manifest left; each run meters only what it deleted | `TestExpire_ResumesFromTombstoneWithNoManifestLeft` | ✅ |
-| IDs not in the generated form never reach a store path; a tombstone whose inventory differs from any manifest copy is refused; a concurrent tombstone is accepted only with the same inventory | `TestExpire_IDNotInGeneratedForm_NeverReachesAPath`, `TestSnapshot_IDNotInGeneratedForm_IsNotExpired`, `TestExpire_TombstoneOfAnotherInventory_IsRefused`, `TestExpire_RecordedTombstone_MustMatchEveryManifestCopy`, `TestExpire_TombstoneOnly_CopyReappearingAtDerivedPath_IsChecked`, `TestExpire_ManifestReappearingForTombstone_IsChecked`, `TestExpire_ConcurrentTombstone_IsAccepted`, `TestExpire_ConcurrentTombstoneOfAnotherInventory_IsRefused` | ✅ |
-| Without a pointer, the head is the newest snapshot whose manifest still loads | `TestExpire_NoPointer_HeadVanishingAfterScanListing` | ✅ |
-| Expired snapshot not resurrected by the scan fallback; rerun completes | `TestExpire_InterruptedAfterCanonicalDelete_IsNotResurrected` | ✅ |
-| Foreign `Files[]` paths reported in `Skipped`, never deleted; no derived path escapes the dataset | `TestExpire_ForeignFileRef_IsSkipped`, `TestExpire_TraversalInFileRef_DeletesNothingOutside` | ✅ |
-| A legacy head with only partition manifests is committed | `TestExpire_LegacyPartitionOnlyHead_IsCommitted` | ✅ |
-| Enumeration skips manifests deleted after listing | `TestEnumeration_SkipsManifestDeletedAfterListing`, `TestLatestScan_SkipsManifestDeletedAfterListing` | ✅ |
+| Expiry removes manifests and data, keeps a tombstone; `Snapshot`/`Read` return `ErrSnapshotExpired` | `TestExpire_Selection/by_ID_removes_manifest_and_data`, `TestExpire_Selection/flat_layout` | ✅ |
+| `Partition` matches whole segments | `TestExpire_Selection/partition_matches_whole_segments`, `TestExpire_Selection/partition_with_a_trailing_slash` | ✅ |
+| Mixed snapshots kept under `Partition`, expirable by `IDs` | `TestExpire_Selection/mixed_snapshot_is_kept` | ✅ |
+| `Before` selects by snapshot ID instant; selectors intersect | `TestExpire_Selection/before_uses_the_snapshot_ID_instant`, `TestExpire_Selection/selectors_intersect` | ✅ |
+| Head retained and reported, no tombstone written for it; a head superseded mid-run stays retained | `TestExpire_Head/retained_and_reported`, `TestExpire_Head/without_a_pointer_the_scanned_head_is_protected`, `TestExpire_Head/superseded_mid-run_stays_retained` | ✅ |
+| Uncommitted head stops expiry, including at a retained head's recheck; report lists completed work | `TestExpire_Head/uncommitted_expires_nothing`, `TestExpire_Head/uncommitted_mid-run_reports_completed_work`, `TestExpire_Head/uncommitted_before_a_retained_head_stops_the_run` | ✅ |
+| Dry run writes and deletes nothing, and fails where a real run would | `TestExpire_DryRun/changes_nothing`, `TestExpire_DryRun/fails_where_a_real_run_would` | ✅ |
+| Existing tombstone: same ID resumes, other ID fails (CAS and non-CAS); tombstone records the whole `Files[]`, and one whose inventory is missing or fails FileRef validation is corrupt | `TestExpire_Tombstone/existing`, `TestExpire_Tombstone/zero_length`, `TestExpire_Tombstone/records_the_inventory`, `TestExpire_Tombstone/invalid_inventory_is_corrupt` | ✅ |
+| A recorded expiry resumes from its tombstone with no manifest left; each run meters only what it deleted | `TestExpire_Resumption/from_a_tombstone_with_no_manifest_left` | ✅ |
+| IDs not in the generated form never reach a store path; a tombstone whose inventory differs from any manifest copy is refused; a concurrent tombstone is accepted only with the same inventory | `TestExpire_Tombstone/ID_not_in_the_generated_form_never_reaches_a_path`, `TestSnapshot_IDNotInGeneratedForm_IsNotExpired`, `TestExpire_ReusedID/tombstone_of_another_inventory_is_refused`, `TestExpire_ReusedID/recorded_tombstone_must_match_every_manifest_copy`, `TestExpire_ReusedID/copy_reappearing_at_a_derived_path_is_checked`, `TestExpire_ReusedID/manifest_reappearing_for_a_tombstone_is_checked`, `TestExpire_Tombstone/concurrent_one_is_accepted`, `TestExpire_Tombstone/concurrent_one_of_another_inventory_is_refused` | ✅ |
+| Without a pointer, the head is the newest snapshot whose manifest still loads | `TestExpire_Head/without_a_pointer_a_head_vanishing_after_the_listing` | ✅ |
+| Expired snapshot not resurrected by the scan fallback; rerun completes | `TestExpire_Resumption/interrupted_after_the_canonical_delete_is_not_resurrected` | ✅ |
+| Foreign `Files[]` paths reported in `Skipped`, never deleted; no derived path escapes the dataset | `TestExpire_PathSafety/foreign_FileRef_is_skipped`, `TestExpire_PathSafety/traversal_in_a_FileRef_deletes_nothing_outside` | ✅ |
+| A legacy head with only partition manifests is committed | `TestExpire_Head/legacy_partition-only_head_is_committed` | ✅ |
+| Enumeration skips manifests deleted after listing | `TestEnumeration_ToleratesDeletion/listings_skip_a_manifest_deleted_after_listing`, `TestEnumeration_ToleratesDeletion/latest_scan_skips_a_manifest_deleted_after_listing` | ✅ |
 
 ---
 
