@@ -7,24 +7,43 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"time"
 )
 
 // tombstone is the persisted record of an expiry (CONTRACT_RETENTION
 // §Tombstone). It carries the snapshot's inventory, copied from the
 // manifest before anything is deleted, so every later step works from the
-// tombstone rather than from manifests that may already be gone.
+// tombstone rather than from manifests that may already be gone, and the
+// manifest's commit instant, which with the inventory tells this snapshot
+// from a later one that reused its ID.
 type tombstone struct {
-	SnapshotID  DatasetSnapshotID `json:"snapshot_id"`
-	RequestedAt time.Time         `json:"requested_at"`
-	Files       []FileRef         `json:"files"`
+	SnapshotID        DatasetSnapshotID `json:"snapshot_id"`
+	RequestedAt       time.Time         `json:"requested_at"`
+	ManifestCreatedAt time.Time         `json:"manifest_created_at"`
+	Files             []FileRef         `json:"files"`
 }
 
-func newTombstone(id DatasetSnapshotID, files []FileRef) tombstone {
+// newTombstone records the expiry of snapshot id from its manifest m.
+func newTombstone(id DatasetSnapshotID, m *Manifest) tombstone {
+	files := m.Files
 	if files == nil {
 		files = []FileRef{} // an inventory is never null, so absence means corruption
 	}
-	return tombstone{SnapshotID: id, RequestedAt: time.Now().UTC(), Files: files}
+	return tombstone{SnapshotID: id, RequestedAt: time.Now().UTC(), ManifestCreatedAt: m.CreatedAt, Files: files}
+}
+
+// sameSnapshot reports whether t and o record the same snapshot: the same
+// commit instant and the same inventory, paths and sizes.
+func (t tombstone) sameSnapshot(o tombstone) bool {
+	return t.ManifestCreatedAt.Equal(o.ManifestCreatedAt) &&
+		slices.EqualFunc(t.Files, o.Files, func(x, y FileRef) bool { return x.Path == y.Path && x.SizeBytes == y.SizeBytes })
+}
+
+// describes reports whether t is the record of manifest m
+// (CONTRACT_RETENTION §Tombstone).
+func (t tombstone) describes(m *Manifest) bool {
+	return t.sameSnapshot(tombstone{ManifestCreatedAt: m.CreatedAt, Files: m.Files})
 }
 
 // tombstones is a dataset's tombstone directory. Tombstones are created
@@ -71,8 +90,8 @@ func (ts tombstones) record(ctx context.Context, t tombstone) error {
 }
 
 // matchRecorded accepts the tombstone that won the create at p only if it
-// records the inventory t would have: a different one must never stand as
-// the record of the files this run deletes.
+// records the same snapshot as t: another must never stand as the record of
+// the files this run deletes.
 func (ts tombstones) matchRecorded(ctx context.Context, p string, t tombstone) error {
 	existing, err := ts.lookup(ctx, t.SnapshotID)
 	if errors.Is(err, ErrNotFound) {
@@ -81,8 +100,8 @@ func (ts tombstones) matchRecorded(ctx context.Context, p string, t tombstone) e
 	if err != nil {
 		return err
 	}
-	if !sameInventory(existing.Files, t.Files) {
-		return fmt.Errorf("lode: tombstone %s records a different inventory than its manifest", p)
+	if !existing.sameSnapshot(t) {
+		return fmt.Errorf("lode: tombstone %s records another snapshot than its manifest", p)
 	}
 	return nil
 }
@@ -120,18 +139,24 @@ func (ts tombstones) lookup(ctx context.Context, id DatasetSnapshotID) (tombston
 	return validTombstone(p, data, id)
 }
 
-// validTombstone decodes data and requires it to record snapshot id and to
-// carry an inventory whose every FileRef is valid.
+// validTombstone decodes data and requires it to record snapshot id, the
+// manifest's commit instant, and an inventory whose every FileRef is valid.
 func validTombstone(p string, data []byte, id DatasetSnapshotID) (tombstone, error) {
 	var t tombstone
 	if err := json.Unmarshal(data, &t); err != nil {
 		return t, fmt.Errorf("lode: failed to decode tombstone %s: %w", p, err)
 	}
-	if t.SnapshotID != id {
-		return t, fmt.Errorf("lode: tombstone %s records snapshot %q, not %q", p, t.SnapshotID, id)
-	}
-	if t.Files == nil {
-		return t, fmt.Errorf("lode: tombstone %s has no inventory", p)
+	for _, check := range []struct {
+		bad     bool
+		problem string
+	}{
+		{t.SnapshotID != id, fmt.Sprintf("records snapshot %q, not %q", t.SnapshotID, id)},
+		{t.ManifestCreatedAt.IsZero(), "has no manifest commit instant"},
+		{t.Files == nil, "has no inventory"},
+	} {
+		if check.bad {
+			return t, fmt.Errorf("lode: tombstone %s %s", p, check.problem)
+		}
 	}
 	if err := validateFiles(t.Files); err != nil {
 		return t, fmt.Errorf("lode: tombstone %s has an invalid inventory: %w", p, err)

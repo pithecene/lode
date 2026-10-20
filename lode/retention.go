@@ -382,19 +382,19 @@ func (r expiryRun) plan(ctx context.Context, c expiryCandidate) (expiryPlan, err
 		return expiryPlan{}, errSnapshotGone
 	case (errors.Is(err, ErrNotFound) || errors.Is(err, errEmptyTombstone)) && hasManifest:
 		// None recorded yet; an empty placeholder is replaced by the write.
-		return expiryPlan{tomb: newTombstone(c.id, m.Files), manifest: m}, nil
+		return expiryPlan{tomb: newTombstone(c.id, m), manifest: m}, nil
 	case err != nil:
 		return expiryPlan{}, err
 	}
 	// A tombstone left by an earlier snapshot with the same ID must never
 	// steer deletes of this one, even when no copy was found above: every
 	// path this expiry would delete is checked.
-	matches, err := r.ds.copiesMatch(ctx, c.id, r.ds.allManifestPaths(c.id, c.paths, t.Files), t.Files)
+	matches, err := r.ds.describesEveryCopy(ctx, t, r.ds.allManifestPaths(c.id, c.paths, t.Files))
 	if err != nil {
 		return expiryPlan{}, err
 	}
 	if !matches {
-		return expiryPlan{}, fmt.Errorf("lode: tombstone for %s records a different inventory than its manifest", c.id)
+		return expiryPlan{}, fmt.Errorf("lode: tombstone for %s records another snapshot than its manifest", c.id)
 	}
 	return expiryPlan{tomb: t, recorded: true, manifest: m}, nil
 }
@@ -406,12 +406,6 @@ func (r expiryRun) tombstoneFor(ctx context.Context, c expiryCandidate) (tombsto
 		return *c.recorded, nil
 	}
 	return r.ds.tombstones().lookup(ctx, c.id)
-}
-
-// sameInventory reports whether two inventories list the same paths with
-// the same sizes, in order.
-func sameInventory(a, b []FileRef) bool {
-	return slices.EqualFunc(a, b, func(x, y FileRef) bool { return x.Path == y.Path && x.SizeBytes == y.SizeBytes })
 }
 
 // present meters files: those the run's listing showed, so an object an
@@ -467,20 +461,21 @@ func (d *dataset) loadCandidate(ctx context.Context, c expiryCandidate) (*Manife
 	return nil, fmt.Errorf("lode: snapshot %s has no manifest: %w", c.id, ErrNotFound)
 }
 
-// copiesMatch reports whether every manifest copy at paths, and the canonical
-// one, records files where it still loads. Callers pass every path their
-// expiry would delete. Commit writes one serialization to every path, so a
-// copy that differs belongs to another snapshot with the same ID.
-func (d *dataset) copiesMatch(ctx context.Context, id DatasetSnapshotID, listed []string, files []FileRef) (bool, error) {
-	for _, p := range d.manifestCopies(id, listed) {
-		s, err := d.history.load(ctx, id, p)
+// describesEveryCopy reports whether t describes every manifest copy of its
+// snapshot that still loads at paths or the canonical path. Callers pass
+// every path their expiry would delete. Commit writes one serialization to
+// every path, so a copy t does not describe belongs to another snapshot
+// with the same ID.
+func (d *dataset) describesEveryCopy(ctx context.Context, t tombstone, paths []string) (bool, error) {
+	for _, p := range d.manifestCopies(t.SnapshotID, paths) {
+		s, err := d.history.load(ctx, t.SnapshotID, p)
 		if errors.Is(err, ErrNotFound) {
 			continue
 		}
 		if err != nil {
 			return false, fmt.Errorf("lode: failed to load manifest %s: %w", p, err)
 		}
-		if !sameInventory(s.Manifest.Files, files) {
+		if !t.describes(s.Manifest) {
 			return false, nil
 		}
 	}
