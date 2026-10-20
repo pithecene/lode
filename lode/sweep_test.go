@@ -431,12 +431,10 @@ func TestSweep_Head(t *testing.T) {
 	t.Run("without a pointer the scanned head is held", func(t *testing.T) {
 		store := NewMemory()
 		ds := newDefaultRetention(t, store)
-		writeRecord(t, ds, 1)
+		first := writeRecord(t, ds, 1)
 		head := writeRecord(t, ds, 2)
+		legacyize(t, store, first, head)
 		putTombstone(t, store, head.ID, newTombstone(head.ID, head.Manifest)) // misplaced
-		if err := store.Delete(t.Context(), "datasets/events/latest"); err != nil {
-			t.Fatal(err)
-		}
 
 		report, err := ds.Sweep(t.Context(), SweepRequest{Grace: time.Nanosecond})
 		if err != nil {
@@ -451,8 +449,9 @@ func TestSweep_Head(t *testing.T) {
 	t.Run("without a pointer an expired leftover is settled", func(t *testing.T) {
 		mem := NewMemory()
 		ds := newHiveRetention(t, mem)
-		writeRun(t, ds, "a", "x")
+		live := writeRun(t, ds, "a", "x")
 		gone := writeRun(t, ds, "b", "x")
+		legacyize(t, mem, live, gone)
 		// An interrupted expiry of the newest snapshot left a partition copy.
 		putTombstone(t, mem, gone.ID, newTombstone(gone.ID, gone.Manifest))
 		var leftover string
@@ -468,9 +467,6 @@ func TestSweep_Head(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		if err := mem.Delete(t.Context(), "datasets/events/latest"); err != nil {
-			t.Fatal(err)
-		}
 
 		report, err := ds.Sweep(t.Context(), SweepRequest{Grace: sweepGrace})
 		if err != nil {
@@ -485,12 +481,10 @@ func TestSweep_Head(t *testing.T) {
 		mem := NewMemory()
 		lister := &listInjector{Store: mem}
 		ds := newHiveRetention(t, lister)
-		writeRun(t, ds, "a", "x")
+		older := writeRun(t, ds, "a", "x")
 		head := writeRun(t, ds, "b", "x")
+		legacyize(t, mem, older, head)
 		putTombstone(t, mem, head.ID, newTombstone(head.ID, head.Manifest)) // misplaced
-		if err := mem.Delete(t.Context(), "datasets/events/latest"); err != nil {
-			t.Fatal(err)
-		}
 		// The listing shows a partition copy but omits the canonical one.
 		for _, k := range storeKeys(t, mem) {
 			if strings.Contains(k, string(head.ID)) && strings.HasSuffix(k, manifestFile) && !strings.Contains(k, "partitions/") {
@@ -506,6 +500,20 @@ func TestSweep_Head(t *testing.T) {
 			t.Errorf("report = %+v, want the head held", report)
 		}
 		assertPresent(t, ds, head)
+	})
+
+	t.Run("a pointer missing beside new-form IDs stops the run", func(t *testing.T) {
+		mem := NewMemory()
+		ds := newDefaultRetention(t, mem)
+		writeRecord(t, ds, 1)
+		writeRecord(t, ds, 2)
+		if err := mem.Delete(t.Context(), "datasets/events/latest"); err != nil {
+			t.Fatal(err)
+		}
+
+		if _, err := ds.Sweep(t.Context(), SweepRequest{Grace: sweepGrace}); !errors.Is(err, ErrHeadUncommitted) {
+			t.Fatalf("Sweep = %v, want ErrHeadUncommitted", err)
+		}
 	})
 
 	t.Run("a held tombstone keeps its data", func(t *testing.T) {

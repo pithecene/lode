@@ -128,6 +128,11 @@ func (d *dataset) sweepProtected(ctx context.Context, manifests map[DatasetSnaps
 	if err != nil {
 		return nil, err
 	}
+	if id == "" && strings.Contains(string(head), idSeparator) {
+		// Only a pre-pointer dataset lacks one for good, and its IDs are
+		// instant-only (history.legacyHead).
+		return nil, fmt.Errorf("lode: latest pointer is absent beside snapshot %s: %w", head, ErrHeadUncommitted)
+	}
 	protected[head] = true
 	return protected, nil
 }
