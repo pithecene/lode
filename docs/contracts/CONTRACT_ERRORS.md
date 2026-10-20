@@ -299,8 +299,10 @@ These are returned by snapshot expiry and the unreferenced-object sweep
   completes. A pointer left behind by a crashed commit is repaired by the
   next `Latest` or commit.
 - `Expire` and `Sweep` return a non-nil report with every error, describing
-  the work completed before it. The next `Expire` or `Sweep` completes the
-  rest.
+  the work completed before it. After a retryable failure the next
+  `Expire` or `Sweep` completes the rest; corruption (an invalid or
+  contradicted tombstone, an invalid manifest) recurs until repaired
+  (CONTRACT_RETENTION §Accounting).
 
 ---
 

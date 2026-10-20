@@ -225,8 +225,10 @@ listed during selection may have become head in that window. A snapshot the
 recheck finds to be the head is retained and reported in `RetainedHead`
 exactly as at preflight, and no tombstone is written for it. A snapshot
 already protected is retained without further steps, but its recheck still
-runs, so a commit that started mid-run stops `Expire` with
-`ErrHeadUncommitted` at any snapshot. Once a snapshot
+runs: a recheck that finds the pointer naming an uncommitted ID stops
+`Expire` with `ErrHeadUncommitted`, whichever snapshot it precedes. A commit
+that begins after a snapshot's recheck goes unobserved, and needs no
+coordination: it can only make a new ID the head. Once a snapshot
 has been observed as non-head it can never become head later, because
 commits only ever advance the pointer to a newly created ID, so one recheck
 before the tombstone closes the race for every later step.
@@ -250,7 +252,9 @@ snapshot, the snapshot is retained and none of the steps run for it; if it
 names an uncommitted ID, `Expire` stops with `ErrHeadUncommitted`.
 
 1. Write the tombstone `expired/<id>`, recording the inventory from the
-   manifest. When the store implements
+   manifest. Every manifest copy retention reads MUST first pass manifest
+   validation (CONTRACT_ERRORS §3, Manifest Validation Errors); an invalid one fails
+   the operation before anything is written or deleted. When the store implements
    `ConditionalWriter`, the write MUST be an atomic conditional create
    (`CompareAndSwap` from absent); an `ErrSnapshotConflict` result means the
    tombstone already exists. Otherwise `Store.Put` is used; its create-only
@@ -499,14 +503,15 @@ type SweepReport struct {
 
 ### Accounting
 
-Both reports meter what the run deletes, so totals across runs add up and a
-resumed expiry is never counted twice:
+Both reports meter what the run deletes as its listing showed it, so a
+resumed expiry is never counted twice. `Store.Delete` does not say whether
+it removed anything, so the counts are only as exact as the listing:
 
 - `Objects` counts data objects the run deleted that its listing showed
   present. An object already gone (deleted by an earlier, interrupted run)
   is not counted again. Runs that overlap can both list an object and both
-  count it: `Store.Delete` does not say whether it removed anything, so
-  only sequential runs' totals add up exactly.
+  count it, and an object a lagging listing omitted is deleted but not
+  counted; sequential runs over consistent listings add up exactly.
 - `Bytes` sums the sizes recorded for those objects in the tombstone's
   inventory. Every object `Expire` deletes is in the inventory, so its
   `Bytes` is exact.
@@ -517,8 +522,12 @@ resumed expiry is never counted twice:
   one is out of scope. They are counted, never estimated.
 
 Both methods return a non-nil report, also on error. On error the report
-describes the work completed before the error; the dataset is left in a
-state the next `Expire` or `Sweep` completes.
+describes the work completed before the error. After a retryable failure (a
+store error, an uncommitted head) the dataset is left in a state the next
+`Expire` or `Sweep` completes. Corruption is not retryable: an invalid or
+contradicted tombstone, or an invalid manifest, fails `Expire` and is
+reported by `Sweep` on every run until an operator repairs it. Lode never
+rewrites or removes a tombstone to recover.
 
 ---
 
