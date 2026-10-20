@@ -8,9 +8,13 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/pithecene-io/lode/internal/history"
+	"github.com/pithecene-io/lode/internal/testutil"
 )
 
 // -----------------------------------------------------------------------------
@@ -232,7 +236,8 @@ func legacyize(t *testing.T, store Store, snaps ...*DatasetSnapshot) {
 	t.Helper()
 	renamed := make(map[DatasetSnapshotID]DatasetSnapshotID, len(snaps))
 	for _, s := range snaps {
-		legacy := DatasetSnapshotID(strings.SplitN(string(s.ID), idSeparator, 2)[0])
+		at, _ := history.Instant(s.ID)
+		legacy := DatasetSnapshotID(strconv.FormatInt(at.UnixNano(), 10))
 		renamed[s.ID] = legacy
 		rename := func(p string) string { return strings.ReplaceAll(p, string(s.ID), string(legacy)) }
 		m := *s.Manifest
@@ -279,7 +284,7 @@ func moveObject(t *testing.T, store Store, from, to string) {
 // idAt is the snapshot ID a write beginning at t would get, with a zero
 // nonce.
 func idAt(t time.Time) DatasetSnapshotID {
-	return DatasetSnapshotID(formatSnapshotID(t, [nonceBytes]byte{}))
+	return DatasetSnapshotID(history.FormatID(t, [history.NonceBytes]byte{}))
 }
 
 // -----------------------------------------------------------------------------
@@ -304,7 +309,7 @@ func TestExpire_Validation(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			fs := newFaultStore(NewMemory())
+			fs := testutil.NewFaultStore(NewMemory())
 			ds := newDefaultRetention(t, fs)
 			if tt.hive {
 				ds = newHiveRetention(t, fs)

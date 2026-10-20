@@ -10,6 +10,8 @@ import (
 	"context"
 	"io"
 	"time"
+
+	"github.com/pithecene-io/lode/internal/validate"
 )
 
 // -----------------------------------------------------------------------------
@@ -584,7 +586,7 @@ var (
 	// used: a nil store factory, a negative offset, a block outside the
 	// volume, a blob write without exactly one []byte. The message names the
 	// value. Not retry-safe; fix the call.
-	ErrInvalidArgument error = errInvalidArgument{}
+	ErrInvalidArgument error = validate.ErrInvalidArgument
 
 	// ErrInvalidPath indicates a storage path or range the store refuses:
 	// a key that is empty or escapes the root, a partition prefix that is not
@@ -605,7 +607,7 @@ var (
 	ErrHeadUncommitted error = errHeadUncommitted{}
 
 	// ErrManifestInvalid indicates a manifest failed validation.
-	ErrManifestInvalid error = errManifestInvalid{}
+	ErrManifestInvalid error = validate.ErrManifestInvalid
 
 	// ErrOptionNotValidForDataset indicates an option was used with NewDataset
 	// that only applies to NewDatasetReader.
@@ -614,10 +616,6 @@ var (
 	// ErrOptionNotValidForDatasetReader indicates an option was used with
 	// NewDatasetReader that only applies to NewDataset.
 	ErrOptionNotValidForDatasetReader error = errOptionNotValidForDatasetReader{}
-
-	// ErrOptionNotValidForVolume indicates an option was used with NewVolume
-	// that only applies to Dataset or DatasetReader.
-	ErrOptionNotValidForVolume error = errOptionNotValidForVolume{}
 )
 
 type errNotFound struct{}
@@ -690,17 +688,9 @@ type errSnapshotConflict struct{}
 
 func (errSnapshotConflict) Error() string { return "snapshot conflict: another writer committed" }
 
-type errInvalidArgument struct{}
-
-func (errInvalidArgument) Error() string { return "invalid argument" }
-
 type errInvalidPath struct{}
 
 func (errInvalidPath) Error() string { return "invalid path" }
-
-type errManifestInvalid struct{}
-
-func (errManifestInvalid) Error() string { return "invalid manifest" }
 
 type errOptionNotValidForDataset struct{}
 
@@ -709,10 +699,6 @@ func (errOptionNotValidForDataset) Error() string { return "option not valid for
 type errOptionNotValidForDatasetReader struct{}
 
 func (errOptionNotValidForDatasetReader) Error() string { return "option not valid for reader" }
-
-type errOptionNotValidForVolume struct{}
-
-func (errOptionNotValidForVolume) Error() string { return "option not valid for volume" }
 
 // -----------------------------------------------------------------------------
 // DatasetReader interface
@@ -841,138 +827,3 @@ var ErrDatasetsNotModeled = errDatasetsNotModeled{}
 type errDatasetsNotModeled struct{}
 
 func (errDatasetsNotModeled) Error() string { return "datasets not modeled by this layout" }
-
-// -----------------------------------------------------------------------------
-// Volume types
-// -----------------------------------------------------------------------------
-
-// VolumeID uniquely identifies a volume.
-type VolumeID string
-
-// VolumeSnapshotID uniquely identifies an immutable volume snapshot.
-type VolumeSnapshotID string
-
-// BlockRef references a staged or committed byte block within a volume.
-type BlockRef struct {
-	// Offset is the byte offset within the volume's address space.
-	Offset int64 `json:"offset"`
-
-	// Length is the block size in bytes.
-	Length int64 `json:"length"`
-
-	// Path is the storage path for the block data.
-	Path string `json:"path"`
-
-	// Checksum is an optional integrity hash.
-	Checksum string `json:"checksum,omitempty"`
-}
-
-// VolumeManifest describes the committed state of a volume snapshot.
-//
-// Manifests are cumulative: each contains the full set of committed blocks
-// across all prior commits, not just the blocks added in the current commit.
-type VolumeManifest struct {
-	// SchemaName identifies the manifest schema.
-	SchemaName string `json:"schema_name"`
-
-	// FormatVersion identifies the manifest schema version.
-	FormatVersion string `json:"format_version"`
-
-	// VolumeID identifies the volume this manifest belongs to.
-	VolumeID VolumeID `json:"volume_id"`
-
-	// SnapshotID uniquely identifies this volume snapshot.
-	SnapshotID VolumeSnapshotID `json:"snapshot_id"`
-
-	// CreatedAt records when the snapshot was committed.
-	CreatedAt time.Time `json:"created_at"`
-
-	// Metadata contains user-provided key-value pairs.
-	Metadata Metadata `json:"metadata"`
-
-	// TotalLength is the volume's total byte address space.
-	TotalLength int64 `json:"total_length"`
-
-	// Blocks lists all committed blocks (cumulative).
-	Blocks []BlockRef `json:"blocks"`
-
-	// ParentSnapshotID optionally references the previous volume snapshot.
-	ParentSnapshotID VolumeSnapshotID `json:"parent_snapshot_id,omitempty"`
-
-	// ChecksumAlgorithm records the checksum algorithm used.
-	ChecksumAlgorithm string `json:"checksum_algorithm,omitempty"`
-}
-
-// VolumeSnapshot represents an immutable point-in-time view of a volume.
-type VolumeSnapshot struct {
-	// ID uniquely identifies this volume snapshot.
-	ID VolumeSnapshotID
-
-	// Manifest describes the snapshot's committed blocks.
-	Manifest *VolumeManifest
-}
-
-// volumeConfig holds the resolved configuration for a volume.
-type volumeConfig struct {
-	checksum Checksum
-	retry    retryConfig
-}
-
-// -----------------------------------------------------------------------------
-// Volume errors
-// -----------------------------------------------------------------------------
-
-// ErrRangeMissing indicates a requested byte range is not fully committed.
-var ErrRangeMissing = errRangeMissing{}
-
-type errRangeMissing struct{}
-
-func (errRangeMissing) Error() string { return "range missing: requested range is not fully committed" }
-
-// ErrOverlappingBlocks indicates committed blocks overlap in the cumulative manifest.
-var ErrOverlappingBlocks = errOverlappingBlocks{}
-
-type errOverlappingBlocks struct{}
-
-func (errOverlappingBlocks) Error() string { return "overlapping blocks in cumulative manifest" }
-
-// -----------------------------------------------------------------------------
-// Volume interfaces
-// -----------------------------------------------------------------------------
-
-// VolumeWriter defines the write surface for a volume.
-type VolumeWriter interface {
-	// StageWriteAt writes data at an offset and returns a block handle.
-	// Staged data is not visible until Commit is called.
-	StageWriteAt(ctx context.Context, offset int64, r io.Reader) (BlockRef, error)
-
-	// Commit records the provided blocks into a new immutable snapshot.
-	// The resulting manifest is cumulative: it includes all previously committed
-	// blocks plus the new blocks. Commit MUST include at least one new block.
-	Commit(ctx context.Context, blocks []BlockRef, metadata Metadata) (*VolumeSnapshot, error)
-}
-
-// VolumeReader defines the read surface for a volume.
-type VolumeReader interface {
-	// ReadAt reads a fully committed range from a snapshot.
-	// Returns ErrRangeMissing if any sub-range is uncommitted.
-	ReadAt(ctx context.Context, snapshotID VolumeSnapshotID, offset, length int64) ([]byte, error)
-
-	// Latest returns the most recently committed snapshot.
-	// Returns ErrNoSnapshots if no snapshots exist.
-	Latest(ctx context.Context) (*VolumeSnapshot, error)
-
-	// Snapshots lists all committed snapshots.
-	Snapshots(ctx context.Context) ([]*VolumeSnapshot, error)
-
-	// Snapshot retrieves a specific snapshot by ID.
-	// Returns ErrNotFound if the snapshot does not exist.
-	Snapshot(ctx context.Context, id VolumeSnapshotID) (*VolumeSnapshot, error)
-}
-
-// Volume composes the full read/write surface for a sparse byte space.
-type Volume interface {
-	VolumeWriter
-	VolumeReader
-	ID() VolumeID
-}

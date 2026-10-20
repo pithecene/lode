@@ -7,6 +7,9 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/pithecene-io/lode/internal/history"
+	"github.com/pithecene-io/lode/internal/validate"
 )
 
 // Retention removes snapshots without ever removing what a manifest still
@@ -55,7 +58,7 @@ func (d *dataset) validateExpire(req ExpireRequest) error {
 		err   func() error
 	}{
 		{len(req.IDs) == 0 && req.Partition == "" && req.Before.IsZero(), func() error {
-			return invalidArgument("Expire requires at least one of IDs, Partition or Before")
+			return validate.Argument("Expire requires at least one of IDs, Partition or Before")
 		}},
 		{!validPartitionPrefix(req.Partition), func() error {
 			return fmt.Errorf("lode: Expire partition %q: %w", req.Partition, ErrInvalidPath)
@@ -139,7 +142,7 @@ func (s selection) spansOutside(l layout, owned []FileRef) bool {
 }
 
 func startedBefore(id DatasetSnapshotID, cutoff time.Time) bool {
-	t, ok := snapshotInstant(id)
+	t, ok := history.Instant(id)
 	return ok && t.Before(cutoff)
 }
 
@@ -243,7 +246,7 @@ func groupBySnapshot(keys []string, owner func(string) (DatasetSnapshotID, bool)
 // protection). A head stays protected after a newer commit supersedes it:
 // the run's report promises the head it saw was kept.
 type headGuard struct {
-	history   *history[DatasetSnapshotID, Manifest]
+	history   *history.History[DatasetSnapshotID, Manifest]
 	current   DatasetSnapshotID
 	protected map[DatasetSnapshotID]bool
 }
@@ -259,7 +262,7 @@ func (d *dataset) refuseHeadless(ctx context.Context) error {
 	return fmt.Errorf("lode: latest pointer is absent beside tombstones: %w", ErrHeadUncommitted)
 }
 
-func newHeadGuard(ctx context.Context, h *history[DatasetSnapshotID, Manifest]) (*headGuard, error) {
+func newHeadGuard(ctx context.Context, h *history.History[DatasetSnapshotID, Manifest]) (*headGuard, error) {
 	g := &headGuard{history: h, protected: make(map[DatasetSnapshotID]bool)}
 	return g, g.refresh(ctx)
 }
@@ -521,7 +524,7 @@ func (d *dataset) loadCopies(ctx context.Context, id DatasetSnapshotID, paths []
 // means it is absent. An invalid or misplaced manifest is an error: nothing
 // is expired or recorded from it.
 func (d *dataset) loadManifestAt(ctx context.Context, id DatasetSnapshotID, p string) (*Manifest, error) {
-	s, err := d.history.load(ctx, id, p)
+	s, err := d.history.LoadAt(ctx, id, p)
 	if errors.Is(err, ErrNotFound) {
 		return nil, err
 	}

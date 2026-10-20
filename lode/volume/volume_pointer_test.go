@@ -1,8 +1,11 @@
-package lode
+package volume
 
 import (
 	"bytes"
 	"testing"
+
+	"github.com/pithecene-io/lode/internal/testutil"
+	"github.com/pithecene-io/lode/lode"
 )
 
 // A fresh Volume instance resolves its parent from the persisted pointer
@@ -10,15 +13,15 @@ import (
 // cold-start tests assert the parent linkage but not the absence of a scan,
 // so negating the pointer check was unobserved.
 func TestVolume_Commit_ColdStart_ValidPointer_SkipsScan(t *testing.T) {
-	fs := newFaultStore(NewMemory())
+	fs := testutil.NewFaultStore(lode.NewMemory())
 	first := newTestVolume(t, "test-vol", newFaultStoreFactory(fs), 20)
 	blk := stageBlock(t, first, 0, bytes.Repeat([]byte("A"), 10))
-	snap1 := commitBlocks(t, first, []BlockRef{blk}, Metadata{})
+	snap1 := commitBlocks(t, first, []BlockRef{blk}, lode.Metadata{})
 
 	second := newTestVolume(t, "test-vol", newFaultStoreFactory(fs), 20)
 	blk2 := stageBlock(t, second, 10, bytes.Repeat([]byte("B"), 10))
 	before := len(fs.ListCalls())
-	snap2 := commitBlocks(t, second, []BlockRef{blk2}, Metadata{})
+	snap2 := commitBlocks(t, second, []BlockRef{blk2}, lode.Metadata{})
 	if got := len(fs.ListCalls()) - before; got != 0 {
 		t.Fatalf("cold start with valid pointer issued %d List calls, want 0", got)
 	}

@@ -27,15 +27,15 @@ Based on the full-history audit of the production dataset
   ID order does not match commit order, which breaks an assumption in the
   latest-by-scan fallback ([#208](https://github.com/pithecene/lode/issues/208)).
 - **Not yet met, time-gated:** API and sentinel freeze windows reopened by
-  v0.10.0 (earliest 2026-11-16, §1); `V1_API_DECISIONS.md` D1–D8 open, and
-  D9's package structure open.
+  v0.10.0 and reopened again by the next release, which moves Volume out of
+  `lode` (§1); `V1_API_DECISIONS.md` D1–D8 open.
 - **Not yet met, evidence missing:** native AWS S3 (§6), steady-state snapshot
   reads (§3), checksum-backed corruption checks (no production file carries a
   checksum, §10).
 - **Renegotiated (D9):** Volume is experimental for v1.0. Volume dogfooding
   (§4) and `VolumeManifest` stability (§2) gate Volume leaving experimental,
-  not the v1.0 tag. The experimental boundary itself must ship before v1.0
-  (§1, D9).
+  not the v1.0 tag. The boundary has shipped: package `lode/volume`, marked
+  experimental in `PUBLIC_API.md` and `CONTRACT_VOLUME.md` (D9).
 - **Accepted limitations (GC and performance are out of scope):** 2.07 GB of
   unreferenced data objects with no sweep (lode#174); `ListManifests` and
   `ListPartitions` take hours at this size. As a result the consumer reads the
@@ -129,7 +129,7 @@ partitions, one dataset on R2.
 
 - [ ] No public type, function, or method signature in the v1.0-promised surface has changed for 4+ weeks after first downstream integration (experimental Volume excluded, D9)
 
-> **Evidence:** Window open. Last change: v0.10.0 (2026-10-19) added `DatasetListOptions.StartAfter`, `PartitionListOptions.Prefix`/`StartAfter`, `ManifestListOptions.StartAfter`. Earliest pass: 2026-11-16, if nothing changes. Quarry took v0.10.0 with no call-site changes.
+> **Evidence:** Window open. Last release change: v0.10.0 (2026-10-19) added `DatasetListOptions.StartAfter`, `PartitionListOptions.Prefix`/`StartAfter`, `ManifestListOptions.StartAfter`. Unreleased: D9 removes the Volume types, `NewVolume` and `ErrOptionNotValidForVolume` from `lode` (moved to experimental `lode/volume`), which restarts the window when it is released. Quarry took v0.10.0 with no call-site changes and uses no Volume API.
 > Date: 2026-10-20 | Observer: @pithecene-io | Project: lode, quarry
 > Summary: Not met; window restarts on every API change.
 > Issue: lode#175
@@ -143,7 +143,7 @@ partitions, one dataset on R2.
 
 - [ ] Every candidate in `docs/V1_API_DECISIONS.md` is marked accepted (and shipped) or rejected; none is left open
 
-> **Evidence:** D1–D8 all Open. D9 accepted in part: Volume is experimental for v1.0; its package structure (A/B/C) is open, and v1.0 stays blocked until that boundary ships and `PUBLIC_API.md` / `CONTRACT_VOLUME.md` mark Volume experimental. Dogfooding now bears on D8: `private-A` reads the on-disk path grammar directly (audit F8), so the path-compatibility policy has a real consumer.
+> **Evidence:** D1–D8 all Open. D9 accepted and shipped: Volume is experimental in package `lode/volume`, and `PUBLIC_API.md` / `CONTRACT_VOLUME.md` say so. Dogfooding now bears on D8: `private-A` reads the on-disk path grammar directly (audit F8), so the path-compatibility policy has a real consumer.
 > Date: 2026-10-20 | Observer: @pithecene-io | Project: lode, private-A
 > Summary: Not met; D8 should be decided with the consumer's raw-layout reads in view.
 > Issue: —
@@ -173,7 +173,7 @@ partitions, one dataset on R2.
 
 - [x] ~~`VolumeManifest` struct fields unchanged for 4+ weeks~~ Reclassified: Volume stability gate (`V1_API_DECISIONS.md` D9)
 
-> **Evidence:** Fields unchanged in source since 2026-02-06 (#94). No downstream Volume data (§4). Volume is experimental for v1.0 (D9), so its manifest format is not frozen by the v1.0 tag; this criterion moves to the gate for Volume leaving experimental.
+> **Evidence:** Fields unchanged in source since 2026-02-06 (#94). No downstream Volume data (§4). Volume is experimental for v1.0 (D9), so the v1.0 tag does not freeze the `volume.Manifest` type; persisted Volume manifests stay readable (D8). This criterion moves to the gate for Volume leaving experimental.
 > Date: 2026-10-20 | Observer: @pithecene-io | Project: lode
 > Summary: Not a v1.0 blocker. Still unmet for Volume's own gate: no consumer writes Volumes.
 > Issue: —

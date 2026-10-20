@@ -84,23 +84,25 @@ removed in the same release; removing either Hive spelling breaks its users;
 
 ## D3 — `Option` applicability is N×M
 
-**Current.** `Option` has `applyDataset`, `applyReader`, `applyVolume`. Every
-option implements all three; the ones that do not apply return
-`ErrOptionNotValidForDatasetReader` or `ErrOptionNotValidForVolume`. A third
-sentinel, `ErrOptionNotValidForDataset`, is declared and documented but no
-option produces it: every current option applies to `NewDataset`.
+**Current.** `Option` has `applyDataset` and `applyReader`. Every option
+implements both; the ones that do not apply to a reader return
+`ErrOptionNotValidForDatasetReader`. A second sentinel,
+`ErrOptionNotValidForDataset`, is declared and documented but no option
+produces it: every current option applies to `NewDataset`. (Until D9 shipped
+there was a third target, `applyVolume`, and a third sentinel,
+`ErrOptionNotValidForVolume`; Volume now has its own option type.)
 
 **Problem.** Adding a constructor touches every option; adding an option
-touches every constructor. Three sentinels name one condition ("this option
+touches every constructor. Two sentinels name one condition ("this option
 does not apply here"), one of them unproduced, so callers that want to
-classify need three checks.
+classify need two checks.
 
 **Proposed.** One `ErrOptionNotApplicable` sentinel whose message names the
 option and the constructor; internally, options declare the targets they
-support as data (a set) and a single applicability check replaces the three
-methods. Public surface: three sentinels become one.
+support as data (a set) and a single applicability check replaces the
+per-target methods. Public surface: two sentinels become one.
 
-**Breaks.** Callers matching the three sentinels by identity. Grep shows
+**Breaks.** Callers matching the two sentinels by identity. Grep shows
 only Lode's own tests do.
 
 **Status.** Open.
@@ -286,8 +288,8 @@ Holding v1.0 for this evidence would hold the Dataset surface, which has
 eight months of production evidence, behind a container nobody uses yet.
 
 **Two containers, not a family.** `Dataset` and `Volume` share one internal
-core, `history[ID, M]` (`lode/history.go`: the snapshot chain, the latest
-pointer, CAS). Each container supplies its own `snapshotKind` (its path
+core, `History[ID, M]` (`internal/history`: the snapshot chain, the latest
+pointer, CAS). Each container supplies its own `Kind` (its path
 grammar) and its own manifest type, and the manifests differ in kind:
 
 | Container | What a snapshot's manifest describes |
@@ -329,10 +331,12 @@ cross-module coupling. "Experimental" is stated in the package and in
 `PUBLIC_API.md`, not encoded in a version.
 
 Work required for B (and C):
-- Move `history[ID, M]`, the retry loop and checksum plumbing into `internal/`.
-- Give Volume its own `Option` type. Today `lode.Option` carries an
-  unexported `applyVolume` method (`lode/dataset.go`), which another package
-  cannot implement or call. Volume uses only the checksum and retry options.
+- Move the history core and the retry configuration into `internal/`
+  (`internal/history`, `internal/retry`). Checksums need no move:
+  `lode.Checksum` is public and Volume uses it as is.
+- Give Volume its own `Option` type. `lode.Option` carried an unexported
+  `applyVolume` method (`lode/dataset.go`), which another package cannot
+  implement or call. Volume uses only the checksum and retry options.
 - `ErrOptionNotValidForVolume` leaves `lode`. This shrinks D3 to two targets.
 
 The on-disk Volume path grammar does not change. Volume does not use
@@ -345,14 +349,18 @@ The on-disk Volume path grammar does not change. Volume does not use
   callers matching `ErrOptionNotValidForVolume` lose that sentinel.
 - `Dataset` callers are unaffected.
 
-**Status.** Accepted: Volume is experimental for v1.0 (owner decision,
-2026-10-20). Open: structure, A, B or C. Recommended B.
+**Status.** Accepted and shipped (owner decisions, 2026-10-20): Volume is
+experimental for v1.0, structured as **B**, package `lode/volume`, with
+unprefixed names (`volume.New`, `volume.ID`, `volume.SnapshotID`,
+`volume.Snapshot`, `volume.Manifest`, `volume.BlockRef`, `volume.Writer`,
+`volume.Reader`, `volume.Volume`, `volume.Option`, `volume.ErrRangeMissing`,
+`volume.ErrOverlappingBlocks`). Shipping met the conditions this entry set:
+- the boundary exists: package `lode/volume`, its own `Option` type, and
+  `ErrOptionNotValidForVolume` removed from `lode`;
+- `PUBLIC_API.md` (§Volume, §Compatibility scope) and `CONTRACT_VOLUME.md`
+  mark Volume experimental;
+- `PUBLIC_API.md` §Compatibility scope states which packages the v1.0
+  promise covers.
 
-Until the chosen structure ships, v1.0 stays blocked: `V1_READINESS.md` §1
-requires every candidate here to be accepted *and shipped*. Shipping means:
-- the boundary exists (A, B or C);
-- `PUBLIC_API.md` and `CONTRACT_VOLUME.md` mark Volume experimental;
-- `PUBLIC_API.md` states which surface the v1.0 promise covers.
-
-Volume dogfooding evidence (§4) no longer blocks v1.0. The boundary still
-does.
+Volume dogfooding evidence (§4) no longer blocks v1.0; D9 itself is
+settled.
