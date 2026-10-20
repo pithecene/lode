@@ -552,6 +552,23 @@ func TestExpire_ZeroLengthTombstone(t *testing.T) {
 	}
 }
 
+func TestExpire_ZeroLengthTombstoneWithoutManifest_IsCorrupt(t *testing.T) {
+	for _, dryRun := range []bool{true, false} {
+		mem := NewMemory()
+		ds := newDefaultRetention(t, casHookStore{&hookStore{Store: mem}})
+		writeRecord(t, ds, 1)
+		// Nothing is left to record a tombstone from, so the placeholder
+		// cannot be replaced and is not an absent tombstone.
+		gone := idAt(time.Now().Add(-time.Hour))
+		if err := mem.Put(t.Context(), "datasets/events/expired/"+string(gone), strings.NewReader("")); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{gone}, DryRun: dryRun}); !errors.Is(err, errEmptyTombstone) {
+			t.Errorf("Expire(dry=%v) = %v, want errEmptyTombstone", dryRun, err)
+		}
+	}
+}
+
 func TestExpire_TombstoneRecordsTheInventory(t *testing.T) {
 	store := NewMemory()
 	ds := newDefaultRetention(t, store)
@@ -564,9 +581,9 @@ func TestExpire_TombstoneRecordsTheInventory(t *testing.T) {
 	if _, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{first.ID}}); err != nil {
 		t.Fatal(err)
 	}
-	ts, found, err := newDefaultTombstones(t, ds).lookup(t.Context(), first.ID)
-	if err != nil || !found {
-		t.Fatalf("lookup = %v, %v; want the tombstone", found, err)
+	ts, err := newDefaultTombstones(t, ds).lookup(t.Context(), first.ID)
+	if err != nil {
+		t.Fatalf("lookup = %v, want the tombstone", err)
 	}
 	if !slices.Equal(ts.Files, m.Files) {
 		t.Errorf("inventory = %v, want the manifest's Files[] %v", ts.Files, m.Files)

@@ -82,17 +82,6 @@ func (h *history[ID, M]) load(ctx context.Context, id ID, path string) (*snapsho
 	return &snapshot[ID, M]{ID: id, Manifest: m}, nil
 }
 
-// loadListed loads a manifest a listing returned. ok is false when it was
-// deleted after the listing: an expiry removed it, which enumeration skips
-// rather than reports (CONTRACT_RETENTION §Lineage).
-func (h *history[ID, M]) loadListed(ctx context.Context, e manifestEntry[ID]) (s *snapshot[ID, M], ok bool, err error) {
-	s, err = h.load(ctx, e.id, e.path)
-	if errors.Is(err, ErrNotFound) {
-		return nil, false, nil
-	}
-	return s, err == nil, err
-}
-
 // Snapshot loads a snapshot by ID from its canonical manifest.
 func (h *history[ID, M]) Snapshot(ctx context.Context, id ID) (*snapshot[ID, M], error) {
 	return h.load(ctx, id, h.kind.manifestPath(id))
@@ -142,13 +131,16 @@ func (h *history[ID, M]) Snapshots(ctx context.Context) ([]*snapshot[ID, M], err
 	slices.SortFunc(entries, func(a, b manifestEntry[ID]) int { return strings.Compare(string(a.id), string(b.id)) })
 	out := make([]*snapshot[ID, M], 0, len(entries))
 	for _, e := range entries {
-		s, ok, err := h.loadListed(ctx, e)
+		// A manifest an expiry deleted after the listing is skipped, not
+		// reported (CONTRACT_RETENTION §Lineage).
+		s, err := h.load(ctx, e.id, e.path)
+		if errors.Is(err, ErrNotFound) {
+			continue
+		}
 		if err != nil {
 			return nil, fmt.Errorf("lode: failed to load snapshot %s: %w", e.id, err)
 		}
-		if ok {
-			out = append(out, s)
-		}
+		out = append(out, s)
 	}
 	return out, nil
 }
@@ -184,13 +176,14 @@ func (h *history[ID, M]) scan(ctx context.Context) (*snapshot[ID, M], error) {
 	heap.Init(&byNewest)
 	for byNewest.Len() > 0 {
 		e := heap.Pop(&byNewest).(manifestEntry[ID])
-		s, ok, err := h.loadListed(ctx, e)
+		s, err := h.load(ctx, e.id, e.path)
+		if errors.Is(err, ErrNotFound) {
+			continue
+		}
 		if err != nil {
 			return nil, fmt.Errorf("lode: failed to load latest snapshot: %w", err)
 		}
-		if ok {
-			return s, nil
-		}
+		return s, nil
 	}
 	return nil, ErrNoSnapshots
 }

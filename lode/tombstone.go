@@ -74,12 +74,12 @@ func (ts tombstones) record(ctx context.Context, t tombstone) error {
 // records the inventory t would have: a different one must never stand as
 // the record of the files this run deletes.
 func (ts tombstones) matchRecorded(ctx context.Context, p string, t tombstone) error {
-	existing, found, err := ts.lookup(ctx, t.SnapshotID)
+	existing, err := ts.lookup(ctx, t.SnapshotID)
+	if errors.Is(err, ErrNotFound) {
+		return fmt.Errorf("lode: tombstone %s exists but reads as absent", p)
+	}
 	if err != nil {
 		return err
-	}
-	if !found {
-		return fmt.Errorf("lode: tombstone %s exists but reads as absent", p)
 	}
 	if !sameInventory(existing.Files, t.Files) {
 		return fmt.Errorf("lode: tombstone %s records a different inventory than its manifest", p)
@@ -96,27 +96,28 @@ func (ts tombstones) create(ctx context.Context, p string, data []byte) error {
 	return ts.store.Put(ctx, p, bytes.NewReader(data))
 }
 
-// lookup returns the tombstone recorded for id. found is false when there
-// is none, or when a ConditionalWriter holds only a zero-length object that
-// record would replace (a CAS from "" matches it). Anything else must be a
-// valid tombstone of this snapshot; otherwise it is corruption.
-func (ts tombstones) lookup(ctx context.Context, id DatasetSnapshotID) (t tombstone, found bool, err error) {
+// errEmptyTombstone is a zero-length object at a tombstone path of a
+// ConditionalWriter. record replaces it (a CAS from "" matches it), so it
+// stands for no tombstone only while a manifest is left to record from.
+var errEmptyTombstone = errors.New("lode: tombstone is empty")
+
+// lookup returns the tombstone recorded for id. ErrNotFound means there is
+// none, and errEmptyTombstone reports the zero-length placeholder above.
+// Anything else must be a valid tombstone of this snapshot; otherwise it is
+// corruption.
+func (ts tombstones) lookup(ctx context.Context, id DatasetSnapshotID) (tombstone, error) {
 	p, ok := ts.path(id)
 	if !ok {
-		return t, false, nil
+		return tombstone{}, fmt.Errorf("lode: snapshot ID %q names no tombstone: %w", id, ErrNotFound)
 	}
 	data, err := ts.readRaw(ctx, p)
-	if errors.Is(err, ErrNotFound) {
-		return t, false, nil
-	}
 	if err != nil {
-		return t, false, err
+		return tombstone{}, err
 	}
 	if _, cas := ts.store.(ConditionalWriter); cas && len(data) == 0 {
-		return t, false, nil
+		return tombstone{}, fmt.Errorf("%w: %s", errEmptyTombstone, p)
 	}
-	t, err = validTombstone(p, data, id)
-	return t, err == nil, err
+	return validTombstone(p, data, id)
 }
 
 // validTombstone decodes data and requires it to record snapshot id and to

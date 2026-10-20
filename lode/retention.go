@@ -189,13 +189,14 @@ func (d *dataset) tombstoneCandidates(ctx context.Context, sel selection, withMa
 		if withManifest[id] {
 			continue
 		}
-		t, found, err := d.tombstones().lookup(ctx, id)
+		t, err := d.tombstones().lookup(ctx, id)
+		if errors.Is(err, ErrNotFound) {
+			continue
+		}
 		if err != nil {
 			return nil, err
 		}
-		if found {
-			out = append(out, expiryCandidate{snapshotKeys: snapshotKeys{id: id}, recorded: &t})
-		}
+		out = append(out, expiryCandidate{snapshotKeys: snapshotKeys{id: id}, recorded: &t})
 	}
 	return out, nil
 }
@@ -321,8 +322,11 @@ func (r expiryRun) expire(ctx context.Context, c expiryCandidate) (expiryOutcome
 	if r.head.is(c.id) {
 		return r.retain(ctx, out)
 	}
-	plan, found, err := r.plan(ctx, c)
-	if err != nil || !found {
+	plan, err := r.plan(ctx, c)
+	if errors.Is(err, errSnapshotGone) {
+		return out, nil
+	}
+	if err != nil {
 		return out, err
 	}
 	if plan.manifest != nil && r.sel.spansOutside(r.ds.layout, plan.manifest) {
@@ -358,43 +362,48 @@ func (r expiryRun) retain(ctx context.Context, out expiryOutcome) (expiryOutcome
 	return out, nil
 }
 
-// plan finds the tombstone to work from. found is false when the snapshot
-// has neither a manifest nor a tombstone left: another run finished it.
-func (r expiryRun) plan(ctx context.Context, c expiryCandidate) (plan expiryPlan, found bool, err error) {
+// errSnapshotGone is a candidate with neither a manifest nor a tombstone
+// left: another run finished it, so this run has nothing to do.
+var errSnapshotGone = errors.New("lode: snapshot already gone")
+
+// plan finds the tombstone to work from, the one recorded or the one this
+// run would record from the manifest.
+func (r expiryRun) plan(ctx context.Context, c expiryCandidate) (expiryPlan, error) {
 	// A candidate selected by its tombstone is checked for a manifest too:
 	// one may have appeared since the listing.
-	m, hasManifest, err := r.ds.loadCandidate(ctx, c)
-	if err != nil {
-		return plan, false, err
+	m, err := r.ds.loadCandidate(ctx, c)
+	hasManifest := err == nil
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		return expiryPlan{}, err
 	}
-	t, recorded, err := r.tombstoneFor(ctx, c)
-	if err != nil {
-		return plan, false, err
-	}
-	if !recorded && !hasManifest {
-		return plan, false, nil
-	}
-	if !recorded {
-		return expiryPlan{tomb: newTombstone(c.id, m.Files), manifest: m}, true, nil
+	t, err := r.tombstoneFor(ctx, c)
+	switch {
+	case errors.Is(err, ErrNotFound) && !hasManifest:
+		return expiryPlan{}, errSnapshotGone
+	case (errors.Is(err, ErrNotFound) || errors.Is(err, errEmptyTombstone)) && hasManifest:
+		// None recorded yet; an empty placeholder is replaced by the write.
+		return expiryPlan{tomb: newTombstone(c.id, m.Files), manifest: m}, nil
+	case err != nil:
+		return expiryPlan{}, err
 	}
 	// A tombstone left by an earlier snapshot with the same ID must never
 	// steer deletes of this one, even when no copy was found above: every
 	// path this expiry would delete is checked.
 	matches, err := r.ds.copiesMatch(ctx, c.id, r.ds.allManifestPaths(c, t.Files), t.Files)
 	if err != nil {
-		return plan, false, err
+		return expiryPlan{}, err
 	}
 	if !matches {
-		return plan, false, fmt.Errorf("lode: tombstone for %s records a different inventory than its manifest", c.id)
+		return expiryPlan{}, fmt.Errorf("lode: tombstone for %s records a different inventory than its manifest", c.id)
 	}
-	return expiryPlan{tomb: t, recorded: true, manifest: m}, true, nil
+	return expiryPlan{tomb: t, recorded: true, manifest: m}, nil
 }
 
 // tombstoneFor is the candidate's recorded tombstone: the one selection
-// already read, or a lookup.
-func (r expiryRun) tombstoneFor(ctx context.Context, c expiryCandidate) (tombstone, bool, error) {
+// already read, or a lookup. ErrNotFound means none is recorded.
+func (r expiryRun) tombstoneFor(ctx context.Context, c expiryCandidate) (tombstone, error) {
 	if c.recorded != nil {
-		return *c.recorded, true, nil
+		return *c.recorded, nil
 	}
 	return r.ds.tombstones().lookup(ctx, c.id)
 }
@@ -443,19 +452,19 @@ func (r expiryRun) remove(ctx context.Context, c expiryCandidate, plan expiryPla
 
 // loadCandidate loads the snapshot's manifest: the canonical copy, else any
 // partition copy the listing found (pre-canonical data, or an expiry that
-// stopped after its canonical delete). found is false when every copy is
-// gone: another expiry finished it.
-func (d *dataset) loadCandidate(ctx context.Context, c expiryCandidate) (m *Manifest, found bool, err error) {
+// stopped after its canonical delete). ErrNotFound means every copy is gone.
+func (d *dataset) loadCandidate(ctx context.Context, c expiryCandidate) (*Manifest, error) {
 	for _, p := range d.manifestCopies(c.id, c.paths) {
-		s, ok, err := d.history.loadListed(ctx, manifestEntry[DatasetSnapshotID]{c.id, p})
+		s, err := d.history.load(ctx, c.id, p)
+		if errors.Is(err, ErrNotFound) {
+			continue
+		}
 		if err != nil {
-			return nil, false, fmt.Errorf("lode: failed to load manifest %s: %w", p, err)
+			return nil, fmt.Errorf("lode: failed to load manifest %s: %w", p, err)
 		}
-		if ok {
-			return s.Manifest, true, nil
-		}
+		return s.Manifest, nil
 	}
-	return nil, false, nil
+	return nil, fmt.Errorf("lode: snapshot %s has no manifest: %w", c.id, ErrNotFound)
 }
 
 // copiesMatch reports whether every manifest copy at paths, and the canonical
@@ -464,11 +473,14 @@ func (d *dataset) loadCandidate(ctx context.Context, c expiryCandidate) (m *Mani
 // copy that differs belongs to another snapshot with the same ID.
 func (d *dataset) copiesMatch(ctx context.Context, id DatasetSnapshotID, listed []string, files []FileRef) (bool, error) {
 	for _, p := range d.manifestCopies(id, listed) {
-		s, ok, err := d.history.loadListed(ctx, manifestEntry[DatasetSnapshotID]{id, p})
+		s, err := d.history.load(ctx, id, p)
+		if errors.Is(err, ErrNotFound) {
+			continue
+		}
 		if err != nil {
 			return false, fmt.Errorf("lode: failed to load manifest %s: %w", p, err)
 		}
-		if ok && !sameInventory(s.Manifest.Files, files) {
+		if !sameInventory(s.Manifest.Files, files) {
 			return false, nil
 		}
 	}
