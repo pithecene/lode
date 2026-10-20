@@ -12,7 +12,34 @@ Stability is proven by **usage and time**, not design review.
 - Every criterion below must be checked off with recorded evidence.
 - Evidence must reference a real downstream project (or redacted alias), real data, and a real observer.
 - No criterion may be waived — if it cannot be met, it must be renegotiated and this document updated.
-- The v1.0 tag is blocked until all criteria pass.
+- The v1.0 tag is blocked until all criteria pass, except §4: it is the Volume stability gate (`V1_API_DECISIONS.md` D9), which gates Volume leaving experimental, not the v1.0 tag.
+
+---
+
+## Current Assessment (2026-10-20)
+
+Based on the full-history audit of the production dataset
+([`dogfood_audit_2026-10.md`](dogfood_audit_2026-10.md)):
+
+- **Holds:** no corruption detected and zero manifest decode failures across 96,478
+  snapshots over 8 months on R2; `Manifest` format stable since 2026-02-06.
+- **Blocker:** one history fork under CAS + retry (2026-08-25, §10). Snapshot
+  ID order does not match commit order, which breaks an assumption in the
+  latest-by-scan fallback ([#208](https://github.com/pithecene/lode/issues/208)).
+- **Not yet met, time-gated:** API and sentinel freeze windows reopened by
+  v0.10.0 (earliest 2026-11-16, §1); `V1_API_DECISIONS.md` D1–D8 open, and
+  D9's package structure open.
+- **Not yet met, evidence missing:** native AWS S3 (§6), steady-state snapshot
+  reads (§3), checksum-backed corruption checks (no production file carries a
+  checksum, §10).
+- **Renegotiated (D9):** Volume is experimental for v1.0. Volume dogfooding
+  (§4) and `VolumeManifest` stability (§2) gate Volume leaving experimental,
+  not the v1.0 tag. The experimental boundary itself must ship before v1.0
+  (§1, D9).
+- **Accepted limitations (GC and performance are out of scope):** 2.07 GB of
+  unreferenced data objects with no sweep (lode#174); `ListManifests` and
+  `ListPartitions` take hours at this size. As a result the consumer reads the
+  on-disk paths directly, which makes D8 a real dependency.
 
 ---
 
@@ -27,8 +54,10 @@ internal project names, repo URLs, domain-specific details, or
 implementation specifics that could identify the project or its purpose.
 Usage profiles and evidence summaries should describe Lode-level behavior
 only (e.g. "Dataset round-trip over S3"), not the consumer's architecture
-or data model. If a linked issue lives in a private tracker, reference it
-as `(private)` instead of by number.
+or data model. Aggregate usage counts (snapshots, runs, events,
+partitions, bytes) are allowed: they show scale without revealing purpose.
+If a linked issue lives in a private tracker, reference it as `(private)`
+instead of by number.
 
 ### quarry
 
@@ -36,14 +65,43 @@ as `(private)` instead of by number.
 - **Contact:** @pithecene-io
 - **Usage profile:** Dataset
 - **Storage backend:** AWS S3 (S3 adapter targeting Cloudflare R2)
-- **Status:** In progress (~2 weeks production operation)
+- **Status:** Active — Lode v0.10.0 since Quarry v0.13.6 (2026-10-19); ~8 months of production operation through `private-A`
+- **Visibility:** Public
+- **Last audited:** 2026-10-19
 
 | Criterion | Validated | Date | Notes |
 |-----------|:---------:|------|-------|
 | Dataset write round-trip | ✅ | 2026-02-23 | Hive-partitioned writes and reads over S3-compatible backend at >100k object scale |
-| Volume write round-trip | N/A | — | Dataset-only integration |
-| Error sentinels observed | ✅ | 2026-03-22 | All 3 sentinels validated: `ErrNoSnapshots` (production), `ErrPathExists` (integration test), `ErrNotFound` (integration test) |
-| API friction (none = pass) | ✅ | 2026-03-22 | All friction resolved. Blob completeness (§9): Quarry tracks sidecar files in snapshot `Metadata["sidecar_files"]` (v0.13.4); caller responsibility, not a Lode gap. CAS: resolved for CAS-capable stores (R2) via `WithRetryCount(3)` (v0.12.1); non-CAS store guidance documented in `PUBLIC_API.md` §Adapter CAS Support. |
+| Volume write round-trip | N/A | — | Dataset-only integration (no Volume API referenced in Quarry's Lode client) |
+| Error sentinels observed | ✅ | 2026-03-22 | All 3 sentinels validated: `ErrNoSnapshots` (production), `ErrPathExists` (integration test), `ErrNotFound` (integration test). `quarry/lode/sentinel_test.go` still present at v0.13.6. |
+| API friction (none = pass) | ⚠️ | 2026-10-19 | Upgrades v0.9.0 → v0.9.1 → v0.10.0 needed no call-site changes beyond adopting new options (v0.10.0 bump was dependency-only; Quarry matches on sentinels, so v0.10.0 error-text changes were behavior-neutral; Quarry CI green on v0.10.0). Open friction: no retention/delete primitive (lode#174, filed from this workload) gates Quarry's planned `gc`; Quarry's v0.14 run reader still pages `Store.List` client-side (no storage-native continuation). Earlier friction resolved: sidecar inventory via snapshot `Metadata["sidecar_files"]` (Quarry v0.13.4); CAS via `WithRetryCount(3)` + `WithRetryObserver` (Quarry v0.13.5, Lode v0.9.1, lode#169); listing prefix/cursor (lode#175, v0.10.0). |
+
+**Lode APIs exercised (Quarry v0.13.6):** `NewDataset`, `WithHiveLayout`,
+`WithCodec(NewJSONLCodec())`, `WithRetryCount`, `WithRetryObserver`,
+`Dataset.Write`/`Latest`/`Snapshots`/`Read` (metrics and sidecar queries),
+`Store.Put` (sidecar files), S3 adapter, `NewMemory`/`NewFSFactory` (tests),
+`ErrNoSnapshots`, `ErrNotFound`, `ErrPathExists`, `ErrSnapshotConflict`.
+
+### private-A
+
+- **Integration date:** 2026-02-10 (indirect — writes through Quarry's embedded Lode)
+- **Contact:** @pithecene-io
+- **Usage profile:** Dataset
+- **Storage backend:** Cloudflare R2 via the S3 adapter
+- **Status:** Active production since 2026-02-07; runs Quarry 0.13.4 → Lode v0.9.0 (CAS + retry since 2026-03-08; not on v0.9.1/v0.10.0)
+- **Visibility:** Private (alias — see privacy rule above)
+- **Last audited:** 2026-10-20 — full-history read-only audit, [`dogfood_audit_2026-10.md`](dogfood_audit_2026-10.md)
+
+**Scale (audit, 2026-10-20):** 96,478 snapshots over 8 months, 10,858 runs,
+4.73M events persisted, 143k referenced data objects (1.78 GB), 32,830
+partitions, one dataset on R2.
+
+| Criterion | Validated | Date | Notes |
+|-----------|:---------:|------|-------|
+| Dataset write round-trip | ⚠️ | 2026-10-20 | Writes: ✅ no corruption detected across all 96,478 snapshots (audit F1). Reads: Lode's reader is not exercised in production (F8). Lode's reader was exercised by the audit: `Latest`/`Read` in ~130 ms; `ListManifests`/`ListPartitions` took 2–3 h (F6). |
+| Volume write round-trip | N/A | — | Dataset-only |
+| Error sentinels observed | N/A | — | Sentinels surface inside Quarry; covered by the quarry entry |
+| API friction (none = pass) | ❌ | 2026-10-20 | (1) One history fork under CAS (F3). (2) 48k unreferenced data objects, 2.07 GB, and no reference-aware sweep in Lode to find or remove them (F5, lode#174). (3) Cold listing unusable at this size (F6), so the consumer couples to the path grammar (F8, `V1_API_DECISIONS.md` D8). The earlier sidecar-manifest friction no longer applies to this consumer. |
 
 <!--
 ### <project-name or redacted alias>
@@ -69,26 +127,26 @@ as `(private)` instead of by number.
 
 ### 1. API Surface Freeze
 
-- [ ] No public type, function, or method signature has changed for 4+ weeks after first downstream integration
+- [ ] No public type, function, or method signature in the v1.0-promised surface has changed for 4+ weeks after first downstream integration (experimental Volume excluded, D9)
 
-> **Evidence:** _not yet recorded_
-> Date: — | Observer: — | Project: —
-> Summary: —
-> Issue: #___
+> **Evidence:** Window open. Last change: v0.10.0 (2026-10-19) added `DatasetListOptions.StartAfter`, `PartitionListOptions.Prefix`/`StartAfter`, `ManifestListOptions.StartAfter`. Earliest pass: 2026-11-16, if nothing changes. Quarry took v0.10.0 with no call-site changes.
+> Date: 2026-10-20 | Observer: @pithecene-io | Project: lode, quarry
+> Summary: Not met; window restarts on every API change.
+> Issue: lode#175
 
-- [ ] No new sentinel errors added for 4+ weeks after first downstream integration (freeze window reset: v0.10.0 added `ErrInvalidArgument`)
+- [ ] No new sentinel errors added to the v1.0-promised surface for 4+ weeks after first downstream integration (experimental Volume excluded, D9; freeze window reset: v0.10.0 added `ErrInvalidArgument`)
 
-> **Evidence:** _not yet recorded_
-> Date: — | Observer: — | Project: —
-> Summary: —
-> Issue: #___
+> **Evidence:** Window open. v0.10.0 (2026-10-19) added `ErrInvalidArgument` and `ErrPartitionPrefixNotSupported`. Earliest pass: 2026-11-16.
+> Date: 2026-10-20 | Observer: @pithecene-io | Project: lode
+> Summary: Not met.
+> Issue: —
 
 - [ ] Every candidate in `docs/V1_API_DECISIONS.md` is marked accepted (and shipped) or rejected; none is left open
 
-> **Evidence:** _not yet recorded_
-> Date: — | Observer: — | Project: —
-> Summary: —
-> Issue: #___
+> **Evidence:** D1–D8 all Open. D9 accepted in part: Volume is experimental for v1.0; its package structure (A/B/C) is open, and v1.0 stays blocked until that boundary ships and `PUBLIC_API.md` / `CONTRACT_VOLUME.md` mark Volume experimental. Dogfooding now bears on D8: `private-A` reads the on-disk path grammar directly (audit F8), so the path-compatibility policy has a real consumer.
+> Date: 2026-10-20 | Observer: @pithecene-io | Project: lode, private-A
+> Summary: Not met; D8 should be decided with the consumer's raw-layout reads in view.
+> Issue: —
 
 - [ ] `PUBLIC_API.md` matches exported symbols in `lode/api.go` with zero discrepancies
 
@@ -97,67 +155,72 @@ as `(private)` instead of by number.
 > Summary: —
 > Issue: #___
 
-- [ ] Option surface has not expanded since v0.9.1 (freeze window reset: v0.9.1 added WithRetryObserver; v0.9.0 added WithRetryCount/BaseDelay/MaxDelay/Jitter, ErrOptionNotValidForVolume; removed VolumeOption, WithVolumeChecksum)
+- [ ] Option surface of the v1.0-promised API has not expanded since v0.9.1 (experimental Volume options excluded, D9; freeze window reset: v0.9.1 added WithRetryObserver; v0.9.0 added WithRetryCount/BaseDelay/MaxDelay/Jitter, ErrOptionNotValidForVolume; removed VolumeOption, WithVolumeChecksum)
 
-> **Evidence:** _not yet recorded_
-> Date: — | Observer: — | Project: —
-> Summary: —
-> Issue: #___
+> **Evidence:** No option added in v0.10.0. Window since v0.9.1 (2026-10-18) passes 4 weeks on 2026-11-15. Both downstream-driven additions (`WithRetryCount`, `WithRetryObserver`) came from Quarry requests (lode#163, lode#169).
+> Date: 2026-10-20 | Observer: @pithecene-io | Project: lode, quarry
+> Summary: On track; not yet met.
+> Issue: lode#169
 
 ### 2. Manifest Format Freeze
 
-- [ ] `Manifest` struct fields unchanged for 4+ weeks
+- [x] `Manifest` struct fields unchanged for 4+ weeks
 
-> **Evidence:** _not yet recorded_
-> Date: — | Observer: — | Project: —
-> Summary: —
-> Issue: #___
+> **Evidence:** `Manifest` fields unchanged since 2026-02-06 (#94); `FileRef` fields unchanged since 2026-02-06 (#103, which added `FileRef.Stats`). All 233,815 production manifest objects are `lode-manifest@1.0.0` and decode cleanly ([`dogfood_audit_2026-10.md`](dogfood_audit_2026-10.md) F1).
+> Date: 2026-10-20 | Observer: @pithecene-io | Project: lode, private-A
+> Summary: Met; >8 months stable, 96,478 snapshots in production.
+> Issue: —
 
-- [ ] `VolumeManifest` struct fields unchanged for 4+ weeks
+- [x] ~~`VolumeManifest` struct fields unchanged for 4+ weeks~~ Reclassified: Volume stability gate (`V1_API_DECISIONS.md` D9)
 
-> **Evidence:** _not yet recorded_
-> Date: — | Observer: — | Project: —
-> Summary: —
-> Issue: #___
+> **Evidence:** Fields unchanged in source since 2026-02-06 (#94). No downstream Volume data (§4). Volume is experimental for v1.0 (D9), so its manifest format is not frozen by the v1.0 tag; this criterion moves to the gate for Volume leaving experimental.
+> Date: 2026-10-20 | Observer: @pithecene-io | Project: lode
+> Summary: Not a v1.0 blocker. Still unmet for Volume's own gate: no consumer writes Volumes.
+> Issue: —
 
 - [ ] Owner sign-off on manifest JSON schema as v1.0 wire format
 
-> **Evidence:** _not yet recorded_
-> Date: — | Observer: — | Project: —
-> Summary: —
-> Issue: #___
+> **Evidence:** Inputs for the sign-off from the audit: Hive layout writes one byte-identical manifest copy per touched partition (~2.4× objects in production, F2); no production file carries a checksum (F1). Both are part of what v1.0 freezes.
+> Date: 2026-10-20 | Observer: @pithecene-io | Project: private-A
+> Summary: Pending owner decision.
+> Issue: —
 
 ### 3. Dataset Dogfooding
 
-- [ ] At least one consumer writing Dataset snapshots to S3 for 2+ weeks
+- [x] At least one consumer writing Dataset snapshots to S3 for 2+ weeks
 
-> **Evidence:** Quarry production pipeline writing Hive-partitioned Dataset snapshots to S3-compatible backend (R2) since 2026-02-10. 15 days elapsed as of 2026-02-25; threshold met.
-> Date: 2026-02-25 | Observer: @pithecene-io | Project: quarry
-> Summary: Hive-partitioned event and blob storage, deterministic segment layout confirmed idempotent across re-runs. 2-week threshold met.
-> Issue: (private)
+> **Evidence:** `private-A` (through Quarry) has written to R2 from 2026-02-07 to 2026-10-10: 96,478 snapshots, 10,858 runs, 4.73M events ([`dogfood_audit_2026-10.md`](dogfood_audit_2026-10.md)).
+> Date: 2026-10-20 | Observer: @pithecene-io | Project: private-A, quarry
+> Summary: Met; ~8 months.
+> Issue: —
 
 - [ ] At least one consumer reading Dataset snapshots back (round-trip) for 2+ weeks
 
-> **Evidence:** Quarry reads Dataset snapshots via prefix listing and segment data files. Full round-trip confirmed but read path requires prefix scan + post-filter (no segment enumeration shortcut).
-> Date: 2026-02-23 | Observer: @pithecene-io | Project: quarry
-> Summary: Partial — reads work but rely on prefix listing rather than manifest-driven discovery for blob files.
-> Issue: (private)
+> **Evidence:** In production, `private-A` data is read back by Lode's on-disk path grammar, not through Lode's read API (audit F8). Quarry reads through Lode only for metrics and sidecar queries. The audit exercised Lode's reader once over the full dataset: `Latest`/`Read` ~130 ms, `ListManifests` 2 h 05 m, `ListPartitions` 2 h 40 m (F6).
+> Date: 2026-10-20 | Observer: @pithecene-io | Project: private-A, quarry
+> Summary: Not met. Reading data objects by path skips snapshots, so it is not a snapshot round-trip. Quarry's `Dataset.Read`/`Latest` calls (metrics and sidecar queries) have no evidence of 2+ weeks of production use.
+> Issue: —
 
-- [ ] At least 100 Dataset snapshots committed and read with no corruption
+- [x] At least 100 Dataset snapshots committed and read with no corruption
 
-> **Evidence:** _not yet recorded — snapshot count not yet confirmed_
-> Date: — | Observer: — | Project: quarry
-> Summary: No corruption observed during dogfooding period; exact count pending.
-> Issue: (private)
+> **Evidence:** 96,478 snapshots; every manifest decoded and every referenced data file downloaded: 0 missing, 0 size mismatches, 0 unparseable lines, 0 row-count mismatches (row counts checkable for single-file snapshots only) ([`dogfood_audit_2026-10.md`](dogfood_audit_2026-10.md) F1).
+> Date: 2026-10-20 | Observer: @pithecene-io | Project: private-A
+> Summary: Met by ~965×.
+> Issue: —
 
 - [ ] No Dataset API changes required to support integration
 
-> **Evidence:** No API changes required during integration. Two performance fixes (v0.7.1 O(n²) write, v0.7.3 latest pointer) were internal improvements, not API changes.
-> Date: 2026-02-23 | Observer: @pithecene-io | Project: quarry
-> Summary: API surface stable throughout integration. Consumer workarounds address missing features (blob manifest), not API defects.
-> Issue: (private)
+> **Evidence:** Integration drove three additive API changes: CAS retry options (v0.9.0, lode#163), `WithRetryObserver` (v0.9.1, lode#169), listing `Prefix`/`StartAfter` (v0.10.0, lode#175). None broke Quarry. lode#174 (retention) is open from the same workload, but GC is out of scope for v1.0.
+> Date: 2026-10-20 | Observer: @pithecene-io | Project: quarry
+> Summary: Not met as worded: the API grew to support the integration, additively. Re-word to "no breaking changes", or accept that the window resets.
+> Issue: lode#174
 
-### 4. Volume Dogfooding
+### 4. Volume Dogfooding — Volume stability gate (not a v1.0 blocker)
+
+Volume is experimental for v1.0 (`V1_API_DECISIONS.md` D9). The criteria in
+this section gate Volume leaving experimental, not the v1.0 tag. They stay
+unchanged so evidence lands in one place when a consumer appears. The
+nearest candidate is pithecene/quarry#255.
 
 - [ ] At least one consumer using StageWriteAt + Commit with real data
 
@@ -187,6 +250,27 @@ as `(private)` instead of by number.
 > Summary: —
 > Issue: #___
 
+- [ ] Volume writes/reads on AWS S3 during dogfooding with no adapter errors (moved from §6, D9)
+
+> **Evidence:** _not yet recorded_
+> Date: — | Observer: — | Project: —
+> Summary: —
+> Issue: #___
+
+- [ ] Zero silent data corruption in Volume data during dogfooding, verified with checksums (moved from §10, D9)
+
+> **Evidence:** _not yet recorded_
+> Date: — | Observer: — | Project: —
+> Summary: —
+> Issue: #___
+
+- [ ] `VolumeManifest` struct fields unchanged for 4+ weeks with real downstream data (moved from §2, D9)
+
+> **Evidence:** Fields unchanged in source since 2026-02-06 (#94). No downstream Volume data.
+> Date: 2026-10-20 | Observer: @pithecene-io | Project: lode
+> Summary: Not met.
+> Issue: —
+
 ### 5. Error Path Validation
 
 - [x] ErrNoSnapshots observed and handled correctly by a downstream consumer
@@ -212,12 +296,12 @@ as `(private)` instead of by number.
 
 ### 6. S3 Backend Verification
 
-- [ ] AWS S3 used for Dataset and Volume writes/reads during dogfooding with no adapter errors
+- [ ] AWS S3 used for Dataset writes/reads during dogfooding with no adapter errors (Volume half moved to §4, D9)
 
-> **Evidence:** Quarry uses the S3 adapter targeting Cloudflare R2 (S3-compatible). Dataset writes/reads confirmed working at >100k object scale. No adapter errors observed. Volume not exercised (Dataset-only integration).
-> Date: 2026-02-23 | Observer: @pithecene-io | Project: quarry
-> Summary: Partial — S3 adapter verified on R2 for Dataset path. Volume and native AWS S3 not yet exercised.
-> Issue: (private)
+> **Evidence:** R2 only. Reads: 0 errors over ~0.5M `GetObject` calls and the full listing during the audit. Writes: Quarry recorded `lode_write_failure` at 1.8% of writes since May (F7), unclassified, so adapter errors cannot be ruled in or out. Native AWS S3 not exercised.
+> Date: 2026-10-20 | Observer: @pithecene-io | Project: private-A
+> Summary: Partial. Needs AWS S3 and classified write failures.
+> Issue: —
 
 - [ ] Non-AWS backend caveat documented in README and PUBLIC_API.md as known v1.0 limitation
 
@@ -296,26 +380,26 @@ as `(private)` instead of by number.
 
 ### 10. Data Correctness
 
-- [ ] Zero silent data corruption during dogfooding (Dataset or Volume)
+- [ ] Zero silent data corruption in Dataset data during dogfooding (Volume half moved to §4, D9)
 
-> **Evidence:** No corruption observed during ~2 weeks of Quarry production pipeline operation on R2.
-> Date: 2026-02-23 | Observer: @pithecene-io | Project: quarry
-> Summary: Partial — no corruption observed but formal verification (checksum audit) not yet performed.
-> Issue: (private)
+> **Evidence:** Full-history verification of 96,478 snapshots: every referenced data file matches its manifest size and parses as JSONL; row counts match where the manifest records them per file (single-file snapshots) ([`dogfood_audit_2026-10.md`](dogfood_audit_2026-10.md) F1). Limit: no file carries a checksum, so byte-level flips that keep size and JSON validity are not excluded.
+> Date: 2026-10-20 | Observer: @pithecene-io | Project: private-A
+> Summary: Partial. No corruption detected by size, row-count and parse checks (Dataset). Silent corruption cannot be ruled out until a consumer writes with `WithChecksum`.
+> Issue: —
 
-- [ ] Zero manifest deserialization failures on same-version data
+- [x] Zero manifest deserialization failures on same-version data
 
-> **Evidence:** No manifest deserialization failures observed during Quarry dogfooding.
-> Date: 2026-02-23 | Observer: @pithecene-io | Project: quarry
-> Summary: Partial — no failures observed; systematic audit not yet performed.
-> Issue: (private)
+> **Evidence:** 0 of 233,815 manifest objects fail to decode; all `lode-manifest@1.0.0`, written across Lode releases up to v0.9.0 and read by v0.9.0 ([`dogfood_audit_2026-10.md`](dogfood_audit_2026-10.md) F1).
+> Date: 2026-10-20 | Observer: @pithecene-io | Project: private-A
+> Summary: Met.
+> Issue: —
 
 - [ ] Zero snapshot history inconsistencies (forked history, missing parent, duplicate ID)
 
-> **Evidence:** Persistent latest pointer (v0.7.3) resolved prior cold-start scan issue. No history inconsistencies observed since.
-> Date: 2026-02-23 | Observer: @pithecene-io | Project: quarry
-> Summary: Partial — no inconsistencies observed; O(n²) parent resolution and latest-pointer bugs (pre-v0.7.3) could have caused issues in earlier versions.
-> Issue: (private)
+> **Evidence:** 0 duplicate IDs. 2 missing parents (2026-02-12, Lode v0.7.3). 1,113 forks, of which 1,112 predate the consumer's CAS adoption (2026-03-08) and are expected without concurrency control. **1 fork happened under Lode v0.9.0 CAS + retry (2026-08-25)** ([`dogfood_audit_2026-10.md`](dogfood_audit_2026-10.md) F3). The same fork shows a child whose ID precedes its parent's: ID order is not commit order, which breaks the assumption in the latest-by-scan fallback (`history.go` `scan`, unchanged in v0.10.0). Candidate mechanism; not reproduced.
+> Date: 2026-10-20 | Observer: @pithecene-io | Project: private-A
+> Summary: Not met. Blocker until the CAS-era fork is explained and fixed or bounded.
+> Issue: [#208](https://github.com/pithecene/lode/issues/208)
 
 ---
 
@@ -331,6 +415,8 @@ The following are explicitly **not blockers** for the v1.0 release:
 - Compaction or garbage collection
 - Distributed coordination (consensus, lock management)
 - Query planning or execution
+- Volume API and `VolumeManifest` stability: Volume is experimental for
+  v1.0 (`V1_API_DECISIONS.md` D9; §4 is its own gate)
 
 These may become goals for v1.1+ but must not gate the initial stability release.
 
@@ -340,6 +426,7 @@ These may become goals for v1.1+ but must not gate the initial stability release
 
 - `PUBLIC_API.md` — public API shape and defaults
 - `docs/V1_API_DECISIONS.md` — breaking API candidates held for v1.0
+- `docs/dogfood_audit_2026-10.md` — full-history production audit (evidence for §2, §3, §6, §10)
 - `docs/contracts/CONTRACT_CORE.md` — core model invariants
 - `docs/contracts/CONTRACT_WRITE_API.md` — write API semantics
 - `docs/contracts/CONTRACT_READ_API.md` — read API contract

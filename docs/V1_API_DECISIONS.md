@@ -13,6 +13,10 @@ Additive fixes from the same pass (`ErrInvalidArgument`,
 `DatasetListOptions.StartAfter`, sentinel consolidation) shipped in v0.10.0
 (`CHANGELOG.md` §0.10.0) and are not listed here.
 
+D9 comes from dogfooding rather than the hygiene pass: it changes where a
+part of the surface lives and what v1.0 promises about it, so it is decided
+here with the rest.
+
 ---
 
 ## D1 — `Dataset.Write` is type-erased
@@ -236,6 +240,119 @@ layout) but never changed or removed for an existing layout, and
 `V1_READINESS.md` §2 gains the corresponding checkbox. `Manifest` JSON field
 names (`snapshot_id`, `parent_snapshot_id`) fall under the same rule.
 
+Volume does not use `Layout` (`PUBLIC_API.md`). Its fixed grammar is named
+explicitly so the rule covers it:
+- `volumes/<id>/snapshots/<snapshot>/manifest.json`
+- `volumes/<id>/data/<offset>-<length>.bin`
+- `volumes/<id>/latest`
+
+Volume being experimental (D9) does not exempt its persisted data: a
+Volume written before the boundary moves must stay readable after it.
+
 **Breaks.** Nothing; it forbids a class of future changes.
 
 **Status.** Open. Recommended accept before v1.0.
+
+---
+
+## D9 — Volume enters v1.0 as experimental
+
+**Current.** `Volume` (`NewVolume`, `Volume`, `VolumeWriter`, `VolumeReader`,
+`VolumeID`, `VolumeSnapshotID`, `VolumeSnapshot`, `VolumeManifest`,
+`BlockRef`, `ErrRangeMissing`, `ErrOverlappingBlocks`,
+`ErrOptionNotValidForVolume`) is exported from `lode` next to `Dataset` and
+documented as a coequal persistence paradigm. `V1_READINESS.md` §4 gates
+v1.0 on Volume dogfooding, and §2 on `VolumeManifest` stability.
+
+**Problem.** No dogfooding consumer writes or reads a Volume, so §4 and
+the `VolumeManifest` freeze have no evidence and none is in reach.
+
+The workloads Volume is for share one shape: a byte object of known length,
+immutable once written, that is filled in pieces. The pieces arrive in
+parallel, out of order, or across process restarts, and a partly filled
+object is useful as long as its gaps are explicit. Examples: resumable
+mirroring of large remote files; range-subsetting of chunked scientific and
+geospatial formats; sector imaging with a map of recovered and missing
+ranges; and sharded writers that each fill a range of a fixed layout.
+
+Committed ranges never overlap (`CONTRACT_VOLUME.md` §Write Lifecycle, §API Constraints), so
+workloads that rewrite regions do not fit, and neither do streams of unknown
+length (`TotalLength` is required). The candidate workloads surveyed for
+dogfooding are all of the fill-once shape, and none is implemented. The
+nearest is a proposal to move Quarry's artifact bytes into Volumes
+(pithecene/quarry#255), which would fill ranges in order.
+
+Holding v1.0 for this evidence would hold the Dataset surface, which has
+eight months of production evidence, behind a container nobody uses yet.
+
+**Two containers, not a family.** `Dataset` and `Volume` share one internal
+core, `history[ID, M]` (`lode/history.go`: the snapshot chain, the latest
+pointer, CAS). Each container supplies its own `snapshotKind` (its path
+grammar) and its own manifest type, and the manifests differ in kind:
+
+| Container | What a snapshot's manifest describes |
+|---|---|
+| `Dataset` | The files of that one write |
+| `Volume` | Every block committed so far (cumulative) |
+
+The shared seam is internal, which is the right level. No public "container"
+abstraction should be drawn from two instances. Reconsider only if a third
+container appears with real demand.
+
+**Proposed.** Volume is excluded from the v1.0 compatibility promise until it
+passes its own gate: `V1_READINESS.md` §4, which now also holds
+`VolumeManifest` stability and the Volume halves of §6 (AWS S3) and §10
+(checksum-verified corruption). How the exclusion is expressed:
+
+| Option | Shape | Enforced by | Cost |
+|---|---|---|---|
+| A. Label only | `Experimental:` doc comments; exclusion stated in `PUBLIC_API.md` | Documentation only. The v1 module version covers every exported name by Go convention, and nothing in the version or import path tells a caller that Volume is different | None |
+| B. Subpackage | Directory `lode/volume/` beside `lode/s3/`, in the same module; package doc and `PUBLIC_API.md` state that it is experimental | A separate import path, so every caller opts in visibly, plus documentation. It still ships at v1 | Shared internals move to `internal/`. Volume options leave `lode.Option` |
+| C. Nested module | Directory `lode/volume/` with its own `go.mod`, versioned v0.x | Semantic versioning: v0 may break | As B, plus the problems below |
+
+Both B and C keep the public API under `/lode` (`AGENTS.md` §Public API
+boundaries); the package lives in the `lode/` directory, as `lode/s3` does.
+
+C's costs make it the wrong choice:
+- **Cross-module internals.** The `volume` module would import the parent's
+  `internal/` packages. A `go.mod` requirement is a minimum, not a pin, so
+  minimal version selection can pair an older `volume` with a newer `lode`
+  whose internals changed. That combination stops compiling. Avoiding it
+  needs either a public seam for the history core (new v1 surface) or a
+  duplicate of it.
+- **CI.** Nested modules sit outside the root module's `./...`, so `task test`
+  and `task build` would silently stop covering Volume. They would need
+  their own jobs or a workspace.
+
+Recommended: **B**. It marks Volume's boundary in the import path without
+cross-module coupling. "Experimental" is stated in the package and in
+`PUBLIC_API.md`, not encoded in a version.
+
+Work required for B (and C):
+- Move `history[ID, M]`, the retry loop and checksum plumbing into `internal/`.
+- Give Volume its own `Option` type. Today `lode.Option` carries an
+  unexported `applyVolume` method (`lode/dataset.go`), which another package
+  cannot implement or call. Volume uses only the checksum and retry options.
+- `ErrOptionNotValidForVolume` leaves `lode`. This shrinks D3 to two targets.
+
+The on-disk Volume path grammar does not change. Volume does not use
+`Layout`, so D8 names its fixed grammar explicitly.
+
+**Breaks.**
+- Under A: nothing.
+- Under B or C: every Volume caller changes its import path and option
+  constructors (`examples/volume_sparse`; no downstream consumer known), and
+  callers matching `ErrOptionNotValidForVolume` lose that sentinel.
+- `Dataset` callers are unaffected.
+
+**Status.** Accepted: Volume is experimental for v1.0 (owner decision,
+2026-10-20). Open: structure, A, B or C. Recommended B.
+
+Until the chosen structure ships, v1.0 stays blocked: `V1_READINESS.md` §1
+requires every candidate here to be accepted *and shipped*. Shipping means:
+- the boundary exists (A, B or C);
+- `PUBLIC_API.md` and `CONTRACT_VOLUME.md` mark Volume experimental;
+- `PUBLIC_API.md` states which surface the v1.0 promise covers.
+
+Volume dogfooding evidence (§4) no longer blocks v1.0. The boundary still
+does.
