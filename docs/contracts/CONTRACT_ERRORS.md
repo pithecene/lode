@@ -335,9 +335,11 @@ Errors MUST NOT imply:
 
 All operations are:
 - **Idempotent reads**: Same input, same output (modulo storage consistency).
-- **Atomic writes**: Manifest presence is the sole commit signal. Retention
-  (`Expire`, `Sweep`) is not a write: it deletes in idempotent steps and
-  records intent in a tombstone, as above.
+- **Atomic writes**: Manifest presence is the sole commit signal.
+
+  Retention (`Expire`, `Sweep`) is not a snapshot commit. Its only writes are
+  tombstones, created create-only (`CONTRACT_RETENTION.md` §Order of
+  operations); everything else it does is an idempotent delete.
 
 ---
 

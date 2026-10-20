@@ -40,7 +40,9 @@ commits never mutate existing state. Retention does not weaken this:
   or absent.
 - Expiry is a **state transition on the dataset**, recorded by a new object
   (a tombstone), never by editing an existing one.
-- Snapshot IDs are never reused. An expired ID stays expired.
+- Retention never reassigns a snapshot ID, and a tombstone is never removed.
+  IDs are write-start nanosecond timestamps, so a new write reuses an
+  expired ID only if the clock repeats that instant.
 
 Immutable means *unchanging while it exists*, not *unremovable*.
 
