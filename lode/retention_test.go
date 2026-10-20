@@ -226,6 +226,56 @@ func rewriteCopies(t *testing.T, store Store, id DatasetSnapshotID, m *Manifest)
 	}
 }
 
+// legacyize rewrites snaps as a writer before v0.11 stored them, under
+// instant-only IDs and with no latest pointer, and updates snaps to match.
+func legacyize(t *testing.T, store Store, snaps ...*DatasetSnapshot) {
+	t.Helper()
+	renamed := make(map[DatasetSnapshotID]DatasetSnapshotID, len(snaps))
+	for _, s := range snaps {
+		legacy := DatasetSnapshotID(strings.SplitN(string(s.ID), idSeparator, 2)[0])
+		renamed[s.ID] = legacy
+		rename := func(p string) string { return strings.ReplaceAll(p, string(s.ID), string(legacy)) }
+		m := *s.Manifest
+		m.SnapshotID = legacy
+		if parent, ok := renamed[m.ParentSnapshotID]; ok {
+			m.ParentSnapshotID = parent
+		}
+		m.Files = slices.Clone(m.Files)
+		for i := range m.Files {
+			m.Files[i].Path = rename(m.Files[i].Path)
+		}
+		for _, k := range storeKeys(t, store) {
+			if !strings.Contains(k, string(s.ID)) {
+				continue
+			}
+			if strings.HasSuffix(k, manifestFile) {
+				rewriteManifest(t, store, rename(k), &m)
+			} else {
+				moveObject(t, store, k, rename(k))
+			}
+			if err := store.Delete(t.Context(), k); err != nil {
+				t.Fatal(err)
+			}
+		}
+		s.ID, s.Manifest = legacy, &m
+	}
+	if err := store.Delete(t.Context(), "datasets/events/latest"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func moveObject(t *testing.T, store Store, from, to string) {
+	t.Helper()
+	rc, err := store.Get(t.Context(), from)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closer(rc)()
+	if err := store.Put(t.Context(), to, rc); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // idAt is the snapshot ID a write beginning at t would get, with a zero
 // nonce.
 func idAt(t time.Time) DatasetSnapshotID {
@@ -672,9 +722,7 @@ func TestExpire_ScannedHead(t *testing.T) {
 		ds := newDefaultRetention(t, store)
 		first := writeRecord(t, ds, 1)
 		head := writeRecord(t, ds, 2)
-		if err := store.Delete(t.Context(), "datasets/events/latest"); err != nil {
-			t.Fatal(err)
-		}
+		legacyize(t, store, first, head)
 		// A fresh dataset handle has no in-process memory of the head.
 		ds = newDefaultRetention(t, store)
 
@@ -691,12 +739,10 @@ func TestExpire_ScannedHead(t *testing.T) {
 		mem := NewMemory()
 		hs := &hookStore{Store: mem}
 		ds := newDefaultRetention(t, casHookStore{hs})
-		writeRecord(t, ds, 1)
+		first := writeRecord(t, ds, 1)
 		second := writeRecord(t, ds, 2)
 		third := writeRecord(t, ds, 3)
-		if err := mem.Delete(t.Context(), "datasets/events/latest"); err != nil {
-			t.Fatal(err)
-		}
+		legacyize(t, mem, first, second, third)
 		ds = newDefaultRetention(t, casHookStore{hs})
 
 		// The head scan's listing still shows the newest snapshot, whose
@@ -722,6 +768,7 @@ func TestExpire_ScannedHead(t *testing.T) {
 		ds := newHiveRetention(t, mem)
 		live := writeRun(t, ds, "a", "x")
 		gone := writeRun(t, ds, "b", "x")
+		legacyize(t, mem, live, gone)
 		// An interrupted expiry of the newer snapshot left a partition copy.
 		putTombstone(t, mem, gone.ID, newTombstone(gone.ID, gone.Manifest))
 		for _, k := range storeKeys(t, mem) {
@@ -730,9 +777,6 @@ func TestExpire_ScannedHead(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-		}
-		if err := mem.Delete(t.Context(), "datasets/events/latest"); err != nil {
-			t.Fatal(err)
 		}
 		ds = newHiveRetention(t, mem)
 
@@ -751,12 +795,10 @@ func TestExpire_ScannedHead(t *testing.T) {
 		ds := newDefaultRetention(t, mem)
 		older := writeRecord(t, ds, 1)
 		head := writeRecord(t, ds, 2)
+		legacyize(t, mem, older, head)
 		// A tombstone without the canonical delete: the snapshot is expiring,
 		// still fully readable, and so still the head.
 		putTombstone(t, mem, head.ID, newTombstone(head.ID, head.Manifest))
-		if err := mem.Delete(t.Context(), "datasets/events/latest"); err != nil {
-			t.Fatal(err)
-		}
 		ds = newDefaultRetention(t, mem)
 
 		report, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{older.ID, head.ID}})
@@ -766,6 +808,25 @@ func TestExpire_ScannedHead(t *testing.T) {
 		if report.RetainedHead != head.ID || !slices.Equal(report.Expired, []DatasetSnapshotID{older.ID}) {
 			t.Errorf("report = %+v, want %s retained and %s expired", report, head.ID, older.ID)
 		}
+	})
+
+	t.Run("a pointer missing beside new-form IDs is a commit in flight", func(t *testing.T) {
+		mem := NewMemory()
+		ds := newDefaultRetention(t, mem)
+		first := writeRecord(t, ds, 1)
+		writeRecord(t, ds, 2)
+		// Only a Delete+Put commit on a store without ConditionalWriter, or a
+		// hand, leaves a dataset written with nonce IDs pointer-less.
+		if err := mem.Delete(t.Context(), "datasets/events/latest"); err != nil {
+			t.Fatal(err)
+		}
+		ds = newDefaultRetention(t, mem)
+
+		_, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{first.ID}})
+		if !errors.Is(err, ErrHeadUncommitted) {
+			t.Fatalf("Expire = %v, want ErrHeadUncommitted", err)
+		}
+		assertPresent(t, ds, first)
 	})
 
 	t.Run("legacy partition-only head is committed", func(t *testing.T) {

@@ -281,7 +281,7 @@ func (h *history[ID, M]) CommittedHead(ctx context.Context, known ID, keep keepF
 		if known != "" {
 			return known, nil
 		}
-		return h.scannedHead(ctx, keep)
+		return h.legacyHead(ctx, keep)
 	}
 	if err != nil {
 		return "", fmt.Errorf("lode: failed to resolve head: %w", err)
@@ -312,6 +312,20 @@ func (h *history[ID, M]) hasManifest(ctx context.Context, id ID) (bool, error) {
 		return false, err
 	}
 	return slices.ContainsFunc(entries, func(e manifestEntry[ID]) bool { return e.id == id }), nil
+}
+
+// legacyHead is the head of a history with no pointer. Only a history
+// written before the pointer existed lacks one for good, and its IDs are
+// instant-only. A head in the <instant>-<nonce> form means the pointer is
+// gone only for now (a Delete+Put commit on a store without
+// ConditionalWriter) or was removed by hand; the scan cannot say which
+// snapshot is committed, so that is ErrHeadUncommitted.
+func (h *history[ID, M]) legacyHead(ctx context.Context, keep keepFunc[ID]) (ID, error) {
+	id, err := h.scannedHead(ctx, keep)
+	if err != nil || !strings.Contains(string(id), idSeparator) {
+		return id, err
+	}
+	return "", fmt.Errorf("lode: latest pointer is absent beside snapshot %s: %w", id, ErrHeadUncommitted)
 }
 
 // scannedHead is the ID a scan limited to keep returns: the largest whose
