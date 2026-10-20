@@ -125,208 +125,308 @@ func setupTestBucket(t *testing.T, backend s3Backend) *Store {
 // Store Integration Tests
 // -----------------------------------------------------------------------------
 
-func TestIntegration_WriteListRead(t *testing.T) {
-	for _, backend := range s3Backends {
-		t.Run(backend.name, func(t *testing.T) {
-			store := setupTestBucket(t, backend)
-			ctx := t.Context()
+func TestIntegration_Reads(t *testing.T) {
+	t.Run("write list read", func(t *testing.T) {
+		for _, backend := range s3Backends {
+			t.Run(backend.name, func(t *testing.T) {
+				store := setupTestBucket(t, backend)
+				ctx := t.Context()
 
-			content := []byte("hello world")
-			key := "test/file.txt"
+				content := []byte("hello world")
+				key := "test/file.txt"
 
-			err := store.Put(ctx, key, bytes.NewReader(content))
-			if err != nil {
-				t.Fatalf("Put failed: %v", err)
-			}
+				err := store.Put(ctx, key, bytes.NewReader(content))
+				if err != nil {
+					t.Fatalf("Put failed: %v", err)
+				}
 
-			keys, err := store.List(ctx, "test/")
-			if err != nil {
-				t.Fatalf("List failed: %v", err)
-			}
-			if !slices.Contains(keys, key) {
-				t.Errorf("expected key %q in list, got %v", key, keys)
-			}
+				keys, err := store.List(ctx, "test/")
+				if err != nil {
+					t.Fatalf("List failed: %v", err)
+				}
+				if !slices.Contains(keys, key) {
+					t.Errorf("expected key %q in list, got %v", key, keys)
+				}
 
-			rc, err := store.Get(ctx, key)
-			if err != nil {
-				t.Fatalf("Get failed: %v", err)
-			}
-			data, err := io.ReadAll(rc)
-			_ = rc.Close()
-			if err != nil {
-				t.Fatalf("reading body failed: %v", err)
-			}
-			if string(data) != string(content) {
-				t.Errorf("expected %q, got %q", string(content), string(data))
-			}
-		})
-	}
+				rc, err := store.Get(ctx, key)
+				if err != nil {
+					t.Fatalf("Get failed: %v", err)
+				}
+				data, err := io.ReadAll(rc)
+				_ = rc.Close()
+				if err != nil {
+					t.Fatalf("reading body failed: %v", err)
+				}
+				if string(data) != string(content) {
+					t.Errorf("expected %q, got %q", string(content), string(data))
+				}
+			})
+		}
+	})
+
+	t.Run("range read", func(t *testing.T) {
+		for _, backend := range s3Backends {
+			t.Run(backend.name, func(t *testing.T) {
+				store := setupTestBucket(t, backend)
+				ctx := t.Context()
+
+				content := []byte("0123456789")
+				key := "test/range.txt"
+
+				err := store.Put(ctx, key, bytes.NewReader(content))
+				if err != nil {
+					t.Fatalf("Put failed: %v", err)
+				}
+
+				data, err := store.ReadRange(ctx, key, 3, 4)
+				if err != nil {
+					t.Fatalf("ReadRange failed: %v", err)
+				}
+				if string(data) != "3456" {
+					t.Errorf("expected '3456', got %q", string(data))
+				}
+
+				// Read beyond EOF — should return available bytes
+				data, err = store.ReadRange(ctx, key, 8, 10)
+				if err != nil {
+					t.Fatalf("ReadRange beyond EOF failed: %v", err)
+				}
+				if string(data) != "89" {
+					t.Errorf("expected '89', got %q", string(data))
+				}
+			})
+		}
+	})
+
+	t.Run("reader at", func(t *testing.T) {
+		for _, backend := range s3Backends {
+			t.Run(backend.name, func(t *testing.T) {
+				store := setupTestBucket(t, backend)
+				ctx := t.Context()
+
+				content := []byte("hello world reader at")
+				key := "test/readerat.txt"
+
+				err := store.Put(ctx, key, bytes.NewReader(content))
+				if err != nil {
+					t.Fatalf("Put failed: %v", err)
+				}
+
+				ra, err := store.ReaderAt(ctx, key)
+				if err != nil {
+					t.Fatalf("ReaderAt failed: %v", err)
+				}
+
+				buf := make([]byte, 5)
+
+				n, err := ra.ReadAt(buf, 0)
+				if err != nil {
+					t.Fatalf("ReadAt(0) failed: %v", err)
+				}
+				if n != 5 || string(buf) != "hello" {
+					t.Errorf("ReadAt(0): expected 'hello', got %q", string(buf[:n]))
+				}
+
+				n, err = ra.ReadAt(buf, 6)
+				if err != nil {
+					t.Fatalf("ReadAt(6) failed: %v", err)
+				}
+				if n != 5 || string(buf) != "world" {
+					t.Errorf("ReadAt(6): expected 'world', got %q", string(buf[:n]))
+				}
+			})
+		}
+	})
+
+	t.Run("not found", func(t *testing.T) {
+		for _, backend := range s3Backends {
+			t.Run(backend.name, func(t *testing.T) {
+				store := setupTestBucket(t, backend)
+				ctx := t.Context()
+
+				_, err := store.Get(ctx, "nonexistent/path.txt")
+				if !errors.Is(err, lode.ErrNotFound) {
+					t.Errorf("expected ErrNotFound for Get, got: %v", err)
+				}
+
+				_, err = store.ReadRange(ctx, "nonexistent/path.txt", 0, 10)
+				if !errors.Is(err, lode.ErrNotFound) {
+					t.Errorf("expected ErrNotFound for ReadRange, got: %v", err)
+				}
+
+				_, err = store.ReaderAt(ctx, "nonexistent/path.txt")
+				if !errors.Is(err, lode.ErrNotFound) {
+					t.Errorf("expected ErrNotFound for ReaderAt, got: %v", err)
+				}
+			})
+		}
+	})
 }
 
-func TestIntegration_RangeRead(t *testing.T) {
-	for _, backend := range s3Backends {
-		t.Run(backend.name, func(t *testing.T) {
-			store := setupTestBucket(t, backend)
-			ctx := t.Context()
+func TestIntegration_Writes(t *testing.T) {
+	t.Run("immutability enforcement", func(t *testing.T) {
+		for _, backend := range s3Backends {
+			t.Run(backend.name, func(t *testing.T) {
+				store := setupTestBucket(t, backend)
+				ctx := t.Context()
 
-			content := []byte("0123456789")
-			key := "test/range.txt"
+				content := []byte("immutable")
+				key := "test/immutable.txt"
 
-			err := store.Put(ctx, key, bytes.NewReader(content))
-			if err != nil {
-				t.Fatalf("Put failed: %v", err)
-			}
+				err := store.Put(ctx, key, bytes.NewReader(content))
+				if err != nil {
+					t.Fatalf("first Put failed: %v", err)
+				}
 
-			data, err := store.ReadRange(ctx, key, 3, 4)
-			if err != nil {
-				t.Fatalf("ReadRange failed: %v", err)
-			}
-			if string(data) != "3456" {
-				t.Errorf("expected '3456', got %q", string(data))
-			}
+				err = store.Put(ctx, key, bytes.NewReader([]byte("modified")))
+				if !errors.Is(err, lode.ErrPathExists) {
+					t.Errorf("expected ErrPathExists on second write, got: %v", err)
+				}
+			})
+		}
+	})
 
-			// Read beyond EOF — should return available bytes
-			data, err = store.ReadRange(ctx, key, 8, 10)
-			if err != nil {
-				t.Fatalf("ReadRange beyond EOF failed: %v", err)
-			}
-			if string(data) != "89" {
-				t.Errorf("expected '89', got %q", string(data))
-			}
-		})
-	}
-}
+	t.Run("manifest last visibility", func(t *testing.T) {
+		for _, backend := range s3Backends {
+			t.Run(backend.name, func(t *testing.T) {
+				store := setupTestBucket(t, backend)
+				ctx := t.Context()
 
-func TestIntegration_ReaderAt(t *testing.T) {
-	for _, backend := range s3Backends {
-		t.Run(backend.name, func(t *testing.T) {
-			store := setupTestBucket(t, backend)
-			ctx := t.Context()
+				dataKey := "datasets/test-ds/snapshots/snap1/data/file.jsonl"
+				manifestKey := "datasets/test-ds/snapshots/snap1/manifest.json"
 
-			content := []byte("hello world reader at")
-			key := "test/readerat.txt"
+				// Write data first
+				err := store.Put(ctx, dataKey, bytes.NewReader([]byte(`{"id": 1}`)))
+				if err != nil {
+					t.Fatalf("Put data failed: %v", err)
+				}
 
-			err := store.Put(ctx, key, bytes.NewReader(content))
-			if err != nil {
-				t.Fatalf("Put failed: %v", err)
-			}
+				// Before manifest, listing should not find the manifest
+				keys, err := store.List(ctx, "datasets/test-ds/snapshots/snap1/")
+				if err != nil {
+					t.Fatalf("List failed: %v", err)
+				}
+				if slices.Contains(keys, manifestKey) {
+					t.Error("manifest should not exist before being written")
+				}
 
-			ra, err := store.ReaderAt(ctx, key)
-			if err != nil {
-				t.Fatalf("ReaderAt failed: %v", err)
-			}
+				// Write manifest (commit signal)
+				manifestJSON := `{"schema_name":"lode-manifest","format_version":"1.0","dataset_id":"test-ds","snapshot_id":"snap1","created_at":"2024-01-01T00:00:00Z","metadata":{},"files":[{"path":"data/file.jsonl","size_bytes":10}],"row_count":1,"compressor":"noop","partitioner":"noop"}`
+				err = store.Put(ctx, manifestKey, bytes.NewReader([]byte(manifestJSON)))
+				if err != nil {
+					t.Fatalf("Put manifest failed: %v", err)
+				}
 
-			buf := make([]byte, 5)
+				// After manifest, listing should find both
+				keys, err = store.List(ctx, "datasets/test-ds/snapshots/snap1/")
+				if err != nil {
+					t.Fatalf("List failed: %v", err)
+				}
+				if !slices.Contains(keys, manifestKey) {
+					t.Error("manifest should exist after being written")
+				}
+				if !slices.Contains(keys, dataKey) {
+					t.Error("data file should exist")
+				}
+			})
+		}
+	})
 
-			n, err := ra.ReadAt(buf, 0)
-			if err != nil {
-				t.Fatalf("ReadAt(0) failed: %v", err)
-			}
-			if n != 5 || string(buf) != "hello" {
-				t.Errorf("ReadAt(0): expected 'hello', got %q", string(buf[:n]))
-			}
+	// TestIntegration_StreamWrite_ContextCancel verifies that when context
+	// is canceled during a streaming write to S3, no snapshot becomes visible.
+	t.Run("stream write context cancel", func(t *testing.T) {
+		for _, backend := range s3Backends {
+			t.Run(backend.name, func(t *testing.T) {
+				store := setupTestBucket(t, backend)
+				ctx := t.Context()
 
-			n, err = ra.ReadAt(buf, 6)
-			if err != nil {
-				t.Fatalf("ReadAt(6) failed: %v", err)
-			}
-			if n != 5 || string(buf) != "world" {
-				t.Errorf("ReadAt(6): expected 'world', got %q", string(buf[:n]))
-			}
-		})
-	}
-}
+				storeFactory := func() (lode.Store, error) { return store, nil }
 
-func TestIntegration_ImmutabilityEnforcement(t *testing.T) {
-	for _, backend := range s3Backends {
-		t.Run(backend.name, func(t *testing.T) {
-			store := setupTestBucket(t, backend)
-			ctx := t.Context()
+				ds, err := lode.NewDataset("cancel-test", storeFactory)
+				if err != nil {
+					t.Fatal(err)
+				}
 
-			content := []byte("immutable")
-			key := "test/immutable.txt"
+				cancelCtx, cancel := context.WithCancel(ctx)
 
-			err := store.Put(ctx, key, bytes.NewReader(content))
-			if err != nil {
-				t.Fatalf("first Put failed: %v", err)
-			}
+				sw, err := ds.StreamWrite(cancelCtx, lode.Metadata{"test": "cancel"})
+				if err != nil {
+					t.Fatal(err)
+				}
 
-			err = store.Put(ctx, key, bytes.NewReader([]byte("modified")))
-			if !errors.Is(err, lode.ErrPathExists) {
-				t.Errorf("expected ErrPathExists on second write, got: %v", err)
-			}
-		})
-	}
-}
+				_, err = sw.Write([]byte("data that will be canceled"))
+				if err != nil {
+					t.Fatalf("Write failed: %v", err)
+				}
 
-func TestIntegration_NotFound(t *testing.T) {
-	for _, backend := range s3Backends {
-		t.Run(backend.name, func(t *testing.T) {
-			store := setupTestBucket(t, backend)
-			ctx := t.Context()
+				cancel()
 
-			_, err := store.Get(ctx, "nonexistent/path.txt")
-			if !errors.Is(err, lode.ErrNotFound) {
-				t.Errorf("expected ErrNotFound for Get, got: %v", err)
-			}
+				_, err = sw.Commit(cancelCtx)
+				if err == nil {
+					t.Log("Note: commit completed before cancel took effect (timing-dependent)")
+				} else if !errors.Is(err, context.Canceled) {
+					t.Logf("Note: commit failed with non-cancel error: %v", err)
+				}
 
-			_, err = store.ReadRange(ctx, "nonexistent/path.txt", 0, 10)
-			if !errors.Is(err, lode.ErrNotFound) {
-				t.Errorf("expected ErrNotFound for ReadRange, got: %v", err)
-			}
+				// Core invariant: verify snapshot state with fresh context
+				freshCtx := t.Context()
+				_, err = ds.Latest(freshCtx)
+				switch {
+				case errors.Is(err, lode.ErrNoSnapshots):
+					t.Log("No snapshot visible - cancel prevented commit")
+				case err == nil:
+					t.Log("Snapshot visible after cancel - commit completed before cancel")
+				default:
+					t.Errorf("Unexpected error checking snapshot: %v", err)
+				}
+			})
+		}
+	})
 
-			_, err = store.ReaderAt(ctx, "nonexistent/path.txt")
-			if !errors.Is(err, lode.ErrNotFound) {
-				t.Errorf("expected ErrNotFound for ReaderAt, got: %v", err)
-			}
-		})
-	}
-}
+	// TestIntegration_StreamWriteRecords_ContextTimeout verifies that when
+	// context times out during StreamWriteRecords to S3, no partial snapshot is visible.
+	t.Run("stream write records context timeout", func(t *testing.T) {
+		for _, backend := range s3Backends {
+			t.Run(backend.name, func(t *testing.T) {
+				store := setupTestBucket(t, backend)
+				ctx := t.Context()
 
-func TestIntegration_ManifestLastVisibility(t *testing.T) {
-	for _, backend := range s3Backends {
-		t.Run(backend.name, func(t *testing.T) {
-			store := setupTestBucket(t, backend)
-			ctx := t.Context()
+				storeFactory := func() (lode.Store, error) { return store, nil }
 
-			dataKey := "datasets/test-ds/snapshots/snap1/data/file.jsonl"
-			manifestKey := "datasets/test-ds/snapshots/snap1/manifest.json"
+				ds, err := lode.NewDataset("timeout-test", storeFactory, lode.WithCodec(lode.NewJSONLCodec()))
+				if err != nil {
+					t.Fatal(err)
+				}
 
-			// Write data first
-			err := store.Put(ctx, dataKey, bytes.NewReader([]byte(`{"id": 1}`)))
-			if err != nil {
-				t.Fatalf("Put data failed: %v", err)
-			}
+				records := make([]any, 100)
+				for i := range records {
+					records[i] = lode.D{"id": fmt.Sprintf("%d", i), "data": "payload"}
+				}
 
-			// Before manifest, listing should not find the manifest
-			keys, err := store.List(ctx, "datasets/test-ds/snapshots/snap1/")
-			if err != nil {
-				t.Fatalf("List failed: %v", err)
-			}
-			if slices.Contains(keys, manifestKey) {
-				t.Error("manifest should not exist before being written")
-			}
+				// Very short timeout to exercise cancellation path.
+				// S3/LocalStack latency means this may still complete.
+				timeoutCtx, cancel := context.WithTimeout(ctx, 1*time.Millisecond)
+				defer cancel()
 
-			// Write manifest (commit signal)
-			manifestJSON := `{"schema_name":"lode-manifest","format_version":"1.0","dataset_id":"test-ds","snapshot_id":"snap1","created_at":"2024-01-01T00:00:00Z","metadata":{},"files":[{"path":"data/file.jsonl","size_bytes":10}],"row_count":1,"compressor":"noop","partitioner":"noop"}`
-			err = store.Put(ctx, manifestKey, bytes.NewReader([]byte(manifestJSON)))
-			if err != nil {
-				t.Fatalf("Put manifest failed: %v", err)
-			}
+				iter := &testRecordIterator{records: records}
+				_, err = ds.StreamWriteRecords(timeoutCtx, iter, lode.Metadata{})
 
-			// After manifest, listing should find both
-			keys, err = store.List(ctx, "datasets/test-ds/snapshots/snap1/")
-			if err != nil {
-				t.Fatalf("List failed: %v", err)
-			}
-			if !slices.Contains(keys, manifestKey) {
-				t.Error("manifest should exist after being written")
-			}
-			if !slices.Contains(keys, dataKey) {
-				t.Error("data file should exist")
-			}
-		})
-	}
+				freshCtx := t.Context()
+				if err == nil {
+					snap, snapErr := ds.Latest(freshCtx)
+					if snapErr != nil {
+						t.Fatalf("Expected snapshot after successful write: %v", snapErr)
+					}
+					t.Logf("Write completed with %d rows (timeout didn't trigger)", snap.Manifest.RowCount)
+				} else {
+					_, snapErr := ds.Latest(freshCtx)
+					if !errors.Is(snapErr, lode.ErrNoSnapshots) {
+						t.Errorf("Expected ErrNoSnapshots after timeout, got: %v", snapErr)
+					}
+				}
+			})
+		}
+	})
 }
 
 // -----------------------------------------------------------------------------
@@ -341,102 +441,6 @@ func TestIntegration_ManifestLastVisibility(t *testing.T) {
 // but don't make timing-dependent assertions that could flake due to network latency.
 //
 // Contract reference: CONTRACT_TEST_MATRIX.md (G3-4 residual risk)
-
-// TestIntegration_StreamWrite_ContextCancel verifies that when context
-// is canceled during a streaming write to S3, no snapshot becomes visible.
-func TestIntegration_StreamWrite_ContextCancel(t *testing.T) {
-	for _, backend := range s3Backends {
-		t.Run(backend.name, func(t *testing.T) {
-			store := setupTestBucket(t, backend)
-			ctx := t.Context()
-
-			storeFactory := func() (lode.Store, error) { return store, nil }
-
-			ds, err := lode.NewDataset("cancel-test", storeFactory)
-			if err != nil {
-				t.Fatal(err)
-			}
-
-			cancelCtx, cancel := context.WithCancel(ctx)
-
-			sw, err := ds.StreamWrite(cancelCtx, lode.Metadata{"test": "cancel"})
-			if err != nil {
-				t.Fatal(err)
-			}
-
-			_, err = sw.Write([]byte("data that will be canceled"))
-			if err != nil {
-				t.Fatalf("Write failed: %v", err)
-			}
-
-			cancel()
-
-			_, err = sw.Commit(cancelCtx)
-			if err == nil {
-				t.Log("Note: commit completed before cancel took effect (timing-dependent)")
-			} else if !errors.Is(err, context.Canceled) {
-				t.Logf("Note: commit failed with non-cancel error: %v", err)
-			}
-
-			// Core invariant: verify snapshot state with fresh context
-			freshCtx := t.Context()
-			_, err = ds.Latest(freshCtx)
-			switch {
-			case errors.Is(err, lode.ErrNoSnapshots):
-				t.Log("No snapshot visible - cancel prevented commit")
-			case err == nil:
-				t.Log("Snapshot visible after cancel - commit completed before cancel")
-			default:
-				t.Errorf("Unexpected error checking snapshot: %v", err)
-			}
-		})
-	}
-}
-
-// TestIntegration_StreamWriteRecords_ContextTimeout verifies that when
-// context times out during StreamWriteRecords to S3, no partial snapshot is visible.
-func TestIntegration_StreamWriteRecords_ContextTimeout(t *testing.T) {
-	for _, backend := range s3Backends {
-		t.Run(backend.name, func(t *testing.T) {
-			store := setupTestBucket(t, backend)
-			ctx := t.Context()
-
-			storeFactory := func() (lode.Store, error) { return store, nil }
-
-			ds, err := lode.NewDataset("timeout-test", storeFactory, lode.WithCodec(lode.NewJSONLCodec()))
-			if err != nil {
-				t.Fatal(err)
-			}
-
-			records := make([]any, 100)
-			for i := range records {
-				records[i] = lode.D{"id": fmt.Sprintf("%d", i), "data": "payload"}
-			}
-
-			// Very short timeout to exercise cancellation path.
-			// S3/LocalStack latency means this may still complete.
-			timeoutCtx, cancel := context.WithTimeout(ctx, 1*time.Millisecond)
-			defer cancel()
-
-			iter := &testRecordIterator{records: records}
-			_, err = ds.StreamWriteRecords(timeoutCtx, iter, lode.Metadata{})
-
-			freshCtx := t.Context()
-			if err == nil {
-				snap, snapErr := ds.Latest(freshCtx)
-				if snapErr != nil {
-					t.Fatalf("Expected snapshot after successful write: %v", snapErr)
-				}
-				t.Logf("Write completed with %d rows (timeout didn't trigger)", snap.Manifest.RowCount)
-			} else {
-				_, snapErr := ds.Latest(freshCtx)
-				if !errors.Is(snapErr, lode.ErrNoSnapshots) {
-					t.Errorf("Expected ErrNoSnapshots after timeout, got: %v", snapErr)
-				}
-			}
-		})
-	}
-}
 
 // testRecordIterator is a simple iterator for testing.
 type testRecordIterator struct {
