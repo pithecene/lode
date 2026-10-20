@@ -617,7 +617,7 @@ rewrites or removes a tombstone to recover.
 | `ErrInvalidArgument` | `Expire`, `Sweep` | `ExpireRequest` with every selector field unset; `SweepRequest.Grace` zero or negative |
 | `ErrInvalidPath` | `Expire` | `Partition` is not a canonical relative partition path |
 | `ErrPartitionPrefixNotSupported` | `Expire` | `Partition` set on a layout without partitions (shared with `PartitionListOptions.Prefix`; distinct from the `StreamWriteRecords` error `ErrPartitioningNotSupported`) |
-| `ErrSnapshotExpired` | `Snapshot`, `Read` | A tombstoned ID **whose canonical manifest is absent**; also matches `ErrNotFound`. An expiring snapshot (tombstone present, canonical manifest present) is returned normally |
+| `ErrSnapshotExpired` | `Snapshot`, `Read` | An ID with a valid tombstone **whose canonical manifest is absent**; also matches `ErrNotFound`. An expiring snapshot (tombstone present, canonical manifest present) is returned normally. An empty object at the tombstone path is no tombstone; any other invalid one is reported as an error, never as an expiry |
 
 Selecting the head is not an error (§Head protection). All deletes propagate
 store errors wrapped with the object path.
