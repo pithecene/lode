@@ -39,14 +39,23 @@ func (d *dataset) tombstones() tombstones {
 	return tombstones{store: d.store, layout: d.layout, dataset: d.id}
 }
 
-func (ts tombstones) path(id DatasetSnapshotID) string {
-	return ts.layout.tombstonePath(ts.dataset, id)
+// path is where snapshot id's tombstone lives. ok is false unless id is in
+// the generated form: only such an ID names a tombstone, and no other
+// caller-supplied string is ever turned into a store path.
+func (ts tombstones) path(id DatasetSnapshotID) (p string, ok bool) {
+	if _, generated := snapshotInstant(id); !generated {
+		return "", false
+	}
+	return ts.layout.tombstonePath(ts.dataset, id), true
 }
 
 // record creates the tombstone, or accepts the one an earlier or concurrent
 // run recorded for the same snapshot.
 func (ts tombstones) record(ctx context.Context, t tombstone) error {
-	p := ts.path(t.SnapshotID)
+	p, ok := ts.path(t.SnapshotID)
+	if !ok {
+		return fmt.Errorf("lode: snapshot ID %q is not in the generated form; it cannot be tombstoned", t.SnapshotID)
+	}
 	data, err := json.Marshal(t)
 	if err != nil {
 		return fmt.Errorf("lode: failed to marshal tombstone: %w", err)
@@ -78,7 +87,10 @@ func (ts tombstones) create(ctx context.Context, p string, data []byte) error {
 // record would replace (a CAS from "" matches it). Anything else must be a
 // valid tombstone of this snapshot; otherwise it is corruption.
 func (ts tombstones) lookup(ctx context.Context, id DatasetSnapshotID) (t tombstone, found bool, err error) {
-	p := ts.path(id)
+	p, ok := ts.path(id)
+	if !ok {
+		return t, false, nil
+	}
 	data, err := ts.readRaw(ctx, p)
 	if errors.Is(err, ErrNotFound) {
 		return t, false, nil
@@ -125,7 +137,11 @@ func (ts tombstones) readRaw(ctx context.Context, p string) ([]byte, error) {
 // expiredError is ErrSnapshotExpired when snapshot id has a tombstone, nil
 // when it has none. Only meaningful once its canonical manifest is missing.
 func (ts tombstones) expiredError(ctx context.Context, id DatasetSnapshotID) error {
-	exists, err := ts.store.Exists(ctx, ts.path(id))
+	p, ok := ts.path(id)
+	if !ok {
+		return nil
+	}
+	exists, err := ts.store.Exists(ctx, p)
 	if err != nil {
 		return fmt.Errorf("lode: failed to check tombstone: %w", err)
 	}

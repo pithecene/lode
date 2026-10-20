@@ -198,9 +198,7 @@ func (d *dataset) expiryListing(ctx context.Context, sel selection) (expiryListi
 func (d *dataset) tombstoneCandidates(ctx context.Context, sel selection, withManifest map[DatasetSnapshotID]bool) ([]expiryCandidate, error) {
 	var out []expiryCandidate
 	for _, id := range sel.byTombstone {
-		// Only an ID in the generated form can name a tombstone; any other
-		// never reaches a store path (CONTRACT_RETENTION §Definition).
-		if _, generated := snapshotInstant(id); withManifest[id] || !generated {
+		if withManifest[id] {
 			continue
 		}
 		t, found, err := d.tombstones().lookup(ctx, id)
@@ -365,16 +363,18 @@ func (r expiryRun) expire(ctx context.Context, c expiryCandidate) (expiryOutcome
 // plan finds the tombstone to work from. found is false when the snapshot
 // has neither a manifest nor a tombstone left: another run finished it.
 func (r expiryRun) plan(ctx context.Context, c expiryCandidate) (plan expiryPlan, found bool, err error) {
-	if c.recorded != nil {
-		return expiryPlan{tomb: *c.recorded, recorded: true}, true, nil
-	}
-	m, found, err := r.ds.loadCandidate(ctx, c)
-	if err != nil || !found {
-		return plan, false, err
-	}
-	t, recorded, err := r.ds.tombstones().lookup(ctx, c.id)
+	// A candidate selected by its tombstone is checked for a manifest too:
+	// one may have appeared since the listing.
+	m, hasManifest, err := r.ds.loadCandidate(ctx, c)
 	if err != nil {
 		return plan, false, err
+	}
+	t, recorded, err := r.tombstoneFor(ctx, c)
+	if err != nil {
+		return plan, false, err
+	}
+	if !hasManifest {
+		return expiryPlan{tomb: t, recorded: true}, recorded, nil
 	}
 	if !recorded {
 		t = newTombstone(c.id, m.Files)
@@ -385,6 +385,15 @@ func (r expiryRun) plan(ctx context.Context, c expiryCandidate) (plan expiryPlan
 		return plan, false, fmt.Errorf("lode: tombstone for %s records a different inventory than its manifest", c.id)
 	}
 	return expiryPlan{tomb: t, recorded: recorded, manifest: m}, true, nil
+}
+
+// tombstoneFor is the candidate's recorded tombstone: the one selection
+// already read, or a lookup.
+func (r expiryRun) tombstoneFor(ctx context.Context, c expiryCandidate) (tombstone, bool, error) {
+	if c.recorded != nil {
+		return *c.recorded, true, nil
+	}
+	return r.ds.tombstones().lookup(ctx, c.id)
 }
 
 // sameInventory reports whether two inventories list the same paths with

@@ -289,13 +289,17 @@ func (h *history[ID, M]) hasManifest(ctx context.Context, id ID) (bool, error) {
 	return slices.ContainsFunc(entries, func(e manifestEntry[ID]) bool { return e.id == id }), nil
 }
 
-// scannedHead is the ID a scan would return, without loading its manifest.
+// scannedHead is the ID a scan returns: the largest whose manifest still
+// loads, so one deleted after the listing is never mistaken for the head.
 func (h *history[ID, M]) scannedHead(ctx context.Context) (ID, error) {
-	entries, err := h.manifests(ctx)
-	if err != nil || len(entries) == 0 {
+	s, err := h.scan(ctx)
+	if errors.Is(err, ErrNoSnapshots) {
+		return "", nil
+	}
+	if err != nil {
 		return "", err
 	}
-	return entries[latestEntry(entries)].id, nil
+	return s.ID, nil
 }
 
 // writePointer persists id as the pointer. With a ConditionalWriter the write

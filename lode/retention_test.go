@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -663,6 +664,69 @@ func TestExpire_ConcurrentTombstone_IsAccepted(t *testing.T) {
 	assertGone(t, mem, ds, first)
 }
 
+func TestSnapshot_IDNotInGeneratedForm_IsNotExpired(t *testing.T) {
+	ds := newDefaultRetention(t, NewMemory())
+	writeRecord(t, ds, 1)
+	// "../latest" would resolve to the pointer if it reached a store path.
+	_, err := ds.Snapshot(t.Context(), "../latest")
+	if errors.Is(err, ErrSnapshotExpired) || !errors.Is(err, ErrNotFound) {
+		t.Errorf("Snapshot(../latest) = %v, want ErrNotFound only", err)
+	}
+}
+
+func TestExpire_ManifestReappearingForTombstone_IsChecked(t *testing.T) {
+	mem := NewMemory()
+	hs := &hookStore{Store: mem}
+	ds := newDefaultRetention(t, casHookStore{hs})
+	writeRecord(t, ds, 1)
+	reused := idAt(time.Now().Add(-time.Hour))
+	putTombstone(t, mem, reused, reused, []FileRef{{Path: "datasets/events/snapshots/" + string(reused) + "/data/old", SizeBytes: 1}})
+
+	// After selection sees only the tombstone, a new snapshot reuses the ID.
+	manifest := "datasets/events/snapshots/" + string(reused) + "/manifest.json"
+	hs.onList = func(string, []string) {
+		hs.onList = nil
+		m := Manifest{SnapshotID: reused, Files: []FileRef{{Path: "datasets/events/snapshots/" + string(reused) + "/data/new", SizeBytes: 2}}}
+		rewriteManifest(t, mem, manifest, &m)
+	}
+	if _, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{reused}}); err == nil {
+		t.Fatal("Expire used an old tombstone against a newer manifest")
+	}
+	if ok, _ := mem.Exists(t.Context(), manifest); !ok {
+		t.Error("the newer snapshot's manifest was deleted")
+	}
+}
+
+func TestExpire_NoPointer_HeadVanishingAfterScanListing(t *testing.T) {
+	mem := NewMemory()
+	hs := &hookStore{Store: mem}
+	ds := newDefaultRetention(t, casHookStore{hs})
+	writeRecord(t, ds, 1)
+	second := writeRecord(t, ds, 2)
+	third := writeRecord(t, ds, 3)
+	if err := mem.Delete(t.Context(), "datasets/events/latest"); err != nil {
+		t.Fatal(err)
+	}
+	ds = newDefaultRetention(t, casHookStore{hs})
+
+	// The head scan's listing still shows the newest snapshot, whose
+	// manifest is then deleted by a concurrent expiry.
+	listings := 0
+	hs.onList = func(string, []string) {
+		if listings++; listings == 2 {
+			_ = mem.Delete(t.Context(), "datasets/events/snapshots/"+string(third.ID)+"/manifest.json")
+		}
+	}
+	report, err := ds.Expire(t.Context(), ExpireRequest{Before: time.Now().Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.RetainedHead != second.ID {
+		t.Errorf("RetainedHead = %q, want %q (the newest snapshot still loadable)", report.RetainedHead, second.ID)
+	}
+	assertPresent(t, ds, second)
+}
+
 func TestExpire_TombstoneWithoutInventory_IsCorrupt(t *testing.T) {
 	mem := NewMemory()
 	ds := newDefaultRetention(t, mem)
@@ -995,4 +1059,9 @@ func TestSnapshotInstant_OnlyGeneratedForm(t *testing.T) {
 			t.Errorf("snapshotInstant(%q) ok = %v, want %v", id, ok, want)
 		}
 	}
+}
+
+// idAt is the snapshot ID a write beginning at t would get.
+func idAt(t time.Time) DatasetSnapshotID {
+	return DatasetSnapshotID(strconv.FormatInt(t.UnixNano(), 10))
 }
