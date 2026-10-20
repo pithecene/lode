@@ -2,6 +2,7 @@ package lode
 
 import (
 	"bytes"
+	"container/heap"
 	"context"
 	"encoding/json"
 	"errors"
@@ -176,20 +177,36 @@ func (h *history[ID, M]) scan(ctx context.Context) (*snapshot[ID, M], error) {
 	if err != nil {
 		return nil, err
 	}
-	// A max search per attempt, not a sort: CONTRACT_COMPLEXITY bounds the
-	// degraded path at O(N), and a manifest vanishing mid-scan is rare.
-	for len(entries) > 0 {
-		i := latestEntry(entries)
-		s, ok, err := h.loadListed(ctx, entries[i])
+	// A max-heap, not a sort: building it is O(N), the bound
+	// CONTRACT_COMPLEXITY sets for the degraded path, and each manifest that
+	// vanished mid-scan costs only O(log N) more.
+	byNewest := newestFirst[ID](entries)
+	heap.Init(&byNewest)
+	for byNewest.Len() > 0 {
+		e := heap.Pop(&byNewest).(manifestEntry[ID])
+		s, ok, err := h.loadListed(ctx, e)
 		if err != nil {
 			return nil, fmt.Errorf("lode: failed to load latest snapshot: %w", err)
 		}
 		if ok {
 			return s, nil
 		}
-		entries = slices.Delete(entries, i, i+1)
 	}
 	return nil, ErrNoSnapshots
+}
+
+// newestFirst is a max-heap of manifest entries by ID (container/heap).
+type newestFirst[ID ~string] []manifestEntry[ID]
+
+func (q newestFirst[ID]) Len() int           { return len(q) }
+func (q newestFirst[ID]) Less(i, j int) bool { return q[i].id > q[j].id }
+func (q newestFirst[ID]) Swap(i, j int)      { q[i], q[j] = q[j], q[i] }
+func (q *newestFirst[ID]) Push(x any)        { *q = append(*q, x.(manifestEntry[ID])) }
+func (q *newestFirst[ID]) Pop() any {
+	old := *q
+	e := old[len(old)-1]
+	*q = old[:len(old)-1]
+	return e
 }
 
 // latestEntry is the index of the entry with the largest ID; entries must

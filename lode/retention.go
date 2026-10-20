@@ -183,28 +183,32 @@ func groupManifests(keys []string, owner func(string) (DatasetSnapshotID, bool))
 // The head
 // -----------------------------------------------------------------------------
 
-// headGuard is the snapshot retention must never remove, re-resolved before
-// each irreversible step (CONTRACT_RETENTION §Head protection).
+// headGuard protects every snapshot observed as the head during one run,
+// re-resolving before each irreversible step (CONTRACT_RETENTION §Head
+// protection). A head stays protected after a newer commit supersedes it:
+// the run's report promises the head it saw was kept.
 type headGuard struct {
-	history *history[DatasetSnapshotID, Manifest]
-	id      DatasetSnapshotID
+	history   *history[DatasetSnapshotID, Manifest]
+	current   DatasetSnapshotID
+	protected map[DatasetSnapshotID]bool
 }
 
 func newHeadGuard(ctx context.Context, h *history[DatasetSnapshotID, Manifest]) (*headGuard, error) {
-	g := &headGuard{history: h}
+	g := &headGuard{history: h, protected: make(map[DatasetSnapshotID]bool)}
 	return g, g.refresh(ctx)
 }
 
 func (g *headGuard) refresh(ctx context.Context) error {
-	id, err := g.history.CommittedHead(ctx, g.id)
+	id, err := g.history.CommittedHead(ctx, g.current)
 	if err != nil {
 		return err
 	}
-	g.id = id
+	g.current = id
+	g.protected[id] = true
 	return nil
 }
 
-func (g *headGuard) is(id DatasetSnapshotID) bool { return id == g.id }
+func (g *headGuard) is(id DatasetSnapshotID) bool { return g.protected[id] }
 
 // -----------------------------------------------------------------------------
 // Expiring one snapshot
@@ -271,6 +275,10 @@ func (r expiryRun) expire(ctx context.Context, c expiryCandidate) (expiryOutcome
 	owned, skipped := r.ds.splitFiles(c.id, m)
 	out.skipped = skipped
 	if r.dryRun {
+		// A real run would fail on a tombstone recording another snapshot.
+		if err := r.ds.tombstones().check(ctx, c.id); err != nil {
+			return out, err
+		}
 		out.verdict, out.deleted = verdictExpired, owned
 		return out, nil
 	}
@@ -319,7 +327,7 @@ func (d *dataset) splitFiles(id DatasetSnapshotID, m *Manifest) (owned []FileRef
 // manifests, data. The snapshot is expired once its canonical manifest is
 // gone, so the verdict is set then, even if a later step fails.
 func (d *dataset) removeSnapshot(ctx context.Context, c expiryCandidate, m *Manifest, owned []FileRef, out expiryOutcome) (expiryOutcome, error) {
-	if err := d.tombstones().record(ctx, newTombstone(c.id, owned)); err != nil {
+	if err := d.tombstones().record(ctx, newTombstone(c.id, m.Files)); err != nil {
 		return out, err
 	}
 	manifests := d.allManifestPaths(c, m)

@@ -458,6 +458,76 @@ func TestExpire_NoPointer_ProtectsScannedHead(t *testing.T) {
 	}
 }
 
+func TestExpire_HeadSupersededMidRun_StaysRetained(t *testing.T) {
+	mem := NewMemory()
+	hs := &hookStore{Store: mem}
+	ds := newDefaultRetention(t, casHookStore{hs})
+	first := writeRecord(t, ds, 1)
+	head := writeRecord(t, ds, 2)
+
+	// After the first snapshot is gone, another writer commits: the head
+	// the run saw at preflight is no longer the head when its turn comes.
+	writer := newDefaultRetention(t, mem)
+	hs.onDelete = func(p string) error {
+		if strings.Contains(p, string(first.ID)+"/data/") {
+			hs.onDelete = nil
+			writeRecord(t, writer, 3)
+		}
+		return nil
+	}
+	report, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{first.ID, head.ID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.RetainedHead != head.ID || !slices.Equal(report.Expired, []DatasetSnapshotID{first.ID}) {
+		t.Errorf("report = %+v, want %s retained and only %s expired", report, head.ID, first.ID)
+	}
+	assertPresent(t, ds, head)
+}
+
+func TestExpire_DryRun_FailsWhereARealRunWould(t *testing.T) {
+	mem := NewMemory()
+	ds := newDefaultRetention(t, mem)
+	first := writeRecord(t, ds, 1)
+	writeRecord(t, ds, 2)
+	putTombstone(t, mem, first.ID, "123")
+
+	report, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{first.ID}, DryRun: true})
+	if err == nil || len(report.Expired) != 0 {
+		t.Errorf("dry run = %+v, %v; want the tombstone mismatch a real run hits", report, err)
+	}
+}
+
+func TestExpire_TombstoneRecordsWholeManifest(t *testing.T) {
+	store := NewMemory()
+	ds := newDefaultRetention(t, store)
+	first := writeRecord(t, ds, 1)
+	writeRecord(t, ds, 2)
+	m := *first.Manifest
+	m.Files = append(m.Files, FileRef{Path: "elsewhere/x", SizeBytes: 7})
+	rewriteManifest(t, store, "datasets/events/snapshots/"+string(first.ID)+"/manifest.json", &m)
+
+	if _, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{first.ID}}); err != nil {
+		t.Fatal(err)
+	}
+	ts, err := newDefaultTombstones(t, ds).read(t.Context(), "datasets/events/expired/"+string(first.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ts.SnapshotID != first.ID || ts.Objects != len(m.Files) || ts.Bytes != totalBytes(m.Files) {
+		t.Errorf("tombstone = %+v, want %d objects / %d bytes (the whole Files[])", ts, len(m.Files), totalBytes(m.Files))
+	}
+}
+
+func newDefaultTombstones(t *testing.T, ds Dataset) tombstones {
+	t.Helper()
+	d, ok := ds.(*dataset)
+	if !ok {
+		t.Fatalf("unexpected Dataset implementation %T", ds)
+	}
+	return d.tombstones()
+}
+
 func setPointer(t *testing.T, store Store, p, id string) {
 	t.Helper()
 	if err := store.Delete(t.Context(), p); err != nil {

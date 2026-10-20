@@ -11,7 +11,7 @@ import (
 
 // tombstone is the persisted record of an expiry (CONTRACT_RETENTION
 // §Tombstone). It records intent, not outcome: the object count and bytes
-// are what the manifest planned, not what was deleted.
+// are the manifest's whole Files[], not what was deleted.
 type tombstone struct {
 	SnapshotID  DatasetSnapshotID `json:"snapshot_id"`
 	RequestedAt time.Time         `json:"requested_at"`
@@ -64,6 +64,20 @@ func (ts tombstones) create(ctx context.Context, p string, data []byte) error {
 		return cw.CompareAndSwap(ctx, p, "", string(data))
 	}
 	return ts.store.Put(ctx, p, bytes.NewReader(data))
+}
+
+// check is record without the write: it fails only where record would, on
+// an existing tombstone recording another snapshot.
+func (ts tombstones) check(ctx context.Context, id DatasetSnapshotID) error {
+	p := ts.path(id)
+	exists, err := ts.store.Exists(ctx, p)
+	if err != nil {
+		return fmt.Errorf("lode: failed to check tombstone: %w", err)
+	}
+	if !exists {
+		return nil
+	}
+	return ts.confirm(ctx, p, id)
 }
 
 // confirm fails unless the tombstone at p records snapshot id.
