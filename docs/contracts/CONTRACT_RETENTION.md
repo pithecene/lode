@@ -4,8 +4,7 @@ This document defines the contract for **snapshot expiry** and the
 **unreferenced-object sweep**. It is authoritative for any retention
 implementation.
 
-Status: **Draft** — design settled for v0.11.0; becomes Active when
-`Dataset.Expire` and `Dataset.Sweep` ship. No code implements it yet.
+Status: **Active** (v0.11.0)
 
 Issue: [#174](https://github.com/pithecene-io/lode/issues/174)
 

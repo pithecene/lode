@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Snapshot expiry**: `Dataset.Expire(ctx, ExpireRequest)` removes snapshots selected by `IDs`, `Partition` (whole-segment, Hive only) or `Before` (snapshot ID instant), with a `DryRun` preview. The head is never expired and is reported in `ExpireReport.RetainedHead`; snapshots with files outside the selected partition are kept and reported in `Mixed`. Each expiry writes a tombstone first, so `Snapshot` and `Read` on an expired ID return the new `ErrSnapshotExpired` (which also matches `ErrNotFound`), and an interrupted expiry resumes on the next run. The new `ErrHeadUncommitted` reports a commit in flight, or a dataset with snapshots but no `latest` pointer (written before the pointer existed): any commit creates the pointer, after which retention runs. ([#174](https://github.com/pithecene-io/lode/issues/174))
 - **Unreferenced-object sweep**: `Dataset.Sweep(ctx, SweepRequest{Grace})` settles interrupted expiries and reclaims data objects of snapshots that never committed (aborted streams) once their write began more than `Grace` ago, with a `DryRun` preview. `Bytes` sums the sizes recorded in expiry tombstones; objects with no recorded size are counted in `Unsized`. Reclaim is per snapshot, never per `Files[]`; objects outside the layout's data topology (sidecars, the pointer, tombstones) are never touched. ([#174](https://github.com/pithecene-io/lode/issues/174))
+- **Retention example**: `examples/retention/` expires runs by partition with a dry-run preview, shows the retained head, and sweeps.
+- **`CONTRACT_RETENTION.md` is Active**: snapshot expiry and the unreferenced-object sweep are normative.
 
 ### Changed
 
