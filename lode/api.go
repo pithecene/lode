@@ -471,9 +471,9 @@ type ExpireReport struct {
 	// The head is never expired. Empty otherwise.
 	RetainedHead DatasetSnapshotID
 
-	// Objects counts the data objects this run deleted. An object an
-	// earlier, interrupted run already deleted is not counted again, so
-	// totals across runs add up.
+	// Objects counts the data objects this run deleted that its listing
+	// showed. An object an earlier, interrupted run already deleted is not
+	// counted again; runs that overlap can both count one.
 	Objects int
 
 	// Bytes sums the sizes the snapshots' inventories record for those
