@@ -114,8 +114,9 @@ set, not the store calls. Sorting adds O(N log N) CPU, no store calls.
 | Snapshot(id), Read(id) expired | Hot miss | +1 Get (tombstone) | O(1) |
 
 `Expire` with `Partition` lists only that partition subtree; otherwise N is
-the whole snapshot prefix. With no pointer, finding the head lists the
-whole snapshot prefix even for a `Partition` request. Selection by `Before` reads snapshot IDs from
+the whole snapshot prefix. With no pointer, retention lists the whole
+snapshot prefix even for a `Partition` request, to tell an empty dataset
+from one it must refuse. Selection by `Before` reads snapshot IDs from
 paths and loads no manifest beyond the K selected. Full bounds and their
 derivation are in `CONTRACT_RETENTION.md` §Complexity Bounds.
 

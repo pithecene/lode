@@ -287,7 +287,7 @@ These are returned by snapshot expiry and the unreferenced-object sweep
 | Error | Source | Meaning |
 |-------|--------|---------|
 | `lode.ErrSnapshotExpired` | Dataset.Snapshot, Dataset.Read | The snapshot was expired by `Expire`; also matches `ErrNotFound` |
-| `lode.ErrHeadUncommitted` | Dataset.Expire, Dataset.Sweep | The head is not committed yet: the latest pointer names a snapshot whose manifest is not yet written (`Expire`), or is missing beside `<instant>-<nonce>` IDs (both) |
+| `lode.ErrHeadUncommitted` | Dataset.Expire, Dataset.Sweep | The head is not committed yet: the latest pointer names a snapshot whose manifest is not yet written (`Expire`), or is missing beside existing snapshots (both) |
 | `lode.ErrInvalidArgument` | Dataset.Expire, Dataset.Sweep | `ExpireRequest` with no selector field set; `SweepRequest.Grace` zero or negative |
 | `lode.ErrInvalidPath` | Dataset.Expire | `ExpireRequest.Partition` is not a canonical relative partition path |
 | `lode.ErrPartitionPrefixNotSupported` | Dataset.Expire | `ExpireRequest.Partition` set on a layout without partitions |

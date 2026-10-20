@@ -215,22 +215,18 @@ writes always selects it, and failing would make such a request unusable
 until something new is committed. A caller that needs a whole partition gone
 checks `RetainedHead` and runs the request again after a newer commit.
 
-When the pointer is absent, what that means depends on the IDs. The first
-commit creates the pointer and every later commit replaces it, so only a
-dataset written before the pointer existed lacks one for good, and its IDs
-are legacy instant-only ones. There the head is the snapshot a scan returns:
-the largest snapshot ID (CONTRACT_WRITE_API §Parent Resolution, scan
-fallback) that is not expired, which is exactly the head `Latest` serves:
-the scan behind `Latest` passes over expired snapshots too.
-An interrupted expiry can leave a partition manifest of an expired snapshot
-behind, and that leftover is never the head; an expiring snapshot (its
-canonical manifest still present) is, being fully readable. A dataset whose
-newest such snapshot has an `<instant>-<nonce>` ID was written by a version
-that keeps the pointer: its pointer is gone only for the moment of a
-Delete+Put commit on a store without `ConditionalWriter`, or was removed by
-hand, and no scan can say which snapshot is committed. `Expire` and `Sweep`
-then return `ErrHeadUncommitted`, and callers retry. The scan runs once per
-run: a pointer still absent at a recheck keeps the head found.
+Only the pointer names the head. When it is absent beside any snapshot,
+`Expire` and `Sweep` return `ErrHeadUncommitted` and remove nothing; a
+dataset with no snapshot at all needs no pointer. Every commit writes the
+pointer, so it is missing only for the moment of a Delete+Put commit on a
+store without `ConditionalWriter`, in a dataset written before the pointer
+existed, or after a hand edit. None of these lets retention tell the head
+safely: the largest ID is what `Latest` serves there, but a clock that
+rolled back between two commits can give the last one the smaller ID. Any
+commit creates the pointer, after which retention proceeds. (`Latest`'s own
+scan still serves the largest ID that is not expired: an interrupted expiry
+can leave a partition manifest of an expired snapshot behind, and that
+leftover is never served.)
 
 Rationale: the `latest` pointer is the live CAS target for every writer.
 Retention MUST never move it, and MUST never remove the manifest it names:
@@ -469,13 +465,12 @@ later run whose listing shows its leftovers removes them; probing every
 tombstone's inventory on every run would grow without bound.
 
 `Sweep` reads the pointer once, before step 1, and never settles the
-snapshot it names. When the pointer is absent, or names an ID with no
-manifest in the listing, the newest listed snapshot that is not expired is
-protected the same way (the snapshot a scan would return). Candidates are
-the snapshots with a listed manifest and the tombstoned ones with listed
-data, since a listing may omit manifests; a tombstoned candidate whose
-canonical manifest the listing omits is checked in the store before it is
-passed over. `Expire` writes a tombstone only
+snapshot it names. While the pointer names a snapshot with no manifest, a
+commit is in flight and the head is unknown, so no tombstoned snapshot is
+settled in that run; orphans past grace are still reclaimed. With no
+pointer, a dataset whose listing shows a manifest or a tombstone is refused
+with `ErrHeadUncommitted` (§Head protection); one that shows neither has no
+head and only orphans to reclaim. `Expire` writes a tombstone only
 for a snapshot observed as non-head (§Head protection), so this guard never
 fires for tombstones Lode wrote; it keeps a misplaced object under
 `expired/` from ever removing the head. A protected tombstoned snapshot is
@@ -484,8 +479,8 @@ left unsettled and its objects stay live.
 The data objects of an in-flight commit have no manifest yet and are
 orphaned by the definition above; the grace period protects them, not the
 pointer, so a pointer naming an uncommitted ID does not stop `Sweep`. A
-missing pointer beside `<instant>-<nonce>` IDs does (§Head protection):
-`Sweep` then returns `ErrHeadUncommitted`, like `Expire`.
+missing pointer beside snapshots does (§Head protection): `Sweep` then
+returns `ErrHeadUncommitted`, like `Expire`.
 
 ### Grace period
 
@@ -590,7 +585,7 @@ rewrites or removes a tombstone to recover.
 
 | Error | Source | Condition |
 |-------|--------|-----------|
-| `ErrHeadUncommitted` | `Expire`, `Sweep` | `Expire`: the pointer names a snapshot with no manifest (a commit in flight). At preflight nothing is expired; at a per-snapshot recheck the snapshots already expired stay expired and are reported. Both: the pointer is missing beside `<instant>-<nonce>` IDs (§Head protection); `Sweep` stops before deleting anything |
+| `ErrHeadUncommitted` | `Expire`, `Sweep` | `Expire`: the pointer names a snapshot with no manifest (a commit in flight). At preflight nothing is expired; at a per-snapshot recheck the snapshots already expired stay expired and are reported. Both: the pointer is missing beside existing snapshots (§Head protection); `Sweep` stops before deleting anything |
 | `ErrInvalidArgument` | `Expire`, `Sweep` | `ExpireRequest` with every selector field unset; `SweepRequest.Grace` zero or negative |
 | `ErrInvalidPath` | `Expire` | `Partition` is not a canonical relative partition path |
 | `ErrPartitionPrefixNotSupported` | `Expire` | `Partition` set on a layout without partitions (shared with `PartitionListOptions.Prefix`; distinct from the `StreamWriteRecords` error `ErrPartitioningNotSupported`) |
@@ -608,8 +603,8 @@ selects, T the tombstones, D the objects deleted (manifests and data alike).
 
 | Operation | Store Calls | Memory |
 |-----------|-------------|--------|
-| `Expire` | 1 List (the `Partition` subtree, else the snapshot prefix) + (K + 1) pointer Gets, each followed by at most one `Exists` (and one List of the snapshot prefix when the named snapshot has no canonical manifest, to find a legacy partition-only copy) + K manifest Gets + K tombstone Gets (the recorded inventory, if any; also one per requested ID with no manifest) + 1 Get per manifest path of each selected snapshot (every copy is checked against the tombstone before it is written) + K tombstone writes (each + at most 1 read-back Get when it already exists) + Σ(manifests + files) Deletes; when the pointer is absent, +1 List of the whole snapshot prefix (even for a `Partition` request) and, newest first until the head, 1 tombstone `Exists` per scanned snapshot (+1 canonical-manifest `Exists` for one that has a tombstone) | O(N + K × manifest) |
-| `Sweep` | 2 Lists (tombstones, snapshot prefix) + 1 pointer Get + T tombstone Gets + 1 Get per manifest path of each tombstoned snapshot with anything left in the listing + 1 `Exists` per manifest path of each orphaned group about to be reclaimed (stopping at the first present) + D Deletes; when the pointer is absent, 1 canonical-manifest `Exists` per tombstoned snapshot scanned, newest first, whose canonical copy the listing omits | O(N + Σ tombstone inventories) |
+| `Expire` | 1 List (the `Partition` subtree, else the snapshot prefix) + (K + 1) pointer Gets, each followed by at most one `Exists` (and one List of the snapshot prefix when the named snapshot has no canonical manifest, to find a legacy partition-only copy) + K manifest Gets + K tombstone Gets (the recorded inventory, if any; also one per requested ID with no manifest) + 1 Get per manifest path of each selected snapshot (every copy is checked against the tombstone before it is written) + K tombstone writes (each + at most 1 read-back Get when it already exists) + Σ(manifests + files) Deletes; when the pointer is absent, +1 List of the whole snapshot prefix (even for a `Partition` request) to tell an empty dataset from a refused one | O(N + K × manifest) |
+| `Sweep` | 2 Lists (tombstones, snapshot prefix) + 1 pointer Get + T tombstone Gets + 1 Get per manifest path of each tombstoned snapshot with anything left in the listing + 1 `Exists` per manifest path of each orphaned group about to be reclaimed (stopping at the first present) + D Deletes; when the pointer names a snapshot, 1 `Exists` (+1 List when it has no canonical manifest) to tell whether it is committed | O(N + Σ tombstone inventories) |
 | `Snapshot(id)`, `Read(id)` expired path | +1 Get (tombstone) | O(1) |
 
 Pointer Gets: one preflight read plus one re-read per selected snapshot,
