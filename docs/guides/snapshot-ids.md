@@ -87,10 +87,12 @@ not reserve IDs against existing ones, so should it happen:
   naming the earlier snapshot until the next commit.
 - **After the earlier snapshot expired**, its tombstone records that
   snapshot's commit time and file list. Retention acts on a tombstone only
-  against a manifest it describes, so the new snapshot is never deleted by
-  it: `Expire` naming the ID returns an error, and `Sweep` reports the
-  tombstone in `Unparseable` and keeps the snapshot's data. The one
-  exposure is the moment while the new write is staging data, before its
+  against a manifest it describes. While the new snapshot is the head it is
+  retained like any head. Once superseded, `Expire` naming the ID returns an
+  error and `Sweep` reports the tombstone in `Unparseable` and keeps the
+  data, unless the two commits also landed in the same nanosecond with the
+  same files, in which case the old tombstone describes the new snapshot
+  and it can be removed. The other exposure is the moment while the new write is staging data, before its
   manifest exists: nothing yet tells that data from the expired snapshot's
   leftovers, so a `Sweep`, or an `Expire` naming the ID, can delete it.
 

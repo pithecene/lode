@@ -162,7 +162,7 @@ aborted stream, a crashed process) and is deleted.
 
 ```mermaid
 flowchart TD
-    G[data objects of one snapshot ID] --> H{snapshot held?<br/>committed head, or rejected tombstone}
+    G[data objects of one snapshot ID] --> H{snapshot held?<br/>committed head, rejected tombstone,<br/>or any tombstone while a commit is in flight}
     H -- yes --> K[kept]
     H -- no --> S{settled this run<br/>or earlier?}
     S -- yes --> R[reclaimed, any age]

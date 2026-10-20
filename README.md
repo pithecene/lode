@@ -104,8 +104,9 @@ sequenceDiagram
 ```
 
 If another writer moved the pointer first, the CAS fails with
-`ErrSnapshotConflict` (retried for you with `WithRetryCount`) and the snapshot
-is not published. Data files a buffered write already staged stay behind as
+`ErrSnapshotConflict`. With `WithRetryCount`, Lode re-reads the head and
+retries with the same staged data, which may still publish the snapshot. If
+the commit fails for good, data files a buffered write staged stay behind as
 orphans until `Dataset.Sweep` reclaims them; a stream write deletes its
 object on a best-effort basis.
 
