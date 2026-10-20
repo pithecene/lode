@@ -714,103 +714,35 @@ func TestExpire_Head(t *testing.T) {
 	})
 }
 
-// TestExpire_ScannedHead covers datasets with no pointer, whose head is the
-// newest snapshot a scan can load.
-func TestExpire_ScannedHead(t *testing.T) {
-	t.Run("is protected", func(t *testing.T) {
-		store := NewMemory()
-		ds := newDefaultRetention(t, store)
-		first := writeRecord(t, ds, 1)
-		head := writeRecord(t, ds, 2)
-		legacyize(t, store, first, head)
-		// A fresh dataset handle has no in-process memory of the head.
-		ds = newDefaultRetention(t, store)
-
-		report, err := ds.Expire(t.Context(), ExpireRequest{Before: time.Now().Add(time.Hour)})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if report.RetainedHead != head.ID || !slices.Equal(report.Expired, []DatasetSnapshotID{first.ID}) {
-			t.Errorf("report = %+v, want head %s retained and %s expired", report, head.ID, first.ID)
-		}
-	})
-
-	t.Run("a head vanishing after the listing", func(t *testing.T) {
-		mem := NewMemory()
-		hs := &hookStore{Store: mem}
-		ds := newDefaultRetention(t, casHookStore{hs})
-		first := writeRecord(t, ds, 1)
-		second := writeRecord(t, ds, 2)
-		third := writeRecord(t, ds, 3)
-		legacyize(t, mem, first, second, third)
-		ds = newDefaultRetention(t, casHookStore{hs})
-
-		// The head scan's listing still shows the newest snapshot, whose
-		// manifest is then deleted by a concurrent expiry.
-		listings := 0
-		hs.onList = func(string, []string) {
-			if listings++; listings == 2 {
-				_ = mem.Delete(t.Context(), "datasets/events/snapshots/"+string(third.ID)+"/manifest.json")
-			}
-		}
-		report, err := ds.Expire(t.Context(), ExpireRequest{Before: time.Now().Add(time.Hour)})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if report.RetainedHead != second.ID {
-			t.Errorf("RetainedHead = %q, want %q (the newest snapshot still loadable)", report.RetainedHead, second.ID)
-		}
-		assertPresent(t, ds, second)
-	})
-
-	t.Run("an expired leftover is not the head", func(t *testing.T) {
-		mem := NewMemory()
-		ds := newHiveRetention(t, mem)
-		live := writeRun(t, ds, "a", "x")
-		gone := writeRun(t, ds, "b", "x")
-		legacyize(t, mem, live, gone)
-		// An interrupted expiry of the newer snapshot left a partition copy.
-		putTombstone(t, mem, gone.ID, newTombstone(gone.ID, gone.Manifest))
-		for _, k := range storeKeys(t, mem) {
-			if strings.Contains(k, string(gone.ID)) && strings.HasSuffix(k, manifestFile) && !strings.Contains(k, "partitions/") {
-				if err := mem.Delete(t.Context(), k); err != nil {
-					t.Fatal(err)
-				}
-			}
-		}
-		ds = newHiveRetention(t, mem)
-
-		report, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{live.ID}})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if report.RetainedHead != live.ID {
-			t.Errorf("RetainedHead = %q, want %q: the expired leftover is not the head", report.RetainedHead, live.ID)
-		}
-		assertPresent(t, ds, live)
-	})
-
-	t.Run("an expiring snapshot is still the head", func(t *testing.T) {
+// TestExpire_HeadResolution covers how Expire finds the head it protects:
+// only the pointer names it, so a dataset with snapshots and no pointer is
+// refused until a commit writes one.
+func TestExpire_HeadResolution(t *testing.T) {
+	t.Run("a pointer-less dataset is refused", func(t *testing.T) {
 		mem := NewMemory()
 		ds := newDefaultRetention(t, mem)
-		older := writeRecord(t, ds, 1)
+		first := writeRecord(t, ds, 1)
 		head := writeRecord(t, ds, 2)
-		legacyize(t, mem, older, head)
-		// A tombstone without the canonical delete: the snapshot is expiring,
-		// still fully readable, and so still the head.
-		putTombstone(t, mem, head.ID, newTombstone(head.ID, head.Manifest))
+		legacyize(t, mem, first, head)
 		ds = newDefaultRetention(t, mem)
 
-		report, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{older.ID, head.ID}})
-		if err != nil {
-			t.Fatal(err)
+		_, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{first.ID}})
+		if !errors.Is(err, ErrHeadUncommitted) {
+			t.Fatalf("Expire = %v, want ErrHeadUncommitted", err)
 		}
-		if report.RetainedHead != head.ID || !slices.Equal(report.Expired, []DatasetSnapshotID{older.ID}) {
-			t.Errorf("report = %+v, want %s retained and %s expired", report, head.ID, older.ID)
+		assertPresent(t, ds, first)
+		assertPresent(t, ds, head)
+	})
+
+	t.Run("an empty dataset needs no pointer", func(t *testing.T) {
+		ds := newDefaultRetention(t, NewMemory())
+		report, err := ds.Expire(t.Context(), ExpireRequest{Before: time.Now()})
+		if err != nil || len(report.Expired) != 0 {
+			t.Fatalf("Expire = %+v, %v; want nothing expired and no error", report, err)
 		}
 	})
 
-	t.Run("a pointer missing beside new-form IDs is a commit in flight", func(t *testing.T) {
+	t.Run("a pointer missing beside new-form IDs is refused", func(t *testing.T) {
 		mem := NewMemory()
 		ds := newDefaultRetention(t, mem)
 		first := writeRecord(t, ds, 1)

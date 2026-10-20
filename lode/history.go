@@ -264,18 +264,14 @@ func (h *history[ID, M]) readPointer(ctx context.Context) (ID, error) {
 }
 
 // CommittedHead returns the head retention must never remove: the snapshot
-// the pointer names, or, with no pointer, the one a scan returns ("" for an
-// empty history). known is a head an earlier call confirmed; a pointer still
-// naming it, or still absent, costs no further call. A pointer naming a
-// snapshot with no manifest is a commit in flight, whose parent the pointer
-// no longer names: ErrHeadUncommitted.
+// the pointer names ("" for a history with no snapshot at all). known is a
+// head an earlier call confirmed; a pointer still naming it costs no
+// further call. A pointer naming a snapshot with no manifest is a commit in
+// flight, whose parent the pointer no longer names: ErrHeadUncommitted.
 func (h *history[ID, M]) CommittedHead(ctx context.Context, known ID) (ID, error) {
 	id, err := h.readPointer(ctx)
 	if errors.Is(err, ErrNotFound) {
-		if known != "" {
-			return known, nil
-		}
-		return h.legacyHead(ctx)
+		return "", h.pointerless(ctx)
 	}
 	if err != nil {
 		return "", fmt.Errorf("lode: failed to resolve head: %w", err)
@@ -293,6 +289,23 @@ func (h *history[ID, M]) CommittedHead(ctx context.Context, known ID) (ID, error
 	return id, nil
 }
 
+// pointerless is nil for a history with no snapshot and ErrHeadUncommitted
+// otherwise. Every commit writes the pointer, so it is missing beside a
+// snapshot only for the moment of a Delete+Put commit on a store without
+// ConditionalWriter, in a history written before the pointer existed, or
+// after a hand edit. In none of these can the head be told safely: a
+// clock that rolled back may have given the last commit a smaller ID.
+func (h *history[ID, M]) pointerless(ctx context.Context) error {
+	entries, err := h.manifests(ctx)
+	if err != nil {
+		return err
+	}
+	if len(entries) == 0 {
+		return nil
+	}
+	return fmt.Errorf("lode: latest pointer is absent: %w", ErrHeadUncommitted)
+}
+
 // hasManifest reports whether snapshot id has any manifest: its canonical
 // one (one Exists), or, for data written before canonical manifests, any
 // listed copy (one List, only on that miss).
@@ -306,34 +319,6 @@ func (h *history[ID, M]) hasManifest(ctx context.Context, id ID) (bool, error) {
 		return false, err
 	}
 	return slices.ContainsFunc(entries, func(e manifestEntry[ID]) bool { return e.id == id }), nil
-}
-
-// legacyHead is the head of a history with no pointer. Only a history
-// written before the pointer existed lacks one for good, and its IDs are
-// instant-only. A head in the <instant>-<nonce> form means the pointer is
-// gone only for now (a Delete+Put commit on a store without
-// ConditionalWriter) or was removed by hand; the scan cannot say which
-// snapshot is committed, so that is ErrHeadUncommitted.
-func (h *history[ID, M]) legacyHead(ctx context.Context) (ID, error) {
-	id, err := h.scannedHead(ctx)
-	if err != nil || !strings.Contains(string(id), idSeparator) {
-		return id, err
-	}
-	return "", fmt.Errorf("lode: latest pointer is absent beside snapshot %s: %w", id, ErrHeadUncommitted)
-}
-
-// scannedHead is the ID a scan returns: the largest that is not expired and
-// whose manifest still loads, so one deleted after the listing is never
-// mistaken for the head.
-func (h *history[ID, M]) scannedHead(ctx context.Context) (ID, error) {
-	s, err := h.scan(ctx)
-	if errors.Is(err, ErrNoSnapshots) {
-		return "", nil
-	}
-	if err != nil {
-		return "", err
-	}
-	return s.ID, nil
 }
 
 // writePointer persists id as the pointer. With a ConditionalWriter the write
