@@ -460,9 +460,12 @@ Reclaim is per snapshot (§Unreferenced object): a settled snapshot's objects
 are every object under its data prefixes, including any its inventory does
 not list (partial objects of an aborted stream, caller objects inside its
 data prefix). The inventory decides only how they are counted
-(§Accounting), never whether they are deleted — with one addition: an
-object the inventory lists but a lagging listing omitted is deleted too,
-and, not having been listed, is not counted.
+(§Accounting), never whether they are deleted — with one addition: for a
+snapshot the listing shows a manifest or object of, an object the inventory
+lists but the listing omitted is deleted too and, not having been listed, is
+not counted. A snapshot the listing shows nothing of is not probed, so a
+later run whose listing shows its leftovers removes them; probing every
+tombstone's inventory on every run would grow without bound.
 
 `Sweep` reads the pointer once, before step 1, and never settles the
 snapshot it names. When the pointer is absent, or names an ID with no
