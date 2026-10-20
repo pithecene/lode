@@ -50,6 +50,11 @@ func (k volumeKind) parseManifest(p string) (VolumeSnapshotID, bool) {
 	return id, id != ""
 }
 
+// notExpired is always true: Volumes have no retention.
+func (volumeKind) notExpired(context.Context, Store, VolumeSnapshotID) (bool, error) {
+	return true, nil
+}
+
 func (k volumeKind) decode(r io.Reader) (*VolumeManifest, error) {
 	var m VolumeManifest
 	if err := json.NewDecoder(r).Decode(&m); err != nil {

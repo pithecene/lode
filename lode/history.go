@@ -37,6 +37,9 @@ type snapshotKind[ID ~string, M any] interface {
 	parseManifest(path string) (ID, bool)
 	// decode reads and validates a manifest.
 	decode(r io.Reader) (*M, error)
+	// notExpired reports whether a pointer-less scan may take snapshot id as
+	// the head: false only for one retention has expired.
+	notExpired(ctx context.Context, store Store, id ID) (bool, error)
 }
 
 // snapshot pairs a snapshot ID with its decoded manifest.
@@ -186,17 +189,6 @@ func (h *history[ID, M]) find(ctx context.Context, id ID) (*snapshot[ID, M], err
 // after the listing is passed over for the next largest. Returns
 // ErrNoSnapshots when the container is empty.
 func (h *history[ID, M]) scan(ctx context.Context) (*snapshot[ID, M], error) {
-	return h.scanWhere(ctx, everySnapshot[ID])
-}
-
-// keepFunc decides whether a scan may return snapshot id.
-type keepFunc[ID ~string] func(context.Context, ID) (bool, error)
-
-func everySnapshot[ID ~string](context.Context, ID) (bool, error) { return true, nil }
-
-// scanWhere is scan limited to snapshots keep accepts: one it rejects is
-// passed over like one whose manifests vanished.
-func (h *history[ID, M]) scanWhere(ctx context.Context, keep keepFunc[ID]) (*snapshot[ID, M], error) {
 	entries, err := h.manifests(ctx)
 	if err != nil {
 		return nil, err
@@ -208,7 +200,7 @@ func (h *history[ID, M]) scanWhere(ctx context.Context, keep keepFunc[ID]) (*sna
 	heap.Init(&byNewest)
 	for byNewest.Len() > 0 {
 		e := heap.Pop(&byNewest).(manifestEntry[ID])
-		s, err := h.loadKept(ctx, e, keep)
+		s, err := h.loadUnexpired(ctx, e)
 		if errors.Is(err, ErrNotFound) {
 			continue
 		}
@@ -220,14 +212,16 @@ func (h *history[ID, M]) scanWhere(ctx context.Context, keep keepFunc[ID]) (*sna
 	return nil, ErrNoSnapshots
 }
 
-// loadKept loads entry e unless keep rejects it, which reads as ErrNotFound.
-func (h *history[ID, M]) loadKept(ctx context.Context, e manifestEntry[ID], keep keepFunc[ID]) (*snapshot[ID, M], error) {
-	kept, err := keep(ctx, e.id)
+// loadUnexpired loads entry e unless retention expired it: an interrupted
+// expiry can leave a partition copy of the newest snapshot, which must
+// never become the head. A passed-over entry reads as ErrNotFound.
+func (h *history[ID, M]) loadUnexpired(ctx context.Context, e manifestEntry[ID]) (*snapshot[ID, M], error) {
+	live, err := h.kind.notExpired(ctx, h.store, e.id)
 	if err != nil {
 		return nil, err
 	}
-	if !kept {
-		return nil, fmt.Errorf("lode: snapshot %s passed over: %w", e.id, ErrNotFound)
+	if !live {
+		return nil, fmt.Errorf("lode: snapshot %s is expired: %w", e.id, ErrNotFound)
 	}
 	return h.loadEntry(ctx, e)
 }
@@ -270,18 +264,18 @@ func (h *history[ID, M]) readPointer(ctx context.Context) (ID, error) {
 }
 
 // CommittedHead returns the head retention must never remove: the snapshot
-// the pointer names, or, with no pointer, the one a scan limited to keep
-// returns ("" for an empty history). known is a head an earlier call confirmed; a pointer still
+// the pointer names, or, with no pointer, the one a scan returns ("" for an
+// empty history). known is a head an earlier call confirmed; a pointer still
 // naming it, or still absent, costs no further call. A pointer naming a
 // snapshot with no manifest is a commit in flight, whose parent the pointer
 // no longer names: ErrHeadUncommitted.
-func (h *history[ID, M]) CommittedHead(ctx context.Context, known ID, keep keepFunc[ID]) (ID, error) {
+func (h *history[ID, M]) CommittedHead(ctx context.Context, known ID) (ID, error) {
 	id, err := h.readPointer(ctx)
 	if errors.Is(err, ErrNotFound) {
 		if known != "" {
 			return known, nil
 		}
-		return h.legacyHead(ctx, keep)
+		return h.legacyHead(ctx)
 	}
 	if err != nil {
 		return "", fmt.Errorf("lode: failed to resolve head: %w", err)
@@ -320,19 +314,19 @@ func (h *history[ID, M]) hasManifest(ctx context.Context, id ID) (bool, error) {
 // gone only for now (a Delete+Put commit on a store without
 // ConditionalWriter) or was removed by hand; the scan cannot say which
 // snapshot is committed, so that is ErrHeadUncommitted.
-func (h *history[ID, M]) legacyHead(ctx context.Context, keep keepFunc[ID]) (ID, error) {
-	id, err := h.scannedHead(ctx, keep)
+func (h *history[ID, M]) legacyHead(ctx context.Context) (ID, error) {
+	id, err := h.scannedHead(ctx)
 	if err != nil || !strings.Contains(string(id), idSeparator) {
 		return id, err
 	}
 	return "", fmt.Errorf("lode: latest pointer is absent beside snapshot %s: %w", id, ErrHeadUncommitted)
 }
 
-// scannedHead is the ID a scan limited to keep returns: the largest whose
-// manifest still loads, so one deleted after the listing is never mistaken
-// for the head.
-func (h *history[ID, M]) scannedHead(ctx context.Context, keep keepFunc[ID]) (ID, error) {
-	s, err := h.scanWhere(ctx, keep)
+// scannedHead is the ID a scan returns: the largest that is not expired and
+// whose manifest still loads, so one deleted after the listing is never
+// mistaken for the head.
+func (h *history[ID, M]) scannedHead(ctx context.Context) (ID, error) {
+	s, err := h.scan(ctx)
 	if errors.Is(err, ErrNoSnapshots) {
 		return "", nil
 	}

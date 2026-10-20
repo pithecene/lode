@@ -294,7 +294,7 @@ All error sentinels covered ✅
 | Expired snapshot not resurrected by the scan fallback; rerun completes | `TestExpire_Resumption/interrupted_after_the_canonical_delete_is_not_resurrected` | ✅ |
 | Foreign `Files[]` paths reported in `Skipped`, never deleted; no derived path escapes the dataset | `TestExpire_PathSafety/foreign_FileRef_is_skipped`, `TestExpire_PathSafety/a_path_listed_twice_is_counted_once`, `TestExpire_PathSafety/a_snapshot_left_unexpired_reports_no_skipped_paths`, `TestExpire_PathSafety/a_failed_expiry_reports_no_skipped_paths`, `TestExpire_Partition/a_foreign_file_does_not_make_a_snapshot_mixed`, `TestExpire_PathSafety/traversal_in_a_FileRef_deletes_nothing_outside` | ✅ |
 | A legacy head with only partition manifests is committed | `TestExpire_ScannedHead/legacy_partition-only_head_is_committed` | ✅ |
-| Enumeration skips manifests deleted after listing | `TestEnumeration_ToleratesDeletion/listings_skip_a_manifest_deleted_after_listing`, `TestEnumeration_ToleratesDeletion/latest_scan_skips_a_manifest_deleted_after_listing`, `TestEnumeration_ToleratesDeletion/latest_scan_falls_back_to_another_copy_of_a_snapshot` | ✅ |
+| Enumeration skips manifests deleted after listing | `TestEnumeration_ToleratesDeletion/listings_skip_a_manifest_deleted_after_listing`, `TestLatestScan/skips_a_manifest_deleted_after_listing`, `TestLatestScan/falls_back_to_another_copy_of_a_snapshot`, `TestLatestScan/passes_over_an_expired_leftover` | ✅ |
 
 ---
 

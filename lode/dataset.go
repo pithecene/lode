@@ -328,6 +328,21 @@ func (k datasetKind) parseManifest(p string) (DatasetSnapshotID, bool) {
 	return id, id != ""
 }
 
+// notExpired is false only for an expired snapshot: one with a tombstone
+// and no canonical manifest (CONTRACT_RETENTION §Expired snapshot). An
+// expiring snapshot, its canonical manifest still present, is readable.
+func (k datasetKind) notExpired(ctx context.Context, store Store, id DatasetSnapshotID) (bool, error) {
+	absent, err := tombstones{store: store, layout: k.layout, dataset: k.id}.absent(ctx, id)
+	if err != nil || absent {
+		return absent, err
+	}
+	present, err := store.Exists(ctx, k.manifestPath(id))
+	if err != nil {
+		return false, fmt.Errorf("lode: failed to check manifest: %w", err)
+	}
+	return present, nil
+}
+
 func (k datasetKind) decode(r io.Reader) (*Manifest, error) {
 	var m Manifest
 	if err := json.NewDecoder(r).Decode(&m); err != nil {

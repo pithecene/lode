@@ -1508,8 +1508,12 @@ func TestEnumeration_ToleratesDeletion(t *testing.T) {
 			t.Errorf("ListPartitions = %v, %v; want only run_id=b", parts, err)
 		}
 	})
+}
 
-	t.Run("latest scan falls back to another copy of a snapshot", func(t *testing.T) {
+// TestLatestScan covers the pointer-less Latest scan: it tolerates
+// deletion during the scan and never serves an expired snapshot.
+func TestLatestScan(t *testing.T) {
+	t.Run("falls back to another copy of a snapshot", func(t *testing.T) {
 		mem := NewMemory()
 		hs := &hookStore{Store: mem}
 		ds := newHiveRetention(t, casHookStore{hs})
@@ -1534,7 +1538,29 @@ func TestEnumeration_ToleratesDeletion(t *testing.T) {
 		}
 	})
 
-	t.Run("latest scan skips a manifest deleted after listing", func(t *testing.T) {
+	t.Run("passes over an expired leftover", func(t *testing.T) {
+		mem := NewMemory()
+		ds := newHiveRetention(t, mem)
+		live := writeRun(t, ds, "a", "x")
+		gone := writeRun(t, ds, "b", "x")
+		legacyize(t, mem, live, gone)
+		// An interrupted expiry of the newest snapshot left a partition copy.
+		putTombstone(t, mem, gone.ID, newTombstone(gone.ID, gone.Manifest))
+		for _, k := range storeKeys(t, mem) {
+			if strings.Contains(k, string(gone.ID)) && strings.HasSuffix(k, manifestFile) && !strings.Contains(k, "partitions/") {
+				if err := mem.Delete(t.Context(), k); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+
+		latest, err := newHiveRetention(t, mem).Latest(t.Context())
+		if err != nil || latest.ID != live.ID {
+			t.Errorf("Latest = %v, %v; want %s, not the expired leftover", latest, err, live.ID)
+		}
+	})
+
+	t.Run("skips a manifest deleted after listing", func(t *testing.T) {
 		mem := NewMemory()
 		hs := &hookStore{Store: mem}
 		ds := newDefaultRetention(t, casHookStore{hs})
