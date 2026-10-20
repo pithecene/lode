@@ -467,19 +467,28 @@ func (d *dataset) loadCandidate(ctx context.Context, c expiryCandidate) (*Manife
 // every path, so a copy t does not describe belongs to another snapshot
 // with the same ID.
 func (d *dataset) describesEveryCopy(ctx context.Context, t tombstone, paths []string) (bool, error) {
-	for _, p := range d.manifestCopies(t.SnapshotID, paths) {
-		s, err := d.history.load(ctx, t.SnapshotID, p)
+	copies, err := d.loadCopies(ctx, t.SnapshotID, paths)
+	if err != nil {
+		return false, err
+	}
+	return !slices.ContainsFunc(copies, func(m *Manifest) bool { return !t.describes(m) }), nil
+}
+
+// loadCopies loads every manifest copy of snapshot id that is present at
+// paths or the canonical path, whether or not a listing showed it.
+func (d *dataset) loadCopies(ctx context.Context, id DatasetSnapshotID, paths []string) ([]*Manifest, error) {
+	var copies []*Manifest
+	for _, p := range d.manifestCopies(id, paths) {
+		s, err := d.history.load(ctx, id, p)
 		if errors.Is(err, ErrNotFound) {
 			continue
 		}
 		if err != nil {
-			return false, fmt.Errorf("lode: failed to load manifest %s: %w", p, err)
+			return nil, fmt.Errorf("lode: failed to load manifest %s: %w", p, err)
 		}
-		if !t.describes(s.Manifest) {
-			return false, nil
-		}
+		copies = append(copies, s.Manifest)
 	}
-	return true, nil
+	return copies, nil
 }
 
 // manifestCopies is where snapshot id's manifest may be: the canonical path
