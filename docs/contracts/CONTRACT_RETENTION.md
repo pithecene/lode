@@ -214,10 +214,14 @@ checks `RetainedHead` and runs the request again after a newer commit.
 
 When the pointer is absent (a dataset written before the pointer existed),
 the head is the snapshot a scan returns: the largest snapshot ID
-(CONTRACT_WRITE_API §Parent Resolution, scan fallback). Only legacy
-instant-only IDs meet this rule in practice: every version that writes
-`<instant>-<nonce>` IDs also writes the pointer, so a random nonce never
-decides which snapshot is the head. Retention protects
+(CONTRACT_WRITE_API §Parent Resolution, scan fallback). The first commit
+creates the pointer and later commits only replace it by CAS, so it is
+absent only in a dataset written before the pointer existed (or one whose
+pointer was removed by hand). Such a dataset has legacy instant-only IDs,
+and there the scan result is exactly the head `Latest` serves readers:
+retention protects that snapshot, whatever order the commits actually
+landed in. Every version that writes `<instant>-<nonce>` IDs also writes
+the pointer, so a random nonce never decides the head. Retention protects
 the snapshot Lode serves as head — what `Latest` returns — not a
 reconstruction of commit order, so it never removes the state readers see
 as current. The next commit writes the pointer, after which the pointer
@@ -550,8 +554,11 @@ Both methods return a non-nil report, also on error. On error the report
 describes the work completed before the error. After a retryable failure (a
 store error, an uncommitted head) the dataset is left in a state the next
 `Expire` or `Sweep` completes. Corruption is not retryable: an invalid or
-contradicted tombstone, or an invalid manifest, fails `Expire` and is
-reported by `Sweep` on every run until an operator repairs it. Lode never
+contradicted tombstone, or an invalid manifest, fails `Expire` whenever it
+selects the snapshot, and `Sweep` reports what it examines — tombstones,
+and the manifests it loads while settling them — on every run until an
+operator repairs it. `Sweep` does not load the manifests of live snapshots
+and does not report their corruption. Lode never
 rewrites or removes a tombstone to recover.
 
 ---
