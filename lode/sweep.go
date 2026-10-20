@@ -76,15 +76,15 @@ func (d *dataset) inventoryTombstones(ctx context.Context) (valid []tombstone, i
 	}
 	slices.Sort(keys)
 	for _, k := range keys {
-		t, ok, err := ts.recorded(ctx, k)
+		t, err := ts.recorded(ctx, k)
+		if errors.Is(err, errInvalidTombstone) {
+			invalid = append(invalid, k)
+			continue
+		}
 		if err != nil {
 			return nil, nil, err
 		}
-		if ok {
-			valid = append(valid, t)
-			continue
-		}
-		invalid = append(invalid, k)
+		valid = append(valid, t)
 	}
 	return valid, invalid, nil
 }

@@ -128,21 +128,28 @@ func isTombstoneName(key, prefix string) bool {
 	return ok
 }
 
-// recorded reads the tombstone at a listed key. valid is false unless the
-// key is canonical and the tombstone records the snapshot its own path
-// names with an inventory (CONTRACT_RETENTION §Definition); an invalid one
-// settles nothing.
-func (ts tombstones) recorded(ctx context.Context, key string) (t tombstone, valid bool, err error) {
+// errInvalidTombstone marks a listed tombstone Lode cannot trust: a key
+// that is not canonical, or content that fails validation. It settles
+// nothing (CONTRACT_RETENTION §Definition).
+var errInvalidTombstone = errors.New("lode: invalid tombstone")
+
+// recorded reads the tombstone at a listed key. errInvalidTombstone reports
+// one whose key is not canonical or that does not record the snapshot its
+// own path names with a valid inventory.
+func (ts tombstones) recorded(ctx context.Context, key string) (tombstone, error) {
 	id := DatasetSnapshotID(strings.TrimPrefix(key, ts.layout.tombstonesPrefix(ts.dataset)))
 	if !ts.isCanonicalPath(key, id) {
-		return t, false, nil
+		return tombstone{}, fmt.Errorf("%w: %s is not a canonical tombstone path", errInvalidTombstone, key)
 	}
 	data, err := ts.readRaw(ctx, key)
 	if err != nil {
-		return t, false, err
+		return tombstone{}, err
 	}
-	t, err = validTombstone(key, data, id)
-	return t, err == nil, nil
+	t, err := validTombstone(key, data, id)
+	if err != nil {
+		return tombstone{}, fmt.Errorf("%w: %w", errInvalidTombstone, err)
+	}
+	return t, nil
 }
 
 // isCanonicalPath reports whether key is a canonical store key and exactly
