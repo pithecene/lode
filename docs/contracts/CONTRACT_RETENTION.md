@@ -219,8 +219,9 @@ Only the pointer names the head. When it is absent beside any snapshot,
 `Expire` and `Sweep` return `ErrHeadUncommitted` and remove nothing. A
 tombstone counts: it shows that snapshots existed even when no manifest is
 left. A dataset with neither needs no pointer. A pointer whose content is
-not a snapshot ID (one that, joined into a path, would name another
-location) is corruption: retention fails rather than confirm it. Every commit writes the
+not a snapshot ID in the generated form (CONTRACT_CORE §Snapshot ID) is
+corruption: retention fails rather than confirm it, even if a manifest sits
+at the path it would name. Every commit writes the
 pointer, so it is missing only for the moment of a Delete+Put commit on a
 store without `ConditionalWriter`, in a dataset written before the pointer
 existed, or after a hand edit. None of these lets retention tell the head
