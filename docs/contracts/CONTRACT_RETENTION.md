@@ -216,8 +216,9 @@ until something new is committed. A caller that needs a whole partition gone
 checks `RetainedHead` and runs the request again after a newer commit.
 
 Only the pointer names the head. When it is absent beside any snapshot,
-`Expire` and `Sweep` return `ErrHeadUncommitted` and remove nothing; a
-dataset with no snapshot at all needs no pointer. Every commit writes the
+`Expire` and `Sweep` return `ErrHeadUncommitted` and remove nothing. A
+tombstone counts: it shows that snapshots existed even when no manifest is
+left. A dataset with neither needs no pointer. Every commit writes the
 pointer, so it is missing only for the moment of a Delete+Put commit on a
 store without `ConditionalWriter`, in a dataset written before the pointer
 existed, or after a hand edit. None of these lets retention tell the head
