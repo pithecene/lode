@@ -505,84 +505,56 @@ func TestSweep_Head(t *testing.T) {
 	})
 }
 
-// TestSweep_ScannedHead covers datasets with no pointer, whose head Sweep
-// finds by scanning.
-func TestSweep_ScannedHead(t *testing.T) {
-	t.Run("is held", func(t *testing.T) {
-		store := NewMemory()
-		ds := newDefaultRetention(t, store)
-		first := writeRecord(t, ds, 1)
+// TestSweep_HeadResolution covers how Sweep finds the head it holds: only
+// the pointer names it.
+func TestSweep_HeadResolution(t *testing.T) {
+	t.Run("a pointer-less dataset is refused", func(t *testing.T) {
+		mem := NewMemory()
+		ds := newDefaultRetention(t, mem)
+		older := writeRecord(t, ds, 1)
 		head := writeRecord(t, ds, 2)
-		legacyize(t, store, first, head)
-		putTombstone(t, store, head.ID, newTombstone(head.ID, head.Manifest)) // misplaced
-
-		report, err := ds.Sweep(t.Context(), SweepRequest{Grace: time.Nanosecond})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(report.Settled) != 0 || report.Objects != 0 {
-			t.Errorf("report = %+v, want the scanned head held", report)
-		}
-		assertPresent(t, ds, head)
-	})
-
-	t.Run("an expired leftover is settled", func(t *testing.T) {
-		mem := NewMemory()
-		ds := newHiveRetention(t, mem)
-		live := writeRun(t, ds, "a", "x")
-		gone := writeRun(t, ds, "b", "x")
-		legacyize(t, mem, live, gone)
-		// An interrupted expiry of the newest snapshot left a partition copy.
-		putTombstone(t, mem, gone.ID, newTombstone(gone.ID, gone.Manifest))
-		var leftover string
-		for _, k := range storeKeys(t, mem) {
-			if !strings.Contains(k, string(gone.ID)) || !strings.HasSuffix(k, manifestFile) {
-				continue
-			}
-			if strings.Contains(k, "partitions/") {
-				leftover = k
-				continue
-			}
-			if err := mem.Delete(t.Context(), k); err != nil {
-				t.Fatal(err)
-			}
-		}
-
-		report, err := ds.Sweep(t.Context(), SweepRequest{Grace: sweepGrace})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !slices.Equal(report.Settled, []DatasetSnapshotID{gone.ID}) || exists(t, mem, leftover) {
-			t.Errorf("report = %+v, leftover present %v; want the expired leftover settled", report, exists(t, mem, leftover))
-		}
-	})
-
-	t.Run("an expiring head the listing half shows is held", func(t *testing.T) {
-		mem := NewMemory()
-		lister := &listInjector{Store: mem}
-		ds := newHiveRetention(t, lister)
-		older := writeRun(t, ds, "a", "x")
-		head := writeRun(t, ds, "b", "x")
 		legacyize(t, mem, older, head)
 		putTombstone(t, mem, head.ID, newTombstone(head.ID, head.Manifest)) // misplaced
-		// The listing shows a partition copy but omits the canonical one.
-		for _, k := range storeKeys(t, mem) {
-			if strings.Contains(k, string(head.ID)) && strings.HasSuffix(k, manifestFile) && !strings.Contains(k, "partitions/") {
-				lister.hidden = append(lister.hidden, k)
-			}
+
+		if _, err := ds.Sweep(t.Context(), SweepRequest{Grace: sweepGrace}); !errors.Is(err, ErrHeadUncommitted) {
+			t.Fatalf("Sweep = %v, want ErrHeadUncommitted", err)
 		}
+		assertPresent(t, ds, head)
+	})
+
+	t.Run("a pointer-less dataset of orphans only is swept", func(t *testing.T) {
+		mem := NewMemory()
+		ds := newDefaultRetention(t, mem)
+		orphan := "datasets/events/snapshots/" + string(idAt(time.Now().Add(-48*time.Hour))) + "/data/x"
+		putObject(t, mem, orphan)
+
+		report, err := ds.Sweep(t.Context(), SweepRequest{Grace: sweepGrace})
+		if err != nil || report.Orphans != 1 || exists(t, mem, orphan) {
+			t.Fatalf("Sweep = %+v, %v; want the orphan reclaimed", report, err)
+		}
+	})
+
+	t.Run("a commit in flight settles nothing", func(t *testing.T) {
+		mem := NewMemory()
+		ds := newDefaultRetention(t, mem)
+		first := writeRecord(t, ds, 1)
+		writeRecord(t, ds, 2)
+		putTombstone(t, mem, first.ID, newTombstone(first.ID, first.Manifest))
+		setPointer(t, mem, string(idAt(time.Now()))) // its manifest is not written yet
+		orphan := "datasets/events/snapshots/" + string(idAt(time.Now().Add(-48*time.Hour))) + "/data/x"
+		putObject(t, mem, orphan)
 
 		report, err := ds.Sweep(t.Context(), SweepRequest{Grace: sweepGrace})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(report.Settled) != 0 || report.Objects != 0 {
-			t.Errorf("report = %+v, want the head held", report)
+		if len(report.Settled) != 0 || exists(t, mem, orphan) {
+			t.Errorf("report = %+v, orphan present %v; want nothing settled and the orphan reclaimed", report, exists(t, mem, orphan))
 		}
-		assertPresent(t, ds, head)
+		assertPresent(t, ds, first)
 	})
 
-	t.Run("a pointer missing beside new-form IDs stops the run", func(t *testing.T) {
+	t.Run("a pointer missing beside new-form IDs is refused", func(t *testing.T) {
 		mem := NewMemory()
 		ds := newDefaultRetention(t, mem)
 		writeRecord(t, ds, 1)
@@ -594,31 +566,6 @@ func TestSweep_ScannedHead(t *testing.T) {
 		if _, err := ds.Sweep(t.Context(), SweepRequest{Grace: sweepGrace}); !errors.Is(err, ErrHeadUncommitted) {
 			t.Fatalf("Sweep = %v, want ErrHeadUncommitted", err)
 		}
-	})
-
-	t.Run("a head the listing shows only data of is held", func(t *testing.T) {
-		mem := NewMemory()
-		lister := &listInjector{Store: mem}
-		ds := newDefaultRetention(t, lister)
-		older := writeRecord(t, ds, 1)
-		head := writeRecord(t, ds, 2)
-		legacyize(t, mem, older, head)
-		putTombstone(t, mem, head.ID, newTombstone(head.ID, head.Manifest)) // misplaced
-		// The listing shows the head's data but none of its manifests.
-		for _, k := range storeKeys(t, mem) {
-			if strings.Contains(k, string(head.ID)) && strings.HasSuffix(k, manifestFile) {
-				lister.hidden = append(lister.hidden, k)
-			}
-		}
-
-		report, err := ds.Sweep(t.Context(), SweepRequest{Grace: sweepGrace})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(report.Settled) != 0 || report.Objects != 0 {
-			t.Errorf("report = %+v, want the head held", report)
-		}
-		assertPresent(t, ds, head)
 	})
 }
 
