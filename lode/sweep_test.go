@@ -88,7 +88,7 @@ func TestSweep_Request(t *testing.T) {
 			ds := newDefaultRetention(t, store)
 			first := writeRecord(t, ds, 1)
 			writeRecord(t, ds, 2)
-			putTombstone(t, store, first.ID, first.ID, first.Manifest.Files)
+			putTombstone(t, store, first.ID, newTombstone(first.ID, first.Manifest))
 			putObject(t, store, "datasets/events/snapshots/"+string(idAt(time.Now().Add(-48*time.Hour)))+"/data/x")
 			return store, ds
 		}
@@ -347,7 +347,7 @@ func TestSweep_Head(t *testing.T) {
 		store := NewMemory()
 		ds := newDefaultRetention(t, store)
 		head := writeRecord(t, ds, 1)
-		putTombstone(t, store, head.ID, head.ID, head.Manifest.Files) // misplaced: Lode never tombstones a head
+		putTombstone(t, store, head.ID, newTombstone(head.ID, head.Manifest)) // misplaced: Lode never tombstones a head
 
 		report, err := ds.Sweep(t.Context(), SweepRequest{Grace: time.Nanosecond})
 		if err != nil {
@@ -364,7 +364,7 @@ func TestSweep_Head(t *testing.T) {
 		ds := newDefaultRetention(t, store)
 		writeRecord(t, ds, 1)
 		head := writeRecord(t, ds, 2)
-		putTombstone(t, store, head.ID, head.ID, head.Manifest.Files) // misplaced
+		putTombstone(t, store, head.ID, newTombstone(head.ID, head.Manifest)) // misplaced
 		if err := store.Delete(t.Context(), "datasets/events/latest"); err != nil {
 			t.Fatal(err)
 		}
@@ -388,7 +388,7 @@ func TestSweep_Head(t *testing.T) {
 		held := idAt(time.Now().Add(-48 * time.Hour))
 		data := "datasets/events/snapshots/" + string(held) + "/data/x"
 		putObject(t, store, data)
-		putTombstone(t, store, held, held, nil)
+		putTombstone(t, store, held, foreignTombstone(held, nil))
 		setPointer(t, store, string(held))
 
 		report, err := ds.Sweep(t.Context(), SweepRequest{Grace: sweepGrace})
@@ -419,7 +419,7 @@ func TestSweep_RejectedTombstone(t *testing.T) {
 			prefix + string(second.ID), // zero-length
 			prefix + string(third.ID),  // no inventory
 		}
-		putTombstone(t, store, first.ID, "123", first.Manifest.Files)
+		putTombstone(t, store, first.ID, newTombstone("123", first.Manifest))
 		if err := store.Put(t.Context(), invalid[1], strings.NewReader("")); err != nil {
 			t.Fatal(err)
 		}
@@ -457,13 +457,32 @@ func TestSweep_RejectedTombstone(t *testing.T) {
 		assertPresent(t, ds, third)
 	})
 
+	t.Run("same files with another commit instant settles nothing", func(t *testing.T) {
+		store := NewMemory()
+		ds := newDefaultRetention(t, store)
+		live := writeRecord(t, ds, 1)
+		writeRecord(t, ds, 2)
+		earlier := *live.Manifest
+		earlier.CreatedAt = earlier.CreatedAt.Add(-time.Hour)
+		putTombstone(t, store, live.ID, newTombstone(live.ID, &earlier))
+
+		report, err := ds.Sweep(t.Context(), SweepRequest{Grace: sweepGrace})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(report.Settled) != 0 || len(report.Unparseable) != 1 {
+			t.Errorf("report = %+v, want nothing settled and the tombstone reported", report)
+		}
+		assertPresent(t, ds, live)
+	})
+
 	t.Run("another inventory settles nothing", func(t *testing.T) {
 		store := NewMemory()
 		ds := newDefaultRetention(t, store)
 		live := writeRecord(t, ds, 1)
 		writeRecord(t, ds, 2)
 		// A tombstone left by an earlier snapshot with the live one's ID.
-		putTombstone(t, store, live.ID, live.ID, []FileRef{{Path: "datasets/events/snapshots/" + string(live.ID) + "/data/old", SizeBytes: 1}})
+		putTombstone(t, store, live.ID, foreignTombstone(live.ID, []FileRef{{Path: "datasets/events/snapshots/" + string(live.ID) + "/data/old", SizeBytes: 1}}))
 
 		for _, dryRun := range []bool{true, false} {
 			report, err := ds.Sweep(t.Context(), SweepRequest{Grace: sweepGrace, DryRun: dryRun})
@@ -485,7 +504,7 @@ func TestSweep_RejectedTombstone(t *testing.T) {
 		writeRun(t, ds, "b", "x")
 		// An interrupted expiry left the canonical copy; a partition copy left by
 		// an earlier snapshot with the same ID lists other objects.
-		putTombstone(t, store, run.ID, run.ID, run.Manifest.Files)
+		putTombstone(t, store, run.ID, newTombstone(run.ID, run.Manifest))
 		stray := "datasets/events/partitions/run_id=a/event_type=y/segments/" + string(run.ID) + "/manifest.json"
 		other := *run.Manifest
 		other.Files = []FileRef{{Path: "datasets/events/partitions/run_id=a/event_type=y/segments/" + string(run.ID) + "/data/old", SizeBytes: 1}}
@@ -529,7 +548,7 @@ func TestSweep_RejectedTombstone(t *testing.T) {
 		ds := newDefaultRetention(t, store)
 		head := writeRecord(t, ds, 1)
 		tomb := "datasets/events/expired/" + string(head.ID)
-		putTombstone(t, store, head.ID, head.ID, []FileRef{{Path: "datasets/events/snapshots/" + string(head.ID) + "/data/old", SizeBytes: 1}})
+		putTombstone(t, store, head.ID, foreignTombstone(head.ID, []FileRef{{Path: "datasets/events/snapshots/" + string(head.ID) + "/data/old", SizeBytes: 1}}))
 
 		report, err := ds.Sweep(t.Context(), SweepRequest{Grace: sweepGrace})
 		if err != nil {

@@ -177,13 +177,13 @@ func (r sweepRun) settleOne(ctx context.Context, t tombstone, report *SweepRepor
 }
 
 // contradicted reports whether a manifest copy of t's snapshot that is
-// still present records another inventory. With none listed, there is
-// nothing to contradict it.
+// still present is one t does not describe: another commit instant or
+// inventory. With none listed, there is nothing to contradict it.
 func (r sweepRun) contradicted(ctx context.Context, t tombstone, listed []string, pending bool) (bool, error) {
 	if !pending {
 		return false, nil
 	}
-	matches, err := r.ds.copiesMatch(ctx, t.SnapshotID, r.ds.allManifestPaths(t.SnapshotID, listed, t.Files), t.Files)
+	matches, err := r.ds.describesEveryCopy(ctx, t, r.ds.allManifestPaths(t.SnapshotID, listed, t.Files))
 	return !matches, err
 }
 
