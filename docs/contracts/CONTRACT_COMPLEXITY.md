@@ -109,8 +109,8 @@ set, not the store calls. Sorting adds O(N log N) CPU, no store calls.
 
 | Operation | Path | Store Calls | Memory |
 |-----------|------|-------------|--------|
-| Expire (K selected) | Cold | 1 List + (K + 1) pointer Gets (each + at most 1 Exists) + K manifest Gets + K tombstone Gets + K tombstone writes (each + at most 1 read-back Get) + Σ(manifests + files) Deletes | O(N + K × manifest) |
-| Sweep (T tombstones, D deleted) | Cold | 2 Lists + 1 pointer Get + T Gets + ≤ T manifest Gets + D Deletes | O(N + T) |
+| Expire (K selected) | Cold | 1 List + (K + 1) pointer Gets (each + at most 1 Exists) + K manifest Gets + K tombstone Gets + 1 Get per manifest copy of an already-tombstoned snapshot + K tombstone writes (each + at most 1 read-back Get) + Σ(manifests + files) Deletes | O(N + K × manifest) |
+| Sweep (T tombstones, D deleted) | Cold | 2 Lists + 1 pointer Get + T Gets + 1 Get per remaining manifest copy of a tombstoned snapshot + D Deletes | O(N + Σ tombstone inventories) |
 | Snapshot(id), Read(id) expired | Hot miss | +1 Get (tombstone) | O(1) |
 
 `Expire` with `Partition` lists only that partition subtree; otherwise N is
