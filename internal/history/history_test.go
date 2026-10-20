@@ -413,20 +413,26 @@ func TestLatest(t *testing.T) {
 			t.Fatalf("pointer = %q, memory = %q/%q", s.objects[pointer], h.head, h.pointer)
 		}
 	})
-	t.Run("stale pointer heals against its own content", func(t *testing.T) {
+	// A pointer naming a snapshot with no manifest may be a commit in
+	// flight; rewriting it would roll the head back over that commit.
+	t.Run("stale pointer is left for the next commit", func(t *testing.T) {
 		s := newMemStore()
 		put(t, s, "1", "one")
 		s.objects[pointer] = []byte("9")
 		h := newTestHistory(casStore{s})
+		h.remember("1", "1")
 		got, err := h.Latest(t.Context())
 		if err != nil || got.ID != "1" {
 			t.Fatalf("got %+v, %v", got, err)
 		}
-		if !slices.Contains(s.ops, "cas "+pointer+" 9") || string(s.objects[pointer]) != "1" {
+		if slices.Contains(s.ops, "cas "+pointer+" 9") || string(s.objects[pointer]) != "9" {
 			t.Fatalf("ops = %v, pointer = %q", s.ops, s.objects[pointer])
 		}
+		if h.head != "" || h.pointer != "" {
+			t.Fatalf("memory = %q/%q, want it dropped", h.head, h.pointer)
+		}
 	})
-	t.Run("failed heal still returns the scan result", func(t *testing.T) {
+	t.Run("failed creation still returns the scan result", func(t *testing.T) {
 		s := newMemStore()
 		put(t, s, "1", "one")
 		s.fail = failOn("cas", "", errBoom)
@@ -434,6 +440,9 @@ func TestLatest(t *testing.T) {
 		got, err := h.Latest(t.Context())
 		if err != nil || got.ID != "1" {
 			t.Fatalf("got %+v, %v", got, err)
+		}
+		if h.head != "" || h.pointer != "" {
+			t.Fatalf("memory = %q/%q, want none for a pointer not written", h.head, h.pointer)
 		}
 	})
 	t.Run("empty history", func(t *testing.T) {

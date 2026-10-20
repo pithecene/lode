@@ -428,6 +428,7 @@ proportional to dataset/volume size on remote stores (S3/R2).
 | Pointer tracks most recent | `TestDataset_LatestPointer/updates_across_writes` |
 | Backward compat: scan fallback | `TestDataset_LatestPointer/backward_compat` |
 | Corrupt pointer: scan fallback | `TestDataset_LatestPointer/corrupt_pointer` |
+| Stale pointer left for the commit in flight; next commit parents on it | `TestDataset_LatestPointer_CommitInFlight`, `TestLatest/stale_pointer_is_left_for_the_next_commit` |
 | Pointer paths for all layouts | `TestDataset_LatestPointer/all_layouts` |
 | Write: 0 List calls after pointer | `TestDataset_Write_Pointer/latest_pointer_skips_scan` |
 | StreamWrite: 0 List calls | `TestDataset_StreamWrite_Lineage/latest_pointer_skips_scan` |

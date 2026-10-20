@@ -7,7 +7,7 @@
 // History owns everything about the head that the containers would otherwise
 // duplicate: the persisted pointer, the in-process memory of the last head
 // this writer observed (the CAS expected value for the next advance),
-// self-heal after a scan, the scan itself, and manifest I/O.
+// creating a missing pointer after a scan, the scan itself, and manifest I/O.
 //
 // The package does not import lode: it reads the store through the Store
 // subset below and returns the sentinels the container passes in (Errors),
@@ -396,29 +396,41 @@ func (h *History[ID, M]) Forget() {
 }
 
 // Latest returns the head snapshot: through the pointer when it names a
-// loadable snapshot, otherwise by scan — and then self-heals the pointer (a
-// CAS conflict there means a concurrent commit already advanced it). The
-// result is remembered so a later advance expects the right pointer content.
+// loadable snapshot, otherwise by scan. A missing pointer is then created
+// from the scan; a stale one is left for the next commit to replace. A
+// pointer naming a snapshot with no manifest may be a commit in flight
+// (Advance writes the pointer first), and overwriting it would roll the
+// head back over that commit. The head is remembered only while the pointer
+// is known to name it; otherwise the memory is dropped, so the next Resolve
+// consults storage and parents on that commit once it lands.
 func (h *History[ID, M]) Latest(ctx context.Context) (*Snapshot[ID, M], error) {
-	var observed string
-	if id, err := h.readPointer(ctx); err == nil {
+	id, err := h.readPointer(ctx)
+	if err == nil {
 		if s, err := h.Snapshot(ctx, id); err == nil {
 			h.remember(id, string(id))
 			return s, nil
 		}
-		observed = string(id) // stale: names a missing snapshot
 	}
+	pointerMissing := errors.Is(err, h.errs.NotFound)
 
 	s, err := h.scan(ctx)
 	if err != nil {
 		return nil, err
 	}
-	// Self-heal is best-effort: a conflict means another writer repaired or
-	// advanced the pointer first, and any other failure leaves the next
-	// Latest to scan again. Either way the scan result stands.
-	_ = h.writePointer(ctx, observed, s.ID)
-	h.remember(s.ID, string(s.ID))
+	h.Forget()
+	if pointerMissing {
+		h.createPointer(ctx, s.ID)
+	}
 	return s, nil
+}
+
+// createPointer creates a missing pointer naming head, the scan's result.
+// Best-effort: a conflict means a concurrent commit created it first, and
+// any other failure leaves the next Latest to scan again.
+func (h *History[ID, M]) createPointer(ctx context.Context, head ID) {
+	if h.writePointer(ctx, "", head) == nil {
+		h.remember(head, string(head))
+	}
 }
 
 // Resolve returns the ID a new commit parents on ("" for the first) and the
