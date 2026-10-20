@@ -497,8 +497,11 @@ An orphaned object MUST NOT be deleted unless it is older than
 `SweepRequest.Grace`. Its age is the current time minus the instant encoded
 in the snapshot ID in its path (§Selection, `Before`), so every data path
 carries its creation instant and no `Stat` capability is required from the
-store. Clock skew between the writing and the sweeping host shifts the
-effective grace by the skew.
+store. A writer whose clock is behind the sweeper's (skew, or a rollback)
+stamps instants that already look old, shrinking the effective grace by the
+difference: `Grace` MUST exceed the longest expected write plus the largest
+clock difference between any writing host and the sweeping one, or an
+in-flight write's objects can be reclaimed before its manifest lands.
 
 Rationale: an in-flight write has written data objects but not yet its
 manifest. The grace period MUST exceed the longest expected write. There is
@@ -612,8 +615,8 @@ selects, T the tombstones, D the objects deleted (manifests and data alike).
 
 | Operation | Store Calls | Memory |
 |-----------|-------------|--------|
-| `Expire` | 1 List (the `Partition` subtree, else the snapshot prefix) + (K + 1) pointer Gets, each followed by at most one `Exists` (and one List of the snapshot prefix when the named snapshot has no canonical manifest, to find a legacy partition-only copy) + K manifest Gets + K tombstone Gets (the recorded inventory, if any; also one per requested ID with no manifest) + 1 Get per manifest path of each selected snapshot (every copy is checked against the tombstone before it is written) + K tombstone writes (each + at most 1 read-back Get when it already exists) + Σ(manifests + files) Deletes; when the pointer is absent, +1 List of the whole snapshot prefix (even for a `Partition` request) to tell an empty dataset from a refused one | O(N + K × manifest) |
-| `Sweep` | 2 Lists (tombstones, snapshot prefix) + 1 pointer Get + T tombstone Gets + 1 Get per manifest path of each tombstoned snapshot with anything left in the listing + 1 `Exists` per manifest path of each group past grace with no listed manifest, whether or not it is then reclaimed (stopping at the first present) + D Deletes; when the pointer names a snapshot, 1 `Exists` (+1 List when it has no canonical manifest) to tell whether it is committed | O(N + Σ tombstone inventories) |
+| `Expire` | 1 List (the `Partition` subtree, else the snapshot prefix) + (K + 1) pointer Gets, each followed by at most one `Exists` (and one List of the snapshot prefix when the named snapshot has no canonical manifest, to find a legacy partition-only copy) + K manifest Gets + K tombstone Gets (the recorded inventory, if any; also one per requested ID with no manifest) + 1 Get per manifest path of each selected snapshot (every copy is checked against the tombstone before it is written) + K tombstone writes (each + at most 1 read-back Get when it already exists) + Σ(manifests + files) Deletes; when the pointer is absent, +1 List of the whole snapshot prefix (even for a `Partition` request) to tell an empty dataset from a refused one, and +1 List of `expired/` when that listing shows no manifest | O(N + K × manifest) |
+| `Sweep` | 2 Lists (tombstones, snapshot prefix) + 1 pointer Get + T tombstone Gets + 1 Get per manifest path of each tombstoned snapshot with anything left in the listing + 1 `Exists` per manifest path of each group past grace with no listed manifest, whether or not it is then reclaimed (stopping at the first present) + D Deletes; when the pointer names a snapshot, 1 `Exists` (+1 List when it has no canonical manifest) to tell whether it is committed | O(N + Σ tombstone inventories + the manifest copies of one snapshot at a time) |
 | `Snapshot(id)`, `Read(id)` expired path | +1 Get (tombstone) | O(1) |
 
 Pointer Gets: one preflight read plus one re-read per selected snapshot,
