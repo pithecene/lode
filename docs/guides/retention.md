@@ -175,9 +175,12 @@ flowchart TD
     O -- no --> K
 ```
 
-`Sweep` never trusts a listing to tell it a manifest is gone: before
-settling a snapshot or reclaiming an orphan it checks the manifest paths in
-the store, because a store's listing can lag behind its writes.
+`Sweep` does not take a listing's word that a manifest is gone: before
+settling a snapshot the listing shows something of, or reclaiming an
+orphan, it checks the manifest paths in the store, because a store's
+listing can lag behind its writes. A tombstoned snapshot the listing shows
+nothing of is not probed in that run; a later run whose listing shows its
+leftovers handles them.
 
 Reclaim works per snapshot, not per file. Every object under a live
 snapshot's data prefix is kept, whether or not its manifest lists it, and

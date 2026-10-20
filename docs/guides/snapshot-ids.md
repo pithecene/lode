@@ -78,17 +78,21 @@ Two IDs coincide only when two writes begin in the same nanosecond **and**
 draw the same 64-bit nonce, a 1 in 2⁶⁴ chance for each such pair. Lode does
 not reserve IDs against existing ones, so should it happen:
 
-- **While the earlier snapshot exists**, the colliding commit fails on its
-  create-only manifest write. By then it has already moved the `latest`
-  pointer (Lode writes the pointer before the manifest), so the pointer can
-  be left naming the earlier snapshot until the next commit.
+- **While the earlier snapshot exists**, the colliding write fails on the
+  first path both share. If that is a data file, it fails with
+  `ErrPathExists` while staging, before touching the pointer. If their data
+  paths differ (other partitions), it fails at its create-only manifest
+  write instead, after it has already moved the `latest` pointer (Lode
+  writes the pointer before the manifest), so the pointer can be left
+  naming the earlier snapshot until the next commit.
 - **After the earlier snapshot expired**, its tombstone records that
   snapshot's commit time and file list. Retention acts on a tombstone only
   against a manifest it describes, so the new snapshot is never deleted by
   it: `Expire` naming the ID returns an error, and `Sweep` reports the
-  tombstone in `Unparseable` and keeps the snapshot's data. The one exposure is the moment while
-  the new write is staging data, before its manifest exists: a `Sweep` then
-  cannot tell that data from the expired snapshot's leftovers.
+  tombstone in `Unparseable` and keeps the snapshot's data. The one
+  exposure is the moment while the new write is staging data, before its
+  manifest exists: nothing yet tells that data from the expired snapshot's
+  leftovers, so a `Sweep`, or an `Expire` naming the ID, can delete it.
 
 Instant-only IDs collided whenever two writes shared a nanosecond, with
 the same effects; the nonce makes that a 2⁻⁶⁴ event.
