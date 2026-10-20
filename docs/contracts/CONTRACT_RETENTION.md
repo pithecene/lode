@@ -47,10 +47,11 @@ commits never mutate existing state. Retention does not weaken this:
   manifest (§Tombstone): retention refuses to act on it, so the new
   snapshot is never deleted by it, and is instead held — reported, never
   expired or reclaimed — since the tombstone cannot be removed. The one
-  exposure is a `Sweep` that runs while the reusing write is staging data,
-  before any manifest of it exists: nothing yet tells that data from the
-  expired snapshot's leftovers, and it is reclaimed. Lode accepts this
-  2⁻⁶⁴ event rather than check every write against the tombstones.
+  exposure is the window while the reusing write is staging data, before
+  any manifest of it exists: nothing yet tells that data from the expired
+  snapshot's leftovers, so a `Sweep`, or an `Expire` naming the ID, can
+  delete it then. Lode accepts this 2⁻⁶⁴ event rather than check every
+  write against the tombstones.
 
 Immutable means *unchanging while it exists*, not *unremovable*.
 
@@ -194,6 +195,10 @@ snapshot MUST be reported under `Mixed` and MUST NOT be expired by
 `Partition` alone. It MAY be expired by a request that names it in `IDs`
 without `Partition`.
 
+Only the snapshot's own data files decide (§Order of operations, step 4): a
+`FileRef` outside the dataset's data topology is never deleted, so it is
+reported in `Skipped` and never makes a snapshot mixed.
+
 ### Head protection
 
 The head MUST NOT be expired. `Expire` MUST read the pointer **after**
@@ -207,7 +212,10 @@ checks `RetainedHead` and runs the request again after a newer commit.
 
 When the pointer is absent (a dataset written before the pointer existed),
 the head is the snapshot a scan returns: the largest snapshot ID
-(CONTRACT_WRITE_API §Parent Resolution, scan fallback). Retention protects
+(CONTRACT_WRITE_API §Parent Resolution, scan fallback). Only legacy
+instant-only IDs meet this rule in practice: every version that writes
+`<instant>-<nonce>` IDs also writes the pointer, so a random nonce never
+decides which snapshot is the head. Retention protects
 the snapshot Lode serves as head — what `Latest` returns — not a
 reconstruction of commit order, so it never removes the state readers see
 as current. The next commit writes the pointer, after which the pointer
