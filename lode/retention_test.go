@@ -215,6 +215,17 @@ func rewriteManifest(t *testing.T, store Store, p string, m *Manifest) {
 	}
 }
 
+// rewriteCopies replaces every manifest copy of snapshot id with m, as one
+// commit would have written them.
+func rewriteCopies(t *testing.T, store Store, id DatasetSnapshotID, m *Manifest) {
+	t.Helper()
+	for _, k := range storeKeys(t, store) {
+		if strings.Contains(k, string(id)) && strings.HasSuffix(k, manifestFile) {
+			rewriteManifest(t, store, k, m)
+		}
+	}
+}
+
 // idAt is the snapshot ID a write beginning at t would get, with a zero
 // nonce.
 func idAt(t time.Time) DatasetSnapshotID {
@@ -412,11 +423,7 @@ func TestExpire_Partition(t *testing.T) {
 		// A path outside the dataset is never deleted, so it cannot decide.
 		m := *run.Manifest
 		m.Files = append(slices.Clone(m.Files), FileRef{Path: "elsewhere/x", SizeBytes: 1})
-		for _, k := range storeKeys(t, mem) {
-			if strings.Contains(k, string(run.ID)) && strings.HasSuffix(k, manifestFile) {
-				rewriteManifest(t, mem, k, &m)
-			}
-		}
+		rewriteCopies(t, mem, run.ID, &m)
 
 		report, err := ds.Expire(t.Context(), ExpireRequest{Partition: "run_id=a"})
 		if err != nil {
@@ -948,6 +955,27 @@ func TestExpire_ReusedID(t *testing.T) {
 		assertPresent(t, ds, first)
 	})
 
+	t.Run("a fresh expiry checks every manifest copy", func(t *testing.T) {
+		mem := NewMemory()
+		ds := newHiveRetention(t, mem)
+		run := writeRun(t, ds, "a", "x", "y")
+		writeRun(t, ds, "b", "x")
+		// No tombstone yet; one partition copy is another snapshot's.
+		stray := "datasets/events/partitions/run_id=a/event_type=y/segments/" + string(run.ID) + "/manifest.json"
+		other := *run.Manifest
+		other.CreatedAt = other.CreatedAt.Add(-time.Hour)
+		rewriteManifest(t, mem, stray, &other)
+
+		if _, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{run.ID}}); err == nil {
+			t.Fatal("Expire recorded a tombstone a manifest copy contradicts")
+		}
+		tombstoned, _ := mem.Exists(t.Context(), "datasets/events/expired/"+string(run.ID))
+		kept, _ := mem.Exists(t.Context(), stray)
+		if tombstoned || !kept {
+			t.Errorf("tombstone written %v, stray copy kept %v; want neither change", tombstoned, kept)
+		}
+	})
+
 	t.Run("tombstone of another inventory is refused", func(t *testing.T) {
 		mem := NewMemory()
 		ds := newDefaultRetention(t, mem)
@@ -1132,7 +1160,7 @@ func TestExpire_PathSafety(t *testing.T) {
 		m := *run.Manifest
 		escape := "datasets/events/partitions/run_id=a/../../../other/partitions/x/segments/" + string(run.ID) + "/data/f"
 		m.Files = append(m.Files, FileRef{Path: escape})
-		rewriteManifest(t, store, "datasets/events/segments/"+string(run.ID)+"/manifest.json", &m)
+		rewriteCopies(t, store, run.ID, &m)
 
 		report, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{run.ID}})
 		if err != nil {

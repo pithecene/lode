@@ -369,8 +369,29 @@ func (r expiryRun) retain(ctx context.Context, out expiryOutcome) (expiryOutcome
 var errSnapshotGone = errors.New("lode: snapshot already gone")
 
 // plan finds the tombstone to work from, the one recorded or the one this
-// run would record from the manifest.
+// run would record from the manifest, and checks it against every manifest
+// copy this expiry would delete before anything is written.
 func (r expiryRun) plan(ctx context.Context, c expiryCandidate) (expiryPlan, error) {
+	plan, err := r.tombstonePlan(ctx, c)
+	if err != nil {
+		return plan, err
+	}
+	// A copy the tombstone does not describe (malformed, or of an earlier
+	// snapshot with the same ID) must never be deleted under it; every path
+	// this expiry would delete is checked, listed or not.
+	matches, err := r.ds.describesEveryCopy(ctx, plan.tomb, r.ds.allManifestPaths(c.id, c.paths, plan.tomb.Files))
+	if err != nil {
+		return expiryPlan{}, err
+	}
+	if !matches {
+		return expiryPlan{}, fmt.Errorf("lode: tombstone for %s records another snapshot than its manifest", c.id)
+	}
+	return plan, nil
+}
+
+// tombstonePlan picks the tombstone: the recorded one, else a new one from
+// the manifest. errSnapshotGone means neither is left.
+func (r expiryRun) tombstonePlan(ctx context.Context, c expiryCandidate) (expiryPlan, error) {
 	// A candidate selected by its tombstone is checked for a manifest too:
 	// one may have appeared since the listing.
 	m, err := r.ds.loadCandidate(ctx, c)
@@ -387,16 +408,6 @@ func (r expiryRun) plan(ctx context.Context, c expiryCandidate) (expiryPlan, err
 		return expiryPlan{tomb: newTombstone(c.id, m), manifest: m}, nil
 	case err != nil:
 		return expiryPlan{}, err
-	}
-	// A tombstone left by an earlier snapshot with the same ID must never
-	// steer deletes of this one, even when no copy was found above: every
-	// path this expiry would delete is checked.
-	matches, err := r.ds.describesEveryCopy(ctx, t, r.ds.allManifestPaths(c.id, c.paths, t.Files))
-	if err != nil {
-		return expiryPlan{}, err
-	}
-	if !matches {
-		return expiryPlan{}, fmt.Errorf("lode: tombstone for %s records another snapshot than its manifest", c.id)
 	}
 	return expiryPlan{tomb: t, recorded: true, manifest: m}, nil
 }
