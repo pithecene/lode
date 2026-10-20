@@ -491,7 +491,7 @@ func TestExpire_DryRun_FailsWhereARealRunWould(t *testing.T) {
 	ds := newDefaultRetention(t, mem)
 	first := writeRecord(t, ds, 1)
 	writeRecord(t, ds, 2)
-	putTombstone(t, mem, first.ID, "123")
+	putTombstone(t, mem, first.ID, "123", first.Manifest.Files)
 
 	report, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{first.ID}, DryRun: true})
 	if err == nil || len(report.Expired) != 0 {
@@ -526,7 +526,7 @@ func TestExpire_ZeroLengthTombstone(t *testing.T) {
 	}
 }
 
-func TestExpire_TombstoneRecordsWholeManifest(t *testing.T) {
+func TestExpire_TombstoneRecordsTheInventory(t *testing.T) {
 	store := NewMemory()
 	ds := newDefaultRetention(t, store)
 	first := writeRecord(t, ds, 1)
@@ -538,13 +538,75 @@ func TestExpire_TombstoneRecordsWholeManifest(t *testing.T) {
 	if _, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{first.ID}}); err != nil {
 		t.Fatal(err)
 	}
-	ts, err := newDefaultTombstones(t, ds).read(t.Context(), "datasets/events/expired/"+string(first.ID))
+	ts, found, err := newDefaultTombstones(t, ds).lookup(t.Context(), first.ID)
+	if err != nil || !found {
+		t.Fatalf("lookup = %v, %v; want the tombstone", found, err)
+	}
+	if !slices.Equal(ts.Files, m.Files) {
+		t.Errorf("inventory = %v, want the manifest's Files[] %v", ts.Files, m.Files)
+	}
+}
+
+func TestExpire_ResumesFromTombstoneWithNoManifestLeft(t *testing.T) {
+	mem := NewMemory()
+	hs := &hookStore{Store: mem}
+	ds := newHiveRetention(t, casHookStore{hs})
+	run := writeRun(t, ds, "a", "x", "y")
+	writeRun(t, ds, "b", "x")
+
+	// Every manifest is deleted, then the second data delete fails.
+	injected := errors.New("injected")
+	deletes := 0
+	hs.onDelete = func(p string) error {
+		if !strings.Contains(p, "/data/") {
+			return nil
+		}
+		if deletes++; deletes == 2 {
+			return injected
+		}
+		return nil
+	}
+	first, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{run.ID}})
+	if !errors.Is(err, injected) {
+		t.Fatalf("Expire = %v, want the injected error", err)
+	}
+	hs.onDelete = nil
+
+	// The same request selects the snapshot by its tombstone and finishes.
+	second, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{run.ID}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ts.SnapshotID != first.ID || ts.Objects != len(m.Files) || ts.Bytes != totalBytes(m.Files) {
-		t.Errorf("tombstone = %+v, want %d objects / %d bytes (the whole Files[])", ts, len(m.Files), totalBytes(m.Files))
+	if !slices.Equal(second.Expired, []DatasetSnapshotID{run.ID}) {
+		t.Errorf("rerun Expired = %v, want [%s]", second.Expired, run.ID)
 	}
+	// Each run counts only what it deleted; together, the whole snapshot.
+	if first.Objects != 1 || second.Objects != 1 || first.Bytes+second.Bytes != totalBytes(run.Manifest.Files) {
+		t.Errorf("Objects %d+%d, Bytes %d+%d; want 1+1 and %d bytes in total",
+			first.Objects, second.Objects, first.Bytes, second.Bytes, totalBytes(run.Manifest.Files))
+	}
+	assertGone(t, mem, ds, run)
+
+	// Once finished, the snapshot is no longer selected.
+	third, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{run.ID}})
+	if err != nil || third.Objects != 0 {
+		t.Errorf("third run = %+v, %v; want nothing left to count", third, err)
+	}
+}
+
+func TestExpire_TombstoneWithoutInventory_IsCorrupt(t *testing.T) {
+	mem := NewMemory()
+	ds := newDefaultRetention(t, mem)
+	first := writeRecord(t, ds, 1)
+	writeRecord(t, ds, 2)
+	body := `{"snapshot_id":"` + string(first.ID) + `"}`
+	if err := mem.Put(t.Context(), "datasets/events/expired/"+string(first.ID), strings.NewReader(body)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{first.ID}}); err == nil {
+		t.Fatal("Expire accepted a tombstone with no inventory")
+	}
+	assertPresent(t, ds, first)
 }
 
 func TestExpire_TraversalInFileRef_DeletesNothingOutside(t *testing.T) {
@@ -628,7 +690,7 @@ func TestExpire_ExistingTombstone(t *testing.T) {
 			ds := newDefaultRetention(t, wrap(mem))
 			first := writeRecord(t, ds, 1)
 			writeRecord(t, ds, 2)
-			putTombstone(t, mem, first.ID, first.ID)
+			putTombstone(t, mem, first.ID, first.ID, first.Manifest.Files)
 
 			if _, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{first.ID}}); err != nil {
 				t.Fatal(err)
@@ -640,7 +702,7 @@ func TestExpire_ExistingTombstone(t *testing.T) {
 			ds := newDefaultRetention(t, wrap(mem))
 			first := writeRecord(t, ds, 1)
 			writeRecord(t, ds, 2)
-			putTombstone(t, mem, first.ID, "123")
+			putTombstone(t, mem, first.ID, "123", first.Manifest.Files)
 
 			report, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{first.ID}})
 			if err == nil {
@@ -654,10 +716,15 @@ func TestExpire_ExistingTombstone(t *testing.T) {
 	}
 }
 
-func putTombstone(t *testing.T, store Store, at, records DatasetSnapshotID) {
+// putTombstone writes a tombstone at expired/<at> that records snapshot
+// records with the given inventory, as an earlier run would have.
+func putTombstone(t *testing.T, store Store, at, records DatasetSnapshotID, files []FileRef) {
 	t.Helper()
-	body := `{"snapshot_id":"` + string(records) + `"}`
-	if err := store.Put(t.Context(), "datasets/events/expired/"+string(at), strings.NewReader(body)); err != nil {
+	data, err := json.Marshal(newTombstone(records, files))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Put(t.Context(), "datasets/events/expired/"+string(at), bytes.NewReader(data)); err != nil {
 		t.Fatal(err)
 	}
 }

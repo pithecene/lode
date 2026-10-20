@@ -11,17 +11,20 @@ import (
 )
 
 // tombstone is the persisted record of an expiry (CONTRACT_RETENTION
-// §Tombstone). It records intent, not outcome: the object count and bytes
-// are the manifest's whole Files[], not what was deleted.
+// §Tombstone). It carries the snapshot's inventory, copied from the
+// manifest before anything is deleted, so every later step works from the
+// tombstone rather than from manifests that may already be gone.
 type tombstone struct {
 	SnapshotID  DatasetSnapshotID `json:"snapshot_id"`
 	RequestedAt time.Time         `json:"requested_at"`
-	Objects     int               `json:"objects"`
-	Bytes       int64             `json:"bytes"`
+	Files       []FileRef         `json:"files"`
 }
 
-func newTombstone(id DatasetSnapshotID, planned []FileRef) tombstone {
-	return tombstone{SnapshotID: id, RequestedAt: time.Now().UTC(), Objects: len(planned), Bytes: totalBytes(planned)}
+func newTombstone(id DatasetSnapshotID, files []FileRef) tombstone {
+	if files == nil {
+		files = []FileRef{} // an inventory is never null, so absence means corruption
+	}
+	return tombstone{SnapshotID: id, RequestedAt: time.Now().UTC(), Files: files}
 }
 
 // tombstones is a dataset's tombstone directory. Tombstones are created
@@ -40,8 +43,8 @@ func (ts tombstones) path(id DatasetSnapshotID) string {
 	return ts.layout.tombstonePath(ts.dataset, id)
 }
 
-// record creates the tombstone, or confirms that an existing one records
-// the same snapshot: the same expiry, repeated or concurrent.
+// record creates the tombstone, or accepts the one an earlier or concurrent
+// run recorded for the same snapshot.
 func (ts tombstones) record(ctx context.Context, t tombstone) error {
 	p := ts.path(t.SnapshotID)
 	data, err := json.Marshal(t)
@@ -50,7 +53,10 @@ func (ts tombstones) record(ctx context.Context, t tombstone) error {
 	}
 	err = ts.create(ctx, p, data)
 	if errors.Is(err, ErrSnapshotConflict) || errors.Is(err, ErrPathExists) {
-		return ts.confirm(ctx, p, t.SnapshotID)
+		if _, found, err := ts.lookup(ctx, t.SnapshotID); err != nil || found {
+			return err
+		}
+		return fmt.Errorf("lode: tombstone %s exists but reads as absent", p)
 	}
 	if err != nil {
 		return fmt.Errorf("lode: failed to write tombstone %s: %w", p, err)
@@ -67,51 +73,40 @@ func (ts tombstones) create(ctx context.Context, p string, data []byte) error {
 	return ts.store.Put(ctx, p, bytes.NewReader(data))
 }
 
-// check is record without the write: it fails exactly where record would.
-// An absent tombstone would be created, and so would a zero-length one on a
-// ConditionalWriter (a CAS from "" matches it); anything else must record
-// this snapshot.
-func (ts tombstones) check(ctx context.Context, id DatasetSnapshotID) error {
+// lookup returns the tombstone recorded for id. found is false when there
+// is none, or when a ConditionalWriter holds only a zero-length object that
+// record would replace (a CAS from "" matches it). Anything else must be a
+// valid tombstone of this snapshot; otherwise it is corruption.
+func (ts tombstones) lookup(ctx context.Context, id DatasetSnapshotID) (t tombstone, found bool, err error) {
 	p := ts.path(id)
 	data, err := ts.readRaw(ctx, p)
 	if errors.Is(err, ErrNotFound) {
-		return nil
+		return t, false, nil
 	}
 	if err != nil {
-		return err
+		return t, false, err
 	}
 	if _, cas := ts.store.(ConditionalWriter); cas && len(data) == 0 {
-		return nil
+		return t, false, nil
 	}
-	return confirmTombstone(p, data, id)
+	t, err = validTombstone(p, data, id)
+	return t, err == nil, err
 }
 
-// confirm fails unless the tombstone at p records snapshot id.
-func (ts tombstones) confirm(ctx context.Context, p string, id DatasetSnapshotID) error {
-	data, err := ts.readRaw(ctx, p)
-	if err != nil {
-		return err
-	}
-	return confirmTombstone(p, data, id)
-}
-
-func confirmTombstone(p string, data []byte, id DatasetSnapshotID) error {
-	t, err := decodeTombstone(p, data)
-	if err != nil {
-		return err
+// validTombstone decodes data and requires it to record snapshot id and to
+// carry an inventory.
+func validTombstone(p string, data []byte, id DatasetSnapshotID) (tombstone, error) {
+	var t tombstone
+	if err := json.Unmarshal(data, &t); err != nil {
+		return t, fmt.Errorf("lode: failed to decode tombstone %s: %w", p, err)
 	}
 	if t.SnapshotID != id {
-		return fmt.Errorf("lode: tombstone %s records snapshot %q, not %q", p, t.SnapshotID, id)
+		return t, fmt.Errorf("lode: tombstone %s records snapshot %q, not %q", p, t.SnapshotID, id)
 	}
-	return nil
-}
-
-func (ts tombstones) read(ctx context.Context, p string) (tombstone, error) {
-	data, err := ts.readRaw(ctx, p)
-	if err != nil {
-		return tombstone{}, err
+	if t.Files == nil {
+		return t, fmt.Errorf("lode: tombstone %s has no inventory", p)
 	}
-	return decodeTombstone(p, data)
+	return t, nil
 }
 
 func (ts tombstones) readRaw(ctx context.Context, p string) ([]byte, error) {
@@ -125,14 +120,6 @@ func (ts tombstones) readRaw(ctx context.Context, p string) ([]byte, error) {
 		return nil, fmt.Errorf("lode: failed to read tombstone %s: %w", p, err)
 	}
 	return data, nil
-}
-
-func decodeTombstone(p string, data []byte) (tombstone, error) {
-	var t tombstone
-	if err := json.Unmarshal(data, &t); err != nil {
-		return tombstone{}, fmt.Errorf("lode: failed to decode tombstone %s: %w", p, err)
-	}
-	return t, nil
 }
 
 // expiredError is ErrSnapshotExpired when snapshot id has a tombstone, nil

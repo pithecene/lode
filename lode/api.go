@@ -391,7 +391,8 @@ type Dataset interface {
 // ExpireRequest selects the snapshots Dataset.Expire removes. Set fields
 // intersect; at least one of IDs, Partition and Before must be set.
 type ExpireRequest struct {
-	// IDs selects these snapshots.
+	// IDs selects these snapshots, including any whose expiry an earlier
+	// run recorded but did not finish: the request completes it.
 	IDs []DatasetSnapshotID
 
 	// Partition selects snapshots with a partition manifest in this
@@ -423,13 +424,16 @@ type ExpireReport struct {
 	// The head is never expired. Empty otherwise.
 	RetainedHead DatasetSnapshotID
 
-	// Objects counts the data objects deleted.
+	// Objects counts the data objects this run deleted. An object an
+	// earlier, interrupted run already deleted is not counted again, so
+	// totals across runs add up.
 	Objects int
 
-	// Bytes sums FileRef.SizeBytes over the deleted data objects.
+	// Bytes sums the sizes the snapshots' inventories record for those
+	// objects.
 	Bytes int64
 
-	// Skipped lists manifest file paths that are not data objects of the
+	// Skipped lists inventory paths that are not data objects of the
 	// expired snapshot in this dataset. They are left in place.
 	Skipped []string
 }

@@ -279,7 +279,8 @@ All error sentinels covered ✅
 | Head retained and reported, no tombstone written for it; a head superseded mid-run stays retained | `TestExpire_HeadIsRetainedAndReported`, `TestExpire_NoPointer_ProtectsScannedHead`, `TestExpire_HeadSupersededMidRun_StaysRetained` | ✅ |
 | Uncommitted head stops expiry; report lists completed work | `TestExpire_UncommittedHead_ExpiresNothing`, `TestExpire_UncommittedHeadMidRun_ReportsCompletedWork` | ✅ |
 | Dry run writes and deletes nothing, and fails where a real run would | `TestExpire_DryRun_ChangesNothing`, `TestExpire_DryRun_FailsWhereARealRunWould` | ✅ |
-| Existing tombstone: same ID resumes, other ID fails (CAS and non-CAS); tombstone records the whole `Files[]` | `TestExpire_ExistingTombstone`, `TestExpire_ZeroLengthTombstone`, `TestExpire_TombstoneRecordsWholeManifest` | ✅ |
+| Existing tombstone: same ID resumes, other ID fails (CAS and non-CAS); tombstone records the whole `Files[]` | `TestExpire_ExistingTombstone`, `TestExpire_ZeroLengthTombstone`, `TestExpire_TombstoneRecordsTheInventory`, `TestExpire_TombstoneWithoutInventory_IsCorrupt` | ✅ |
+| A recorded expiry resumes from its tombstone with no manifest left; each run meters only what it deleted | `TestExpire_ResumesFromTombstoneWithNoManifestLeft` | ✅ |
 | Expired snapshot not resurrected by the scan fallback; rerun completes | `TestExpire_InterruptedAfterCanonicalDelete_IsNotResurrected` | ✅ |
 | Foreign `Files[]` paths reported in `Skipped`, never deleted; no derived path escapes the dataset | `TestExpire_ForeignFileRef_IsSkipped`, `TestExpire_TraversalInFileRef_DeletesNothingOutside` | ✅ |
 | A legacy head with only partition manifests is committed | `TestExpire_LegacyPartitionOnlyHead_IsCommitted` | ✅ |
