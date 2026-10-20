@@ -129,7 +129,12 @@ and by expiries interrupted after the tombstone was written.
 
 Reclaim granularity is the **snapshot, not the file**: an object under a live
 snapshot's data prefix is never unreferenced, whether or not that snapshot's
-`Files[]` lists it. PUBLIC_API.md presents a file inventory kept in
+`Files[]` lists it. This rests on a layout invariant: a commit writes every
+data object it records under its own snapshot ID, so a manifest never
+describes an object under another snapshot's prefix. A manifest that does
+(hand-made, or from outside Lode) is outside the model, and `Sweep`, which
+reads only the manifests of tombstoned snapshots, does not protect such
+objects. PUBLIC_API.md presents a file inventory kept in
 `Manifest.Metadata` as a correct pattern, so `Files[]` membership cannot be
 the test for liveness. Every other object under the dataset that is not one
 of its manifests (partition-level sidecars such as
