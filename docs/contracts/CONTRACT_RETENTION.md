@@ -139,8 +139,10 @@ that resolve to a set:
 
 - `IDs` — explicit snapshot IDs: each that has a manifest, and each that
   has a valid tombstone, whose recorded expiry the request completes from
-  the tombstone's inventory (§Order of operations). `Partition` and `Before`
-  select from manifests only.
+  the tombstone's inventory (§Order of operations). Only an ID in the
+  generated form (§Definition) can name a tombstone; any other is never
+  turned into a store path. `Partition` and `Before` select from manifests
+  only.
 - `Partition` — a partition path (Hive layouts only; see CONTRACT_LAYOUT).
   Resolves to every snapshot that has a partition manifest in that partition
   or beneath it. Matching is **whole-segment**: `run_id=run-1` selects
@@ -232,7 +234,10 @@ names an uncommitted ID, `Expire` stops with `ErrHeadUncommitted`.
    means the tombstone already exists. In both cases an existing tombstone
    MUST be read back and, if it names this snapshot ID, treated as success:
    the same expiry is already recorded, by an earlier or concurrent run, and
-   steps 2–4 use **its** inventory. A snapshot selected by its tombstone
+   steps 2–4 use **its** inventory. When a manifest of the snapshot still
+   exists, the tombstone's inventory MUST equal the manifest's `Files[]`
+   (paths and sizes); otherwise it belongs to an earlier snapshot with the
+   same ID and the operation MUST fail. A snapshot selected by its tombstone
    alone (no manifest left) starts here, with the read-back. A tombstone
    naming a different ID is corruption and MUST fail the operation.
    Tombstone content is never empty. `CompareAndSwap` with `expected == ""`
