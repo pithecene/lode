@@ -209,18 +209,6 @@ func (q *newestFirst[ID]) Pop() any {
 	return e
 }
 
-// latestEntry is the index of the entry with the largest ID; entries must
-// be non-empty.
-func latestEntry[ID ~string](entries []manifestEntry[ID]) int {
-	latest := 0
-	for i := range entries {
-		if entries[i].id > entries[latest].id {
-			latest = i
-		}
-	}
-	return latest
-}
-
 // -----------------------------------------------------------------------------
 // The head pointer
 // -----------------------------------------------------------------------------
