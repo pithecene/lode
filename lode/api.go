@@ -601,9 +601,9 @@ var (
 	// ErrHeadUncommitted indicates retention cannot tell the committed head:
 	// the latest pointer names a snapshot whose manifest is not written yet
 	// (a commit is in flight, or crashed before writing it), or is missing
-	// beside existing snapshots. Retry once the commit completes; Latest and
-	// the next commit repair a pointer a crashed commit left behind, and any
-	// commit creates a missing one.
+	// beside existing snapshots. Retry once the commit completes; the next
+	// commit replaces a pointer a crashed commit left behind, and any commit
+	// creates a missing one.
 	ErrHeadUncommitted error = errHeadUncommitted{}
 
 	// ErrManifestInvalid indicates a manifest failed validation.
