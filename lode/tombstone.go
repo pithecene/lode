@@ -77,7 +77,7 @@ func (ts tombstones) path(id DatasetSnapshotID) (p string, ok bool) {
 func (ts tombstones) record(ctx context.Context, t tombstone) error {
 	p, ok := ts.path(t.SnapshotID)
 	if !ok {
-		return fmt.Errorf("lode: snapshot ID %q is not in the generated form; it cannot be tombstoned", t.SnapshotID)
+		return errUntombstonable(t.SnapshotID)
 	}
 	data, err := json.Marshal(t)
 	if err != nil {
@@ -119,6 +119,13 @@ func (ts tombstones) list(ctx context.Context) ([]string, error) {
 		return nil, fmt.Errorf("lode: failed to list tombstones: %w", err)
 	}
 	return slices.DeleteFunc(keys, func(k string) bool { return !isTombstoneName(k, prefix) }), nil
+}
+
+// errUntombstonable is the error for a snapshot whose ID is not in the
+// generated form: no tombstone path can be formed for it, so it is never
+// expired, on a dry run or a real one.
+func errUntombstonable(id DatasetSnapshotID) error {
+	return fmt.Errorf("lode: snapshot ID %q is not in the generated form; it cannot be tombstoned", id)
 }
 
 // isTombstoneName reports whether a key below the tombstone directory names

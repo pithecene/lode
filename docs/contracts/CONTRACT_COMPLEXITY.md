@@ -60,10 +60,10 @@ Hot-path operations MUST NOT scale with dataset/volume history size.
 
 | Operation | Store Calls (warm) | Store Calls (cold) | Memory |
 |-----------|-------------------|--------------------|--------|
-| Write (no partitions) | 4 fixed | +1 List (scan) | O(R + encoded) |
-| Write (P partitions) | 2P + 3 | +1 List (scan) | O(R + encoded) |
-| StreamWrite | 4 fixed | +1 List (scan) | O(1) streaming |
-| StreamWriteRecords | 4 fixed | +1 List (scan) | O(1) streaming |
+| Write (no partitions) | 4 fixed | scan fallback (below) | O(R + encoded) |
+| Write (P partitions) | 2P + 3 | scan fallback (below) | O(R + encoded) |
+| StreamWrite | 4 fixed | scan fallback (below) | O(1) streaming |
+| StreamWriteRecords | 4 fixed | scan fallback (below) | O(1) streaming |
 
 Parent resolution:
 - In-memory cache: 0 calls
