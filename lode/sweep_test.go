@@ -421,6 +421,39 @@ func TestSweep_Head(t *testing.T) {
 		assertPresent(t, ds, head)
 	})
 
+	t.Run("without a pointer an expired leftover is settled", func(t *testing.T) {
+		mem := NewMemory()
+		ds := newHiveRetention(t, mem)
+		writeRun(t, ds, "a", "x")
+		gone := writeRun(t, ds, "b", "x")
+		// An interrupted expiry of the newest snapshot left a partition copy.
+		putTombstone(t, mem, gone.ID, newTombstone(gone.ID, gone.Manifest))
+		var leftover string
+		for _, k := range storeKeys(t, mem) {
+			if !strings.Contains(k, string(gone.ID)) || !strings.HasSuffix(k, manifestFile) {
+				continue
+			}
+			if strings.Contains(k, "partitions/") {
+				leftover = k
+				continue
+			}
+			if err := mem.Delete(t.Context(), k); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := mem.Delete(t.Context(), "datasets/events/latest"); err != nil {
+			t.Fatal(err)
+		}
+
+		report, err := ds.Sweep(t.Context(), SweepRequest{Grace: sweepGrace})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(report.Settled, []DatasetSnapshotID{gone.ID}) || exists(t, mem, leftover) {
+			t.Errorf("report = %+v, leftover present %v; want the expired leftover settled", report, exists(t, mem, leftover))
+		}
+	})
+
 	t.Run("a held tombstone keeps its data", func(t *testing.T) {
 		store := NewMemory()
 		ds := newDefaultRetention(t, store)
