@@ -557,6 +557,24 @@ func TestExpire_Partition(t *testing.T) {
 }
 
 func TestExpire_DryRun(t *testing.T) {
+	// A manifest under an ID Lode never generates cannot be tombstoned, so
+	// the real run fails on it; the dry run must report the same failure.
+	t.Run("fails where the real run would on an ID it cannot tombstone", func(t *testing.T) {
+		mem := NewMemory()
+		ds := newDefaultRetention(t, mem)
+		snap := writeRecord(t, ds, 1)
+		writeRecord(t, ds, 2) // the head
+		m := *snap.Manifest
+		m.SnapshotID = "foo"
+		rewriteManifest(t, mem, "datasets/events/snapshots/foo/manifest.json", &m)
+		for _, dryRun := range []bool{true, false} {
+			report, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{"foo"}, DryRun: dryRun})
+			if err == nil || len(report.Expired) != 0 {
+				t.Errorf("DryRun=%v: Expire = %+v, %v; want an error and nothing expired", dryRun, report, err)
+			}
+		}
+	})
+
 	t.Run("changes nothing", func(t *testing.T) {
 		store := NewMemory()
 		ds := newHiveRetention(t, store)
