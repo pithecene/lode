@@ -40,6 +40,8 @@ type listInjector struct {
 	deleted    []string
 	failPrefix string // a listing of exactly this prefix fails
 	failGet    string // a Get of exactly this path fails
+	hideOnce   bool   // hidden applies to the first snapshot listing only, as one that catches up
+	listings   int    // snapshot listings so far
 }
 
 func (l *listInjector) Get(ctx context.Context, p string) (io.ReadCloser, error) {
@@ -59,7 +61,12 @@ func (l *listInjector) List(ctx context.Context, prefix string) ([]string, error
 		return nil, errListFailed
 	}
 	keys, err := l.Store.List(ctx, prefix)
-	keys = slices.DeleteFunc(keys, func(k string) bool { return slices.Contains(l.hidden, k) })
+	if !strings.Contains(prefix, "expired/") {
+		l.listings++
+	}
+	if !l.hideOnce || l.listings == 1 {
+		keys = slices.DeleteFunc(keys, func(k string) bool { return slices.Contains(l.hidden, k) })
+	}
 	for _, k := range l.extra {
 		if strings.HasPrefix(k, prefix) {
 			keys = append(keys, k)
@@ -555,6 +562,48 @@ func TestSweep_HeadResolution(t *testing.T) {
 		report, err := ds.Sweep(t.Context(), SweepRequest{Grace: sweepGrace})
 		if err != nil || report.Orphans != 1 || exists(t, mem, orphan) {
 			t.Fatalf("Sweep = %+v, %v; want the orphan reclaimed", report, err)
+		}
+	})
+
+	t.Run("the pointer's head keeps its objects when the listing omits its manifests", func(t *testing.T) {
+		mem := NewMemory()
+		lister := &listInjector{Store: mem}
+		ds := newHiveRetention(t, mem)
+		writeRun(t, ds, "a", "x")
+		head := writeRun(t, ds, "b", "x")
+		// A pre-canonical head: only its partition copy, which the listing
+		// omits along with its data, and a stray object of its in another
+		// partition.
+		var copies []string
+		for _, k := range storeKeys(t, mem) {
+			if strings.Contains(k, string(head.ID)) && strings.HasSuffix(k, manifestFile) {
+				copies = append(copies, k)
+			}
+		}
+		for _, f := range head.Manifest.Files {
+			lister.hidden = append(lister.hidden, f.Path) // the stray alone is listed
+		}
+		for _, k := range copies {
+			if strings.Contains(k, "partitions/") {
+				lister.hidden = append(lister.hidden, k)
+				continue
+			}
+			if err := mem.Delete(t.Context(), k); err != nil {
+				t.Fatal(err)
+			}
+		}
+		stray := "datasets/events/partitions/run_id=z/event_type=x/segments/" + string(head.ID) + "/data/stray"
+		putObject(t, mem, stray)
+		// Sweep's own listing lags; the later lookup confirming the head
+		// does not.
+		lister.hideOnce = true
+		ds = newHiveRetention(t, lister)
+
+		if _, err := ds.Sweep(t.Context(), SweepRequest{Grace: time.Nanosecond}); err != nil {
+			t.Fatal(err)
+		}
+		if !exists(t, mem, stray) {
+			t.Error("an object of the pointer's head was reclaimed as an orphan")
 		}
 	})
 

@@ -45,7 +45,7 @@ type sweepInventory struct {
 	manifests         map[DatasetSnapshotID][]string // every manifest key, by snapshot
 	objects           []snapshotKeys                 // every data object key, by snapshot
 	dataOf            map[DatasetSnapshotID][]string // the same keys, looked up by snapshot
-	holds             func(DatasetSnapshotID) bool   // tombstoned snapshots never settled this run
+	guard             headGuardian                   // what the pointer says this run must not remove
 }
 
 func (d *dataset) sweepInventory(ctx context.Context) (sweepInventory, error) {
@@ -68,7 +68,7 @@ func (d *dataset) sweepInventory(ctx context.Context) (sweepInventory, error) {
 	for _, g := range inv.objects {
 		inv.dataOf[g.id] = g.paths
 	}
-	inv.holds, err = d.sweepGuard(ctx, inv)
+	inv.guard, err = d.sweepGuard(ctx, inv)
 	return inv, err
 }
 
@@ -107,41 +107,53 @@ func (d *dataset) rejectedTombstoneIDs(keys []string) map[DatasetSnapshotID]bool
 	return held
 }
 
-// sweepGuard decides which tombstoned snapshots this sweep must not settle
-// (CONTRACT_RETENTION §Head protection). Only the pointer names the head:
-//   - a pointer naming a committed snapshot holds that one;
+// headGuardian is what the pointer tells a sweep it must not remove: the
+// committed head, or, while a commit is in flight, that the head is
+// unknown. Lode never tombstones a head, so it only keeps a misplaced object
+// under expired/ or a stray object under the head's prefix from removing it.
+type headGuardian struct {
+	named    DatasetSnapshotID // the snapshot the pointer names, "" with no pointer
+	inFlight bool              // it has no manifest: a commit is in flight
+}
+
+// holdsTombstone reports whether a tombstoned snapshot must stay unsettled:
+// the one the pointer names, or every one while the head is unknown.
+func (g headGuardian) holdsTombstone(id DatasetSnapshotID) bool {
+	return g.inFlight || id == g.named
+}
+
+// holdsObjects reports whether a snapshot's objects are kept whatever the
+// listing shows: those of the committed head are never orphans. A crashed
+// commit the pointer still names is not committed, so its data ages out.
+func (g headGuardian) holdsObjects(id DatasetSnapshotID) bool {
+	return !g.inFlight && g.named != "" && id == g.named
+}
+
+// sweepGuard reads the pointer once (CONTRACT_RETENTION §Head protection):
+//   - a pointer naming a committed snapshot guards that one;
 //   - a pointer naming a snapshot with no manifest means a commit is in
-//     flight and the head is unknown, so none is settled this run (orphans
-//     past grace still are);
+//     flight and the head is unknown, so no tombstoned snapshot is settled
+//     this run (orphans past grace still are);
 //   - with no pointer, a dataset showing a manifest or a tombstone is
 //     refused with ErrHeadUncommitted, and one showing neither has no head.
-//
-// Lode never tombstones a head, so this only keeps a misplaced object under
-// expired/ from removing one.
-func (d *dataset) sweepGuard(ctx context.Context, inv sweepInventory) (func(DatasetSnapshotID) bool, error) {
+func (d *dataset) sweepGuard(ctx context.Context, inv sweepInventory) (headGuardian, error) {
 	head, err := d.history.readPointer(ctx)
 	if errors.Is(err, ErrNotFound) {
 		if len(inv.manifests) > 0 || len(inv.tombstones) > 0 || len(inv.invalidTombstones) > 0 {
-			return nil, fmt.Errorf("lode: latest pointer is absent: %w", ErrHeadUncommitted)
+			return headGuardian{}, fmt.Errorf("lode: latest pointer is absent: %w", ErrHeadUncommitted)
 		}
-		return holdsNone, nil
+		return headGuardian{}, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("lode: failed to resolve head: %w", err)
+		return headGuardian{}, fmt.Errorf("lode: failed to resolve head: %w", err)
 	}
 	// One pointer read decides: the value just read is the one confirmed.
 	err = d.history.confirmCommitted(ctx, head)
 	if errors.Is(err, ErrHeadUncommitted) {
-		return holdsAll, nil
+		return headGuardian{named: head, inFlight: true}, nil
 	}
-	if err != nil {
-		return nil, err
-	}
-	return func(id DatasetSnapshotID) bool { return id == head }, nil
+	return headGuardian{named: head}, err
 }
-
-func holdsNone(DatasetSnapshotID) bool { return false }
-func holdsAll(DatasetSnapshotID) bool  { return true }
 
 // -----------------------------------------------------------------------------
 // Settling
@@ -193,7 +205,7 @@ func (r sweepRun) settleOne(ctx context.Context, t tombstone, report *SweepRepor
 		r.held[id] = true
 		return nil
 	}
-	if r.inv.holds(id) {
+	if r.inv.guard.holdsTombstone(id) {
 		r.held[id] = true
 		return nil
 	}
@@ -276,7 +288,7 @@ func (r sweepRun) classify(id DatasetSnapshotID) objectClass {
 	if _, settled := r.settled[id]; settled {
 		return classSettled
 	}
-	if _, live := r.inv.manifests[id]; live {
+	if _, live := r.inv.manifests[id]; live || r.inv.guard.holdsObjects(id) {
 		return classKept
 	}
 	began, ok := snapshotInstant(id)
