@@ -138,7 +138,7 @@ retry-safe: the call must change.
 | `lode.ErrInvalidArgument` | Constructors | Nil store factory, factory returned nil store, nil layout or compressor, empty volume ID, non-positive total length, option value out of range (`WithRetry*`), `NewHiveLayout` without keys, raw blob mode with a partitioning layout |
 | `lode.ErrInvalidArgument` | Dataset | `Write` in raw blob mode without exactly one `[]byte`; `StreamWriteRecords` without a codec |
 | `lode.ErrInvalidArgument` | Volume | Negative offset, non-positive length, empty block, block or read outside the address space, block path not produced by the volume, commit with no new block |
-| `lode.ErrOptionNotValidForDataset`, `…DatasetReader`, `…Volume` | Constructors | Option used with a constructor it does not apply to |
+| `lode.ErrOptionNotValidForDataset`, `…DatasetReader` | Constructors | Option used with a constructor it does not apply to (Volume options are a separate type, checked at compile time) |
 
 **Behavior**:
 - Every argument check above MUST return an error matching
@@ -222,12 +222,14 @@ See [CONTRACT_PARQUET.md](CONTRACT_PARQUET.md) for complete Parquet codec semant
 
 ### 9. Volume Errors
 
-These indicate Volume-specific failures.
+These indicate Volume-specific failures. Volume is experimental and lives in
+package `lode/volume` (`V1_API_DECISIONS.md` D9), so its two sentinels are
+declared there; the shared sentinels it also returns are lode's.
 
 | Error | Source | Meaning |
 |-------|--------|---------|
-| `lode.ErrRangeMissing` | Volume.ReadAt | Requested range is not fully committed |
-| `lode.ErrOverlappingBlocks` | Volume.Commit | Committed blocks overlap in the cumulative manifest |
+| `volume.ErrRangeMissing` | Volume.ReadAt | Requested range is not fully committed |
+| `volume.ErrOverlappingBlocks` | Volume.Commit | Committed blocks overlap in the cumulative manifest |
 
 **ErrRangeMissing Behavior**:
 - `ReadAt` returns `ErrRangeMissing` if any sub-range is uncommitted.
@@ -244,7 +246,7 @@ These indicate Volume-specific failures.
 - `Commit` with nil metadata returns an error.
 - `Volume.Latest` returns `ErrNoSnapshots` when no snapshots exist.
 - `Volume.Snapshot` returns `ErrNotFound` when snapshot ID doesn't exist.
-- `NewVolume` with nil factory, empty ID, or non-positive totalLength returns an error.
+- `volume.New` with nil factory, empty ID, or non-positive totalLength returns `lode.ErrInvalidArgument`.
 
 See [CONTRACT_VOLUME.md](CONTRACT_VOLUME.md) for full Volume semantics.
 
