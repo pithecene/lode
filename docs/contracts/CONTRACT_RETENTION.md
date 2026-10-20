@@ -263,8 +263,9 @@ names an uncommitted ID, `Expire` stops with `ErrHeadUncommitted`.
 
 1. Write the tombstone `expired/<id>`, recording the inventory from the
    manifest. Every manifest copy retention reads MUST first pass manifest
-   validation (CONTRACT_ERRORS §3, Manifest Validation Errors); an invalid one fails
-   the operation before anything is written or deleted. When the store implements
+   validation (CONTRACT_ERRORS §3, Manifest Validation Errors) and name the
+   snapshot and dataset it was found under; an invalid or misplaced one
+   fails the operation before anything is written or deleted. When the store implements
    `ConditionalWriter`, the write MUST be an atomic conditional create
    (`CompareAndSwap` from absent); an `ErrSnapshotConflict` result means the
    tombstone already exists. Otherwise `Store.Put` is used; its create-only
@@ -416,8 +417,10 @@ manifest and data object of the layout). It then performs, in order:
    2–3 of §Order of operations on those paths.
    Only once **every** manifest of that snapshot is confirmed absent is the
    snapshot *settled*; `Settled` reports the snapshots whose manifests this
-   run removed (in a dry run, would remove), so a snapshot settled by an
-   earlier run is not reported again. If any
+   run found and deleted (in a dry run, would delete), so a snapshot settled
+   by an earlier run is not reported again. Like the counts (§Accounting) it
+   is an observation, not a claim: overlapping runs can both find and
+   delete the same manifest and both report the snapshot. If any
    manifest delete fails, the snapshot is **not** settled: it keeps its
    surviving manifests and none of its objects are reclaimed in this run. A
    manifest that can still be loaded always protects the objects it
