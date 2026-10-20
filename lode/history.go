@@ -279,14 +279,21 @@ func (h *history[ID, M]) CommittedHead(ctx context.Context, known ID) (ID, error
 	if id == known {
 		return id, nil
 	}
+	return id, h.confirmCommitted(ctx, id)
+}
+
+// confirmCommitted is nil when snapshot id, read from the pointer, has a
+// manifest, and ErrHeadUncommitted when it has none: a commit in flight,
+// whose parent the pointer no longer names.
+func (h *history[ID, M]) confirmCommitted(ctx context.Context, id ID) error {
 	committed, err := h.hasManifest(ctx, id)
 	if err != nil {
-		return "", fmt.Errorf("lode: failed to resolve head: %w", err)
+		return fmt.Errorf("lode: failed to resolve head: %w", err)
 	}
 	if !committed {
-		return "", fmt.Errorf("lode: latest pointer names %s: %w", id, ErrHeadUncommitted)
+		return fmt.Errorf("lode: latest pointer names %s: %w", id, ErrHeadUncommitted)
 	}
-	return id, nil
+	return nil
 }
 
 // pointerless is nil for a history with no snapshot and ErrHeadUncommitted
