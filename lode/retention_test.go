@@ -345,7 +345,25 @@ func TestExpire_Selection(t *testing.T) {
 		}
 	})
 
-	t.Run("partition matches whole segments", func(t *testing.T) {
+	t.Run("flat layout", func(t *testing.T) {
+		store := NewMemory()
+		ds := newDefaultRetention(t, store, WithLayout(NewFlatLayout()))
+		first := writeRecord(t, ds, 1)
+		second := writeRecord(t, ds, 2)
+
+		if _, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{first.ID}}); err != nil {
+			t.Fatal(err)
+		}
+		assertGone(t, store, ds, first)
+		snaps, err := ds.Snapshots(t.Context())
+		if err != nil || len(snaps) != 1 || snaps[0].ID != second.ID {
+			t.Errorf("Snapshots = %v, %v; want only %s (the tombstone is not a snapshot)", snaps, err, second.ID)
+		}
+	})
+}
+
+func TestExpire_Partition(t *testing.T) {
+	t.Run("matches whole segments", func(t *testing.T) {
 		store := NewMemory()
 		ds := newHiveRetention(t, store)
 		run1 := writeRun(t, ds, "run-1", "start", "end")
@@ -366,7 +384,7 @@ func TestExpire_Selection(t *testing.T) {
 		assertPresent(t, ds, run10)
 	})
 
-	t.Run("partition with a trailing slash", func(t *testing.T) {
+	t.Run("a trailing slash is valid", func(t *testing.T) {
 		ds := newHiveRetention(t, NewMemory())
 		writeRun(t, ds, "a", "x")
 		writeRun(t, ds, "b", "x")
@@ -408,22 +426,6 @@ func TestExpire_Selection(t *testing.T) {
 		}
 		if !slices.Equal(report.Expired, []DatasetSnapshotID{both.ID}) {
 			t.Errorf("Expired by ID = %v, want [%s]", report.Expired, both.ID)
-		}
-	})
-
-	t.Run("flat layout", func(t *testing.T) {
-		store := NewMemory()
-		ds := newDefaultRetention(t, store, WithLayout(NewFlatLayout()))
-		first := writeRecord(t, ds, 1)
-		second := writeRecord(t, ds, 2)
-
-		if _, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{first.ID}}); err != nil {
-			t.Fatal(err)
-		}
-		assertGone(t, store, ds, first)
-		snaps, err := ds.Snapshots(t.Context())
-		if err != nil || len(snaps) != 1 || snaps[0].ID != second.ID {
-			t.Errorf("Snapshots = %v, %v; want only %s (the tombstone is not a snapshot)", snaps, err, second.ID)
 		}
 	})
 }
