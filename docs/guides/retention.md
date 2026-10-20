@@ -159,9 +159,9 @@ is in flight, since the head is then unknown; and a tombstone that is
 invalid or contradicts a manifest copy, which is reported in
 `Unparseable`.
 
-**It reclaims orphans.** A data object whose snapshot has no manifest, and
-that is older than `Grace`, belongs to a write that never committed (an
-aborted stream, a crashed process) and is deleted.
+**It reclaims orphans.** A data object whose snapshot has neither a
+manifest nor a tombstone, and that is older than `Grace`, belongs to a write
+that never committed (an aborted stream, a crashed process) and is deleted.
 
 ```mermaid
 flowchart TD
@@ -187,9 +187,10 @@ leftovers handles them.
 
 Reclaim works per snapshot, not per file. Every object under a live
 snapshot's data prefix is kept, whether or not its manifest lists it, and
-everything under a settled snapshot's prefix goes. Objects outside the
-layout's data paths (sidecars such as `partitions/<k=v>/run.json`, the
-pointer, tombstones) are never touched: they are yours to manage.
+everything under a settled snapshot's prefix goes. Apart from the manifests
+of snapshots it settles, `Sweep` touches nothing outside the layout's data
+paths: sidecars such as `partitions/<k=v>/run.json` are yours to manage,
+and the pointer and tombstones are never deleted.
 
 ### Choosing a grace period
 
@@ -249,8 +250,9 @@ counted.
   avoids it.
 - **Snapshot ID collisions.** IDs are unique up to a 64-bit random
   collision within one nanosecond (see [snapshot IDs](snapshot-ids.md)).
-  Should one happen, retention refuses to act on the older tombstone, but
-  data the new write stages before its manifest exists could be reclaimed.
+  Should one happen, retention refuses to act on the older tombstone unless
+  the new manifest has the same commit time and files, but data the new
+  write stages before its manifest exists could be reclaimed.
 
 ## Errors you may see
 

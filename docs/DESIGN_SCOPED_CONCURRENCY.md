@@ -153,6 +153,7 @@ sequenceDiagram
     P-->>B: conflict: head is S1
     B->>B: read S1's manifest: alpha/ only, no overlap with beta/
     B->>P: re-parent to S1, CAS S1 → S2
+    B->>B: write S2's manifest
     Note over P: history S0 → S1 → S2, linear
 ```
 
