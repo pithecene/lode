@@ -97,9 +97,11 @@ Manifests are immutable once written.
 - Snapshots are immutable after commit.
 - Data files are immutable after write.
 - Commits create new state; they do not mutate existing state.
-- Retention removes snapshots and data files; it never rewrites them.
-  Removal is recorded by a new object (a tombstone), and an expired snapshot
-  ID is never reused (`CONTRACT_RETENTION.md`).
+- Retention removes committed snapshots and their data files; it never
+  rewrites them. Expiring a committed snapshot is recorded by a new object
+  (a tombstone), and an expired snapshot ID is never reused. Objects of
+  writes that never committed are reclaimed without a record, because no
+  snapshot ever existed (`CONTRACT_RETENTION.md`).
 
 ---
 

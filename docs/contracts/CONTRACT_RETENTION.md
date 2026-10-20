@@ -89,19 +89,23 @@ manifest of the dataset.
 
 ### Unreferenced object
 
-A data object under one of the dataset's `<snapshot dir>/<snapshot ID>/data/`
-prefixes (`snapshots/` or `segments/` per layout; canonical or per-partition)
-whose snapshot ID names no existing manifest. Produced by aborted streams (see PUBLIC_API.md §Cleanup Behavior)
+A data object of the layout — a path the layout's grammar parses as
+`.../<snapshot ID>/data/<file>` for this dataset (`snapshots/<id>/data/` in
+the default layout, `[partitions/<k=v>.../]segments/<id>/data/` in Hive,
+`<dataset>/<id>/data/` in the flat layout) — whose snapshot ID names no
+existing manifest. Produced by aborted streams (see PUBLIC_API.md §Cleanup Behavior)
 and by expiries interrupted after the tombstone was written.
 
 Reclaim granularity is the **snapshot, not the file**: an object under a live
 snapshot's data prefix is never unreferenced, whether or not that snapshot's
 `Files[]` lists it. PUBLIC_API.md presents a file inventory kept in
 `Manifest.Metadata` as a correct pattern, so `Files[]` membership cannot be
-the test for liveness. Objects anywhere else under the dataset (partition-level
-sidecars such as `partitions/<k=v>/run.json`, pointers, tombstones) are
-outside the sweep's scope: a store listing of the dataset MAY return them,
-but `Sweep` and `Expire` MUST NOT report or delete them. This scope is a
+the test for liveness. Every other object under the dataset that is not one
+of its manifests (partition-level sidecars such as
+`partitions/<k=v>/run.json`, the pointer, tombstones) is outside retention's
+scope: a store listing of the dataset MAY return them, but `Sweep` and
+`Expire` MUST NOT report or delete them. Manifests are deleted only as
+§Order of operations prescribes. This scope is a
 consumer dependency (quarry keeps its run record there), not an
 implementation detail.
 
