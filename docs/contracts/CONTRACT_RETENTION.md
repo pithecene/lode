@@ -46,7 +46,11 @@ commits never mutate existing state. Retention does not weaken this:
   Should it happen, the old tombstone does not describe the new snapshot's
   manifest (§Tombstone): retention refuses to act on it, so the new
   snapshot is never deleted by it, and is instead held — reported, never
-  expired or reclaimed — since the tombstone cannot be removed.
+  expired or reclaimed — since the tombstone cannot be removed. The one
+  exposure is a `Sweep` that runs while the reusing write is staging data,
+  before any manifest of it exists: nothing yet tells that data from the
+  expired snapshot's leftovers, and it is reclaimed. Lode accepts this
+  2⁻⁶⁴ event rather than check every write against the tombstones.
 
 Immutable means *unchanging while it exists*, not *unremovable*.
 
@@ -372,8 +376,9 @@ manifest and data object of the layout). It then performs, in order:
    its path, and carries the manifest's `CreatedAt` and an inventory; a
    tombstone that fails validation MUST be reported under `Unparseable`
    and MUST NOT settle anything. A snapshot of which the listing shows
-   neither a manifest nor a data object has nothing left to remove and is
-   settled without a store call. Otherwise a listing MAY omit a manifest
+   neither a manifest nor a data object has nothing for this run to
+   remove: it costs no store call, is not reported, and nothing of it is
+   deleted. Otherwise a listing MAY omit a manifest
    (a lagging listing, or one written after it), so Sweep MUST load the
    manifest at every path the expiry would delete — the canonical path,
    every listed copy, and every copy derived from the tombstone's inventory
