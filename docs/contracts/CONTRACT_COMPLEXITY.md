@@ -105,6 +105,21 @@ set, not the store calls. Sorting adds O(N log N) CPU, no store calls.
 
 ---
 
+## Dataset — Retention
+
+| Operation | Path | Store Calls | Memory |
+|-----------|------|-------------|--------|
+| Expire (K selected) | Cold | 1 List + (K + 1) pointer Gets (each + at most 1 Exists) + K manifest Gets + K tombstone writes + Σ(manifests + files) Deletes | O(N + K × manifest) |
+| Sweep (T tombstones, D deleted) | Cold | 2 Lists + T Gets + D Deletes | O(N + T) |
+| Snapshot(id), Read(id) expired | Hot miss | +1 Get (tombstone) | O(1) |
+
+`Expire` with `Partition` lists only that partition subtree; otherwise N is
+the whole snapshot prefix. Selection by `Before` reads snapshot IDs from
+paths and loads no manifest beyond the K selected. Full bounds and their
+derivation are in `CONTRACT_RETENTION.md` §Complexity Bounds.
+
+---
+
 ## Volume — Write Operations
 
 | Operation | Path | Store Calls | Memory | CPU |

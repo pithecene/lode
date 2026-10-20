@@ -279,6 +279,31 @@ never returned; callers must ensure single-writer semantics as before.
 
 ---
 
+### 11. Retention Errors
+
+These are returned by snapshot expiry and the unreferenced-object sweep
+(`CONTRACT_RETENTION.md`).
+
+| Error | Source | Meaning |
+|-------|--------|---------|
+| `lode.ErrSnapshotExpired` | Dataset.Snapshot, Dataset.Read | The snapshot was expired by `Expire`; also matches `ErrNotFound` |
+| `lode.ErrHeadUncommitted` | Dataset.Expire | The latest pointer names a snapshot whose manifest is not yet written (a commit in flight) |
+| `lode.ErrInvalidArgument` | Dataset.Expire, Dataset.Sweep | `ExpireRequest` with no selector field set; `SweepRequest.Grace` zero or negative |
+| `lode.ErrInvalidPath` | Dataset.Expire | `ExpireRequest.Partition` is not a canonical relative partition path |
+| `lode.ErrPartitionPrefixNotSupported` | Dataset.Expire | `ExpireRequest.Partition` set on a layout without partitions |
+
+**Behavior**:
+- Selecting the head snapshot is not an error: `Expire` keeps it and reports
+  it in `ExpireReport.RetainedHead`.
+- `ErrHeadUncommitted` is retryable: retry once the in-flight commit
+  completes. A pointer left behind by a crashed commit is repaired by the
+  next `Latest` or commit.
+- `Expire` and `Sweep` return a non-nil report with every error, describing
+  the work completed before it. The next `Expire` or `Sweep` completes the
+  rest.
+
+---
+
 ## Error Handling Guidelines
 
 ### Retry-Safe Errors
@@ -304,7 +329,9 @@ never returned; callers must ensure single-writer semantics as before.
 Errors MUST NOT imply:
 - Mutable state (no "update failed" semantics).
 - Background recovery (no "will retry later" semantics).
-- Partial success (writes are atomic via manifest).
+- Partial success (writes are atomic via manifest). Retention is the one
+  exception: `Expire` and `Sweep` report the work completed before an error,
+  and every step they take is idempotent (`CONTRACT_RETENTION.md`).
 
 All operations are:
 - **Idempotent reads**: Same input, same output (modulo storage consistency).
