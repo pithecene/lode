@@ -38,8 +38,9 @@ snapshots from a listing without loading any manifest.
 
 Compared as strings, IDs order by instant: the instant has a fixed 19
 digits from 2001-09-09 01:46:40 UTC until 64-bit nanoseconds run out in
-April 2262. An old instant-only ID sorts before every new ID with the same
-instant.
+April 2262. An ID from a clock set before 2001-09-09 01:46:40 UTC has a
+shorter instant and sorts out of time order. An old instant-only ID sorts
+before every new ID with the same instant.
 
 Two writes that begin in the same nanosecond order by their nonce, which is
 random and says nothing about which committed first. That matters only

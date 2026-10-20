@@ -147,6 +147,7 @@ sequenceDiagram
     A->>P: read head: S0
     B->>P: read head: S0
     A->>P: CAS S0 → S1
+    A->>A: write S1's manifest
     Note over A,P: S1 committed (files in alpha/)
     B->>P: CAS S0 → S2
     P-->>B: conflict: head is S1
