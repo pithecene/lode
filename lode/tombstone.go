@@ -120,7 +120,7 @@ func (ts tombstones) lookup(ctx context.Context, id DatasetSnapshotID) (t tombst
 }
 
 // validTombstone decodes data and requires it to record snapshot id and to
-// carry an inventory.
+// carry an inventory whose every FileRef is valid.
 func validTombstone(p string, data []byte, id DatasetSnapshotID) (tombstone, error) {
 	var t tombstone
 	if err := json.Unmarshal(data, &t); err != nil {
@@ -131,6 +131,9 @@ func validTombstone(p string, data []byte, id DatasetSnapshotID) (tombstone, err
 	}
 	if t.Files == nil {
 		return t, fmt.Errorf("lode: tombstone %s has no inventory", p)
+	}
+	if err := validateFiles(t.Files); err != nil {
+		return t, fmt.Errorf("lode: tombstone %s has an invalid inventory: %w", p, err)
 	}
 	return t, nil
 }

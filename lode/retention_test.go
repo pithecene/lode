@@ -768,19 +768,30 @@ func TestExpire_NoPointer_HeadVanishingAfterScanListing(t *testing.T) {
 	assertPresent(t, ds, second)
 }
 
-func TestExpire_TombstoneWithoutInventory_IsCorrupt(t *testing.T) {
-	mem := NewMemory()
-	ds := newDefaultRetention(t, mem)
-	first := writeRecord(t, ds, 1)
-	writeRecord(t, ds, 2)
-	body := `{"snapshot_id":"` + string(first.ID) + `"}`
-	if err := mem.Put(t.Context(), "datasets/events/expired/"+string(first.ID), strings.NewReader(body)); err != nil {
-		t.Fatal(err)
+func TestExpire_TombstoneWithInvalidInventory_IsCorrupt(t *testing.T) {
+	for name, files := range map[string]string{
+		"no inventory":  ``,
+		"empty path":    `,"files":[{"path":"","size_bytes":1}]`,
+		"negative size": `,"files":[{"path":"datasets/events/snapshots/x/data/f","size_bytes":-1}]`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			mem := NewMemory()
+			ds := newDefaultRetention(t, mem)
+			writeRecord(t, ds, 1)
+			// No manifest is left to compare against: only validation stands
+			// between this inventory and the deletes.
+			gone := idAt(time.Now().Add(-time.Hour))
+			body := `{"snapshot_id":"` + string(gone) + `"` + files + `}`
+			if err := mem.Put(t.Context(), "datasets/events/expired/"+string(gone), strings.NewReader(body)); err != nil {
+				t.Fatal(err)
+			}
+			for _, dryRun := range []bool{true, false} {
+				if _, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{gone}, DryRun: dryRun}); err == nil {
+					t.Errorf("Expire(dry=%v) accepted a tombstone with an invalid inventory", dryRun)
+				}
+			}
+		})
 	}
-	if _, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{first.ID}}); err == nil {
-		t.Fatal("Expire accepted a tombstone with no inventory")
-	}
-	assertPresent(t, ds, first)
 }
 
 func TestExpire_TraversalInFileRef_DeletesNothingOutside(t *testing.T) {

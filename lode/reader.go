@@ -376,7 +376,13 @@ func validateManifest(m *Manifest) error {
 	}); err != nil {
 		return err
 	}
-	for i, f := range m.Files {
+	return validateFiles(m.Files)
+}
+
+// validateFiles checks every FileRef of an inventory: a manifest's, or the
+// copy a retention tombstone records (CONTRACT_ERRORS §File Validation).
+func validateFiles(files []FileRef) error {
+	for i, f := range files {
 		if err := firstInvalid([]fieldCheck{
 			{f.Path == "", fmt.Sprintf("files[%d].path", i), "is required"},
 			{f.SizeBytes < 0, fmt.Sprintf("files[%d].size_bytes", i), "must be non-negative"},
