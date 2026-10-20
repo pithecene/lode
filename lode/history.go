@@ -284,8 +284,15 @@ func (h *history[ID, M]) CommittedHead(ctx context.Context, known ID) (ID, error
 
 // confirmCommitted is nil when snapshot id, read from the pointer, has a
 // manifest, and ErrHeadUncommitted when it has none: a commit in flight,
-// whose parent the pointer no longer names.
+// whose parent the pointer no longer names. A pointer that does not hold a
+// snapshot ID is corruption, never confirmed.
 func (h *history[ID, M]) confirmCommitted(ctx context.Context, id ID) error {
+	// A corrupt pointer must not reach a path: the ID has to name the very
+	// manifest path built from it, which rules out anything path.Join would
+	// clean into another location.
+	if parsed, ok := h.kind.parseManifest(h.kind.manifestPath(id)); !ok || parsed != id {
+		return fmt.Errorf("lode: latest pointer holds %q, which is not a snapshot ID", id)
+	}
 	committed, err := h.hasManifest(ctx, id)
 	if err != nil {
 		return fmt.Errorf("lode: failed to resolve head: %w", err)

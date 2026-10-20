@@ -754,6 +754,24 @@ func TestExpire_HeadResolution(t *testing.T) {
 		}
 	})
 
+	t.Run("a pointer that is not a snapshot ID is refused", func(t *testing.T) {
+		mem := NewMemory()
+		ds := newDefaultRetention(t, mem)
+		first := writeRecord(t, ds, 1)
+		writeRecord(t, ds, 2)
+		// Joined into a path, this would clean to an object that exists.
+		setPointer(t, mem, "../../other/x")
+		if err := mem.Put(t.Context(), "datasets/other/x/manifest.json", strings.NewReader("{}")); err != nil {
+			t.Fatal(err)
+		}
+		ds = newDefaultRetention(t, mem)
+
+		if _, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{first.ID}}); err == nil {
+			t.Fatal("Expire accepted a pointer that names no snapshot")
+		}
+		assertPresent(t, ds, first)
+	})
+
 	t.Run("an empty dataset needs no pointer", func(t *testing.T) {
 		ds := newDefaultRetention(t, NewMemory())
 		report, err := ds.Expire(t.Context(), ExpireRequest{Before: time.Now()})
