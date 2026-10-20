@@ -78,117 +78,121 @@ func (c *codeClient) rangeSeen() string {
 
 var conditionalCodes = []string{"PreconditionFailed", "412", "ConditionalRequestConflict", "409"}
 
-func TestStore_Put_MapsPreconditionCodes(t *testing.T) {
-	ctx := t.Context()
-	for _, code := range []string{"PreconditionFailed", "412"} {
-		client := &codeClient{MockS3Client: NewMockS3Client(), putCode: code}
-		store, _ := New(client, Config{Bucket: "test"})
-		if err := store.Put(ctx, "k", bytes.NewReader([]byte("x"))); !errors.Is(err, lode.ErrPathExists) {
-			t.Errorf("code %s: got %v, want ErrPathExists", code, err)
+func TestStore_MapsPreconditionCodes(t *testing.T) {
+	t.Run("put maps precondition codes", func(t *testing.T) {
+		ctx := t.Context()
+		for _, code := range []string{"PreconditionFailed", "412"} {
+			client := &codeClient{MockS3Client: NewMockS3Client(), putCode: code}
+			store, _ := New(client, Config{Bucket: "test"})
+			if err := store.Put(ctx, "k", bytes.NewReader([]byte("x"))); !errors.Is(err, lode.ErrPathExists) {
+				t.Errorf("code %s: got %v, want ErrPathExists", code, err)
+			}
 		}
-	}
-	// Atomic PutObject only treats the 412 spellings as "exists"; a bare
-	// conflict code is surfaced as a plain error.
-	client := &codeClient{MockS3Client: NewMockS3Client(), putCode: "409"}
-	store, _ := New(client, Config{Bucket: "test"})
-	if err := store.Put(ctx, "k", bytes.NewReader([]byte("x"))); err == nil || errors.Is(err, lode.ErrPathExists) {
-		t.Errorf("code 409: got %v, want a non-ErrPathExists error", err)
-	}
+		// Atomic PutObject only treats the 412 spellings as "exists"; a bare
+		// conflict code is surfaced as a plain error.
+		client := &codeClient{MockS3Client: NewMockS3Client(), putCode: "409"}
+		store, _ := New(client, Config{Bucket: "test"})
+		if err := store.Put(ctx, "k", bytes.NewReader([]byte("x"))); err == nil || errors.Is(err, lode.ErrPathExists) {
+			t.Errorf("code 409: got %v, want a non-ErrPathExists error", err)
+		}
+	})
+
+	t.Run("put multipart from file maps completion codes", func(t *testing.T) {
+		ctx := t.Context()
+		data := make([]byte, 6*1024*1024) // two parts
+		for _, code := range append(conditionalCodes, "SlowDown") {
+			client := &codeClient{MockS3Client: NewMockS3Client(), completeCode: code}
+			store, _ := New(client, Config{Bucket: "test"})
+			tmp, err := os.CreateTemp(t.TempDir(), "mp-*")
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, _ = tmp.Write(data)
+			err = store.putMultipartFromFile(ctx, "large.bin", tmp, int64(len(data)))
+			_ = tmp.Close()
+			wantExists := code != "SlowDown"
+			if errors.Is(err, lode.ErrPathExists) != wantExists || err == nil {
+				t.Errorf("code %s: got %v, want ErrPathExists=%v", code, err, wantExists)
+			}
+		}
+	})
+
+	t.Run("compare and swap maps precondition codes", func(t *testing.T) {
+		ctx := t.Context()
+		for _, code := range append(conditionalCodes, "SlowDown") {
+			wantConflict := code != "SlowDown"
+
+			// Create path (object absent, If-None-Match).
+			client := &codeClient{MockS3Client: NewMockS3Client(), putCode: code}
+			store, _ := New(client, Config{Bucket: "test"})
+			err := store.CompareAndSwap(ctx, "ptr/latest", "", "snap-1")
+			if errors.Is(err, lode.ErrSnapshotConflict) != wantConflict || err == nil {
+				t.Errorf("create, code %s: got %v, want conflict=%v", code, err, wantConflict)
+			}
+
+			// Update path (object present, If-Match).
+			client = &codeClient{MockS3Client: NewMockS3Client()}
+			store, _ = New(client, Config{Bucket: "test"})
+			if err := store.CompareAndSwap(ctx, "ptr/latest", "", "snap-1"); err != nil {
+				t.Fatal(err)
+			}
+			client.setPutCode(code)
+			err = store.CompareAndSwap(ctx, "ptr/latest", "snap-1", "snap-2")
+			if errors.Is(err, lode.ErrSnapshotConflict) != wantConflict || err == nil {
+				t.Errorf("update, code %s: got %v, want conflict=%v", code, err, wantConflict)
+			}
+		}
+	})
 }
 
-func TestStore_PutMultipartFromFile_MapsCompletionCodes(t *testing.T) {
-	ctx := t.Context()
-	data := make([]byte, 6*1024*1024) // two parts
-	for _, code := range append(conditionalCodes, "SlowDown") {
-		client := &codeClient{MockS3Client: NewMockS3Client(), completeCode: code}
+func TestStore_ReadRange_Headers(t *testing.T) {
+	t.Run("exact range header", func(t *testing.T) {
+		ctx := t.Context()
+		client := &codeClient{MockS3Client: NewMockS3Client()}
 		store, _ := New(client, Config{Bucket: "test"})
-		tmp, err := os.CreateTemp(t.TempDir(), "mp-*")
+		if err := store.Put(ctx, "k", bytes.NewReader([]byte("hello"))); err != nil {
+			t.Fatal(err)
+		}
+
+		got, err := store.ReadRange(ctx, "k", 2, 3)
+		if err != nil || string(got) != "llo" {
+			t.Fatalf("ReadRange(2,3) = %q, %v; want \"llo\"", got, err)
+		}
+		if r := client.rangeSeen(); r != "bytes=2-4" {
+			t.Fatalf("ReadRange header = %q, want bytes=2-4", r)
+		}
+
+		ra, err := store.ReaderAt(ctx, "k")
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, _ = tmp.Write(data)
-		err = store.putMultipartFromFile(ctx, "large.bin", tmp, int64(len(data)))
-		_ = tmp.Close()
-		wantExists := code != "SlowDown"
-		if errors.Is(err, lode.ErrPathExists) != wantExists || err == nil {
-			t.Errorf("code %s: got %v, want ErrPathExists=%v", code, err, wantExists)
+		buf := make([]byte, 3)
+		n, err := ra.ReadAt(buf, 2)
+		if err != nil || n != 3 || string(buf) != "llo" {
+			t.Fatalf("ReadAt(3 bytes @2) = %d, %q, %v; want 3, \"llo\"", n, buf, err)
 		}
-	}
-}
-
-func TestStore_CompareAndSwap_MapsPreconditionCodes(t *testing.T) {
-	ctx := t.Context()
-	for _, code := range append(conditionalCodes, "SlowDown") {
-		wantConflict := code != "SlowDown"
-
-		// Create path (object absent, If-None-Match).
-		client := &codeClient{MockS3Client: NewMockS3Client(), putCode: code}
-		store, _ := New(client, Config{Bucket: "test"})
-		err := store.CompareAndSwap(ctx, "ptr/latest", "", "snap-1")
-		if errors.Is(err, lode.ErrSnapshotConflict) != wantConflict || err == nil {
-			t.Errorf("create, code %s: got %v, want conflict=%v", code, err, wantConflict)
+		if r := client.rangeSeen(); r != "bytes=2-4" {
+			t.Fatalf("ReadAt header = %q, want bytes=2-4", r)
 		}
+	})
 
-		// Update path (object present, If-Match).
-		client = &codeClient{MockS3Client: NewMockS3Client()}
-		store, _ = New(client, Config{Bucket: "test"})
-		if err := store.CompareAndSwap(ctx, "ptr/latest", "", "snap-1"); err != nil {
+	t.Run("exact overflow bound", func(t *testing.T) {
+		ctx := t.Context()
+		store, _ := New(NewMockS3Client(), Config{Bucket: "test"})
+		if err := store.Put(ctx, "k", bytes.NewReader([]byte("hello"))); err != nil {
 			t.Fatal(err)
 		}
-		client.setPutCode(code)
-		err = store.CompareAndSwap(ctx, "ptr/latest", "snap-1", "snap-2")
-		if errors.Is(err, lode.ErrSnapshotConflict) != wantConflict || err == nil {
-			t.Errorf("update, code %s: got %v, want conflict=%v", code, err, wantConflict)
+		// Zero length is valid and answered without a request.
+		got, err := store.ReadRange(ctx, "k", 1, 0)
+		if err != nil || len(got) != 0 {
+			t.Fatalf("zero length: got %d bytes, %v; want empty, nil", len(got), err)
 		}
-	}
-}
-
-func TestStore_ReadRange_ExactRangeHeader(t *testing.T) {
-	ctx := t.Context()
-	client := &codeClient{MockS3Client: NewMockS3Client()}
-	store, _ := New(client, Config{Bucket: "test"})
-	if err := store.Put(ctx, "k", bytes.NewReader([]byte("hello"))); err != nil {
-		t.Fatal(err)
-	}
-
-	got, err := store.ReadRange(ctx, "k", 2, 3)
-	if err != nil || string(got) != "llo" {
-		t.Fatalf("ReadRange(2,3) = %q, %v; want \"llo\"", got, err)
-	}
-	if r := client.rangeSeen(); r != "bytes=2-4" {
-		t.Fatalf("ReadRange header = %q, want bytes=2-4", r)
-	}
-
-	ra, err := store.ReaderAt(ctx, "k")
-	if err != nil {
-		t.Fatal(err)
-	}
-	buf := make([]byte, 3)
-	n, err := ra.ReadAt(buf, 2)
-	if err != nil || n != 3 || string(buf) != "llo" {
-		t.Fatalf("ReadAt(3 bytes @2) = %d, %q, %v; want 3, \"llo\"", n, buf, err)
-	}
-	if r := client.rangeSeen(); r != "bytes=2-4" {
-		t.Fatalf("ReadAt header = %q, want bytes=2-4", r)
-	}
-}
-
-func TestStore_ReadRange_ExactOverflowBound(t *testing.T) {
-	ctx := t.Context()
-	store, _ := New(NewMockS3Client(), Config{Bucket: "test"})
-	if err := store.Put(ctx, "k", bytes.NewReader([]byte("hello"))); err != nil {
-		t.Fatal(err)
-	}
-	// Zero length is valid and answered without a request.
-	got, err := store.ReadRange(ctx, "k", 1, 0)
-	if err != nil || len(got) != 0 {
-		t.Fatalf("zero length: got %d bytes, %v; want empty, nil", len(got), err)
-	}
-	got, err = store.ReadRange(ctx, "k", math.MaxInt64-10, 10)
-	if err != nil || len(got) != 0 {
-		t.Fatalf("exact bound: got %d bytes, %v; want empty, nil", len(got), err)
-	}
-	if _, err := store.ReadRange(ctx, "k", math.MaxInt64-10, 11); !errors.Is(err, lode.ErrInvalidPath) {
-		t.Fatalf("one past bound: got %v, want ErrInvalidPath", err)
-	}
+		got, err = store.ReadRange(ctx, "k", math.MaxInt64-10, 10)
+		if err != nil || len(got) != 0 {
+			t.Fatalf("exact bound: got %d bytes, %v; want empty, nil", len(got), err)
+		}
+		if _, err := store.ReadRange(ctx, "k", math.MaxInt64-10, 11); !errors.Is(err, lode.ErrInvalidPath) {
+			t.Fatalf("one past bound: got %v, want ErrInvalidPath", err)
+		}
+	})
 }
