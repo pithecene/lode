@@ -502,20 +502,33 @@ func (d *dataset) loadCopies(ctx context.Context, id DatasetSnapshotID, paths []
 }
 
 // loadManifestAt loads and validates the manifest copy at p. ErrNotFound
-// means it is absent. An invalid manifest is an error: nothing is expired
-// or recorded from it.
+// means it is absent. An invalid or misplaced manifest is an error: nothing
+// is expired or recorded from it.
 func (d *dataset) loadManifestAt(ctx context.Context, id DatasetSnapshotID, p string) (*Manifest, error) {
 	s, err := d.history.load(ctx, id, p)
 	if errors.Is(err, ErrNotFound) {
 		return nil, err
 	}
 	if err == nil {
-		err = validateManifest(s.Manifest)
+		err = d.validateCopy(s.Manifest, id)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("lode: failed to load manifest %s: %w", p, err)
 	}
 	return s.Manifest, nil
+}
+
+// validateCopy requires a manifest found at a path of snapshot id to be
+// valid and to name that snapshot of this dataset: a misplaced manifest is
+// corruption, never something to expire.
+func (d *dataset) validateCopy(m *Manifest, id DatasetSnapshotID) error {
+	if err := validateManifest(m); err != nil {
+		return err
+	}
+	if m.DatasetID != d.id || m.SnapshotID != id {
+		return fmt.Errorf("lode: manifest names snapshot %s of dataset %s, not %s of %s", m.SnapshotID, m.DatasetID, id, d.id)
+	}
+	return nil
 }
 
 // manifestCopies is where snapshot id's manifest may be: the canonical path

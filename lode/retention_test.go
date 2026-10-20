@@ -847,8 +847,10 @@ func TestExpire_Tombstone(t *testing.T) {
 // manifest invariants: nothing is recorded or deleted from them.
 func TestExpire_InvalidManifest(t *testing.T) {
 	for name, corrupt := range map[string]func(*Manifest){
-		"zero created at": func(m *Manifest) { m.CreatedAt = time.Time{} },
-		"negative size":   func(m *Manifest) { m.Files[0].SizeBytes = -1 },
+		"zero created at":  func(m *Manifest) { m.CreatedAt = time.Time{} },
+		"negative size":    func(m *Manifest) { m.Files[0].SizeBytes = -1 },
+		"another snapshot": func(m *Manifest) { m.SnapshotID = "1" },
+		"another dataset":  func(m *Manifest) { m.DatasetID = "other" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			mem := NewMemory()
