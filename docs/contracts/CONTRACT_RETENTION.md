@@ -6,7 +6,7 @@ implementation.
 
 Status: **Draft** (proposed for v0.10; no code implements this yet)
 
-Issue: [#174](https://github.com/pithecene-io/lode/issues/174)
+Issue: [#174](https://github.com/pithecene/lode/issues/174)
 
 ---
 

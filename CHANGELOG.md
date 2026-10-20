@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Listing filters and cursors**: `PartitionListOptions.Prefix` narrows `ListPartitions` to a partition-path prefix (a storage prefix on Hive layouts); `PartitionListOptions.StartAfter` and `ManifestListOptions.StartAfter` resume a listing after a previous result. ([#175](https://github.com/pithecene-io/lode/issues/175))
+- **Listing filters and cursors**: `PartitionListOptions.Prefix` narrows `ListPartitions` to a partition-path prefix (a storage prefix on Hive layouts); `PartitionListOptions.StartAfter` and `ManifestListOptions.StartAfter` resume a listing after a previous result. ([#175](https://github.com/pithecene/lode/issues/175))
 - **`ErrPartitionPrefixNotSupported`**: Sentinel for `Prefix` on a layout without partitions.
 - **`ErrInvalidArgument`**: One sentinel for every caller-supplied value Lode refuses — nil factories, nil layouts or compressors, out-of-range retry options, blob writes without exactly one `[]byte`, Volume offsets, lengths, blocks and commits. Previously these were ad-hoc errors matchable only by message; `errors.Is(err, lode.ErrInvalidArgument)` now classifies them and the message still names the value.
 - **`DatasetListOptions.StartAfter`**: `ListDatasets` gains the cursor the other listings have; the last ID from a previous call resumes after it.
@@ -52,11 +52,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Retry observer**: `WithRetryObserver(fn)` registers a callback invoked synchronously once per CAS retry attempt (1-indexed, before backoff) for Dataset and Volume. Enables callers to populate retry metrics such as `lode_write_retry_total`. ([#171](https://github.com/pithecene-io/lode/pull/171), closes [#169](https://github.com/pithecene-io/lode/issues/169))
+- **Retry observer**: `WithRetryObserver(fn)` registers a callback invoked synchronously once per CAS retry attempt (1-indexed, before backoff) for Dataset and Volume. Enables callers to populate retry metrics such as `lode_write_retry_total`. ([#171](https://github.com/pithecene/lode/pull/171), closes [#169](https://github.com/pithecene/lode/issues/169))
 
 ### Security
 
-- **AWS SDK EventStream DoS**: Bump `github.com/aws/aws-sdk-go-v2/service/s3` to v1.97.3 and `aws/protocol/eventstream` to v1.7.8, the first patched versions for the EventStream decoder panic advisory. Transitive `aws-sdk-go-v2` and `smithy-go` patch bumps follow via MVS. ([#170](https://github.com/pithecene-io/lode/pull/170))
+- **AWS SDK EventStream DoS**: Bump `github.com/aws/aws-sdk-go-v2/service/s3` to v1.97.3 and `aws/protocol/eventstream` to v1.7.8, the first patched versions for the EventStream decoder panic advisory. Transitive `aws-sdk-go-v2` and `smithy-go` patch bumps follow via MVS. ([#170](https://github.com/pithecene/lode/pull/170))
 
 ### Upgrade Notes
 
@@ -69,13 +69,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Opt-in CAS retry**: `WithRetryCount(n)` enables automatic bounded retry on `ErrSnapshotConflict` within the commit path for both Dataset and Volume. Data files are written once; only the manifest re-parent and pointer CAS are retried. ([#164](https://github.com/pithecene-io/lode/pull/164), closes [#163](https://github.com/pithecene-io/lode/issues/163))
+- **Opt-in CAS retry**: `WithRetryCount(n)` enables automatic bounded retry on `ErrSnapshotConflict` within the commit path for both Dataset and Volume. Data files are written once; only the manifest re-parent and pointer CAS are retried. ([#164](https://github.com/pithecene/lode/pull/164), closes [#163](https://github.com/pithecene/lode/issues/163))
 - **Backoff customization**: `WithRetryBaseDelay(d)`, `WithRetryMaxDelay(d)`, `WithRetryJitter(j)` for full control over jittered exponential backoff. Defaults: 10ms base, 2s max, full jitter.
 - **`ErrOptionNotValidForVolume`**: Sentinel error for options that do not apply to Volume construction.
 
 ### Changed
 
-- **Unified `Option` interface**: `VolumeOption` function type replaced by the shared `Option` interface (already used by Dataset and DatasetReader). `NewVolume` now takes `...Option`. Options that do not apply to a given constructor return an error at construction time. ([#164](https://github.com/pithecene-io/lode/pull/164))
+- **Unified `Option` interface**: `VolumeOption` function type replaced by the shared `Option` interface (already used by Dataset and DatasetReader). `NewVolume` now takes `...Option`. Options that do not apply to a given constructor return an error at construction time. ([#164](https://github.com/pithecene/lode/pull/164))
 - **`WithVolumeChecksum` → `WithChecksum`**: Volume block checksums now use the same `WithChecksum(c)` option as Dataset file checksums.
 
 ### Breaking Changes
@@ -103,25 +103,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **CAS optimistic concurrency**: `ConditionalWriter` interface and `CompareAndSwap` method on FS, Memory, and S3 stores. Dataset and Volume commit paths use CAS when available, falling back to Delete+Put for single-writer stores. `ErrSnapshotConflict` sentinel for conflict detection and retry. ([#134](https://github.com/pithecene-io/lode/pull/134), [#135](https://github.com/pithecene-io/lode/pull/135))
-- **Optimistic concurrency example**: `examples/optimistic_concurrency/` demonstrates CAS conflict detection and retry pattern. ([#135](https://github.com/pithecene-io/lode/pull/135))
-- **Vector artifact pipeline example**: `examples/vector_artifacts/` demonstrates embeddings, indices, and active pointers. ([#138](https://github.com/pithecene-io/lode/pull/138))
-- **S3 adapter promoted from experimental**: Documentation, ARCH_INDEX, and README updated. ([#154](https://github.com/pithecene-io/lode/pull/154))
-- **AI governance**: `CLAUDE.md` repository constitution and `ai/skills/` repo-local skill definitions. ([#136](https://github.com/pithecene-io/lode/pull/136))
-- **Race detection in CI**: `-race` testing added as a parallel CI job. ([#141](https://github.com/pithecene-io/lode/pull/141))
-- **Test hardening**: Store coverage (Exists, List, path safety), sentinel error messages, and Parquet type conversion. ([#145](https://github.com/pithecene-io/lode/pull/145), [#146](https://github.com/pithecene-io/lode/pull/146))
+- **CAS optimistic concurrency**: `ConditionalWriter` interface and `CompareAndSwap` method on FS, Memory, and S3 stores. Dataset and Volume commit paths use CAS when available, falling back to Delete+Put for single-writer stores. `ErrSnapshotConflict` sentinel for conflict detection and retry. ([#134](https://github.com/pithecene/lode/pull/134), [#135](https://github.com/pithecene/lode/pull/135))
+- **Optimistic concurrency example**: `examples/optimistic_concurrency/` demonstrates CAS conflict detection and retry pattern. ([#135](https://github.com/pithecene/lode/pull/135))
+- **Vector artifact pipeline example**: `examples/vector_artifacts/` demonstrates embeddings, indices, and active pointers. ([#138](https://github.com/pithecene/lode/pull/138))
+- **S3 adapter promoted from experimental**: Documentation, ARCH_INDEX, and README updated. ([#154](https://github.com/pithecene/lode/pull/154))
+- **AI governance**: `CLAUDE.md` repository constitution and `ai/skills/` repo-local skill definitions. ([#136](https://github.com/pithecene/lode/pull/136))
+- **Race detection in CI**: `-race` testing added as a parallel CI job. ([#141](https://github.com/pithecene/lode/pull/141))
+- **Test hardening**: Store coverage (Exists, List, path safety), sentinel error messages, and Parquet type conversion. ([#145](https://github.com/pithecene/lode/pull/145), [#146](https://github.com/pithecene/lode/pull/146))
 
 ### Fixed
 
-- **Windows build**: Extract `fsStore.CompareAndSwap` into build-constrained files. Panic replaced with error return in `buildFieldNode`. Metadata docs corrected to reflect nil coalescing. S3 test cleanup lifecycle fixed. ([#149](https://github.com/pithecene-io/lode/pull/149))
-- **Example metadata docs, S3 connectivity detection, `.gitignore` anchoring, and CI race scope**. ([#150](https://github.com/pithecene-io/lode/pull/150))
+- **Windows build**: Extract `fsStore.CompareAndSwap` into build-constrained files. Panic replaced with error return in `buildFieldNode`. Metadata docs corrected to reflect nil coalescing. S3 test cleanup lifecycle fixed. ([#149](https://github.com/pithecene/lode/pull/149))
+- **Example metadata docs, S3 connectivity detection, `.gitignore` anchoring, and CI race scope**. ([#150](https://github.com/pithecene/lode/pull/150))
 
 ### Changed
 
-- **Table-driven manifest validation**: `validateVolumeManifest` refactored from sequential checks to validation table. ([#143](https://github.com/pithecene-io/lode/pull/143))
-- **StreamWriteRecords cleanup helper**: Deduplicated 4 cleanup sequences into `cleanupStreamWrite()`. ([#144](https://github.com/pithecene-io/lode/pull/144))
-- **S3 test context**: Replaced `context.Background()` with `t.Context()`/`b.Context()` in S3 integration test cleanup. ([#142](https://github.com/pithecene-io/lode/pull/142))
-- **CI workflows hardened** with explicit least-privilege permissions. ([#151](https://github.com/pithecene-io/lode/pull/151), [#152](https://github.com/pithecene-io/lode/pull/152), [#153](https://github.com/pithecene-io/lode/pull/153))
+- **Table-driven manifest validation**: `validateVolumeManifest` refactored from sequential checks to validation table. ([#143](https://github.com/pithecene/lode/pull/143))
+- **StreamWriteRecords cleanup helper**: Deduplicated 4 cleanup sequences into `cleanupStreamWrite()`. ([#144](https://github.com/pithecene/lode/pull/144))
+- **S3 test context**: Replaced `context.Background()` with `t.Context()`/`b.Context()` in S3 integration test cleanup. ([#142](https://github.com/pithecene/lode/pull/142))
+- **CI workflows hardened** with explicit least-privilege permissions. ([#151](https://github.com/pithecene/lode/pull/151), [#152](https://github.com/pithecene/lode/pull/152), [#153](https://github.com/pithecene/lode/pull/153))
 
 ### Upgrade Notes
 
@@ -135,21 +135,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Complexity bounds contract**: `CONTRACT_COMPLEXITY.md` documents the cost of every public method in store calls, memory, and CPU. Operations are classified as hot-path (per-read/write), cold-path (explicit listing), or degraded (backward-compat fallback). Cost that exceeds the documented bound is a bug. ([#129](https://github.com/pithecene-io/lode/pull/129))
-- **Cross-references**: `CONTRACT_WRITE_API.md`, `CONTRACT_READ_API.md`, `CONTRACT_VOLUME.md`, and `CONTRACT_STORAGE.md` now link to `CONTRACT_COMPLEXITY.md` for cost definitions. ([#129](https://github.com/pithecene-io/lode/pull/129))
+- **Complexity bounds contract**: `CONTRACT_COMPLEXITY.md` documents the cost of every public method in store calls, memory, and CPU. Operations are classified as hot-path (per-read/write), cold-path (explicit listing), or degraded (backward-compat fallback). Cost that exceeds the documented bound is a bug. ([#129](https://github.com/pithecene/lode/pull/129))
+- **Cross-references**: `CONTRACT_WRITE_API.md`, `CONTRACT_READ_API.md`, `CONTRACT_VOLUME.md`, and `CONTRACT_STORAGE.md` now link to `CONTRACT_COMPLEXITY.md` for cost definitions. ([#129](https://github.com/pithecene/lode/pull/129))
 
 ### Fixed
 
-- **CX-1: Per-read sort check in `findCoveringBlocks`**: Blocks are now sorted once at load time in `validateVolumeManifest` instead of checked on every read. ([#130](https://github.com/pithecene-io/lode/pull/130))
-- **CX-3: Double deserialization in `ListPartitions`**: Reduced from 2 Gets per manifest to 1 Get (single-pass extraction). ([#130](https://github.com/pithecene-io/lode/pull/130))
-- **CX-6: Redundant sort checks in `Volume.Snapshots`**: Eliminated by the same load-time sort fix as CX-1. ([#130](https://github.com/pithecene-io/lode/pull/130))
-- **CX-7: `fsStore.List` used `filepath.Walk`**: Replaced with `filepath.WalkDir` to avoid per-entry `os.Stat` calls. ([#130](https://github.com/pithecene-io/lode/pull/130))
+- **CX-1: Per-read sort check in `findCoveringBlocks`**: Blocks are now sorted once at load time in `validateVolumeManifest` instead of checked on every read. ([#130](https://github.com/pithecene/lode/pull/130))
+- **CX-3: Double deserialization in `ListPartitions`**: Reduced from 2 Gets per manifest to 1 Get (single-pass extraction). ([#130](https://github.com/pithecene/lode/pull/130))
+- **CX-6: Redundant sort checks in `Volume.Snapshots`**: Eliminated by the same load-time sort fix as CX-1. ([#130](https://github.com/pithecene/lode/pull/130))
+- **CX-7: `fsStore.List` used `filepath.Walk`**: Replaced with `filepath.WalkDir` to avoid per-entry `os.Stat` calls. ([#130](https://github.com/pithecene/lode/pull/130))
 
 ### Changed
 
-- **`fmt.Errorf` → `errors.New`**: 10 instances in `volume.go` where no formatting verbs were used, per AGENTS.md code style rules. ([#131](https://github.com/pithecene-io/lode/pull/131))
-- **Extracted `resolveParent` method**: Parent resolution cascade (cache → pointer → scan) moved from inline in `Commit` to a dedicated method for readability. ([#131](https://github.com/pithecene-io/lode/pull/131))
-- **Extracted `ensureBlocksSortedByOffset` helper**: Deduplicated the check-then-sort pattern in `validateVolumeManifest`. ([#131](https://github.com/pithecene-io/lode/pull/131))
+- **`fmt.Errorf` → `errors.New`**: 10 instances in `volume.go` where no formatting verbs were used, per AGENTS.md code style rules. ([#131](https://github.com/pithecene/lode/pull/131))
+- **Extracted `resolveParent` method**: Parent resolution cascade (cache → pointer → scan) moved from inline in `Commit` to a dedicated method for readability. ([#131](https://github.com/pithecene/lode/pull/131))
+- **Extracted `ensureBlocksSortedByOffset` helper**: Deduplicated the check-then-sort pattern in `validateVolumeManifest`. ([#131](https://github.com/pithecene/lode/pull/131))
 
 ### Upgrade Notes
 
@@ -168,12 +168,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **O(N) cold-start `Latest()` on remote stores**: `Latest()` previously downloaded every manifest in the dataset to find the most recent snapshot. On Cloudflare R2 with ~5,800 manifests this took ~30 minutes. A persistent `latest` pointer file now provides O(1) resolution: 1 Get (pointer) + 1 Get (manifest). ([#127](https://github.com/pithecene-io/lode/pull/127), closes [#118](https://github.com/pithecene-io/lode/issues/118), [#119](https://github.com/pithecene-io/lode/issues/119))
-- **O(N) `Snapshot(ctx, id)` on HiveLayout**: `Snapshot()` scanned all partition directories to find a manifest matching the given ID. A canonical manifest is now written at the non-partitioned path for O(1) lookup, with scan fallback for pre-v0.7.3 data. ([#127](https://github.com/pithecene-io/lode/pull/127), closes [#121](https://github.com/pithecene-io/lode/issues/121))
-- **O(N) `latestByScan` downloaded ALL manifests**: Even the scan fallback path loaded every manifest. It now sorts paths lexicographically and loads only the last one: 1 List + 1 Get. ([#127](https://github.com/pithecene-io/lode/pull/127), closes [#122](https://github.com/pithecene-io/lode/issues/122))
-- **O(B) `Volume.ReadAt` block lookup**: `findCoveringBlocks` used linear scan over all blocks. Now uses binary search on sorted blocks for O(log B) start-index lookup. Blocks are sorted at commit time via a merge-insert algorithm. ([#127](https://github.com/pithecene-io/lode/pull/127), closes [#123](https://github.com/pithecene-io/lode/issues/123))
-- **O(N) `ListManifests` / `ListPartitions`**: Both methods downloaded every manifest to extract IDs and partition paths. Snapshot IDs and partition paths are now extracted from store listing paths. ([#127](https://github.com/pithecene-io/lode/pull/127), closes [#124](https://github.com/pithecene-io/lode/issues/124), [#125](https://github.com/pithecene-io/lode/issues/125))
-- **O(N log N) `validateNoOverlaps` on pre-sorted blocks**: Skips redundant sort when blocks are already sorted (the common case after `mergeBlocks`). ([#127](https://github.com/pithecene-io/lode/pull/127), closes [#126](https://github.com/pithecene-io/lode/issues/126))
+- **O(N) cold-start `Latest()` on remote stores**: `Latest()` previously downloaded every manifest in the dataset to find the most recent snapshot. On Cloudflare R2 with ~5,800 manifests this took ~30 minutes. A persistent `latest` pointer file now provides O(1) resolution: 1 Get (pointer) + 1 Get (manifest). ([#127](https://github.com/pithecene/lode/pull/127), closes [#118](https://github.com/pithecene/lode/issues/118), [#119](https://github.com/pithecene/lode/issues/119))
+- **O(N) `Snapshot(ctx, id)` on HiveLayout**: `Snapshot()` scanned all partition directories to find a manifest matching the given ID. A canonical manifest is now written at the non-partitioned path for O(1) lookup, with scan fallback for pre-v0.7.3 data. ([#127](https://github.com/pithecene/lode/pull/127), closes [#121](https://github.com/pithecene/lode/issues/121))
+- **O(N) `latestByScan` downloaded ALL manifests**: Even the scan fallback path loaded every manifest. It now sorts paths lexicographically and loads only the last one: 1 List + 1 Get. ([#127](https://github.com/pithecene/lode/pull/127), closes [#122](https://github.com/pithecene/lode/issues/122))
+- **O(B) `Volume.ReadAt` block lookup**: `findCoveringBlocks` used linear scan over all blocks. Now uses binary search on sorted blocks for O(log B) start-index lookup. Blocks are sorted at commit time via a merge-insert algorithm. ([#127](https://github.com/pithecene/lode/pull/127), closes [#123](https://github.com/pithecene/lode/issues/123))
+- **O(N) `ListManifests` / `ListPartitions`**: Both methods downloaded every manifest to extract IDs and partition paths. Snapshot IDs and partition paths are now extracted from store listing paths. ([#127](https://github.com/pithecene/lode/pull/127), closes [#124](https://github.com/pithecene/lode/issues/124), [#125](https://github.com/pithecene/lode/issues/125))
+- **O(N log N) `validateNoOverlaps` on pre-sorted blocks**: Skips redundant sort when blocks are already sorted (the common case after `mergeBlocks`). ([#127](https://github.com/pithecene/lode/pull/127), closes [#126](https://github.com/pithecene/lode/issues/126))
 
 ### Added
 
@@ -218,7 +218,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **O(n²) write degradation on remote stores**: `Write()`, `StreamWrite()`, and `StreamWriteRecords()` called `Latest()` on every invocation, scanning all manifests via `store.List` + N×`store.Get`. On remote stores (S3, R2), this caused sequential writes to degrade quadratically. A 40-write burst that should complete in <1s took ~40 minutes. Parent snapshot ID is now cached after each successful write; only the first write (cold start) falls back to `Latest()`. ([#109](https://github.com/pithecene-io/lode/pull/109), closes [#108](https://github.com/pithecene-io/lode/issues/108))
+- **O(n²) write degradation on remote stores**: `Write()`, `StreamWrite()`, and `StreamWriteRecords()` called `Latest()` on every invocation, scanning all manifests via `store.List` + N×`store.Get`. On remote stores (S3, R2), this caused sequential writes to degrade quadratically. A 40-write burst that should complete in <1s took ~40 minutes. Parent snapshot ID is now cached after each successful write; only the first write (cold start) falls back to `Latest()`. ([#109](https://github.com/pithecene/lode/pull/109), closes [#108](https://github.com/pithecene/lode/issues/108))
 
 ### Added
 
@@ -533,20 +533,20 @@ Post-v0.3.0 improvements planned:
 
 ---
 
-[Unreleased]: https://github.com/pithecene-io/lode/compare/v0.10.0...HEAD
-[0.10.0]: https://github.com/pithecene-io/lode/compare/v0.9.1...v0.10.0
-[0.9.1]: https://github.com/pithecene-io/lode/compare/v0.9.0...v0.9.1
-[0.9.0]: https://github.com/pithecene-io/lode/compare/v0.8.0...v0.9.0
-[0.8.0]: https://github.com/pithecene-io/lode/compare/v0.7.4...v0.8.0
-[0.7.4]: https://github.com/pithecene-io/lode/compare/v0.7.3...v0.7.4
-[0.7.3]: https://github.com/pithecene-io/lode/compare/v0.7.2...v0.7.3
-[0.7.2]: https://github.com/pithecene-io/lode/compare/v0.7.1...v0.7.2
-[0.7.1]: https://github.com/pithecene-io/lode/compare/v0.7.0...v0.7.1
-[0.7.0]: https://github.com/pithecene-io/lode/compare/v0.6.0...v0.7.0
-[0.6.0]: https://github.com/pithecene-io/lode/compare/v0.5.0...v0.6.0
-[0.5.0]: https://github.com/pithecene-io/lode/compare/v0.4.1...v0.5.0
-[0.4.1]: https://github.com/pithecene-io/lode/compare/v0.4.0...v0.4.1
-[0.4.0]: https://github.com/pithecene-io/lode/compare/v0.3.0...v0.4.0
-[0.3.0]: https://github.com/pithecene-io/lode/compare/v0.2.0...v0.3.0
-[0.2.0]: https://github.com/pithecene-io/lode/compare/v0.1.0...v0.2.0
-[0.1.0]: https://github.com/pithecene-io/lode/releases/tag/v0.1.0
+[Unreleased]: https://github.com/pithecene/lode/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/pithecene/lode/compare/v0.9.1...v0.10.0
+[0.9.1]: https://github.com/pithecene/lode/compare/v0.9.0...v0.9.1
+[0.9.0]: https://github.com/pithecene/lode/compare/v0.8.0...v0.9.0
+[0.8.0]: https://github.com/pithecene/lode/compare/v0.7.4...v0.8.0
+[0.7.4]: https://github.com/pithecene/lode/compare/v0.7.3...v0.7.4
+[0.7.3]: https://github.com/pithecene/lode/compare/v0.7.2...v0.7.3
+[0.7.2]: https://github.com/pithecene/lode/compare/v0.7.1...v0.7.2
+[0.7.1]: https://github.com/pithecene/lode/compare/v0.7.0...v0.7.1
+[0.7.0]: https://github.com/pithecene/lode/compare/v0.6.0...v0.7.0
+[0.6.0]: https://github.com/pithecene/lode/compare/v0.5.0...v0.6.0
+[0.5.0]: https://github.com/pithecene/lode/compare/v0.4.1...v0.5.0
+[0.4.1]: https://github.com/pithecene/lode/compare/v0.4.0...v0.4.1
+[0.4.0]: https://github.com/pithecene/lode/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/pithecene/lode/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/pithecene/lode/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/pithecene/lode/releases/tag/v0.1.0
