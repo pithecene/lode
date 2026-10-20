@@ -202,8 +202,10 @@ A pointer MAY transiently name a snapshot whose manifest is not yet written,
 because `history.Advance` writes the pointer before the manifests. In that
 state the previous head is still the only readable committed state, and the
 pointer alone does not say which snapshot that is. Retention therefore MUST
-NOT proceed while the head is uncommitted: if the pointer names an ID whose
-canonical manifest is absent, `Expire` returns `ErrHeadUncommitted` and
+NOT proceed while the head is uncommitted: if the pointer names an ID with
+no manifest — no canonical manifest, and, for data written before canonical
+manifests existed, no partition manifest either — `Expire` returns
+`ErrHeadUncommitted` and
 expires nothing (at preflight) or stops before step 1 (at the per-snapshot
 recheck). Callers retry once the in-flight commit completes; a pointer left
 behind by a crashed commit is repaired by the next `Latest` or commit.
@@ -431,7 +433,7 @@ state the next `Expire` or `Sweep` completes.
 
 | Error | Source | Condition |
 |-------|--------|-----------|
-| `ErrHeadUncommitted` | `Expire` | The pointer names a snapshot whose canonical manifest is absent (a commit in flight). At preflight nothing is expired; at a per-snapshot recheck the snapshots already expired stay expired and are reported |
+| `ErrHeadUncommitted` | `Expire` | The pointer names a snapshot with no manifest (a commit in flight). At preflight nothing is expired; at a per-snapshot recheck the snapshots already expired stay expired and are reported |
 | `ErrInvalidArgument` | `Expire`, `Sweep` | `ExpireRequest` with every selector field unset; `SweepRequest.Grace` zero or negative |
 | `ErrInvalidPath` | `Expire` | `Partition` is not a canonical relative partition path |
 | `ErrPartitionPrefixNotSupported` | `Expire` | `Partition` set on a layout without partitions (shared with `PartitionListOptions.Prefix`; distinct from the `StreamWriteRecords` error `ErrPartitioningNotSupported`) |
