@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -495,6 +496,33 @@ func TestExpire_DryRun_FailsWhereARealRunWould(t *testing.T) {
 	report, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{first.ID}, DryRun: true})
 	if err == nil || len(report.Expired) != 0 {
 		t.Errorf("dry run = %+v, %v; want the tombstone mismatch a real run hits", report, err)
+	}
+}
+
+func TestExpire_ZeroLengthTombstone(t *testing.T) {
+	stores := map[string]struct {
+		wrap    func(Store) Store
+		succeed bool // CAS from "" replaces a zero-length object; Put does not
+	}{
+		"cas":     {func(s Store) Store { return casHookStore{&hookStore{Store: s}} }, true},
+		"non-cas": {func(s Store) Store { return &hookStore{Store: s} }, false},
+	}
+	for name, tt := range stores {
+		for _, dryRun := range []bool{true, false} {
+			t.Run(fmt.Sprintf("%s/dry=%v", name, dryRun), func(t *testing.T) {
+				mem := NewMemory()
+				ds := newDefaultRetention(t, tt.wrap(mem))
+				first := writeRecord(t, ds, 1)
+				writeRecord(t, ds, 2)
+				if err := mem.Put(t.Context(), "datasets/events/expired/"+string(first.ID), strings.NewReader("")); err != nil {
+					t.Fatal(err)
+				}
+				_, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{first.ID}, DryRun: dryRun})
+				if (err == nil) != tt.succeed {
+					t.Errorf("Expire = %v, want success %v (dry run and real run agree)", err, tt.succeed)
+				}
+			})
+		}
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"time"
 )
 
@@ -66,23 +67,36 @@ func (ts tombstones) create(ctx context.Context, p string, data []byte) error {
 	return ts.store.Put(ctx, p, bytes.NewReader(data))
 }
 
-// check is record without the write: it fails only where record would, on
-// an existing tombstone recording another snapshot.
+// check is record without the write: it fails exactly where record would.
+// An absent tombstone would be created, and so would a zero-length one on a
+// ConditionalWriter (a CAS from "" matches it); anything else must record
+// this snapshot.
 func (ts tombstones) check(ctx context.Context, id DatasetSnapshotID) error {
 	p := ts.path(id)
-	exists, err := ts.store.Exists(ctx, p)
-	if err != nil {
-		return fmt.Errorf("lode: failed to check tombstone: %w", err)
-	}
-	if !exists {
+	data, err := ts.readRaw(ctx, p)
+	if errors.Is(err, ErrNotFound) {
 		return nil
 	}
-	return ts.confirm(ctx, p, id)
+	if err != nil {
+		return err
+	}
+	if _, cas := ts.store.(ConditionalWriter); cas && len(data) == 0 {
+		return nil
+	}
+	return confirmTombstone(p, data, id)
 }
 
 // confirm fails unless the tombstone at p records snapshot id.
 func (ts tombstones) confirm(ctx context.Context, p string, id DatasetSnapshotID) error {
-	t, err := ts.read(ctx, p)
+	data, err := ts.readRaw(ctx, p)
+	if err != nil {
+		return err
+	}
+	return confirmTombstone(p, data, id)
+}
+
+func confirmTombstone(p string, data []byte, id DatasetSnapshotID) error {
+	t, err := decodeTombstone(p, data)
 	if err != nil {
 		return err
 	}
@@ -93,13 +107,29 @@ func (ts tombstones) confirm(ctx context.Context, p string, id DatasetSnapshotID
 }
 
 func (ts tombstones) read(ctx context.Context, p string) (tombstone, error) {
+	data, err := ts.readRaw(ctx, p)
+	if err != nil {
+		return tombstone{}, err
+	}
+	return decodeTombstone(p, data)
+}
+
+func (ts tombstones) readRaw(ctx context.Context, p string) ([]byte, error) {
 	rc, err := ts.store.Get(ctx, p)
 	if err != nil {
-		return tombstone{}, fmt.Errorf("lode: failed to read tombstone %s: %w", p, err)
+		return nil, fmt.Errorf("lode: failed to read tombstone %s: %w", p, err)
 	}
 	defer closer(rc)()
+	data, err := io.ReadAll(rc)
+	if err != nil {
+		return nil, fmt.Errorf("lode: failed to read tombstone %s: %w", p, err)
+	}
+	return data, nil
+}
+
+func decodeTombstone(p string, data []byte) (tombstone, error) {
 	var t tombstone
-	if err := json.NewDecoder(rc).Decode(&t); err != nil {
+	if err := json.Unmarshal(data, &t); err != nil {
 		return tombstone{}, fmt.Errorf("lode: failed to decode tombstone %s: %w", p, err)
 	}
 	return t, nil
