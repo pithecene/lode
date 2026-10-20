@@ -111,7 +111,9 @@ same ID, or the next `Sweep`, carries on from the tombstone.
 - `Partition`: snapshots with a manifest in that partition or beneath it
   (Hive layouts). Matching is by whole path segment, so `run_id=run-1` never
   selects `run_id=run-10`. A snapshot with files outside the partition is
-  kept and reported in `Mixed`; name it in `IDs` to expire it.
+  kept and reported in `Mixed`; to expire it, name it in `IDs` in a request
+  without `Partition` (fields intersect, so adding `IDs` alongside
+  `Partition` still reports it as mixed).
 - `Before`: snapshots whose write began before an instant. The instant is
   read from the snapshot ID, so selecting loads no manifest.
 
@@ -127,13 +129,15 @@ works; run it again after a newer commit to remove what was retained.
 
 Only the pointer names the head. Retention never guesses it from snapshot
 IDs, because a clock that went backwards can give the last commit the
-smaller ID. So it returns `ErrHeadUncommitted` and removes nothing when:
+smaller ID. So `Expire` returns `ErrHeadUncommitted` when:
 
 - the pointer names a snapshot whose manifest is not written yet (a commit
-  in flight): retry once it lands;
+  in flight): retry once it lands. Found before the run starts, nothing is
+  expired; found at the check before a later snapshot, the snapshots
+  already expired stay expired and the report lists them;
 - the dataset has snapshots, or tombstones, but no pointer (written before
-  the pointer existed): any commit creates the pointer, after which
-  retention runs.
+  the pointer existed): nothing is expired. Any commit creates the
+  pointer, after which retention runs.
 
 A pointer that does not hold a snapshot ID Lode could have written is
 corruption, and retention fails rather than trust it.
@@ -145,7 +149,12 @@ corruption, and retention fails rather than trust it.
 **It settles interrupted expiries.** For each tombstone whose snapshot
 still has manifests or data, it checks the tombstone against every manifest
 copy, deletes the manifests, and then reclaims the data, regardless of the
-grace period: the tombstone already records the decision.
+grace period: the tombstone already records the decision. Three kinds are
+held instead and their data kept: a tombstone naming the committed head
+(Lode never writes one, so it is misplaced); every tombstone while a commit
+is in flight, since the head is then unknown; and a tombstone that is
+invalid or contradicts a manifest copy, which is reported in
+`Unparseable`.
 
 **It reclaims orphans.** A data object whose snapshot has no manifest, and
 that is older than `Grace`, belongs to a write that never committed (an
@@ -215,7 +224,7 @@ The runnable version is [`examples/retention`](../../examples/retention).
 | `ExpireReport.Mixed` | Snapshots kept because they span outside `Partition` |
 | `ExpireReport.RetainedHead` | The head, if your selection included it |
 | `ExpireReport.Skipped` | Inventory paths that are not this snapshot's data objects; left in place |
-| `SweepReport.Settled` | Interrupted expiries this run finished |
+| `SweepReport.Settled` | Interrupted expiries whose remaining manifests this run found and removed; one whose manifests were already gone has its data reclaimed without being listed here |
 | `SweepReport.Orphans` | Objects of writes that never committed |
 | `SweepReport.Unparseable` | Tombstones Lode cannot trust, and objects whose ID carries no instant; nothing listed is deleted |
 | `Objects`, `Bytes`, `Unsized` | What was deleted, as the run's listing showed it; sizes come from tombstone inventories, and objects with no recorded size are counted in `Unsized` |
@@ -241,7 +250,7 @@ counted.
 
 | Error | Meaning | What to do |
 |---|---|---|
-| `ErrHeadUncommitted` | A commit is in flight, or the dataset has no pointer | Retry; for a dataset written before the pointer existed, make one commit |
+| `ErrHeadUncommitted` | `Expire`: a commit is in flight. Both: the dataset has snapshots or tombstones but no pointer. (`Sweep` with a commit in flight succeeds, settling nothing that run.) | Retry; for a dataset written before the pointer existed, make one commit |
 | `ErrSnapshotExpired` | The snapshot you read was expired (also matches `ErrNotFound`) | Expected after expiry |
 | `ErrInvalidArgument` | An `ExpireRequest` with no selector, or a non-positive `Grace` | Fix the request |
 | `ErrInvalidPath` | `Partition` is not a canonical relative partition path | Fix the partition path |

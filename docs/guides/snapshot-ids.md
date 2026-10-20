@@ -84,8 +84,9 @@ not reserve IDs against existing ones, so should it happen:
   be left naming the earlier snapshot until the next commit.
 - **After the earlier snapshot expired**, its tombstone records that
   snapshot's commit time and file list. Retention acts on a tombstone only
-  against a manifest it describes, so it refuses to touch the new snapshot,
-  which is held and reported instead. The one exposure is the moment while
+  against a manifest it describes, so the new snapshot is never deleted by
+  it: `Expire` naming the ID returns an error, and `Sweep` reports the
+  tombstone in `Unparseable` and keeps the snapshot's data. The one exposure is the moment while
   the new write is staging data, before its manifest exists: a `Sweep` then
   cannot tell that data from the expired snapshot's leftovers.
 

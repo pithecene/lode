@@ -137,6 +137,24 @@ Timeline:
 6. History: S0 → S1 → S2 (linear, no fork)
 ```
 
+The same timeline as a sequence:
+
+```mermaid
+sequenceDiagram
+    participant A as Writer A (alpha)
+    participant P as latest pointer
+    participant B as Writer B (beta)
+    A->>P: read head: S0
+    B->>P: read head: S0
+    A->>P: CAS S0 → S1
+    Note over A,P: S1 committed (files in alpha/)
+    B->>P: CAS S0 → S2
+    P-->>B: conflict: head is S1
+    B->>B: read S1's manifest: alpha/ only, no overlap with beta/
+    B->>P: re-parent to S1, CAS S1 → S2
+    Note over P: history S0 → S1 → S2, linear
+```
+
 Steps 3-5 happen inside `Write()` / `StreamWrite()`, invisible to the
 caller. The caller never sees `ErrSnapshotConflict` for non-overlapping
 work.
