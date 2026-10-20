@@ -8,9 +8,10 @@
 //   - Resume pattern: new Volume instance picks up prior state
 //   - Full-volume read after all gaps are filled
 //
-// Volume is a coequal persistence paradigm alongside Dataset. Dataset builds
-// complete objects before committing; Volume commits truth incrementally via
-// sparse byte ranges.
+// Volume lives in package lode/volume and is experimental: outside Lode's
+// v1.0 compatibility promise until it passes its own stability gate
+// (docs/V1_API_DECISIONS.md D9). Dataset builds complete objects before
+// committing; Volume commits truth incrementally via sparse byte ranges.
 //
 // Run with: go run ./examples/volume_sparse
 package main
@@ -24,6 +25,7 @@ import (
 	"os"
 
 	"github.com/pithecene-io/lode/lode"
+	"github.com/pithecene-io/lode/lode/volume"
 )
 
 func main() {
@@ -52,7 +54,7 @@ func run() error {
 	// -------------------------------------------------------------------------
 	fmt.Println("=== SETUP ===")
 
-	vol, err := lode.NewVolume("disk-image", storeFactory, 1024)
+	vol, err := volume.New("disk-image", storeFactory, 1024)
 	if err != nil {
 		return fmt.Errorf("failed to create volume: %w", err)
 	}
@@ -79,7 +81,7 @@ func run() error {
 	}
 	fmt.Printf("Staged sector 2: offset=%d length=%d path=%s\n", blk2.Offset, blk2.Length, blk2.Path)
 
-	snap1, err := vol.Commit(ctx, []lode.BlockRef{blk0, blk2}, lode.Metadata{"step": "initial"})
+	snap1, err := vol.Commit(ctx, []volume.BlockRef{blk0, blk2}, lode.Metadata{"step": "initial"})
 	if err != nil {
 		return fmt.Errorf("failed to commit: %w", err)
 	}
@@ -109,7 +111,7 @@ func run() error {
 	// Sector 1 [256, 512) was never committed — reading it must fail.
 	_, err = vol.ReadAt(ctx, snap1.ID, 256, 256)
 	switch {
-	case errors.Is(err, lode.ErrRangeMissing):
+	case errors.Is(err, volume.ErrRangeMissing):
 		fmt.Printf("ReadAt [256, 512) returned ErrRangeMissing (expected)\n")
 		fmt.Printf("  Sparse volumes explicitly track which ranges are committed.\n")
 		fmt.Printf("  Gaps are detected, not silently zero-filled.\n\n")
@@ -130,7 +132,7 @@ func run() error {
 		return fmt.Errorf("failed to stage sector 1: %w", err)
 	}
 
-	snap2, err := vol.Commit(ctx, []lode.BlockRef{blk1}, lode.Metadata{"step": "fill-gap"})
+	snap2, err := vol.Commit(ctx, []volume.BlockRef{blk1}, lode.Metadata{"step": "fill-gap"})
 	if err != nil {
 		return fmt.Errorf("failed to commit: %w", err)
 	}
@@ -152,7 +154,7 @@ func run() error {
 	fmt.Println("=== RESUME PATTERN (new Volume instance) ===")
 
 	// Simulate a process restart: create a new Volume on the same store.
-	vol2, err := lode.NewVolume("disk-image", storeFactory, 1024)
+	vol2, err := volume.New("disk-image", storeFactory, 1024)
 	if err != nil {
 		return fmt.Errorf("failed to create resumed volume: %w", err)
 	}
@@ -171,7 +173,7 @@ func run() error {
 		return fmt.Errorf("failed to stage sector 3: %w", err)
 	}
 
-	snap3, err := vol2.Commit(ctx, []lode.BlockRef{blk3}, lode.Metadata{"step": "complete"})
+	snap3, err := vol2.Commit(ctx, []volume.BlockRef{blk3}, lode.Metadata{"step": "complete"})
 	if err != nil {
 		return fmt.Errorf("failed to commit: %w", err)
 	}

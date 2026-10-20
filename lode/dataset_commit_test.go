@@ -5,6 +5,8 @@ import (
 	"sort"
 	"testing"
 	"time"
+
+	"github.com/pithecene-io/lode/internal/testutil"
 )
 
 // Tests for commit-path behavior that mutation testing showed unobserved:
@@ -64,7 +66,7 @@ func TestDataset_Write_Commit(t *testing.T) {
 	// A fresh Dataset instance resolves its parent from the persisted pointer
 	// without scanning when the pointer names an existing manifest.
 	t.Run("cold start valid pointer skips scan", func(t *testing.T) {
-		fs := newFaultStore(NewMemory())
+		fs := testutil.NewFaultStore(NewMemory())
 		first, err := NewDataset("test-ds", newFaultStoreFactory(fs), WithCodec(NewJSONLCodec()))
 		if err != nil {
 			t.Fatal(err)
@@ -98,15 +100,15 @@ func TestDataset_Write_Commit(t *testing.T) {
 		injectedCAS := errors.New("injected: cas failure")
 		cases := []struct {
 			name   string
-			inject func(fs *faultStore)
-			clear  func(fs *faultStore)
+			inject func(fs *testutil.FaultStore)
+			clear  func(fs *testutil.FaultStore)
 			want   error
 		}{
-			{"pointer write fails", func(fs *faultStore) { fs.SetCASError(injectedCAS) }, func(fs *faultStore) { fs.SetCASError(nil) }, injectedCAS},
-			{"manifest write fails", func(fs *faultStore) { fs.SetPutError(errInjectedPut, "manifest.json") }, func(fs *faultStore) { fs.SetPutError(nil) }, errInjectedPut},
+			{"pointer write fails", func(fs *testutil.FaultStore) { fs.SetCASError(injectedCAS) }, func(fs *testutil.FaultStore) { fs.SetCASError(nil) }, injectedCAS},
+			{"manifest write fails", func(fs *testutil.FaultStore) { fs.SetPutError(testutil.ErrInjectedPut, "manifest.json") }, func(fs *testutil.FaultStore) { fs.SetPutError(nil) }, testutil.ErrInjectedPut},
 		}
 		for _, c := range cases {
-			fs := newFaultStore(NewMemory())
+			fs := testutil.NewFaultStore(NewMemory())
 			ds, err := NewDataset("test-ds", newFaultStoreFactory(fs), WithCodec(NewJSONLCodec()))
 			if err != nil {
 				t.Fatal(err)

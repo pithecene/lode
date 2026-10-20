@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/pithecene-io/lode/internal/testutil"
 )
 
 func putObject(t *testing.T, store Store, p string) {
@@ -91,7 +93,7 @@ func (l *listInjector) CompareAndSwap(ctx context.Context, p, expected, replacem
 func TestSweep_Request(t *testing.T) {
 	t.Run("non-positive grace is rejected", func(t *testing.T) {
 		for _, grace := range []time.Duration{0, -time.Second} {
-			fs := newFaultStore(NewMemory())
+			fs := testutil.NewFaultStore(NewMemory())
 			ds := newDefaultRetention(t, fs)
 			report, err := ds.Sweep(t.Context(), SweepRequest{Grace: grace})
 			if !errors.Is(err, ErrInvalidArgument) || report == nil {

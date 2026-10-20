@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/pithecene-io/lode/internal/testutil"
 )
 
 // -----------------------------------------------------------------------------
@@ -1351,7 +1353,7 @@ func TestDataset_StreamWrite_Lineage(t *testing.T) {
 	t.Run("latest pointer skips scan", func(t *testing.T) {
 		// StreamWrite → Commit must write the pointer so that a subsequent
 		// Write uses O(1) parent resolution.
-		fs := newFaultStore(NewMemory())
+		fs := testutil.NewFaultStore(NewMemory())
 		ds, err := NewDataset("test-ds", newFaultStoreFactory(fs))
 		if err != nil {
 			t.Fatal(err)
@@ -1810,7 +1812,7 @@ func TestDataset_StreamWriteRecords_Commit(t *testing.T) {
 
 	t.Run("latest pointer skips scan", func(t *testing.T) {
 		// StreamWriteRecords must write the pointer.
-		fs := newFaultStore(NewMemory())
+		fs := testutil.NewFaultStore(NewMemory())
 		ds, err := NewDataset("test-ds", newFaultStoreFactory(fs),
 			WithCodec(NewJSONLCodec()),
 		)
@@ -2348,7 +2350,7 @@ func TestDataset_Write_Pointer(t *testing.T) {
 	t.Run("latest pointer skips scan", func(t *testing.T) {
 		// After the first Write creates the pointer, subsequent writes must not
 		// call store.List to resolve the parent snapshot ID (O(1) via pointer).
-		fs := newFaultStore(NewMemory())
+		fs := testutil.NewFaultStore(NewMemory())
 		ds, err := NewDataset("test-ds", newFaultStoreFactory(fs),
 			WithCodec(NewJSONLCodec()),
 		)
@@ -2479,7 +2481,7 @@ func TestDataset_Write_Pointer(t *testing.T) {
 	// writeLatestPointer fails, the commit is aborted and no manifest is written.
 	// This is the core of the pointer-before-manifest protocol.
 	t.Run("pointer write failure aborts commit", func(t *testing.T) {
-		fs := newFaultStore(NewMemory())
+		fs := testutil.NewFaultStore(NewMemory())
 		factory := newFaultStoreFactory(fs)
 
 		ds, err := NewDataset("test-ds", factory, WithCodec(NewJSONLCodec()))
@@ -2527,12 +2529,67 @@ func TestDataset_Write_Pointer(t *testing.T) {
 	})
 }
 
+func TestDataset_LatestPointer_CommitInFlight(t *testing.T) {
+	// Advance writes the pointer before the manifest, so a pointer naming
+	// a snapshot with no manifest may be a commit in flight. Latest serves
+	// the scan result but must not roll the pointer back over it, and the
+	// next commit must parent on that commit once its manifest lands.
+	store := NewMemory()
+	open := func() Dataset {
+		ds, err := NewDataset("test-ds", NewMemoryFactoryFrom(store), WithCodec(NewJSONLCodec()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ds
+	}
+	reader, other := open(), open()
+	snap1, err := reader.Write(t.Context(), R(D{"a": 1}), Metadata{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inFlight, err := other.Write(t.Context(), R(D{"b": 2}), Metadata{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestPath := "datasets/test-ds/snapshots/" + string(inFlight.ID) + "/manifest.json"
+	moveObject(t, store, manifestPath, "pending/manifest.json")
+	if err := store.Delete(t.Context(), manifestPath); err != nil {
+		t.Fatal(err)
+	}
+
+	latest, err := reader.Latest(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latest.ID != snap1.ID {
+		t.Errorf("Latest = %s, want the committed %s", latest.ID, snap1.ID)
+	}
+	rc, err := store.Get(t.Context(), "datasets/test-ds/latest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pointer, _ := io.ReadAll(rc)
+	_ = rc.Close()
+	if string(pointer) != string(inFlight.ID) {
+		t.Errorf("pointer = %q, want it left at the in-flight %q", pointer, inFlight.ID)
+	}
+
+	moveObject(t, store, "pending/manifest.json", manifestPath)
+	next, err := reader.Write(t.Context(), R(D{"c": 3}), Metadata{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next.Manifest.ParentSnapshotID != inFlight.ID {
+		t.Errorf("parent = %s, want the landed %s", next.Manifest.ParentSnapshotID, inFlight.ID)
+	}
+}
+
 func TestDataset_LatestPointer(t *testing.T) {
 	t.Run("read after write", func(t *testing.T) {
 		// After a write, the pointer file must exist in the store and
 		// Latest() must resolve via pointer (no List calls).
 		store := NewMemory()
-		fs := newFaultStore(store)
+		fs := testutil.NewFaultStore(store)
 		ds, err := NewDataset("test-ds", newFaultStoreFactory(fs),
 			WithCodec(NewJSONLCodec()),
 		)
@@ -2724,7 +2781,7 @@ func TestDataset_HiveLayout(t *testing.T) {
 	// with HiveLayout does NOT require a List call. The canonical manifest is always
 	// written alongside partition manifests, so a single Get resolves the snapshot.
 	t.Run("snapshot by ID no list call", func(t *testing.T) {
-		fs := newFaultStore(NewMemory())
+		fs := testutil.NewFaultStore(NewMemory())
 		factory := newFaultStoreFactory(fs)
 
 		ds, err := NewDataset("test-ds", factory,
@@ -2765,7 +2822,7 @@ func TestDataset_HiveLayout(t *testing.T) {
 	// TestDataset_HiveLayout_CanonicalManifestWritten verifies that writeManifests
 	// writes the canonical manifest alongside partition manifests for HiveLayout.
 	t.Run("canonical manifest written", func(t *testing.T) {
-		fs := newFaultStore(NewMemory())
+		fs := testutil.NewFaultStore(NewMemory())
 		factory := newFaultStoreFactory(fs)
 
 		ds, err := NewDataset("test-ds", factory,
@@ -2787,7 +2844,7 @@ func TestDataset_HiveLayout(t *testing.T) {
 
 		// Canonical path must exist.
 		canonicalPath := "datasets/test-ds/segments/" + string(snap.ID) + "/manifest.json"
-		exists, err := fs.inner.Exists(t.Context(), canonicalPath)
+		exists, err := fs.Exists(t.Context(), canonicalPath)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2801,7 +2858,7 @@ func TestDataset_HiveLayout(t *testing.T) {
 			"datasets/test-ds/partitions/day=2024-01-16/segments/" + string(snap.ID) + "/manifest.json",
 		}
 		for _, pp := range partPaths {
-			exists, err := fs.inner.Exists(t.Context(), pp)
+			exists, err := fs.Exists(t.Context(), pp)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -2815,7 +2872,7 @@ func TestDataset_HiveLayout(t *testing.T) {
 	// falls back to findSnapshotByID when the canonical manifest is missing (pre-fix data).
 	t.Run("backward compat fallback scan", func(t *testing.T) {
 		mem := NewMemory()
-		fs := newFaultStore(mem)
+		fs := testutil.NewFaultStore(mem)
 		factory := newFaultStoreFactory(fs)
 
 		ds, err := NewDataset("test-ds", factory,

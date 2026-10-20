@@ -172,7 +172,10 @@ that resolve to a set:
   §Snapshot ID) and naming a tombstone. Paths are derived only from IDs
   selected this way; any other value is never turned into a store path, so
   no requested ID can reach another dataset. `Partition` and `Before`
-  select from manifests only.
+  select from manifests only, so they do not reselect a snapshot whose
+  expiry stopped after step 2; `Sweep`, or `Expire` naming its ID,
+  completes it. Tombstones are permanent, and selecting from them would
+  revisit every past expiry on every run.
 - `Partition` — a partition path (Hive layouts only; see CONTRACT_LAYOUT).
   Resolves to every snapshot that has a partition manifest in that partition
   or beneath it. Matching is **whole-segment**: `run_id=run-1` selects
@@ -261,7 +264,8 @@ runs: a recheck that finds the pointer naming an uncommitted ID stops
 that begins after a snapshot's recheck goes unobserved, and needs no
 coordination: it can only make a new ID the head. Once a snapshot
 has been observed as non-head it can never become head later, because
-commits only ever advance the pointer to a newly created ID, so one recheck
+commits only ever advance the pointer to a newly created ID, and nothing
+else moves it (`Latest` only creates a missing pointer), so one recheck
 before the tombstone closes the race for every later step.
 
 A pointer MAY transiently name a snapshot whose manifest is not yet written,
@@ -274,7 +278,8 @@ manifests existed, no partition manifest either — `Expire` returns
 `ErrHeadUncommitted` and
 expires nothing (at preflight) or stops before step 1 (at the per-snapshot
 recheck). Callers retry once the in-flight commit completes; a pointer left
-behind by a crashed commit is repaired by the next `Latest` or commit.
+behind by a crashed commit is replaced by the next commit (`Latest` never
+rewrites an existing pointer, CONTRACT_CORE §Snapshot ID).
 
 ### Order of operations (per snapshot)
 
@@ -585,7 +590,10 @@ it removed anything, so the counts are only as exact as the listing:
   present, each once however often an inventory lists its path. An object already gone (deleted by an earlier, interrupted run)
   is not counted again. Runs that overlap can both list an object and both
   count it, and an object a lagging listing omitted is deleted but not
-  counted; sequential runs over consistent listings add up exactly.
+  counted. An object whose `Delete` returned an error is not counted, though
+  the store may have removed it, and a later run whose listing no longer
+  shows it does not count it either. Otherwise, sequential runs over
+  consistent listings add up exactly.
 - `Bytes` sums the sizes recorded for those objects in the tombstone's
   inventory. Every object `Expire` deletes is in the inventory, so its
   `Bytes` is exact.
@@ -597,8 +605,8 @@ it removed anything, so the counts are only as exact as the listing:
 
 Both methods return a non-nil report, also on error. On error the report
 describes the work completed before the error. After a retryable failure (a
-store error, an uncommitted head) the dataset is left in a state the next
-`Expire` or `Sweep` completes. Corruption is not retryable: an invalid or
+store error, an uncommitted head) the dataset is left in a state that
+`Sweep`, or `Expire` naming the affected IDs, completes. Corruption is not retryable: an invalid or
 contradicted tombstone, or an invalid manifest, fails `Expire` whenever it
 selects the snapshot, and `Sweep` reports what it examines — tombstones,
 and the manifests it loads while settling them — on every run until an

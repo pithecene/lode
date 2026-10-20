@@ -68,6 +68,7 @@ Gaps are tracked with codes indicating category and priority:
 |------|------|
 | `<instant>-<nonce>` form; legacy `<instant>` accepted | `TestSnapshotID/instant_only_from_the_generated_form`, `TestSnapshotID/format_round-trips_the_instant` |
 | Unique when the clock repeats | `TestSnapshotID/unique_within_one_instant` |
+| New IDs carry the clock's instant | `TestSnapshotID/new_IDs_carry_the_clock` |
 | String order follows instant; legacy sorts first on a tie | `TestSnapshotID/string_order_follows_the_instant` |
 
 **Metadata Rules**: All covered ✅
@@ -263,11 +264,13 @@ All error sentinels covered ✅
 | ErrPartitionPrefixNotSupported | `TestDatasetReader_ListPartitions_Prefix/default_layout_rejected` |
 | ErrManifestInvalid | Multiple validation tests |
 | ErrInvalidArgument | `TestErrInvalidArgument_Classification` |
-| ErrOptionNotValidFor{Dataset,DatasetReader,Volume} | `TestSentinels_Messages`, option applicability tests |
+| ErrOptionNotValidFor{Dataset,DatasetReader} | `TestSentinels_Messages`, option applicability tests |
 | ErrCodecConfigured | `TestDataset_StreamWrite_Misuse/with_codec_returns_error` |
 | ErrCodecNotStreamable | `TestDataset_StreamWriteRecords_Rejects/non_streaming_codec` |
 | ErrNilIterator | `TestDataset_StreamWriteRecords_Rejects/nil_iterator` |
 | ErrPartitioningNotSupported | `TestDataset_StreamWriteRecords_Rejects/with_partitioner` |
+| volume.ErrRangeMissing | `TestVolume_ReadAt/missing_range_returns_err_range_missing`, `TestVolume_ReadAt/gap_at_start_returns_err_range_missing`, `TestVolume_ReadAt/gap_in_middle_returns_err_range_missing` |
+| volume.ErrOverlappingBlocks | `TestVolume_Commit_Overlaps/overlapping_blocks_returns_err_overlapping_blocks`, `TestVolume_Commit_Overlaps/contained_block_overlap`, `TestVolume_Commit_Overlaps/same_start_offset_overlap`, `TestVolume_Commit_Overlaps/overlap_with_existing_rejected`, `TestVolume_Commit_Overlaps/three_block_overlap` |
 | ErrRangeMissing | `TestVolume_ReadAt/missing_range_returns_err_range_missing`, `TestVolume_ReadAt/gap_at_start_returns_err_range_missing`, `TestVolume_ReadAt/gap_in_middle_returns_err_range_missing` |
 | ErrOverlappingBlocks | `TestVolume_Commit_Overlaps/overlapping_blocks_returns_err_overlapping_blocks`, `TestVolume_Commit_Overlaps/contained_block_overlap`, `TestVolume_Commit_Overlaps/same_start_offset_overlap`, `TestVolume_Commit_Overlaps/overlap_with_existing_rejected`, `TestVolume_Commit_Overlaps/three_block_overlap` |
 | ErrSnapshotExpired | `TestExpire_Selection/by_ID_removes_manifest_and_data`, `TestExpire_Resumption/interrupted_after_the_canonical_delete_is_not_resurrected` |
@@ -307,6 +310,10 @@ All error sentinels covered ✅
 ---
 
 ### CONTRACT_VOLUME.md — Volume Persistence
+
+Tests live in package `lode/volume` (experimental; `V1_API_DECISIONS.md` D9).
+Argument-error cases, including the Volume retry options:
+`lode/volume/invalid_argument_test.go`.
 
 **Construction**: All covered ✅
 
@@ -429,6 +436,7 @@ proportional to dataset/volume size on remote stores (S3/R2).
 | Pointer tracks most recent | `TestDataset_LatestPointer/updates_across_writes` |
 | Backward compat: scan fallback | `TestDataset_LatestPointer/backward_compat` |
 | Corrupt pointer: scan fallback | `TestDataset_LatestPointer/corrupt_pointer` |
+| Stale pointer left for the commit in flight; next commit parents on it | `TestDataset_LatestPointer_CommitInFlight`, `TestLatest/stale_pointer_is_left_for_the_next_commit` |
 | Pointer paths for all layouts | `TestDataset_LatestPointer/all_layouts` |
 | Write: 0 List calls after pointer | `TestDataset_Write_Pointer/latest_pointer_skips_scan` |
 | StreamWrite: 0 List calls | `TestDataset_StreamWrite_Lineage/latest_pointer_skips_scan` |
@@ -537,7 +545,7 @@ The following invariants are now **deterministically tested** via fault injectio
 | Cleanup errors ignored (best-effort) | ✅ Explicit test |
 | Snapshot invisibility preserved | ✅ All failure paths |
 
-**Deterministic test infrastructure**: `lode/store_fault_test.go` provides a fault-injection
+**Deterministic test infrastructure**: `internal/testutil/faultstore.go` provides a fault-injection
 store wrapper with error injection, call observation, and blocking for synchronization.
 
 ### Residual Risk: STORE-CTX-CANCEL (Addressed)
