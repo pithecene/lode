@@ -369,13 +369,20 @@ manifest and data object of the layout). It then performs, in order:
    filesystem store's `.lock` companions (CONTRACT_STORAGE §Implementation
    Notes) — is not a tombstone and is neither reported nor deleted. Load
    each tombstone and verify it is non-empty, records the snapshot ID in
-   its path, and carries the manifest's `CreatedAt` and an inventory; a tombstone that fails validation
-   MUST be reported under `Unparseable` and MUST NOT settle anything. The
-   tombstone MUST describe (§Tombstone) every manifest copy of the snapshot
-   that still loads, as in step 1 of §Order of operations; otherwise the tombstone belongs to an earlier snapshot with
-   the same ID, MUST be reported under `Unparseable`, and MUST NOT settle
-   the snapshot or reclaim its objects. For
-   every valid tombstoned ID, perform steps 2–3 of §Order of operations.
+   its path, and carries the manifest's `CreatedAt` and an inventory; a
+   tombstone that fails validation MUST be reported under `Unparseable`
+   and MUST NOT settle anything. A snapshot of which the listing shows
+   neither a manifest nor a data object has nothing left to remove and is
+   settled without a store call. Otherwise a listing MAY omit a manifest
+   (a lagging listing, or one written after it), so Sweep MUST load the
+   manifest at every path the expiry would delete — the canonical path,
+   every listed copy, and every copy derived from the tombstone's inventory
+   and from the snapshot's listed data objects — whether or not the listing
+   showed it. The tombstone MUST describe (§Tombstone) every copy that
+   loads; otherwise it belongs to an earlier snapshot with the same ID,
+   MUST be reported under `Unparseable`, and MUST NOT settle the snapshot
+   or reclaim its objects. For every valid tombstoned ID, perform steps
+   2–3 of §Order of operations on those paths.
    Only once **every** manifest of that snapshot is confirmed absent is the
    snapshot *settled*; `Settled` reports the snapshots whose manifests this
    run removed (in a dry run, would remove), so a snapshot settled by an
@@ -386,7 +393,11 @@ manifest and data object of the layout). It then performs, in order:
    describes.
 2. **Reclaim objects.** Group the listed data objects by the snapshot ID in
    their path. A group is:
-   - **live** when its snapshot ID still has a manifest — never touched;
+   - **live** when its snapshot ID still has a manifest — never touched. A
+     group the listing shows without a manifest is live too when a
+     manifest exists at its canonical path or at a manifest path derived
+     from its objects' paths; Sweep MUST check those paths before
+     reclaiming an orphaned group, since a listing may omit a manifest;
    - **held** when its snapshot's tombstone was rejected in step 1 (invalid,
      or contradicted by a manifest copy) or its snapshot is protected —
      never touched, even past the grace period, because a tombstone Lode
@@ -488,7 +499,9 @@ resumed expiry is never counted twice:
 
 - `Objects` counts data objects the run deleted that its listing showed
   present. An object already gone (deleted by an earlier, interrupted run)
-  is not counted again.
+  is not counted again. Runs that overlap can both list an object and both
+  count it: `Store.Delete` does not say whether it removed anything, so
+  only sequential runs' totals add up exactly.
 - `Bytes` sums the sizes recorded for those objects in the tombstone's
   inventory. Every object `Expire` deletes is in the inventory, so its
   `Bytes` is exact.
@@ -527,7 +540,7 @@ selects, T the tombstones, D the objects deleted (manifests and data alike).
 | Operation | Store Calls | Memory |
 |-----------|-------------|--------|
 | `Expire` | 1 List (the `Partition` subtree, else the snapshot prefix) + (K + 1) pointer Gets, each followed by at most one `Exists` (and one List of the snapshot prefix when the named snapshot has no canonical manifest, to find a legacy partition-only copy) + K manifest Gets + K tombstone Gets (the recorded inventory, if any; also one per requested ID with no manifest) + 1 Get per manifest copy of a snapshot whose tombstone was already recorded + K tombstone writes (each + at most 1 read-back Get when it already exists) + Σ(manifests + files) Deletes; +1 List when the pointer is absent | O(N + K × manifest) |
-| `Sweep` | 2 Lists (tombstones, snapshot prefix) + 1 pointer Get + T tombstone Gets + 1 Get per manifest copy of each tombstoned snapshot with a manifest left + D Deletes | O(N + Σ tombstone inventories) |
+| `Sweep` | 2 Lists (tombstones, snapshot prefix) + 1 pointer Get + T tombstone Gets + 1 Get per manifest path of each tombstoned snapshot with anything left in the listing + 1 `Exists` per manifest path of each orphaned group about to be reclaimed (stopping at the first present) + D Deletes | O(N + Σ tombstone inventories) |
 | `Snapshot(id)`, `Read(id)` expired path | +1 Get (tombstone) | O(1) |
 
 Pointer Gets: one preflight read plus one re-read per selected snapshot,
