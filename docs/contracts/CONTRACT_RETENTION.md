@@ -214,7 +214,12 @@ checks `RetainedHead` and runs the request again after a newer commit.
 
 When the pointer is absent (a dataset written before the pointer existed),
 the head is the snapshot a scan returns: the largest snapshot ID
-(CONTRACT_WRITE_API §Parent Resolution, scan fallback). The first commit
+(CONTRACT_WRITE_API §Parent Resolution, scan fallback) that is not expired.
+An interrupted expiry can leave a partition manifest of an expired snapshot
+behind, and that leftover is never the head; an expiring snapshot (its
+canonical manifest still present) is, being fully readable. The scan runs
+once per run: a pointer still absent at a recheck keeps the head found, so a
+pointer removed by hand during a run is out of contract. The first commit
 creates the pointer and later commits only replace it by CAS, so it is
 absent only in a dataset written before the pointer existed (or one whose
 pointer was removed by hand). Such a dataset has legacy instant-only IDs,
@@ -537,7 +542,7 @@ resumed expiry is never counted twice. `Store.Delete` does not say whether
 it removed anything, so the counts are only as exact as the listing:
 
 - `Objects` counts data objects the run deleted that its listing showed
-  present. An object already gone (deleted by an earlier, interrupted run)
+  present, each once however often an inventory lists its path. An object already gone (deleted by an earlier, interrupted run)
   is not counted again. Runs that overlap can both list an object and both
   count it, and an object a lagging listing omitted is deleted but not
   counted; sequential runs over consistent listings add up exactly.
