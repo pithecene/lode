@@ -356,8 +356,10 @@ snapshot normally.
 `Snapshots()`, `ListManifests`, and `ListPartitions` MUST NOT return expired
 snapshots once step 3 has completed. They MAY return an expiring snapshot or
 one whose partition manifests have not all been deleted yet; every manifest
-they return is complete and all of its files exist. Implementations MUST NOT
-read tombstones during enumeration.
+they return is complete and all of its files exist, except a partition
+manifest an in-flight commit wrote after its snapshot was expired
+(§Concurrency), which the next `Sweep` or `Expire` removes.
+Implementations MUST NOT read tombstones during enumeration.
 
 Deletion is a normal event once retention exists, so enumeration MUST
 tolerate it: a manifest that a listing returned and that is absent when
@@ -413,8 +415,9 @@ manifest and data object of the layout). It then performs, in order:
    tombstone that fails validation MUST be reported under `Unparseable`
    and MUST NOT settle anything. A snapshot of which the listing shows
    neither a manifest nor a data object has nothing for this run to
-   remove: it costs no store call, is not reported, and nothing of it is
-   deleted. Otherwise a listing MAY omit a manifest
+   remove: once its tombstone has been loaded and validated like every
+   other, it costs no further store call, is not reported, and nothing of
+   it is deleted. Otherwise a listing MAY omit a manifest
    (a lagging listing, or one written after it), so Sweep MUST load the
    manifest at every path the expiry would delete — the canonical path,
    every listed copy, and every copy derived from the tombstone's inventory
