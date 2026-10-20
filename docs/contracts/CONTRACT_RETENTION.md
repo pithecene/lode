@@ -68,6 +68,9 @@ A small object at a layout-defined path, one per expired snapshot:
 <dataset root>/expired/<snapshot_id>
 ```
 
+The `expired/` directory is reserved for Lode: callers MUST NOT write under
+it.
+
 Contents: the snapshot ID, the UTC instant the expiry was requested, and the
 **planned** object count and byte total taken from the manifest's `Files[]`.
 A tombstone records intent, not outcome; completion is observable only as the
@@ -119,8 +122,9 @@ reclaiming as unreferenced.
 Expiry operates on an explicit set of snapshot IDs. `ExpireRequest` fields
 that resolve to a set:
 
-- `IDs` — explicit snapshot IDs. An ID with no manifest left is not selected
-  (an interrupted expiry of it is completed by `Sweep`).
+- `IDs` — explicit snapshot IDs. An ID with no manifest left is not
+  selected: there is no `Files[]` left to act on, and `Sweep` reclaims what
+  remains of it.
 - `Partition` — a partition path (Hive layouts only; see CONTRACT_LAYOUT).
   Resolves to every snapshot that has a partition manifest in that partition
   or beneath it. Matching is **whole-segment**: `run_id=run-1` selects
@@ -233,7 +237,8 @@ Each step MUST be idempotent; a step that finds its target already absent
 succeeds. If the process stops after step 1 the snapshot is still readable
 and consistent (expiring). If it stops after step 2 or later the snapshot is
 expired and its remaining manifests and objects are reclaimed by `Sweep`
-(below) or by re-running `Expire` with the same ID.
+(below), or by re-running `Expire` with the same ID while any of its
+manifests remain.
 
 Manifests are deleted **before** data so that any manifest loaded **after**
 the manifest delete describes only objects that still exist. This does not
@@ -327,12 +332,18 @@ manifest and data object of the layout). It then performs, in order:
 `Files[]` did not list: partial objects of an aborted stream, and caller
 objects inside its data prefix.
 
-`Sweep` does not consult the head. A tombstone is written only for a
-snapshot observed as non-head (§Head protection), and such a snapshot never
-becomes head again, so no tombstoned snapshot is the head. The data objects
-of an in-flight commit have no manifest yet and are orphaned by the
-definition above; the grace period protects them, not the pointer. `Sweep`
-therefore never returns `ErrHeadUncommitted`.
+`Sweep` reads the pointer once, before step 1, and never settles the
+snapshot it names. When the pointer is absent, or names an ID with no
+manifest in the listing, the largest listed manifest ID is protected the
+same way (the snapshot a scan would return). `Expire` writes a tombstone only
+for a snapshot observed as non-head (§Head protection), so this guard never
+fires for tombstones Lode wrote; it keeps a misplaced object under
+`expired/` from ever removing the head. A protected tombstoned snapshot is
+left unsettled and its objects stay live.
+
+The data objects of an in-flight commit have no manifest yet and are
+orphaned by the definition above; the grace period protects them, not the
+pointer. `Sweep` therefore never returns `ErrHeadUncommitted`.
 
 ### Grace period
 
@@ -429,7 +440,7 @@ selects, T the tombstones, D the objects deleted.
 | Operation | Store Calls | Memory |
 |-----------|-------------|--------|
 | `Expire` | 1 List (the `Partition` subtree, else the snapshot prefix) + (K + 1) pointer Gets, each followed by at most one `Exists` + K manifest Gets + K tombstone writes + Σ(manifests + files) Deletes; +1 List when the pointer is absent | O(N + K × manifest) |
-| `Sweep` | 2 Lists (tombstones, snapshot prefix) + T tombstone Gets + D Deletes | O(N + T) |
+| `Sweep` | 2 Lists (tombstones, snapshot prefix) + 1 pointer Get + T tombstone Gets + D Deletes | O(N + T) |
 | `Snapshot(id)`, `Read(id)` expired path | +1 Get (tombstone) | O(1) |
 
 Pointer Gets: one preflight read plus one re-read immediately before each
