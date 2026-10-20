@@ -391,6 +391,11 @@ var errSnapshotGone = errors.New("lode: snapshot already gone")
 // run would record from the manifest, and checks it against every manifest
 // copy this expiry would delete before anything is written.
 func (r expiryRun) plan(ctx context.Context, c expiryCandidate) (expiryPlan, error) {
+	// Checked before anything else, so a dry run fails where the real run
+	// would when it came to record the tombstone.
+	if !history.IsGeneratedID(c.id) {
+		return expiryPlan{}, errUntombstonable(c.id)
+	}
 	plan, err := r.tombstonePlan(ctx, c)
 	if err != nil {
 		return plan, err
