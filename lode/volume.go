@@ -12,6 +12,9 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/pithecene-io/lode/internal/history"
+	"github.com/pithecene-io/lode/internal/retry"
 )
 
 const (
@@ -25,10 +28,10 @@ type volume struct {
 	store       Store
 	totalLength int64
 	checksum    Checksum
-	retry       retryConfig
+	retry       retry.Config
 
-	// history owns the snapshot sequence and its head pointer (history.go).
-	history history[VolumeSnapshotID, VolumeManifest]
+	// history owns the snapshot sequence and its head pointer (internal/history).
+	history history.History[VolumeSnapshotID, VolumeManifest]
 }
 
 // volumeKind is the volume's snapshot grammar for history: a fixed layout
@@ -38,11 +41,11 @@ type volumeKind struct {
 	totalLength int64
 }
 
-func (k volumeKind) snapshotsPrefix() string                 { return volumeSnapshotsPrefix(k.id) }
-func (k volumeKind) pointerPath() string                     { return volumeLatestPointerPath(k.id) }
-func (k volumeKind) manifestPath(id VolumeSnapshotID) string { return volumeManifestPath(k.id, id) }
+func (k volumeKind) SnapshotsPrefix() string                 { return volumeSnapshotsPrefix(k.id) }
+func (k volumeKind) PointerPath() string                     { return volumeLatestPointerPath(k.id) }
+func (k volumeKind) ManifestPath(id VolumeSnapshotID) string { return volumeManifestPath(k.id, id) }
 
-func (k volumeKind) parseManifest(p string) (VolumeSnapshotID, bool) {
+func (k volumeKind) ParseManifest(p string) (VolumeSnapshotID, bool) {
 	if !strings.HasSuffix(p, "manifest.json") {
 		return "", false
 	}
@@ -50,7 +53,7 @@ func (k volumeKind) parseManifest(p string) (VolumeSnapshotID, bool) {
 	return id, id != ""
 }
 
-func (k volumeKind) decode(r io.Reader) (*VolumeManifest, error) {
+func (k volumeKind) Decode(r io.Reader) (*VolumeManifest, error) {
 	var m VolumeManifest
 	if err := json.NewDecoder(r).Decode(&m); err != nil {
 		return nil, fmt.Errorf("lode: failed to decode volume manifest: %w", err)
@@ -67,9 +70,9 @@ func (k volumeKind) decode(r io.Reader) (*VolumeManifest, error) {
 	return &m, nil
 }
 
-var _ snapshotKind[VolumeSnapshotID, VolumeManifest] = volumeKind{}
+var _ history.Kind[VolumeSnapshotID, VolumeManifest] = volumeKind{}
 
-func toVolumeSnapshot(s *snapshot[VolumeSnapshotID, VolumeManifest]) *VolumeSnapshot {
+func toVolumeSnapshot(s *history.Snapshot[VolumeSnapshotID, VolumeManifest]) *VolumeSnapshot {
 	return &VolumeSnapshot{ID: s.ID, Manifest: s.Manifest}
 }
 
@@ -86,7 +89,7 @@ func NewVolume(id VolumeID, storeFactory StoreFactory, totalLength int64, opts .
 	}
 
 	cfg := &volumeConfig{
-		retry: defaultRetryConfig(),
+		retry: retry.Default(),
 	}
 	for _, opt := range opts {
 		if err := opt.applyVolume(cfg); err != nil {
@@ -109,7 +112,7 @@ func NewVolume(id VolumeID, storeFactory StoreFactory, totalLength int64, opts .
 		totalLength: totalLength,
 		checksum:    cfg.checksum,
 		retry:       cfg.retry,
-		history:     newHistory(store, volumeKind{id: id, totalLength: totalLength}, "volume manifest"),
+		history:     history.New(store, volumeKind{id: id, totalLength: totalLength}, "volume manifest", historyErrors),
 	}, nil
 }
 
@@ -233,7 +236,7 @@ func (v *volume) Commit(ctx context.Context, blocks []BlockRef, metadata Metadat
 			return err
 		}
 
-		manifest := v.buildManifest(VolumeSnapshotID(generateID()), parentID, metadata, cumulative)
+		manifest := v.buildManifest(VolumeSnapshotID(history.NewID()), parentID, metadata, cumulative)
 		if err := v.history.Advance(ctx, expectedPointer, manifest.SnapshotID, manifest, []string{volumeManifestPath(v.id, manifest.SnapshotID)}); err != nil {
 			return err
 		}

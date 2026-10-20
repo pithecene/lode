@@ -9,6 +9,9 @@ import (
 	"io"
 	"sort"
 	"time"
+
+	"github.com/pithecene-io/lode/internal/history"
+	"github.com/pithecene-io/lode/internal/retry"
 )
 
 const (
@@ -26,7 +29,7 @@ type datasetConfig struct {
 	compressor Compressor
 	codec      Codec
 	checksum   Checksum
-	retry      retryConfig
+	retry      retry.Config
 }
 
 // Option configures dataset, reader, or volume construction.
@@ -191,10 +194,19 @@ func (o *checksumOption) applyVolume(cfg *volumeConfig) error {
 
 // retryOption implements Option for all WithRetry* constructors.
 // Retry options apply identically to datasets and volumes (both have a
-// retryConfig), and are never valid for readers.
+// retry.Config), and are never valid for readers. set is the retry.Config
+// setter; its validation failure is reported as an invalid argument named
+// after the option.
 type retryOption struct {
-	name  string
-	apply func(*retryConfig) error
+	name string
+	set  func(*retry.Config) error
+}
+
+func (o *retryOption) apply(r *retry.Config) error {
+	if err := o.set(r); err != nil {
+		return invalidArgument("%s: %v", o.name, err)
+	}
+	return nil
 }
 
 func (o *retryOption) applyDataset(cfg *datasetConfig) error { return o.apply(&cfg.retry) }
@@ -211,13 +223,7 @@ func (o *retryOption) applyReader(*readerConfig) error {
 func WithRetryCount(n int) Option {
 	return &retryOption{
 		name: "WithRetryCount",
-		apply: func(r *retryConfig) error {
-			if n < 0 {
-				return invalidArgument("WithRetryCount: n must be non-negative")
-			}
-			r.maxAttempts = n
-			return nil
-		},
+		set:  func(r *retry.Config) error { return r.SetMaxAttempts(n) },
 	}
 }
 
@@ -227,13 +233,7 @@ func WithRetryCount(n int) Option {
 func WithRetryBaseDelay(d time.Duration) Option {
 	return &retryOption{
 		name: "WithRetryBaseDelay",
-		apply: func(r *retryConfig) error {
-			if d <= 0 {
-				return invalidArgument("WithRetryBaseDelay: delay must be positive")
-			}
-			r.baseDelay = d
-			return nil
-		},
+		set:  func(r *retry.Config) error { return r.SetBaseDelay(d) },
 	}
 }
 
@@ -242,13 +242,7 @@ func WithRetryBaseDelay(d time.Duration) Option {
 func WithRetryMaxDelay(d time.Duration) Option {
 	return &retryOption{
 		name: "WithRetryMaxDelay",
-		apply: func(r *retryConfig) error {
-			if d <= 0 {
-				return invalidArgument("WithRetryMaxDelay: delay must be positive")
-			}
-			r.maxDelay = d
-			return nil
-		},
+		set:  func(r *retry.Config) error { return r.SetMaxDelay(d) },
 	}
 }
 
@@ -258,13 +252,7 @@ func WithRetryMaxDelay(d time.Duration) Option {
 func WithRetryJitter(j float64) Option {
 	return &retryOption{
 		name: "WithRetryJitter",
-		apply: func(r *retryConfig) error {
-			if j < 0 || j > 1 {
-				return invalidArgument("WithRetryJitter: jitter must be between 0.0 and 1.0")
-			}
-			r.jitter = j
-			return nil
-		},
+		set:  func(r *retry.Config) error { return r.SetJitter(j) },
 	}
 }
 
@@ -279,13 +267,7 @@ func WithRetryJitter(j float64) Option {
 func WithRetryObserver(fn func(attempt int)) Option {
 	return &retryOption{
 		name: "WithRetryObserver",
-		apply: func(r *retryConfig) error {
-			if fn == nil {
-				return invalidArgument("WithRetryObserver: fn must not be nil")
-			}
-			r.observer = fn
-			return nil
-		},
+		set:  func(r *retry.Config) error { return r.SetObserver(fn) },
 	}
 }
 
@@ -301,10 +283,10 @@ type dataset struct {
 	compressor Compressor
 	codec      Codec
 	checksum   Checksum
-	retry      retryConfig
+	retry      retry.Config
 
-	// history owns the snapshot sequence and its head pointer (history.go).
-	history history[DatasetSnapshotID, Manifest]
+	// history owns the snapshot sequence and its head pointer (internal/history).
+	history history.History[DatasetSnapshotID, Manifest]
 }
 
 // datasetKind is the dataset's snapshot grammar for history: paths come from
@@ -314,13 +296,13 @@ type datasetKind struct {
 	layout layout
 }
 
-func (k datasetKind) snapshotsPrefix() string { return k.layout.snapshotsPrefix(k.id) }
-func (k datasetKind) pointerPath() string     { return k.layout.latestPointerPath(k.id) }
-func (k datasetKind) manifestPath(id DatasetSnapshotID) string {
+func (k datasetKind) SnapshotsPrefix() string { return k.layout.snapshotsPrefix(k.id) }
+func (k datasetKind) PointerPath() string     { return k.layout.latestPointerPath(k.id) }
+func (k datasetKind) ManifestPath(id DatasetSnapshotID) string {
 	return k.layout.manifestPath(k.id, id)
 }
 
-func (k datasetKind) parseManifest(p string) (DatasetSnapshotID, bool) {
+func (k datasetKind) ParseManifest(p string) (DatasetSnapshotID, bool) {
 	if !k.layout.isManifest(p) {
 		return "", false
 	}
@@ -328,7 +310,7 @@ func (k datasetKind) parseManifest(p string) (DatasetSnapshotID, bool) {
 	return id, id != ""
 }
 
-func (k datasetKind) decode(r io.Reader) (*Manifest, error) {
+func (k datasetKind) Decode(r io.Reader) (*Manifest, error) {
 	var m Manifest
 	if err := json.NewDecoder(r).Decode(&m); err != nil {
 		return nil, fmt.Errorf("lode: failed to decode manifest: %w", err)
@@ -336,10 +318,10 @@ func (k datasetKind) decode(r io.Reader) (*Manifest, error) {
 	return &m, nil
 }
 
-// datasetKind is a snapshotKind; stated so the methods are visibly used.
-var _ snapshotKind[DatasetSnapshotID, Manifest] = datasetKind{}
+// datasetKind is a history.Kind; stated so the methods are visibly used.
+var _ history.Kind[DatasetSnapshotID, Manifest] = datasetKind{}
 
-func toDatasetSnapshot(s *snapshot[DatasetSnapshotID, Manifest]) *DatasetSnapshot {
+func toDatasetSnapshot(s *history.Snapshot[DatasetSnapshotID, Manifest]) *DatasetSnapshot {
 	return &DatasetSnapshot{ID: s.ID, Manifest: s.Manifest}
 }
 
@@ -364,7 +346,7 @@ func NewDataset(id DatasetID, factory StoreFactory, opts ...Option) (Dataset, er
 		layout:     NewDefaultLayout(),
 		compressor: NewNoOpCompressor(),
 		codec:      nil,
-		retry:      defaultRetryConfig(),
+		retry:      retry.Default(),
 	}
 
 	for _, opt := range opts {
@@ -401,7 +383,7 @@ func NewDataset(id DatasetID, factory StoreFactory, opts ...Option) (Dataset, er
 		codec:      cfg.codec,
 		checksum:   cfg.checksum,
 		retry:      cfg.retry,
-		history:    newHistory(store, datasetKind{id: id, layout: cfg.layout}, "manifest"),
+		history:    history.New(store, datasetKind{id: id, layout: cfg.layout}, "manifest", historyErrors),
 	}, nil
 }
 
@@ -424,7 +406,7 @@ func (d *dataset) Write(ctx context.Context, data []any, metadata Metadata) (*Da
 func (d *dataset) Snapshot(ctx context.Context, id DatasetSnapshotID) (*DatasetSnapshot, error) {
 	s, err := d.history.Snapshot(ctx, id)
 	if errors.Is(err, ErrNotFound) {
-		s, err = d.history.find(ctx, id)
+		s, err = d.history.Find(ctx, id)
 	}
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
@@ -600,6 +582,10 @@ func (d *dataset) validateComponentsMatch(m *Manifest) error {
 	return nil
 }
 
-func generateID() string {
-	return fmt.Sprintf("%d", time.Now().UnixNano())
+// historyErrors are the sentinels every history in this package returns, so
+// history errors keep lode's public identities.
+var historyErrors = history.Errors{
+	NotFound:         ErrNotFound,
+	NoSnapshots:      ErrNoSnapshots,
+	SnapshotConflict: ErrSnapshotConflict,
 }

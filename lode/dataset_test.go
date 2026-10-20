@@ -2787,7 +2787,7 @@ func TestDataset_HiveLayout(t *testing.T) {
 
 		// Canonical path must exist.
 		canonicalPath := "datasets/test-ds/segments/" + string(snap.ID) + "/manifest.json"
-		exists, err := fs.inner.Exists(t.Context(), canonicalPath)
+		exists, err := fs.Exists(t.Context(), canonicalPath)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2801,7 +2801,7 @@ func TestDataset_HiveLayout(t *testing.T) {
 			"datasets/test-ds/partitions/day=2024-01-16/segments/" + string(snap.ID) + "/manifest.json",
 		}
 		for _, pp := range partPaths {
-			exists, err := fs.inner.Exists(t.Context(), pp)
+			exists, err := fs.Exists(t.Context(), pp)
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -10,6 +10,8 @@ import (
 	"context"
 	"io"
 	"time"
+
+	"github.com/pithecene-io/lode/internal/retry"
 )
 
 // -----------------------------------------------------------------------------
@@ -782,7 +784,7 @@ type VolumeSnapshot struct {
 // volumeConfig holds the resolved configuration for a volume.
 type volumeConfig struct {
 	checksum Checksum
-	retry    retryConfig
+	retry    retry.Config
 }
 
 // -----------------------------------------------------------------------------

@@ -8,6 +8,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/pithecene-io/lode/internal/history"
 )
 
 // Data file roles: a dataset without a codec stores one blob per snapshot, a
@@ -42,7 +44,7 @@ func (d *dataset) newPending(metadata Metadata) pendingSnapshot {
 	if metadata == nil {
 		metadata = Metadata{}
 	}
-	return pendingSnapshot{id: DatasetSnapshotID(generateID()), metadata: metadata}
+	return pendingSnapshot{id: DatasetSnapshotID(history.NewID()), metadata: metadata}
 }
 
 // add records a persisted data file and the partition it belongs to.

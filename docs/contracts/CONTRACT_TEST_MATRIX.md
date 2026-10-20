@@ -496,7 +496,7 @@ The following invariants are now **deterministically tested** via fault injectio
 | Cleanup errors ignored (best-effort) | ✅ Explicit test |
 | Snapshot invisibility preserved | ✅ All failure paths |
 
-**Deterministic test infrastructure**: `lode/store_fault_test.go` provides a fault-injection
+**Deterministic test infrastructure**: `internal/testutil/faultstore.go` provides a fault-injection
 store wrapper with error injection, call observation, and blocking for synchronization.
 
 ### Residual Risk: STORE-CTX-CANCEL (Addressed)
