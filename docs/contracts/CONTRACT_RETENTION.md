@@ -4,7 +4,8 @@ This document defines the contract for **snapshot expiry** and the
 **unreferenced-object sweep**. It is authoritative for any retention
 implementation.
 
-Status: **Active** (v0.11.0)
+Status: **Draft** — design settled for v0.11.0; becomes Active when
+`Dataset.Expire` and `Dataset.Sweep` ship. No code implements it yet.
 
 Issue: [#174](https://github.com/pithecene-io/lode/issues/174)
 
@@ -383,8 +384,9 @@ recoverable without ever deleting data a reader could still be directed to.
 listing and resolution but no write or delete, and return the report a real
 run would return. A dry-run `Expire` still reads the pointer, so
 `RetainedHead` and `ErrHeadUncommitted` are what a real run would produce. A
-dry-run `Sweep` treats every validly tombstoned snapshot as settled, so its
-objects count exactly as they would after step 1 of a real run.
+dry-run `Sweep` reads the pointer the same way and treats every validly
+tombstoned snapshot except a protected one as settled, so its objects count
+exactly as they would after step 1 of a real run.
 
 ---
 
