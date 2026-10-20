@@ -43,6 +43,7 @@ type sweepInventory struct {
 	invalidTombstones []string
 	manifests         map[DatasetSnapshotID][]string // every manifest key, by snapshot
 	objects           []snapshotKeys                 // every data object key, by snapshot
+	dataOf            map[DatasetSnapshotID][]string // the same keys, looked up by snapshot
 	protected         map[DatasetSnapshotID]bool     // never settled
 }
 
@@ -62,6 +63,10 @@ func (d *dataset) sweepInventory(ctx context.Context) (sweepInventory, error) {
 		inv.manifests[g.id] = g.paths
 	}
 	inv.objects = groupBySnapshot(keys, d.objectsOfKind(dataLeaf, all))
+	inv.dataOf = make(map[DatasetSnapshotID][]string, len(inv.objects))
+	for _, g := range inv.objects {
+		inv.dataOf[g.id] = g.paths
+	}
 	inv.protected, err = d.sweepProtected(ctx, inv.manifests)
 	return inv, err
 }
@@ -143,48 +148,74 @@ func (r sweepRun) settle(ctx context.Context, report *SweepReport) error {
 	return nil
 }
 
-// settleOne settles one tombstoned snapshot. One with a manifest copy its
-// tombstone does not describe is held and reported, protected or not,
-// because that tombstone belongs to another snapshot; a protected one is
-// held; one with no manifest left was settled by an earlier run and is not
-// reported.
+// settleOne settles one tombstoned snapshot from the manifest copies that
+// are present, not only those the listing showed: a listing may omit one.
+// A snapshot with nothing left in the listing has nothing to remove and
+// costs no store call. A copy its tombstone does not describe means the
+// tombstone belongs to another snapshot: it is held and reported, protected
+// or not. A protected snapshot is held. Settled reports the snapshots whose
+// manifests this run removed.
 func (r sweepRun) settleOne(ctx context.Context, t tombstone, report *SweepReport) error {
 	id := t.SnapshotID
-	listed, pending := r.inv.manifests[id]
-	contradicted, err := r.contradicted(ctx, t, listed, pending)
-	if err != nil {
-		return err
-	}
-	if contradicted {
-		report.Unparseable = append(report.Unparseable, r.ds.layout.tombstonePath(r.ds.id, id))
-	}
-	if contradicted || r.inv.protected[id] {
-		r.held[id] = true
-		return nil
-	}
-	if !pending {
+	if r.nothingLeft(id) {
 		r.settled[id] = t
 		return nil
 	}
-	if !r.dryRun {
-		if err := deleteObjects(ctx, r.ds.store, r.ds.allManifestPaths(id, listed, t.Files)); err != nil {
+	paths := r.ds.allManifestPaths(id, r.inv.manifests[id], append(slices.Clone(t.Files), refsTo(r.inv.dataOf[id])...))
+	copies, err := r.ds.loadCopies(ctx, id, paths)
+	if err != nil {
+		return err
+	}
+	if slices.ContainsFunc(copies, func(m *Manifest) bool { return !t.describes(m) }) {
+		report.Unparseable = append(report.Unparseable, r.ds.layout.tombstonePath(r.ds.id, id))
+		r.held[id] = true
+		return nil
+	}
+	if r.inv.protected[id] {
+		r.held[id] = true
+		return nil
+	}
+	if len(copies) > 0 && !r.dryRun {
+		if err := deleteObjects(ctx, r.ds.store, paths); err != nil {
 			return err
 		}
 	}
 	r.settled[id] = t
-	report.Settled = append(report.Settled, id)
+	if len(copies) > 0 {
+		report.Settled = append(report.Settled, id)
+	}
 	return nil
 }
 
-// contradicted reports whether a manifest copy of t's snapshot that is
-// still present is one t does not describe: another commit instant or
-// inventory. With none listed, there is nothing to contradict it.
-func (r sweepRun) contradicted(ctx context.Context, t tombstone, listed []string, pending bool) (bool, error) {
-	if !pending {
-		return false, nil
+// nothingLeft reports whether the listing showed neither a manifest nor a
+// data object of the snapshot.
+func (r sweepRun) nothingLeft(id DatasetSnapshotID) bool {
+	_, manifests := r.inv.manifests[id]
+	return !manifests && len(r.inv.dataOf[id]) == 0
+}
+
+// refsTo wraps object paths as FileRefs, from which manifest paths derive.
+func refsTo(paths []string) []FileRef {
+	refs := make([]FileRef, 0, len(paths))
+	for _, p := range paths {
+		refs = append(refs, FileRef{Path: p})
 	}
-	matches, err := r.ds.describesEveryCopy(ctx, t, r.ds.allManifestPaths(t.SnapshotID, listed, t.Files))
-	return !matches, err
+	return refs
+}
+
+// anyManifest reports whether a manifest of snapshot id is present at paths
+// or the canonical path, whether or not a listing showed it.
+func (d *dataset) anyManifest(ctx context.Context, id DatasetSnapshotID, paths []string) (bool, error) {
+	for _, p := range d.manifestCopies(id, paths) {
+		present, err := d.store.Exists(ctx, p)
+		if err != nil {
+			return false, fmt.Errorf("lode: failed to check manifest %s: %w", p, err)
+		}
+		if present {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // -----------------------------------------------------------------------------
@@ -201,8 +232,11 @@ const (
 	classUnparseable                    // never committed and its ID carries no instant: reported
 )
 
+// objectAction is what a sweep does with one group of objects.
+type objectAction struct{ reclaim, orphan, report bool }
+
 // objectActions is what each class does, as data.
-var objectActions = map[objectClass]struct{ reclaim, orphan, report bool }{
+var objectActions = map[objectClass]objectAction{
 	classSettled:     {reclaim: true},
 	classOrphan:      {reclaim: true, orphan: true},
 	classUnparseable: {report: true},
@@ -238,7 +272,10 @@ func (r sweepRun) classify(id DatasetSnapshotID) objectClass {
 // only how each object is counted (§Accounting).
 func (r sweepRun) reclaim(ctx context.Context, report *SweepReport) error {
 	for _, g := range r.inv.objects {
-		act := objectActions[r.classify(g.id)]
+		act, err := r.actionFor(ctx, g)
+		if err != nil {
+			return err
+		}
 		if act.report {
 			report.Unparseable = append(report.Unparseable, g.paths...)
 		}
@@ -254,6 +291,21 @@ func (r sweepRun) reclaim(ctx context.Context, report *SweepReport) error {
 		}
 	}
 	return nil
+}
+
+// actionFor is what to do with one group. An orphan is reclaimed only once
+// no manifest of its snapshot is found at a path its objects derive: a
+// listing may omit one, and a manifest still describes its objects.
+func (r sweepRun) actionFor(ctx context.Context, g snapshotKeys) (objectAction, error) {
+	act := objectActions[r.classify(g.id)]
+	if !act.orphan {
+		return act, nil
+	}
+	live, err := r.ds.anyManifest(ctx, g.id, r.ds.allManifestPaths(g.id, nil, refsTo(g.paths)))
+	if err != nil || live {
+		return objectAction{}, err
+	}
+	return act, nil
 }
 
 func (r sweepRun) delete(ctx context.Context, p string) error {

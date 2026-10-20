@@ -29,15 +29,18 @@ func exists(t *testing.T, store Store, p string) bool {
 const sweepGrace = 24 * time.Hour
 
 // listInjector adds raw keys to listings, as a store that does not
-// normalize its keys might return, and records deletes.
+// normalize its keys might return, hides keys from them, as a lagging
+// listing would, and records deletes.
 type listInjector struct {
 	Store
 	extra   []string
+	hidden  []string
 	deleted []string
 }
 
 func (l *listInjector) List(ctx context.Context, prefix string) ([]string, error) {
 	keys, err := l.Store.List(ctx, prefix)
+	keys = slices.DeleteFunc(keys, func(k string) bool { return slices.Contains(l.hidden, k) })
 	for _, k := range l.extra {
 		if strings.HasPrefix(k, prefix) {
 			keys = append(keys, k)
@@ -153,6 +156,25 @@ func TestSweep_Request(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestSweep_Settle(t *testing.T) {
+	t.Run("a manifest the listing omits is still removed", func(t *testing.T) {
+		mem := NewMemory()
+		lister := &listInjector{Store: mem}
+		ds := newDefaultRetention(t, lister)
+		first := writeRecord(t, ds, 1)
+		writeRecord(t, ds, 2)
+		putTombstone(t, mem, first.ID, newTombstone(first.ID, first.Manifest))
+		manifest := "datasets/events/snapshots/" + string(first.ID) + "/manifest.json"
+		lister.hidden = []string{manifest}
+
+		report, err := ds.Sweep(t.Context(), SweepRequest{Grace: sweepGrace})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(report.Settled, []DatasetSnapshotID{first.ID}) || exists(t, mem, manifest) {
+			t.Errorf("report = %+v, manifest present %v; want the hidden manifest removed and the snapshot settled", report, exists(t, mem, manifest))
+		}
+	})
+
 	t.Run("an interrupted expiry", func(t *testing.T) {
 		mem := NewMemory()
 		hs := &hookStore{Store: mem}
@@ -224,6 +246,26 @@ func TestSweep_Settle(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestSweep_Reclaim(t *testing.T) {
+	t.Run("an orphan whose manifest the listing omits is kept", func(t *testing.T) {
+		mem := NewMemory()
+		ds := newDefaultRetention(t, mem)
+		writeRecord(t, ds, 1)
+		old := idAt(time.Now().Add(-48 * time.Hour))
+		data := "datasets/events/snapshots/" + string(old) + "/data/x"
+		manifest := "datasets/events/snapshots/" + string(old) + "/manifest.json"
+		putObject(t, mem, data)
+		putObject(t, mem, manifest)
+		ds = newDefaultRetention(t, &listInjector{Store: mem, hidden: []string{manifest}})
+
+		report, err := ds.Sweep(t.Context(), SweepRequest{Grace: sweepGrace})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if report.Objects != 0 || !exists(t, mem, data) {
+			t.Errorf("report = %+v, want the data a present manifest describes kept", report)
+		}
+	})
+
 	t.Run("only orphans past grace", func(t *testing.T) {
 		store := NewMemory()
 		ds := newHiveRetention(t, store)
