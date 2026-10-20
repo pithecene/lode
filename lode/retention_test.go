@@ -1202,6 +1202,33 @@ func TestExpire_PathSafety(t *testing.T) {
 		}
 	})
 
+	t.Run("a failed expiry reports no skipped paths", func(t *testing.T) {
+		mem := NewMemory()
+		hs := &hookStore{Store: mem}
+		ds := newDefaultRetention(t, casHookStore{hs})
+		first := writeRecord(t, ds, 1)
+		writeRecord(t, ds, 2)
+		m := *first.Manifest
+		m.Files = append(slices.Clone(m.Files), FileRef{Path: "elsewhere/x", SizeBytes: 1})
+		rewriteCopies(t, mem, first.ID, &m)
+		canonical := "datasets/events/snapshots/" + string(first.ID) + "/manifest.json"
+		failure := errors.New("delete failed")
+		hs.onDelete = func(p string) error {
+			if p == canonical {
+				return failure
+			}
+			return nil
+		}
+
+		report, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{first.ID}})
+		if !errors.Is(err, failure) {
+			t.Fatalf("Expire = %v, want the delete failure", err)
+		}
+		if len(report.Expired) != 0 || len(report.Skipped) != 0 {
+			t.Errorf("report = %+v, want nothing expired or skipped", report)
+		}
+	})
+
 	t.Run("foreign FileRef is skipped", func(t *testing.T) {
 		store := NewMemory()
 		ds := newDefaultRetention(t, store)

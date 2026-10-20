@@ -331,8 +331,8 @@ func (r expiryRun) expire(ctx context.Context, c expiryCandidate) (expiryOutcome
 	if err != nil {
 		return out, err
 	}
-	owned, skipped := r.ds.splitFiles(c.id, plan.tomb.Files)
-	if plan.manifest != nil && r.sel.spansOutside(r.ds.layout, owned) {
+	split := r.ds.splitFiles(c.id, plan.tomb.Files)
+	if plan.manifest != nil && r.sel.spansOutside(r.ds.layout, split.owned) {
 		out.verdict = verdictMixed
 		return out, nil
 	}
@@ -345,12 +345,12 @@ func (r expiryRun) expire(ctx context.Context, c expiryCandidate) (expiryOutcome
 		out.verdict = verdictRetained
 		return out, nil
 	}
-	out.skipped = skipped // only a snapshot this run expires reports them
 	if r.dryRun {
-		out.verdict, out.deleted = verdictExpired, r.present(owned)
+		out = out.expired(split)
+		out.deleted = r.present(split.owned)
 		return out, nil
 	}
-	return r.remove(ctx, c, plan, owned, out)
+	return r.remove(ctx, c, plan, split, out)
 }
 
 // retain keeps a snapshot the head guard protects. The pointer is still
@@ -431,7 +431,7 @@ func (r expiryRun) present(files []FileRef) []FileRef {
 // canonical manifest, partition manifests, data. The snapshot is expired
 // once its canonical manifest is gone, so the verdict is set then, even if
 // a later step fails.
-func (r expiryRun) remove(ctx context.Context, c expiryCandidate, plan expiryPlan, owned []FileRef, out expiryOutcome) (expiryOutcome, error) {
+func (r expiryRun) remove(ctx context.Context, c expiryCandidate, plan expiryPlan, split inventorySplit, out expiryOutcome) (expiryOutcome, error) {
 	d := r.ds
 	if !plan.recorded {
 		if err := d.tombstones().record(ctx, plan.tomb); err != nil {
@@ -442,11 +442,11 @@ func (r expiryRun) remove(ctx context.Context, c expiryCandidate, plan expiryPla
 	if err := deleteObject(ctx, d.store, manifests[0]); err != nil {
 		return out, err
 	}
-	out.verdict = verdictExpired
+	out = out.expired(split)
 	if err := deleteObjects(ctx, d.store, manifests[1:]); err != nil {
 		return out, err
 	}
-	for _, f := range owned {
+	for _, f := range split.owned {
 		if err := deleteObject(ctx, d.store, f.Path); err != nil {
 			return out, err
 		}
@@ -526,17 +526,30 @@ func (d *dataset) manifestCopies(id DatasetSnapshotID, listed []string) []string
 	return append([]string{canonical}, others...)
 }
 
-// splitFiles separates the data objects Expire may delete from every other
-// path an inventory lists, which is reported and left in place.
-func (d *dataset) splitFiles(id DatasetSnapshotID, files []FileRef) (owned []FileRef, skipped []string) {
+// inventorySplit is an inventory divided into the data objects Expire may
+// delete and every other path, which is reported and left in place.
+type inventorySplit struct {
+	owned   []FileRef
+	skipped []string
+}
+
+func (d *dataset) splitFiles(id DatasetSnapshotID, files []FileRef) inventorySplit {
+	var split inventorySplit
 	for _, f := range files {
 		if d.layout.isObjectOf(d.id, id, dataLeaf, f.Path) {
-			owned = append(owned, f)
+			split.owned = append(split.owned, f)
 			continue
 		}
-		skipped = append(skipped, f.Path)
+		split.skipped = append(split.skipped, f.Path)
 	}
-	return owned, skipped
+	return split
+}
+
+// expired marks out expired: only then does it report the snapshot's
+// skipped paths, so a run that stops earlier never claims them.
+func (out expiryOutcome) expired(split inventorySplit) expiryOutcome {
+	out.verdict, out.skipped = verdictExpired, split.skipped
+	return out
 }
 
 // allManifestPaths is every manifest path of the snapshot, canonical first:
