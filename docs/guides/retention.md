@@ -134,7 +134,10 @@ smaller ID. So `Expire` returns `ErrHeadUncommitted` when:
 - the pointer names a snapshot whose manifest is not written yet (a commit
   in flight): retry once it lands. Found before the run starts, nothing is
   expired; found at the check before a later snapshot, the snapshots
-  already expired stay expired and the report lists them;
+  already expired stay expired and the report lists them. A pointer left
+  by a crashed commit stays until the next commit replaces it: `Latest`
+  never rewrites a pointer, because it cannot tell a crashed commit from
+  one still in flight;
 - the dataset has snapshots, or tombstones, but no pointer (written before
   the pointer existed): nothing is expired. Any commit creates the
   pointer, after which retention runs.
