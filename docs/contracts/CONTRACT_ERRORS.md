@@ -296,8 +296,8 @@ These are returned by snapshot expiry and the unreferenced-object sweep
 - Selecting the head snapshot is not an error: `Expire` keeps it and reports
   it in `ExpireReport.RetainedHead`.
 - `ErrHeadUncommitted` is retryable: retry once the in-flight commit
-  completes. A pointer left behind by a crashed commit is repaired by the
-  next `Latest` or commit.
+  completes. A pointer left behind by a crashed commit is replaced by the
+  next commit; `Latest` never rewrites an existing pointer.
 - `Expire` and `Sweep` return a non-nil report with every error, describing
   the work completed before it. After a retryable failure the next
   `Expire` or `Sweep` completes the rest; corruption (an invalid or
