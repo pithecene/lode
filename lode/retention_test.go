@@ -734,6 +734,26 @@ func TestExpire_HeadResolution(t *testing.T) {
 		assertPresent(t, ds, head)
 	})
 
+	t.Run("tombstones without a pointer or manifest are refused", func(t *testing.T) {
+		mem := NewMemory()
+		ds := newDefaultRetention(t, mem)
+		// Only an interrupted expiry's tombstone and data remain.
+		gone := idAt(time.Now().Add(-time.Hour))
+		data := "datasets/events/snapshots/" + string(gone) + "/data/f"
+		if err := mem.Put(t.Context(), data, strings.NewReader("x")); err != nil {
+			t.Fatal(err)
+		}
+		putTombstone(t, mem, gone, foreignTombstone(gone, []FileRef{{Path: data, SizeBytes: 1}}))
+
+		_, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{gone}})
+		if !errors.Is(err, ErrHeadUncommitted) {
+			t.Fatalf("Expire = %v, want ErrHeadUncommitted", err)
+		}
+		if ok, _ := mem.Exists(t.Context(), data); !ok {
+			t.Error("data was deleted with no head to protect")
+		}
+	})
+
 	t.Run("an empty dataset needs no pointer", func(t *testing.T) {
 		ds := newDefaultRetention(t, NewMemory())
 		report, err := ds.Expire(t.Context(), ExpireRequest{Before: time.Now()})

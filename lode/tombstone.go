@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -104,6 +105,25 @@ func (ts tombstones) matchRecorded(ctx context.Context, p string, t tombstone) e
 		return fmt.Errorf("lode: tombstone %s records another snapshot than its manifest", p)
 	}
 	return nil
+}
+
+// list returns the keys under the tombstone directory that name a
+// snapshot (CONTRACT_RETENTION §Definition, step 1).
+func (ts tombstones) list(ctx context.Context) ([]string, error) {
+	prefix := ts.layout.tombstonesPrefix(ts.dataset)
+	keys, err := ts.store.List(ctx, prefix)
+	if err != nil {
+		return nil, fmt.Errorf("lode: failed to list tombstones: %w", err)
+	}
+	return slices.DeleteFunc(keys, func(k string) bool { return !isTombstoneName(k, prefix) }), nil
+}
+
+// isTombstoneName reports whether a key below the tombstone directory names
+// a snapshot ID exactly as Lode generates one. Anything else there (the
+// filesystem store's CAS .lock companions) is not a tombstone at all.
+func isTombstoneName(key, prefix string) bool {
+	_, ok := snapshotInstant(DatasetSnapshotID(strings.TrimPrefix(key, prefix)))
+	return ok
 }
 
 // create writes p only if it is absent: atomically when the store is a

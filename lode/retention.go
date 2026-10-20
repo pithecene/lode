@@ -28,6 +28,9 @@ func (d *dataset) Expire(ctx context.Context, req ExpireRequest) (*ExpireReport,
 		return report, err
 	}
 	head, err := newHeadGuard(ctx, &d.history)
+	if err == nil && head.current == "" {
+		err = d.refuseHeadless(ctx)
+	}
 	if err != nil {
 		return report, err
 	}
@@ -243,6 +246,17 @@ type headGuard struct {
 	history   *history[DatasetSnapshotID, Manifest]
 	current   DatasetSnapshotID
 	protected map[DatasetSnapshotID]bool
+}
+
+// refuseHeadless is for a dataset with neither a pointer nor a manifest: a
+// tombstone there means snapshots existed, so the head is unknown, not
+// absent (CONTRACT_RETENTION §Head protection).
+func (d *dataset) refuseHeadless(ctx context.Context) error {
+	keys, err := d.tombstones().list(ctx)
+	if err != nil || len(keys) == 0 {
+		return err
+	}
+	return fmt.Errorf("lode: latest pointer is absent beside tombstones: %w", ErrHeadUncommitted)
 }
 
 func newHeadGuard(ctx context.Context, h *history[DatasetSnapshotID, Manifest]) (*headGuard, error) {
