@@ -319,8 +319,7 @@ type expiryPlan struct {
 func (r expiryRun) expire(ctx context.Context, c expiryCandidate) (expiryOutcome, error) {
 	out := expiryOutcome{id: c.id}
 	if r.head.is(c.id) {
-		out.verdict = verdictRetained
-		return out, nil
+		return r.retain(ctx, out)
 	}
 	plan, found, err := r.plan(ctx, c)
 	if err != nil || !found {
@@ -348,6 +347,17 @@ func (r expiryRun) expire(ctx context.Context, c expiryCandidate) (expiryOutcome
 	return r.remove(ctx, c, plan, owned, out)
 }
 
+// retain keeps a snapshot the head guard protects. The pointer is still
+// rechecked, as before any snapshot's step 1: a commit in flight stops the
+// run with ErrHeadUncommitted here too.
+func (r expiryRun) retain(ctx context.Context, out expiryOutcome) (expiryOutcome, error) {
+	if err := r.head.refresh(ctx); err != nil {
+		return out, err
+	}
+	out.verdict = verdictRetained
+	return out, nil
+}
+
 // plan finds the tombstone to work from. found is false when the snapshot
 // has neither a manifest nor a tombstone left: another run finished it.
 func (r expiryRun) plan(ctx context.Context, c expiryCandidate) (plan expiryPlan, found bool, err error) {
@@ -361,15 +371,16 @@ func (r expiryRun) plan(ctx context.Context, c expiryCandidate) (plan expiryPlan
 	if err != nil {
 		return plan, false, err
 	}
-	if !hasManifest {
-		return expiryPlan{tomb: t, recorded: true}, recorded, nil
+	if !recorded && !hasManifest {
+		return plan, false, nil
 	}
 	if !recorded {
 		return expiryPlan{tomb: newTombstone(c.id, m.Files), manifest: m}, true, nil
 	}
 	// A tombstone left by an earlier snapshot with the same ID must never
-	// steer deletes of this one.
-	matches, err := r.ds.copiesMatch(ctx, c.id, c.paths, t.Files)
+	// steer deletes of this one, even when no copy was found above: every
+	// path this expiry would delete is checked.
+	matches, err := r.ds.copiesMatch(ctx, c.id, r.ds.allManifestPaths(c, t.Files), t.Files)
 	if err != nil {
 		return plan, false, err
 	}
@@ -447,9 +458,10 @@ func (d *dataset) loadCandidate(ctx context.Context, c expiryCandidate) (m *Mani
 	return nil, false, nil
 }
 
-// copiesMatch reports whether every manifest copy of snapshot id that still
-// loads records files. Commit writes one serialization to every path, so a
-// copy that differs is a leftover of an earlier snapshot with the same ID.
+// copiesMatch reports whether every manifest copy at paths, and the canonical
+// one, records files where it still loads. Callers pass every path their
+// expiry would delete. Commit writes one serialization to every path, so a
+// copy that differs belongs to another snapshot with the same ID.
 func (d *dataset) copiesMatch(ctx context.Context, id DatasetSnapshotID, listed []string, files []FileRef) (bool, error) {
 	for _, p := range d.manifestCopies(id, listed) {
 		s, ok, err := d.history.loadListed(ctx, manifestEntry[DatasetSnapshotID]{id, p})

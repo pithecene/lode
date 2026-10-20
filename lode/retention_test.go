@@ -440,6 +440,31 @@ func TestExpire_UncommittedHeadMidRun_ReportsCompletedWork(t *testing.T) {
 	assertPresent(t, ds, second)
 }
 
+func TestExpire_UncommittedHeadBeforeRetainedHead_Stops(t *testing.T) {
+	mem := NewMemory()
+	hs := &hookStore{Store: mem}
+	ds := newDefaultRetention(t, casHookStore{hs})
+	first := writeRecord(t, ds, 1)
+	head := writeRecord(t, ds, 2)
+
+	// After the first snapshot is expired, a commit starts before the run
+	// reaches the head it already protects.
+	hs.onDelete = func(p string) error {
+		if strings.Contains(p, string(first.ID)+"/data/") {
+			setPointer(t, mem, "datasets/events/latest", "9999999999999999999")
+		}
+		return nil
+	}
+	report, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{first.ID, head.ID}})
+	if !errors.Is(err, ErrHeadUncommitted) {
+		t.Fatalf("Expire = %v, want ErrHeadUncommitted", err)
+	}
+	if report.RetainedHead != "" {
+		t.Errorf("RetainedHead = %q, want none: the run stopped before deciding it", report.RetainedHead)
+	}
+	assertPresent(t, ds, head)
+}
+
 func TestExpire_NoPointer_ProtectsScannedHead(t *testing.T) {
 	store := NewMemory()
 	ds := newDefaultRetention(t, store)
@@ -648,6 +673,31 @@ func TestExpire_RecordedTombstone_MustMatchEveryManifestCopy(t *testing.T) {
 		}
 	}
 	assertPresent(t, ds, run)
+}
+
+func TestExpire_TombstoneOnly_CopyReappearingAtDerivedPath_IsChecked(t *testing.T) {
+	mem := NewMemory()
+	hs := &hookStore{Store: mem}
+	ds := newHiveRetention(t, casHookStore{hs})
+	writeRun(t, ds, "b", "x")
+	reused := idAt(time.Now().Add(-time.Hour))
+	dataDir := "datasets/events/partitions/run_id=a/event_type=x/segments/" + string(reused)
+	putTombstone(t, mem, reused, reused, []FileRef{{Path: dataDir + "/data/old", SizeBytes: 1}})
+
+	// After selection saw only the tombstone, a snapshot reusing the ID
+	// writes a partition copy where the old inventory's copy was.
+	copyPath := dataDir + "/manifest.json"
+	hs.onList = func(string, []string) {
+		hs.onList = nil
+		m := Manifest{SnapshotID: reused, Files: []FileRef{{Path: dataDir + "/data/new", SizeBytes: 2}}}
+		rewriteManifest(t, mem, copyPath, &m)
+	}
+	if _, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{reused}}); err == nil {
+		t.Fatal("Expire trusted an old tombstone against a newer partition copy")
+	}
+	if ok, _ := mem.Exists(t.Context(), copyPath); !ok {
+		t.Error("the newer snapshot's partition copy was deleted")
+	}
 }
 
 // racingStore records a tombstone for the same snapshot just before the
