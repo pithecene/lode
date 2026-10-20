@@ -98,12 +98,12 @@ Gaps are tracked with codes indicating category and priority:
 | Codec configured → error | `TestDataset_StreamWrite_Misuse/with_codec_returns_error` |
 | Parent ID resolved O(1) via persistent pointer | `TestDataset_StreamWrite_Lineage/latest_pointer_skips_scan` |
 | Checksum computed | `TestDataset_StreamWrite_Encoding/with_checksum_records_checksum` |
-| Manifest Put error → no manifest + cleanup | `TestStreamWrite_ManifestPutError_NoManifest_CleanupAttempted` |
-| Abort → cleanup attempted | `TestStreamWrite_Abort_NoManifest_CleanupAttempted` |
-| Close → cleanup attempted | `TestStreamWrite_CloseWithoutCommit_NoManifest_CleanupAttempted` |
-| Cleanup errors ignored | `TestStreamWrite_CleanupErrorIgnored` |
-| Fast Put failure → error, no block | `TestStreamWrite_DataPutFailsFast_ReturnsError` |
-| Blocked Put + cancel → no manifest | `TestStreamWrite_BlockedPut_ContextCancel_NoManifest` |
+| Manifest Put error → no manifest + cleanup | `TestStreamWrite_Cleanup/manifest_put_error_no_manifest_cleanup_attempted` |
+| Abort → cleanup attempted | `TestStreamWrite_Cleanup/abort_no_manifest_cleanup_attempted` |
+| Close → cleanup attempted | `TestStreamWrite_Cleanup/close_without_commit_no_manifest_cleanup_attempted` |
+| Cleanup errors ignored | `TestStreamWrite_Cleanup/cleanup_error_ignored` |
+| Fast Put failure → error, no block | `TestStreamWrite_PutFailure/data_put_fails_fast_returns_error` |
+| Blocked Put + cancel → no manifest | `TestStreamWrite_PutFailure/blocked_put_context_cancel_no_manifest` |
 
 **StreamWriteRecords**: All covered ✅
 
@@ -115,10 +115,10 @@ Gaps are tracked with codes indicating category and priority:
 | Partitioning error | `TestDataset_StreamWriteRecords_Rejects/with_partitioner` |
 | Iterator error → no manifest | `TestDataset_StreamWriteRecords_IteratorError/iterator_error` |
 | RowCount = records consumed | `TestDataset_StreamWriteRecords_Commit/success` |
-| Iterator error → cleanup attempted | `TestStreamWriteRecords_IteratorError_NoManifest_CleanupAttempted` |
+| Iterator error → cleanup attempted | `TestStreamWriteRecords_Cleanup/iterator_error_no_manifest_cleanup_attempted` |
 | Parent ID resolved O(1) via persistent pointer | `TestDataset_StreamWriteRecords_Commit/latest_pointer_skips_scan` |
-| Manifest Put error → no manifest + cleanup | `TestStreamWriteRecords_ManifestPutError_NoManifest` |
-| Fast Put failure → error, no block | `TestStreamWriteRecords_DataPutFailsFast_ReturnsError` |
+| Manifest Put error → no manifest + cleanup | `TestStreamWriteRecords_Cleanup/manifest_put_error_no_manifest` |
+| Fast Put failure → error, no block | `TestStreamWriteRecords_PutFailure/data_put_fails_fast_returns_error` |
 
 **Timestamp Computation**: All covered ✅
 
@@ -517,9 +517,9 @@ store wrapper with error injection, call observation, and blocking for synchroni
 - Whether cleanup Delete runs before or after context deadline is nondeterministic
 
 **Mitigation:**
-- Core invariants are tested deterministically via `TestStreamWrite_BlockedPut_ContextCancel_NoManifest`
-- FS adapter timing verified via `TestFSAdapter_StreamWrite_ContextCancel_NoSnapshot`
-- S3 adapter timing verified via `TestLocalStack_StreamWrite_ContextCancel_NoSnapshot` (requires `LODE_S3_TESTS=1`)
+- Core invariants are tested deterministically via `TestStreamWrite_PutFailure/blocked_put_context_cancel_no_manifest`
+- FS adapter timing verified via `TestFSAdapter_ContextCancel/stream_write_context_cancel_no_snapshot`
+- S3 adapter timing verified via `TestIntegration_Writes/stream_write_context_cancel` (requires `go test ./lode/s3/... -integration` against the docker-compose services)
 - Cleanup is documented as best-effort per CONTRACT_ERRORS.md
 
 **Status**: Core invariants covered. Adapter-specific timing tests exercise real behavior without asserting on inherently nondeterministic outcomes.
