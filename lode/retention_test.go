@@ -404,6 +404,29 @@ func TestExpire_Partition(t *testing.T) {
 		}
 	})
 
+	t.Run("a foreign file does not make a snapshot mixed", func(t *testing.T) {
+		mem := NewMemory()
+		ds := newHiveRetention(t, mem)
+		run := writeRun(t, ds, "a", "x")
+		writeRun(t, ds, "b", "x") // head
+		// A path outside the dataset is never deleted, so it cannot decide.
+		m := *run.Manifest
+		m.Files = append(slices.Clone(m.Files), FileRef{Path: "elsewhere/x", SizeBytes: 1})
+		for _, k := range storeKeys(t, mem) {
+			if strings.Contains(k, string(run.ID)) && strings.HasSuffix(k, manifestFile) {
+				rewriteManifest(t, mem, k, &m)
+			}
+		}
+
+		report, err := ds.Expire(t.Context(), ExpireRequest{Partition: "run_id=a"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(report.Expired, []DatasetSnapshotID{run.ID}) || len(report.Mixed) != 0 || !slices.Equal(report.Skipped, []string{"elsewhere/x"}) {
+			t.Errorf("report = %+v, want the snapshot expired and the foreign path skipped", report)
+		}
+	})
+
 	t.Run("mixed snapshot is kept", func(t *testing.T) {
 		ds := newHiveRetention(t, NewMemory())
 		mixed := writeRun(t, ds, "a", "x")
@@ -1120,6 +1143,34 @@ func TestExpire_PathSafety(t *testing.T) {
 		}
 		if ok, _ := store.Exists(t.Context(), victim); !ok {
 			t.Error("a manifest outside the dataset was deleted")
+		}
+	})
+
+	t.Run("a snapshot left unexpired reports no skipped paths", func(t *testing.T) {
+		mem := NewMemory()
+		hs := &hookStore{Store: mem}
+		ds := newDefaultRetention(t, casHookStore{hs})
+		first := writeRecord(t, ds, 1)
+		second := writeRecord(t, ds, 2)
+		writeRecord(t, ds, 3)
+		m := *second.Manifest
+		m.Files = append(slices.Clone(m.Files), FileRef{Path: "elsewhere/x", SizeBytes: 1})
+		rewriteManifest(t, mem, "datasets/events/snapshots/"+string(second.ID)+"/manifest.json", &m)
+
+		// A commit starts once the first snapshot is gone, so the second's
+		// recheck stops the run before it is expired.
+		hs.onDelete = func(p string) error {
+			if strings.Contains(p, string(first.ID)+"/data/") {
+				setPointer(t, mem, string(idAt(time.Now()))) // a commit in flight
+			}
+			return nil
+		}
+		report, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{first.ID, second.ID}})
+		if !errors.Is(err, ErrHeadUncommitted) {
+			t.Fatalf("Expire = %v, want ErrHeadUncommitted", err)
+		}
+		if len(report.Skipped) != 0 {
+			t.Errorf("Skipped = %v, want none: the snapshot naming them was not expired", report.Skipped)
 		}
 	})
 

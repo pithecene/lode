@@ -123,12 +123,14 @@ func (s selection) listPrefix(l layout, dataset DatasetID) string {
 }
 
 // spansOutside reports whether a snapshot selected by partition also has
-// files outside it (CONTRACT_RETENTION §Mixed snapshots).
-func (s selection) spansOutside(l layout, m *Manifest) bool {
+// data files outside it (CONTRACT_RETENTION §Mixed snapshots). Callers pass
+// only the snapshot's own data files: a foreign path is never deleted, so
+// it never decides.
+func (s selection) spansOutside(l layout, owned []FileRef) bool {
 	if s.partition == "" {
 		return false
 	}
-	return slices.ContainsFunc(m.Files, func(f FileRef) bool {
+	return slices.ContainsFunc(owned, func(f FileRef) bool {
 		return !withinPartition(l.extractPartitionPath(f.Path), s.partition)
 	})
 }
@@ -329,12 +331,11 @@ func (r expiryRun) expire(ctx context.Context, c expiryCandidate) (expiryOutcome
 	if err != nil {
 		return out, err
 	}
-	if plan.manifest != nil && r.sel.spansOutside(r.ds.layout, plan.manifest) {
+	owned, skipped := r.ds.splitFiles(c.id, plan.tomb.Files)
+	if plan.manifest != nil && r.sel.spansOutside(r.ds.layout, owned) {
 		out.verdict = verdictMixed
 		return out, nil
 	}
-	owned, skipped := r.ds.splitFiles(c.id, plan.tomb.Files)
-	out.skipped = skipped
 	// Recheck the head immediately before the irreversible steps; a dry run
 	// rechecks too, so its report is the one a real run would produce.
 	if err := r.head.refresh(ctx); err != nil {
@@ -344,6 +345,7 @@ func (r expiryRun) expire(ctx context.Context, c expiryCandidate) (expiryOutcome
 		out.verdict = verdictRetained
 		return out, nil
 	}
+	out.skipped = skipped // only a snapshot this run expires reports them
 	if r.dryRun {
 		out.verdict, out.deleted = verdictExpired, r.present(owned)
 		return out, nil
