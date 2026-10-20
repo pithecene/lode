@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -132,17 +131,6 @@ func (s selection) spansOutside(l layout, m *Manifest) bool {
 	return slices.ContainsFunc(m.Files, func(f FileRef) bool {
 		return !withinPartition(l.extractPartitionPath(f.Path), s.partition)
 	})
-}
-
-// snapshotInstant is when a snapshot's write began, read from its ID. Only
-// an ID exactly as generateID formats it counts (decimal Unix nanoseconds,
-// no sign or leading zero); ok is false for any other ID.
-func snapshotInstant(id DatasetSnapshotID) (time.Time, bool) {
-	n, err := strconv.ParseInt(string(id), 10, 64)
-	if err != nil || n < 0 || strconv.FormatInt(n, 10) != string(id) {
-		return time.Time{}, false
-	}
-	return time.Unix(0, n), true
 }
 
 func startedBefore(id DatasetSnapshotID, cutoff time.Time) bool {

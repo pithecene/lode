@@ -60,6 +60,14 @@ Gaps are tracked with codes indicating category and priority:
 | Checksum | `TestDataset_Write_WithoutChecksum_OmitsChecksum` |
 | FileRef.Stats (present) | `TestDataset_Write_ParquetCodec_StatsPopulated` |
 | FileRef.Stats (absent) | `TestDataset_Write_JSONLCodec_StatsNil`, `TestDataset_Write_RawBlob_StatsNil` |
+
+**Snapshot ID**: All covered ✅
+
+| Rule | Test |
+|------|------|
+| `<instant>-<nonce>` form; legacy `<instant>` accepted | `TestSnapshotInstant_OnlyGeneratedForm`, `TestFormatSnapshotID_RoundTripsInstant` |
+| Unique when the clock repeats | `TestGenerateID_UniqueWithinOneInstant` |
+| String order follows instant; legacy sorts first on a tie | `TestSnapshotID_StringOrderFollowsInstant` |
 | FileRef.Stats (JSON round-trip) | `TestFileRef_Stats_JSONRoundTrip`, `TestFileRef_Stats_BackwardCompat`, `TestFileRef_Stats_OmittedWhenNil` |
 
 **Metadata Rules**: All covered ✅

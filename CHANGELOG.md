@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Unique snapshot IDs**: Dataset and Volume snapshot IDs are now `<instant>-<nonce>` — the write-start Unix nanoseconds followed by 16 random hex digits — so a repeated or rolled-back clock can no longer issue an ID twice, which retention needs to never act on a reused ID. IDs still order by instant when compared as strings. Existing instant-only IDs remain valid; code that parsed an ID as an integer must treat it as an opaque string (CONTRACT_CORE §Snapshot ID).
 - **Enumeration tolerates deletion**: `Snapshots`, the scan behind `Latest`, `ListManifests` and `ListPartitions` skip a manifest deleted between listing and loading instead of failing.
 
 ---

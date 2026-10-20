@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1045,23 +1044,8 @@ func rewriteManifest(t *testing.T, store Store, p string, m *Manifest) {
 	}
 }
 
-func TestSnapshotInstant_OnlyGeneratedForm(t *testing.T) {
-	for id, want := range map[DatasetSnapshotID]bool{
-		"1792459022524750970": true,
-		"0":                   true,
-		"00123":               false,
-		"+123":                false,
-		"-1":                  false,
-		"abc":                 false,
-		"":                    false,
-	} {
-		if _, ok := snapshotInstant(id); ok != want {
-			t.Errorf("snapshotInstant(%q) ok = %v, want %v", id, ok, want)
-		}
-	}
-}
-
-// idAt is the snapshot ID a write beginning at t would get.
+// idAt is the snapshot ID a write beginning at t would get, with a zero
+// nonce.
 func idAt(t time.Time) DatasetSnapshotID {
-	return DatasetSnapshotID(strconv.FormatInt(t.UnixNano(), 10))
+	return DatasetSnapshotID(formatSnapshotID(t, [nonceBytes]byte{}))
 }

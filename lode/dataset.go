@@ -604,7 +604,3 @@ func (d *dataset) validateComponentsMatch(m *Manifest) error {
 	}
 	return nil
 }
-
-func generateID() string {
-	return fmt.Sprintf("%d", time.Now().UnixNano())
-}
