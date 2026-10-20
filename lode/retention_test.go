@@ -629,6 +629,27 @@ func TestExpire_TombstoneOfAnotherInventory_IsRefused(t *testing.T) {
 	assertPresent(t, ds, first)
 }
 
+func TestExpire_RecordedTombstone_MustMatchEveryManifestCopy(t *testing.T) {
+	mem := NewMemory()
+	ds := newHiveRetention(t, mem)
+	run := writeRun(t, ds, "a", "x", "y")
+	writeRun(t, ds, "b", "x")
+	// The recorded tombstone matches the canonical copy, but a partition copy
+	// left by an earlier snapshot with the same ID lists other objects.
+	putTombstone(t, mem, run.ID, run.ID, run.Manifest.Files)
+	stray := "datasets/events/partitions/run_id=a/event_type=y/segments/" + string(run.ID) + "/manifest.json"
+	other := *run.Manifest
+	other.Files = []FileRef{{Path: "datasets/events/partitions/run_id=a/event_type=y/segments/" + string(run.ID) + "/data/old", SizeBytes: 1}}
+	rewriteManifest(t, mem, stray, &other)
+
+	for _, dryRun := range []bool{true, false} {
+		if _, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{run.ID}, DryRun: dryRun}); err == nil {
+			t.Errorf("Expire(dry=%v) trusted a tombstone that a manifest copy contradicts", dryRun)
+		}
+	}
+	assertPresent(t, ds, run)
+}
+
 // racingStore records a tombstone for the same snapshot just before the
 // first tombstone CAS, as a concurrent expiry of the same ID would. With
 // rival set, the raced tombstone is rival instead of this run's own.

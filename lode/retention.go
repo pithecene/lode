@@ -365,14 +365,18 @@ func (r expiryRun) plan(ctx context.Context, c expiryCandidate) (plan expiryPlan
 		return expiryPlan{tomb: t, recorded: true}, recorded, nil
 	}
 	if !recorded {
-		t = newTombstone(c.id, m.Files)
+		return expiryPlan{tomb: newTombstone(c.id, m.Files), manifest: m}, true, nil
 	}
-	// A tombstone left by an earlier snapshot with the same ID (a legacy
-	// clock-only ID repeated an instant) must never steer deletes of this one.
-	if !sameInventory(t.Files, m.Files) {
+	// A tombstone left by an earlier snapshot with the same ID must never
+	// steer deletes of this one.
+	matches, err := r.ds.copiesMatch(ctx, c.id, c.paths, t.Files)
+	if err != nil {
+		return plan, false, err
+	}
+	if !matches {
 		return plan, false, fmt.Errorf("lode: tombstone for %s records a different inventory than its manifest", c.id)
 	}
-	return expiryPlan{tomb: t, recorded: recorded, manifest: m}, true, nil
+	return expiryPlan{tomb: t, recorded: true, manifest: m}, true, nil
 }
 
 // tombstoneFor is the candidate's recorded tombstone: the one selection
@@ -431,8 +435,7 @@ func (r expiryRun) remove(ctx context.Context, c expiryCandidate, plan expiryPla
 // stopped after its canonical delete). found is false when every copy is
 // gone: another expiry finished it.
 func (d *dataset) loadCandidate(ctx context.Context, c expiryCandidate) (m *Manifest, found bool, err error) {
-	paths := append([]string{d.layout.manifestPath(d.id, c.id)}, c.paths...)
-	for _, p := range paths {
+	for _, p := range d.manifestCopies(c.id, c.paths) {
 		s, ok, err := d.history.loadListed(ctx, manifestEntry[DatasetSnapshotID]{c.id, p})
 		if err != nil {
 			return nil, false, fmt.Errorf("lode: failed to load manifest %s: %w", p, err)
@@ -442,6 +445,30 @@ func (d *dataset) loadCandidate(ctx context.Context, c expiryCandidate) (m *Mani
 		}
 	}
 	return nil, false, nil
+}
+
+// copiesMatch reports whether every manifest copy of snapshot id that still
+// loads records files. Commit writes one serialization to every path, so a
+// copy that differs is a leftover of an earlier snapshot with the same ID.
+func (d *dataset) copiesMatch(ctx context.Context, id DatasetSnapshotID, listed []string, files []FileRef) (bool, error) {
+	for _, p := range d.manifestCopies(id, listed) {
+		s, ok, err := d.history.loadListed(ctx, manifestEntry[DatasetSnapshotID]{id, p})
+		if err != nil {
+			return false, fmt.Errorf("lode: failed to load manifest %s: %w", p, err)
+		}
+		if ok && !sameInventory(s.Manifest.Files, files) {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// manifestCopies is where snapshot id's manifest may be: the canonical path
+// first, then every other copy the listing found.
+func (d *dataset) manifestCopies(id DatasetSnapshotID, listed []string) []string {
+	canonical := d.layout.manifestPath(d.id, id)
+	others := slices.DeleteFunc(slices.Clone(listed), func(p string) bool { return p == canonical })
+	return append([]string{canonical}, others...)
 }
 
 // splitFiles separates the data objects Expire may delete from every other
