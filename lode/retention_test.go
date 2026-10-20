@@ -647,7 +647,7 @@ func TestExpire_Head(t *testing.T) {
 		ds := newDefaultRetention(t, store)
 		first := writeRecord(t, ds, 1)
 		writeRecord(t, ds, 2)
-		setPointer(t, store, "9999999999999999999")
+		setPointer(t, store, string(idAt(time.Now()))) // a commit in flight
 		before := storeKeys(t, store)
 
 		report, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{first.ID}})
@@ -674,7 +674,7 @@ func TestExpire_Head(t *testing.T) {
 		// pointer moves to a snapshot without a manifest yet.
 		hs.onDelete = func(p string) error {
 			if strings.Contains(p, string(first.ID)+"/data/") {
-				setPointer(t, mem, "9999999999999999999")
+				setPointer(t, mem, string(idAt(time.Now()))) // a commit in flight
 			}
 			return nil
 		}
@@ -699,7 +699,7 @@ func TestExpire_Head(t *testing.T) {
 		// reaches the head it already protects.
 		hs.onDelete = func(p string) error {
 			if strings.Contains(p, string(first.ID)+"/data/") {
-				setPointer(t, mem, "9999999999999999999")
+				setPointer(t, mem, string(idAt(time.Now()))) // a commit in flight
 			}
 			return nil
 		}
@@ -768,6 +768,24 @@ func TestExpire_HeadResolution(t *testing.T) {
 
 		if _, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{first.ID}}); err == nil {
 			t.Fatal("Expire accepted a pointer that names no snapshot")
+		}
+		assertPresent(t, ds, first)
+	})
+
+	t.Run("a pointer outside the generated form is refused", func(t *testing.T) {
+		mem := NewMemory()
+		ds := newDefaultRetention(t, mem)
+		first := writeRecord(t, ds, 1)
+		writeRecord(t, ds, 2)
+		// Path-safe, and a manifest sits at its path, but Lode never wrote it.
+		setPointer(t, mem, "foo")
+		if err := mem.Put(t.Context(), "datasets/events/snapshots/foo/manifest.json", strings.NewReader("{}")); err != nil {
+			t.Fatal(err)
+		}
+		ds = newDefaultRetention(t, mem)
+
+		if _, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{first.ID}}); err == nil {
+			t.Fatal("Expire accepted a pointer Lode never wrote")
 		}
 		assertPresent(t, ds, first)
 	})

@@ -47,3 +47,10 @@ func snapshotInstant(id DatasetSnapshotID) (time.Time, bool) {
 func isNonce(s string) bool {
 	return len(s) == hex.EncodedLen(nonceBytes) && strings.Trim(s, "0123456789abcdef") == ""
 }
+
+// isGeneratedID reports whether id is in the generated form, new or legacy,
+// for any kind of snapshot.
+func isGeneratedID[ID ~string](id ID) bool {
+	_, ok := snapshotInstant(DatasetSnapshotID(id))
+	return ok
+}

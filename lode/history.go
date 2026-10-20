@@ -287,10 +287,9 @@ func (h *history[ID, M]) CommittedHead(ctx context.Context, known ID) (ID, error
 // whose parent the pointer no longer names. A pointer that does not hold a
 // snapshot ID is corruption, never confirmed.
 func (h *history[ID, M]) confirmCommitted(ctx context.Context, id ID) error {
-	// A corrupt pointer must not reach a path: the ID has to name the very
-	// manifest path built from it, which rules out anything path.Join would
-	// clean into another location.
-	if parsed, ok := h.kind.parseManifest(h.kind.manifestPath(id)); !ok || parsed != id {
+	// A corrupt pointer must not reach a path or stand for the head: Lode
+	// writes only generated IDs there, which are path-safe.
+	if !isGeneratedID(id) {
 		return fmt.Errorf("lode: latest pointer holds %q, which is not a snapshot ID", id)
 	}
 	committed, err := h.hasManifest(ctx, id)
