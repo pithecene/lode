@@ -68,7 +68,7 @@ Hot-path operations MUST NOT scale with dataset/volume history size.
 Parent resolution:
 - In-memory cache: 0 calls
 - Pointer + Exists: 2 calls
-- Scan fallback (degraded): O(N) via List. Self-heals.
+- Scan fallback (degraded): O(N) via List, plus for a Dataset 1 tombstone Exists per snapshot scanned (+1 canonical-manifest Exists for one with a tombstone), newest first until one is not expired. Self-heals.
 
 Parent resolution MUST NOT use List when a valid pointer exists.
 
@@ -79,7 +79,7 @@ Parent resolution MUST NOT use List when a valid pointer exists.
 | Operation | Path | Store Calls | Memory | CPU |
 |-----------|------|-------------|--------|-----|
 | Latest (warm) | Hot | 2 (pointer + manifest) | O(manifest) | O(1) |
-| Latest (cold) | Degraded | 1 List + 1 Get | O(N) | O(N) |
+| Latest (cold) | Degraded | 1 List + 1 Get + 1 tombstone Exists per snapshot scanned (+1 canonical-manifest Exists for one with a tombstone) | O(N) | O(N) |
 | Snapshot(id) | Hot | 1 Get | O(manifest) | O(1) |
 | Snapshot(id) fallback | Degraded | 1 List + scan | O(N) | O(N) |
 | Snapshots() | Cold | 1 List + S Gets | O(S × manifest) | O(S × B_avg + S log S) |

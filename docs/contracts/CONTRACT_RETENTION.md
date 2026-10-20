@@ -178,8 +178,9 @@ that resolve to a set:
 - `Before` — an instant. Resolves to every snapshot whose **ID instant** is
   strictly earlier. A snapshot ID begins with the Unix nanosecond instant
   taken when the write begins (CONTRACT_CORE §Snapshot ID), before any data
-  object is written; `Manifest.CreatedAt` is set at commit and is
-  never earlier. Using the ID makes selection a listing, with no manifest
+  object is written. `Manifest.CreatedAt` is set at commit, by a clock
+  that may have rolled back since, so no ordering between the two is
+  guaranteed; selection uses the ID alone. Using the ID makes selection a listing, with no manifest
   read per candidate. An ID not in the generated form is never selected by
   `Before`.
 
