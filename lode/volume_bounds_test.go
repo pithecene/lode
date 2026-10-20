@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"errors"
 	"testing"
+
+	"github.com/pithecene-io/lode/internal/validate"
 )
 
 // Exact-boundary tests for Volume range arithmetic and manifest validation.
@@ -127,7 +129,7 @@ func TestValidateVolumeManifest_Bounds(t *testing.T) {
 			}
 			continue
 		}
-		var verr *manifestValidationError
+		var verr *validate.ManifestError
 		if !errors.As(err, &verr) || verr.Field != c.wantField {
 			t.Errorf("%s: got %v, want validation error on %q", c.name, err, c.wantField)
 		}

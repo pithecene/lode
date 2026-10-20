@@ -12,6 +12,7 @@ import (
 
 	"github.com/pithecene-io/lode/internal/history"
 	"github.com/pithecene-io/lode/internal/retry"
+	"github.com/pithecene-io/lode/internal/validate"
 )
 
 const (
@@ -204,7 +205,7 @@ type retryOption struct {
 
 func (o *retryOption) apply(r *retry.Config) error {
 	if err := o.set(r); err != nil {
-		return invalidArgument("%s: %v", o.name, err)
+		return validate.Argument("%s: %v", o.name, err)
 	}
 	return nil
 }
@@ -339,7 +340,7 @@ func toDatasetSnapshot(s *history.Snapshot[DatasetSnapshotID, Manifest]) *Datase
 //   - WithChecksum(c) to enable file checksums
 func NewDataset(id DatasetID, factory StoreFactory, opts ...Option) (Dataset, error) {
 	if factory == nil {
-		return nil, invalidArgument("store factory is required")
+		return nil, validate.Argument("store factory is required")
 	}
 
 	cfg := &datasetConfig{
@@ -356,14 +357,14 @@ func NewDataset(id DatasetID, factory StoreFactory, opts ...Option) (Dataset, er
 	}
 
 	if cfg.layout == nil {
-		return nil, invalidArgument("layout must not be nil")
+		return nil, validate.Argument("layout must not be nil")
 	}
 	if cfg.compressor == nil {
-		return nil, invalidArgument("compressor must not be nil")
+		return nil, validate.Argument("compressor must not be nil")
 	}
 	// Raw blob mode (no codec) cannot use partitioning - there are no record fields to extract keys from
 	if cfg.codec == nil && !cfg.layout.partitioner().isNoop() {
-		return nil, invalidArgument("raw blob mode (no codec) requires a layout with noop partitioner")
+		return nil, validate.Argument("raw blob mode (no codec) requires a layout with noop partitioner")
 	}
 
 	// Arguments are checked before any store work (CONTRACT_ERRORS §5).
@@ -372,7 +373,7 @@ func NewDataset(id DatasetID, factory StoreFactory, opts ...Option) (Dataset, er
 		return nil, fmt.Errorf("lode: store factory failed: %w", err)
 	}
 	if store == nil {
-		return nil, invalidArgument("store factory returned nil store")
+		return nil, validate.Argument("store factory returned nil store")
 	}
 
 	return &dataset{
@@ -497,7 +498,7 @@ func (d *dataset) StreamWriteRecords(ctx context.Context, records RecordIterator
 		return nil, ErrNilIterator
 	}
 	if d.codec == nil {
-		return nil, invalidArgument("StreamWriteRecords requires a codec")
+		return nil, validate.Argument("StreamWriteRecords requires a codec")
 	}
 	streamCodec, ok := d.codec.(StreamingRecordCodec)
 	if !ok {

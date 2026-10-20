@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Shared internals**: the snapshot-history core (snapshot chain, latest pointer, CAS commit loop) moved to `internal/history`, the retry configuration and backoff to `internal/retry`, and the fault-injection test store to `internal/testutil`. No API or behavior change; this lets a second package share them ahead of `V1_API_DECISIONS.md` D9.
+- **Shared internals**: the snapshot-history core (snapshot chain, latest pointer, CAS commit loop) moved to `internal/history`, the retry configuration and backoff to `internal/retry`, the argument and manifest validation errors to `internal/validate`, and the fault-injection test store to `internal/testutil`. `ErrInvalidArgument` and `ErrManifestInvalid` are re-exported from `internal/validate`: same values, same static type `error`, same messages. No API or behavior change; this lets a second package share them ahead of `V1_API_DECISIONS.md` D9.
 - **Mutation gate covers the module**: `task mutate` and the nightly job now run gremlins over the whole module (examples and `internal/testutil` excluded) rather than `./lode` only, so the moved internals stay gated. `internal/history` gains its own unit tests; gremlins measures coverage per package.
 
 ---

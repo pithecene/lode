@@ -7,6 +7,8 @@ import (
 	"io"
 	"sort"
 	"strings"
+
+	"github.com/pithecene-io/lode/internal/validate"
 )
 
 // -----------------------------------------------------------------------------
@@ -37,7 +39,7 @@ type reader struct {
 //   - WithLayout(l) to use a different layout
 func NewDatasetReader(factory StoreFactory, opts ...Option) (DatasetReader, error) {
 	if factory == nil {
-		return nil, invalidArgument("store factory is required")
+		return nil, validate.Argument("store factory is required")
 	}
 
 	cfg := &readerConfig{
@@ -51,7 +53,7 @@ func NewDatasetReader(factory StoreFactory, opts ...Option) (DatasetReader, erro
 	}
 
 	if cfg.layout == nil {
-		return nil, invalidArgument("layout must not be nil")
+		return nil, validate.Argument("layout must not be nil")
 	}
 
 	// Arguments are checked before any store work (CONTRACT_ERRORS §5).
@@ -60,7 +62,7 @@ func NewDatasetReader(factory StoreFactory, opts ...Option) (DatasetReader, erro
 		return nil, fmt.Errorf("lode: store factory failed: %w", err)
 	}
 	if store == nil {
-		return nil, invalidArgument("store factory returned nil store")
+		return nil, validate.Argument("store factory returned nil store")
 	}
 
 	return &reader{
@@ -319,46 +321,32 @@ func (r *reader) loadManifest(ctx context.Context, manifestPath string) (*Manife
 // Manifest Validation
 // -----------------------------------------------------------------------------
 
-// manifestValidationError provides details about manifest validation failures.
-type manifestValidationError struct {
-	Field   string
-	Message string
-}
-
-func (e *manifestValidationError) Error() string {
-	return fmt.Sprintf("invalid manifest: %s: %s", e.Field, e.Message)
-}
-
-func (e *manifestValidationError) Unwrap() error {
-	return ErrManifestInvalid
-}
-
 // validateManifest checks that a manifest contains all required fields
 // per CONTRACT_CORE.md and CONTRACT_READ_API.md.
 func validateManifest(m *Manifest) error {
 	if m == nil {
-		return &manifestValidationError{Field: "manifest", Message: "is nil"}
+		return &validate.ManifestError{Field: "manifest", Message: "is nil"}
 	}
 
 	// Codec is optional: empty is valid for raw blob storage.
-	if err := firstInvalid([]fieldCheck{
-		{m.SchemaName == "", "schema_name", "is required"},
-		{m.FormatVersion == "", "format_version", "is required"},
-		{m.DatasetID == "", "dataset_id", "is required"},
-		{m.SnapshotID == "", "snapshot_id", "is required"},
-		{m.CreatedAt.IsZero(), "created_at", "is required"},
-		{m.Metadata == nil, "metadata", "must not be nil (use empty map for no metadata)"},
-		{m.Files == nil, "files", "must not be nil (use empty slice for no files)"},
-		{m.RowCount < 0, "row_count", "must be non-negative"},
-		{m.Compressor == "", "compressor", "is required"},
-		{m.Partitioner == "", "partitioner", "is required"},
+	if err := validate.FirstInvalid([]validate.Check{
+		{Invalid: m.SchemaName == "", Field: "schema_name", Message: "is required"},
+		{Invalid: m.FormatVersion == "", Field: "format_version", Message: "is required"},
+		{Invalid: m.DatasetID == "", Field: "dataset_id", Message: "is required"},
+		{Invalid: m.SnapshotID == "", Field: "snapshot_id", Message: "is required"},
+		{Invalid: m.CreatedAt.IsZero(), Field: "created_at", Message: "is required"},
+		{Invalid: m.Metadata == nil, Field: "metadata", Message: "must not be nil (use empty map for no metadata)"},
+		{Invalid: m.Files == nil, Field: "files", Message: "must not be nil (use empty slice for no files)"},
+		{Invalid: m.RowCount < 0, Field: "row_count", Message: "must be non-negative"},
+		{Invalid: m.Compressor == "", Field: "compressor", Message: "is required"},
+		{Invalid: m.Partitioner == "", Field: "partitioner", Message: "is required"},
 	}); err != nil {
 		return err
 	}
 	for i, f := range m.Files {
-		if err := firstInvalid([]fieldCheck{
-			{f.Path == "", fmt.Sprintf("files[%d].path", i), "is required"},
-			{f.SizeBytes < 0, fmt.Sprintf("files[%d].size_bytes", i), "must be non-negative"},
+		if err := validate.FirstInvalid([]validate.Check{
+			{Invalid: f.Path == "", Field: fmt.Sprintf("files[%d].path", i), Message: "is required"},
+			{Invalid: f.SizeBytes < 0, Field: fmt.Sprintf("files[%d].size_bytes", i), Message: "must be non-negative"},
 		}); err != nil {
 			return err
 		}

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/pithecene-io/lode/internal/testutil"
 )
 
 // -----------------------------------------------------------------------------
@@ -33,7 +35,7 @@ func TestStreamWrite_Cleanup(t *testing.T) {
 	// manifest Put fails during Commit, no manifest is written and cleanup is attempted.
 	t.Run("manifest put error no manifest cleanup attempted", func(t *testing.T) {
 		inner := NewMemory()
-		fs := newFaultStore(inner)
+		fs := testutil.NewFaultStore(inner)
 
 		ds, err := NewDataset("test-ds", newFaultStoreFactory(fs))
 		if err != nil {
@@ -53,7 +55,7 @@ func TestStreamWrite_Cleanup(t *testing.T) {
 
 		// Inject Put error ONLY for manifest paths
 		// The data file Put is already in progress and won't be affected
-		fs.SetPutError(errInjectedPut, "manifest")
+		fs.SetPutError(testutil.ErrInjectedPut, "manifest")
 
 		// Commit should fail when writing manifest
 		_, err = sw.Commit(t.Context())
@@ -88,7 +90,7 @@ func TestStreamWrite_Cleanup(t *testing.T) {
 	// no manifest and attempts cleanup.
 	t.Run("abort no manifest cleanup attempted", func(t *testing.T) {
 		inner := NewMemory()
-		fs := newFaultStore(inner)
+		fs := testutil.NewFaultStore(inner)
 
 		ds, err := NewDataset("test-ds", newFaultStoreFactory(fs))
 		if err != nil {
@@ -137,7 +139,7 @@ func TestStreamWrite_Cleanup(t *testing.T) {
 	// Close without Commit behaves as Abort.
 	t.Run("close without commit no manifest cleanup attempted", func(t *testing.T) {
 		inner := NewMemory()
-		fs := newFaultStore(inner)
+		fs := testutil.NewFaultStore(inner)
 
 		ds, err := NewDataset("test-ds", newFaultStoreFactory(fs))
 		if err != nil {
@@ -177,7 +179,7 @@ func TestStreamWrite_Cleanup(t *testing.T) {
 	// so a broken Delete cannot affect the outcome.
 	t.Run("cleanup error ignored", func(t *testing.T) {
 		inner := NewMemory()
-		fs := newFaultStore(inner)
+		fs := testutil.NewFaultStore(inner)
 
 		ds, err := NewDataset("test-ds", newFaultStoreFactory(fs))
 		if err != nil {
@@ -195,7 +197,7 @@ func TestStreamWrite_Cleanup(t *testing.T) {
 		}
 
 		// Inject Delete error to verify it's ignored
-		fs.SetDeleteError(errInjectedDelete)
+		fs.SetDeleteError(testutil.ErrInjectedDelete)
 
 		// Abort should succeed even with Delete error
 		err = sw.Abort(t.Context())
@@ -209,7 +211,7 @@ func TestStreamWrite_Cleanup(t *testing.T) {
 
 // assertNoDataObject verifies no data object exists in the inner store for
 // any data path the stream handed to Put.
-func assertNoDataObject(t *testing.T, fs *faultStore, inner Store) {
+func assertNoDataObject(t *testing.T, fs *testutil.FaultStore, inner Store) {
 	t.Helper()
 	for _, p := range fs.PutCalls() {
 		if !strings.Contains(p, "/data/") {
@@ -234,7 +236,7 @@ func TestStreamWriteRecords_Cleanup(t *testing.T) {
 	// when the iterator returns an error, no manifest is written and cleanup occurs.
 	t.Run("iterator error no manifest cleanup attempted", func(t *testing.T) {
 		inner := NewMemory()
-		fs := newFaultStore(inner)
+		fs := testutil.NewFaultStore(inner)
 
 		ds, err := NewDataset("test-ds", newFaultStoreFactory(fs), WithCodec(NewJSONLCodec()))
 		if err != nil {
@@ -268,7 +270,7 @@ func TestStreamWriteRecords_Cleanup(t *testing.T) {
 	// during manifest write, the snapshot remains invisible.
 	t.Run("manifest put error no manifest", func(t *testing.T) {
 		inner := NewMemory()
-		fs := newFaultStore(inner)
+		fs := testutil.NewFaultStore(inner)
 
 		ds, err := NewDataset("test-ds", newFaultStoreFactory(fs), WithCodec(NewJSONLCodec()))
 		if err != nil {
@@ -279,7 +281,7 @@ func TestStreamWriteRecords_Cleanup(t *testing.T) {
 		iter := &sliceIterator{records: []any{D{"id": "1"}, D{"id": "2"}}}
 
 		// Inject Put error ONLY for manifest paths (data file Put succeeds)
-		fs.SetPutError(errInjectedPut, "manifest")
+		fs.SetPutError(testutil.ErrInjectedPut, "manifest")
 
 		_, err = ds.StreamWriteRecords(t.Context(), iter, Metadata{})
 		if err == nil {
@@ -325,7 +327,7 @@ func TestStreamWrite_PutFailure(t *testing.T) {
 	// cancellation during a blocked Put leaves no manifest.
 	t.Run("blocked put context cancel no manifest", func(t *testing.T) {
 		inner := NewMemory()
-		fs := newFaultStore(inner)
+		fs := testutil.NewFaultStore(inner)
 
 		ds, err := NewDataset("test-ds", newFaultStoreFactory(fs))
 		if err != nil {
@@ -408,8 +410,8 @@ func TestStreamWrite_PutFailure(t *testing.T) {
 	})
 
 	t.Run("data put fails fast returns error", func(t *testing.T) {
-		fs := newFaultStore(NewMemory())
-		fs.SetPutError(errInjectedPut, "/data/")
+		fs := testutil.NewFaultStore(NewMemory())
+		fs.SetPutError(testutil.ErrInjectedPut, "/data/")
 
 		ds, err := NewDataset("test-ds", newFaultStoreFactory(fs))
 		if err != nil {
@@ -428,8 +430,8 @@ func TestStreamWrite_PutFailure(t *testing.T) {
 			_, cerr := sw.Commit(t.Context())
 			return cerr
 		})
-		if !errors.Is(err, errInjectedPut) {
-			t.Fatalf("got %v, want errInjectedPut", err)
+		if !errors.Is(err, testutil.ErrInjectedPut) {
+			t.Fatalf("got %v, want testutil.ErrInjectedPut", err)
 		}
 
 		fs.SetPutError(nil)
@@ -441,7 +443,7 @@ func TestStreamWrite_PutFailure(t *testing.T) {
 	// Once Put has returned an error, Write must report it even when the
 	// compressor would happily buffer the bytes without touching the pipe.
 	t.Run("buffered compressor write fails once put returned", func(t *testing.T) {
-		fs := newFaultStore(NewMemory())
+		fs := testutil.NewFaultStore(NewMemory())
 		fs.SetPutError(ErrPathExists, "/data/")
 		putReturned := make(chan struct{})
 		fs.SetAfterPut(func(path string, _ error) {
@@ -480,7 +482,7 @@ func TestStreamWrite_ErrorPrecedence(t *testing.T) {
 	// A compressor whose Close fails after Put has already failed must not mask
 	// the Put error at Commit.
 	t.Run("commit put failure precedes compressor close error", func(t *testing.T) {
-		fs := newFaultStore(NewMemory())
+		fs := testutil.NewFaultStore(NewMemory())
 		fs.SetPutError(ErrPathExists, "/data/")
 		gate := afterPutPublished(fs)
 		ds, err := NewDataset("test-ds", newFaultStoreFactory(fs), WithCompressor(closeFailCompressor{NewZstdCompressor()}))
@@ -497,7 +499,7 @@ func TestStreamWrite_ErrorPrecedence(t *testing.T) {
 			t.Fatalf("Commit: got %v, want ErrPathExists", err)
 		}
 		// Without a Put failure the close error itself surfaces.
-		fs2 := newFaultStore(NewMemory())
+		fs2 := testutil.NewFaultStore(NewMemory())
 		ds2, err := NewDataset("test-ds", newFaultStoreFactory(fs2), WithCompressor(closeFailCompressor{NewZstdCompressor()}))
 		if err != nil {
 			t.Fatal(err)
@@ -608,8 +610,8 @@ func awaitOrFail(t *testing.T, op func() error) error {
 
 func TestStreamWriteRecords_PutFailure(t *testing.T) {
 	t.Run("data put fails fast returns error", func(t *testing.T) {
-		fs := newFaultStore(NewMemory())
-		fs.SetPutError(errInjectedPut, "/data/")
+		fs := testutil.NewFaultStore(NewMemory())
+		fs.SetPutError(testutil.ErrInjectedPut, "/data/")
 
 		ds, err := NewDataset("test-ds", newFaultStoreFactory(fs), WithCodec(NewJSONLCodec()))
 		if err != nil {
@@ -621,8 +623,8 @@ func TestStreamWriteRecords_PutFailure(t *testing.T) {
 			_, werr := ds.StreamWriteRecords(t.Context(), iter, Metadata{})
 			return werr
 		})
-		if !errors.Is(err, errInjectedPut) {
-			t.Fatalf("got %v, want errInjectedPut", err)
+		if !errors.Is(err, testutil.ErrInjectedPut) {
+			t.Fatalf("got %v, want testutil.ErrInjectedPut", err)
 		}
 
 		fs.SetPutError(nil)
@@ -635,7 +637,7 @@ func TestStreamWriteRecords_PutFailure(t *testing.T) {
 	// record loop must notice the failure instead of following an iterator that
 	// never ends.
 	t.Run("buffered compressor stops once put returned", func(t *testing.T) {
-		fs := newFaultStore(NewMemory())
+		fs := testutil.NewFaultStore(NewMemory())
 		fs.SetPutError(ErrPathExists, "/data/")
 		putReturned := make(chan struct{})
 		fs.SetAfterPut(func(path string, _ error) {
@@ -660,7 +662,7 @@ func TestStreamWriteRecords_PutFailure(t *testing.T) {
 	// When Put has already failed and the iterator then ends with its own error,
 	// the storage failure is the root cause and is the error reported.
 	t.Run("put failure takes precedence over iterator error", func(t *testing.T) {
-		fs := newFaultStore(NewMemory())
+		fs := testutil.NewFaultStore(NewMemory())
 		fs.SetPutError(ErrPathExists, "/data/")
 		gate := afterPutPublished(fs)
 		ds, err := NewDataset("test-ds", newFaultStoreFactory(fs), WithCodec(NewJSONLCodec()), WithCompressor(NewZstdCompressor()))
@@ -680,7 +682,7 @@ func TestStreamWriteRecords_PutFailure(t *testing.T) {
 	// A Put that fails while records.Err() is running is still the reported
 	// error: the Put result is rechecked after Err returns.
 	t.Run("put failure during iterator err takes precedence", func(t *testing.T) {
-		fs := newFaultStore(NewMemory())
+		fs := testutil.NewFaultStore(NewMemory())
 		fs.SetPutError(ErrPathExists, "/data/")
 		putReturned := make(chan struct{})
 		fs.SetAfterPut(func(path string, _ error) {
@@ -692,7 +694,7 @@ func TestStreamWriteRecords_PutFailure(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		// The faultStore signals from inside Put, just before it returns; the
+		// The testutil.FaultStore signals from inside Put, just before it returns; the
 		// result is published a moment later. Wait for publication explicitly so
 		// the test exercises the re-check rather than a lucky schedule.
 		gate := make(chan struct{})
@@ -711,7 +713,7 @@ func TestStreamWriteRecords_PutFailure(t *testing.T) {
 	})
 
 	t.Run("reported without calling blocking err", func(t *testing.T) {
-		fs := newFaultStore(NewMemory())
+		fs := testutil.NewFaultStore(NewMemory())
 		fs.SetPutError(ErrPathExists, "/data/")
 		gate := afterPutPublished(fs)
 		ds, err := NewDataset("test-ds", newFaultStoreFactory(fs), WithCodec(NewJSONLCodec()), WithCompressor(NewZstdCompressor()))
@@ -730,7 +732,7 @@ func TestStreamWriteRecords_PutFailure(t *testing.T) {
 
 // When Put reports ErrPathExists the object belongs to another writer; the
 // failed stream must not delete it (data files are immutable).
-func assertNoDataDelete(t *testing.T, fs *faultStore) {
+func assertNoDataDelete(t *testing.T, fs *testutil.FaultStore) {
 	t.Helper()
 	for _, p := range fs.DeleteCalls() {
 		if strings.Contains(p, "/data/") {
@@ -749,7 +751,7 @@ func TestStreamWrite_ForeignObject(t *testing.T) {
 			{"abort", func(ctx context.Context, sw StreamWriter) error { return sw.Abort(ctx) }},
 		} {
 			ctx := t.Context()
-			fs := newFaultStore(NewMemory())
+			fs := testutil.NewFaultStore(NewMemory())
 			fs.SetPutError(ErrPathExists, "/data/")
 			ds, err := NewDataset("test-ds", newFaultStoreFactory(fs))
 			if err != nil {
@@ -777,7 +779,7 @@ func TestStreamWrite_ForeignObject(t *testing.T) {
 	// must survive cleanup.
 	t.Run("read before check store preserves foreign object", func(t *testing.T) {
 		inner := NewMemory()
-		fs := newFaultStore(inner)
+		fs := testutil.NewFaultStore(inner)
 		ctx := t.Context()
 		// Plant a foreign object at the exact data path just before Put runs, so
 		// the memory store reads the whole stream and then refuses to overwrite.
@@ -819,7 +821,7 @@ func TestStreamWrite_ForeignObject(t *testing.T) {
 
 func TestStreamWriteRecords_ForeignObject(t *testing.T) {
 	t.Run("put path exists does not delete foreign object", func(t *testing.T) {
-		fs := newFaultStore(NewMemory())
+		fs := testutil.NewFaultStore(NewMemory())
 		fs.SetPutError(ErrPathExists, "/data/")
 		ds, err := NewDataset("test-ds", newFaultStoreFactory(fs), WithCodec(NewJSONLCodec()))
 		if err != nil {
@@ -841,7 +843,7 @@ func TestStreamWriteRecords_ForeignObject(t *testing.T) {
 	// object, and the writer deletes nothing either way.
 	t.Run("propagated err path exists leaves nothing", func(t *testing.T) {
 		inner := NewMemory()
-		fs := newFaultStore(inner)
+		fs := testutil.NewFaultStore(inner)
 		ds, err := NewDataset("test-ds", newFaultStoreFactory(fs), WithCodec(NewJSONLCodec()))
 		if err != nil {
 			t.Fatal(err)
@@ -930,7 +932,7 @@ func (b *blockingErrIterator) Err() error  { select {} }
 
 // afterPutPublished returns a channel closed shortly after the data-path Put
 // has returned, so the test observes the published result, not the hook.
-func afterPutPublished(fs *faultStore) <-chan struct{} {
+func afterPutPublished(fs *testutil.FaultStore) <-chan struct{} {
 	putReturned := make(chan struct{})
 	fs.SetAfterPut(func(path string, _ error) {
 		if strings.Contains(path, "/data/") {

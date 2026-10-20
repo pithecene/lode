@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/pithecene-io/lode/internal/history"
+	"github.com/pithecene-io/lode/internal/validate"
 )
 
 // Data file roles: a dataset without a codec stores one blob per snapshot, a
@@ -146,11 +147,11 @@ func (d *dataset) stage(ctx context.Context, p *pendingSnapshot, data []any) err
 
 func (d *dataset) stageBlob(ctx context.Context, p *pendingSnapshot, data []any) error {
 	if len(data) != 1 {
-		return invalidArgument("raw blob mode requires exactly one data element")
+		return validate.Argument("raw blob mode requires exactly one data element")
 	}
 	blob, ok := data[0].([]byte)
 	if !ok {
-		return invalidArgument("raw blob mode requires []byte, got %T", data[0])
+		return validate.Argument("raw blob mode requires []byte, got %T", data[0])
 	}
 	ref, err := d.putFile(ctx, d.filePath(p.id, "", blobFile), blobContent(blob))
 	if err != nil {
