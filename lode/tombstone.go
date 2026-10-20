@@ -180,16 +180,23 @@ func (ts tombstones) readRaw(ctx context.Context, p string) ([]byte, error) {
 // expiredError is ErrSnapshotExpired when snapshot id has a tombstone, nil
 // when it has none. Only meaningful once its canonical manifest is missing.
 func (ts tombstones) expiredError(ctx context.Context, id DatasetSnapshotID) error {
+	absent, err := ts.absent(ctx, id)
+	if err != nil || absent {
+		return err
+	}
+	return fmt.Errorf("lode: snapshot %s: %w", id, ErrSnapshotExpired)
+}
+
+// absent reports whether snapshot id has no tombstone. An ID outside the
+// generated form never has one.
+func (ts tombstones) absent(ctx context.Context, id DatasetSnapshotID) (bool, error) {
 	p, ok := ts.path(id)
 	if !ok {
-		return nil
+		return true, nil
 	}
 	exists, err := ts.store.Exists(ctx, p)
 	if err != nil {
-		return fmt.Errorf("lode: failed to check tombstone: %w", err)
+		return false, fmt.Errorf("lode: failed to check tombstone: %w", err)
 	}
-	if exists {
-		return fmt.Errorf("lode: snapshot %s: %w", id, ErrSnapshotExpired)
-	}
-	return nil
+	return !exists, nil
 }

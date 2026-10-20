@@ -27,7 +27,7 @@ func (d *dataset) Expire(ctx context.Context, req ExpireRequest) (*ExpireReport,
 	if err != nil {
 		return report, err
 	}
-	head, err := newHeadGuard(ctx, &d.history)
+	head, err := newHeadGuard(ctx, &d.history, d.notExpired)
 	if err != nil {
 		return report, err
 	}
@@ -241,17 +241,34 @@ func groupBySnapshot(keys []string, owner func(string) (DatasetSnapshotID, bool)
 // the run's report promises the head it saw was kept.
 type headGuard struct {
 	history   *history[DatasetSnapshotID, Manifest]
+	live      keepFunc[DatasetSnapshotID] // a pointer-less scan passes over expired leftovers (notExpired)
 	current   DatasetSnapshotID
 	protected map[DatasetSnapshotID]bool
 }
 
-func newHeadGuard(ctx context.Context, h *history[DatasetSnapshotID, Manifest]) (*headGuard, error) {
-	g := &headGuard{history: h, protected: make(map[DatasetSnapshotID]bool)}
+// notExpired reports whether snapshot id is not expired: it has no
+// tombstone, or its canonical manifest is still present (an expiring
+// snapshot is fully readable). A pointer-less head scan passes over expired
+// leftovers, which an interrupted expiry can leave newest.
+func (d *dataset) notExpired(ctx context.Context, id DatasetSnapshotID) (bool, error) {
+	absent, err := d.tombstones().absent(ctx, id)
+	if err != nil || absent {
+		return absent, err
+	}
+	present, err := d.store.Exists(ctx, d.layout.manifestPath(d.id, id))
+	if err != nil {
+		return false, fmt.Errorf("lode: failed to check manifest: %w", err)
+	}
+	return present, nil
+}
+
+func newHeadGuard(ctx context.Context, h *history[DatasetSnapshotID, Manifest], live keepFunc[DatasetSnapshotID]) (*headGuard, error) {
+	g := &headGuard{history: h, live: live, protected: make(map[DatasetSnapshotID]bool)}
 	return g, g.refresh(ctx)
 }
 
 func (g *headGuard) refresh(ctx context.Context) error {
-	id, err := g.history.CommittedHead(ctx, g.current)
+	id, err := g.history.CommittedHead(ctx, g.current, g.live)
 	if err != nil {
 		return err
 	}
@@ -550,7 +567,12 @@ type inventorySplit struct {
 
 func (d *dataset) splitFiles(id DatasetSnapshotID, files []FileRef) inventorySplit {
 	var split inventorySplit
+	seen := make(map[string]bool, len(files))
 	for _, f := range files {
+		if seen[f.Path] {
+			continue // one object, counted once however often it is listed
+		}
+		seen[f.Path] = true
 		if d.layout.isObjectOf(d.id, id, dataLeaf, f.Path) {
 			split.owned = append(split.owned, f)
 			continue

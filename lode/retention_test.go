@@ -662,8 +662,12 @@ func TestExpire_Head(t *testing.T) {
 		}
 		assertPresent(t, ds, head)
 	})
+}
 
-	t.Run("without a pointer the scanned head is protected", func(t *testing.T) {
+// TestExpire_ScannedHead covers datasets with no pointer, whose head is the
+// newest snapshot a scan can load.
+func TestExpire_ScannedHead(t *testing.T) {
+	t.Run("is protected", func(t *testing.T) {
 		store := NewMemory()
 		ds := newDefaultRetention(t, store)
 		first := writeRecord(t, ds, 1)
@@ -683,7 +687,7 @@ func TestExpire_Head(t *testing.T) {
 		}
 	})
 
-	t.Run("without a pointer a head vanishing after the listing", func(t *testing.T) {
+	t.Run("a head vanishing after the listing", func(t *testing.T) {
 		mem := NewMemory()
 		hs := &hookStore{Store: mem}
 		ds := newDefaultRetention(t, casHookStore{hs})
@@ -711,6 +715,57 @@ func TestExpire_Head(t *testing.T) {
 			t.Errorf("RetainedHead = %q, want %q (the newest snapshot still loadable)", report.RetainedHead, second.ID)
 		}
 		assertPresent(t, ds, second)
+	})
+
+	t.Run("an expired leftover is not the head", func(t *testing.T) {
+		mem := NewMemory()
+		ds := newHiveRetention(t, mem)
+		live := writeRun(t, ds, "a", "x")
+		gone := writeRun(t, ds, "b", "x")
+		// An interrupted expiry of the newer snapshot left a partition copy.
+		putTombstone(t, mem, gone.ID, newTombstone(gone.ID, gone.Manifest))
+		for _, k := range storeKeys(t, mem) {
+			if strings.Contains(k, string(gone.ID)) && strings.HasSuffix(k, manifestFile) && !strings.Contains(k, "partitions/") {
+				if err := mem.Delete(t.Context(), k); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		if err := mem.Delete(t.Context(), "datasets/events/latest"); err != nil {
+			t.Fatal(err)
+		}
+		ds = newHiveRetention(t, mem)
+
+		report, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{live.ID}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if report.RetainedHead != live.ID {
+			t.Errorf("RetainedHead = %q, want %q: the expired leftover is not the head", report.RetainedHead, live.ID)
+		}
+		assertPresent(t, ds, live)
+	})
+
+	t.Run("an expiring snapshot is still the head", func(t *testing.T) {
+		mem := NewMemory()
+		ds := newDefaultRetention(t, mem)
+		older := writeRecord(t, ds, 1)
+		head := writeRecord(t, ds, 2)
+		// A tombstone without the canonical delete: the snapshot is expiring,
+		// still fully readable, and so still the head.
+		putTombstone(t, mem, head.ID, newTombstone(head.ID, head.Manifest))
+		if err := mem.Delete(t.Context(), "datasets/events/latest"); err != nil {
+			t.Fatal(err)
+		}
+		ds = newDefaultRetention(t, mem)
+
+		report, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{older.ID, head.ID}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if report.RetainedHead != head.ID || !slices.Equal(report.Expired, []DatasetSnapshotID{older.ID}) {
+			t.Errorf("report = %+v, want %s retained and %s expired", report, head.ID, older.ID)
+		}
 	})
 
 	t.Run("legacy partition-only head is committed", func(t *testing.T) {
@@ -1262,6 +1317,26 @@ func TestExpire_PathSafety(t *testing.T) {
 		}
 		if len(report.Expired) != 0 || len(report.Skipped) != 0 {
 			t.Errorf("report = %+v, want nothing expired or skipped", report)
+		}
+	})
+
+	t.Run("a path listed twice is counted once", func(t *testing.T) {
+		mem := NewMemory()
+		ds := newDefaultRetention(t, mem)
+		first := writeRecord(t, ds, 1)
+		writeRecord(t, ds, 2)
+		m := *first.Manifest
+		m.Files = append(slices.Clone(m.Files), m.Files...)
+		rewriteCopies(t, mem, first.ID, &m)
+
+		for _, dryRun := range []bool{true, false} {
+			report, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{first.ID}, DryRun: dryRun})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if report.Objects != len(first.Manifest.Files) || report.Bytes != totalBytes(first.Manifest.Files) {
+				t.Errorf("dry=%v: Objects/Bytes = %d/%d, want %d/%d", dryRun, report.Objects, report.Bytes, len(first.Manifest.Files), totalBytes(first.Manifest.Files))
+			}
 		}
 	})
 
