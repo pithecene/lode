@@ -88,7 +88,7 @@ type selection struct {
 func newSelection(req ExpireRequest) selection {
 	sel := selection{partition: strings.TrimSuffix(req.Partition, "/")}
 	if req.Partition == "" && req.Before.IsZero() {
-		sel.byTombstone = req.IDs
+		sel.byTombstone = slices.Compact(slices.Sorted(slices.Values(req.IDs))) // each once
 	}
 	if len(req.IDs) > 0 {
 		ids := make(map[DatasetSnapshotID]bool, len(req.IDs))

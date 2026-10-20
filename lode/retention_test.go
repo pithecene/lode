@@ -572,8 +572,9 @@ func TestExpire_ResumesFromTombstoneWithNoManifestLeft(t *testing.T) {
 	}
 	hs.onDelete = nil
 
-	// The same request selects the snapshot by its tombstone and finishes.
-	second, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{run.ID}})
+	// The same request selects the snapshot by its tombstone and finishes,
+	// once, however often the ID is named.
+	second, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{run.ID, run.ID}})
 	if err != nil {
 		t.Fatal(err)
 	}
