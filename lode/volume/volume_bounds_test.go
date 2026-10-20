@@ -1,4 +1,4 @@
-package lode
+package volume
 
 import (
 	"bytes"
@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/pithecene-io/lode/internal/validate"
+	"github.com/pithecene-io/lode/lode"
 )
 
 // Exact-boundary tests for Volume range arithmetic and manifest validation.
@@ -73,9 +74,9 @@ func TestFindCoveringBlocks_AdjacentAtCursor(t *testing.T) {
 }
 
 func TestVolume_ReadAt_ExactEndOfAddressSpace(t *testing.T) {
-	vol := newTestVolume(t, "test-vol", NewMemoryFactory(), 20)
+	vol := newTestVolume(t, "test-vol", lode.NewMemoryFactory(), 20)
 	blk := stageBlock(t, vol, 0, bytes.Repeat([]byte("A"), 20))
-	snap := commitBlocks(t, vol, []BlockRef{blk}, Metadata{})
+	snap := commitBlocks(t, vol, []BlockRef{blk}, lode.Metadata{})
 
 	// Last byte is readable.
 	got, err := vol.ReadAt(t.Context(), snap.ID, 19, 1)
@@ -99,25 +100,25 @@ func TestVolume_ReadAt_ExactEndOfAddressSpace(t *testing.T) {
 func TestValidateVolumeManifest_Bounds(t *testing.T) {
 	cases := []struct {
 		name      string
-		mutate    func(m *VolumeManifest)
+		mutate    func(m *Manifest)
 		wantField string // "" means valid
 	}{
-		{"total_length zero", func(m *VolumeManifest) { m.TotalLength = 0 }, "total_length"},
-		{"total_length one", func(m *VolumeManifest) {
+		{"total_length zero", func(m *Manifest) { m.TotalLength = 0 }, "total_length"},
+		{"total_length one", func(m *Manifest) {
 			m.TotalLength = 1
 			m.Blocks[0].Length = 1
 		}, ""},
-		{"block ends exactly at total_length", func(m *VolumeManifest) {
+		{"block ends exactly at total_length", func(m *Manifest) {
 			m.Blocks[0].Offset = 90
 			m.Blocks[0].Length = 10
 		}, ""},
-		{"block ends one past total_length", func(m *VolumeManifest) {
+		{"block ends one past total_length", func(m *Manifest) {
 			m.Blocks[0].Offset = 91
 			m.Blocks[0].Length = 10
 		}, "blocks[0]"},
-		{"block length zero", func(m *VolumeManifest) { m.Blocks[0].Length = 0 }, "blocks[0].length"},
-		{"block offset zero is valid", func(m *VolumeManifest) { m.Blocks[0].Offset = 0 }, ""},
-		{"block offset negative", func(m *VolumeManifest) { m.Blocks[0].Offset = -1 }, "blocks[0].offset"},
+		{"block length zero", func(m *Manifest) { m.Blocks[0].Length = 0 }, "blocks[0].length"},
+		{"block offset zero is valid", func(m *Manifest) { m.Blocks[0].Offset = 0 }, ""},
+		{"block offset negative", func(m *Manifest) { m.Blocks[0].Offset = -1 }, "blocks[0].offset"},
 	}
 	for _, c := range cases {
 		m := validVolumeManifest("vol", 100)
