@@ -31,22 +31,24 @@ func datasetHistory(store Store) history[DatasetSnapshotID, Manifest] {
 	return newHistory(store, datasetKind{id: "ds", layout: NewDefaultLayout()}, "manifest")
 }
 
-// Refresh after a conflict must tolerate an empty history (nothing to
-// re-parent on) but surface a store that cannot be read.
-func TestHistory_Refresh_EmptyIsNotAnError(t *testing.T) {
-	h := datasetHistory(NewMemory())
-	if err := h.Refresh(t.Context()); err != nil {
-		t.Fatalf("Refresh on empty history: %v", err)
-	}
-}
+func TestHistory_Refresh(t *testing.T) {
+	// Refresh after a conflict must tolerate an empty history (nothing to
+	// re-parent on) but surface a store that cannot be read.
+	t.Run("empty is not an error", func(t *testing.T) {
+		h := datasetHistory(NewMemory())
+		if err := h.Refresh(t.Context()); err != nil {
+			t.Fatalf("Refresh on empty history: %v", err)
+		}
+	})
 
-func TestHistory_Refresh_StoreErrorSurfaces(t *testing.T) {
-	boom := errors.New("store down")
-	h := datasetHistory(failingStore{Store: NewMemory(), err: boom})
-	err := h.Refresh(t.Context())
-	if !errors.Is(err, boom) {
-		t.Fatalf("Refresh: got %v, want the store error", err)
-	}
+	t.Run("store error surfaces", func(t *testing.T) {
+		boom := errors.New("store down")
+		h := datasetHistory(failingStore{Store: NewMemory(), err: boom})
+		err := h.Refresh(t.Context())
+		if !errors.Is(err, boom) {
+			t.Fatalf("Refresh: got %v, want the store error", err)
+		}
+	})
 }
 
 // manifestPutFailStore fails every Put of a manifest so Advance's wording can

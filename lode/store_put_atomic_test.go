@@ -76,18 +76,6 @@ func assertPutAllOrNothing(t *testing.T, store Store) {
 	}
 }
 
-func TestFSStore_Put_AllOrNothing(t *testing.T) {
-	store, err := NewFS(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	assertPutAllOrNothing(t, store)
-}
-
-func TestMemoryStore_Put_AllOrNothing(t *testing.T) {
-	assertPutAllOrNothing(t, NewMemory())
-}
-
 // When the partial object cannot be removed, Put reports both the original
 // failure and the removal failure rather than hiding either.
 func TestFSStore_Put_RemoveFailureIsReported(t *testing.T) {

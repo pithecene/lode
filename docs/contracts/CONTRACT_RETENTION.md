@@ -7,7 +7,7 @@ implementation.
 Status: **Draft** — design settled for v0.11.0; becomes Active when
 `Dataset.Expire` and `Dataset.Sweep` ship. No code implements it yet.
 
-Issue: [#174](https://github.com/pithecene-io/lode/issues/174)
+Issue: [#174](https://github.com/pithecene/lode/issues/174)
 
 ---
 
