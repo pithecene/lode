@@ -3,6 +3,8 @@ package lode
 import (
 	"path"
 	"strings"
+
+	"github.com/pithecene-io/lode/internal/storepath"
 )
 
 // layout is the internal interface that combines path topology with partitioning.
@@ -323,10 +325,14 @@ func (l *pathLayout) parse(p string) (snapshotPath, bool) {
 // leafDir is the directory under a snapshot that holds each kind of leaf.
 var leafDir = map[pathKind]string{manifestLeaf: "", dataLeaf: dataDir}
 
-// isObjectOf parses p and rebuilds it from the parse: only a path that
-// survives the round trip unchanged is canonical, so no "..", empty or
-// foreign segment can make a delete land outside the snapshot.
+// isObjectOf requires p to be a key every store accepts, already in clean
+// form, and to survive a parse-and-rebuild round trip unchanged: no "..",
+// backslash, empty or foreign segment can make a delete land outside the
+// snapshot or fail in the store.
 func (l *pathLayout) isObjectOf(dataset DatasetID, snapshot DatasetSnapshotID, kind pathKind, p string) bool {
+	if key, ok := storepath.Key(p); !ok || key != p {
+		return false
+	}
 	sp, ok := l.grammar.parse(p)
 	if !ok || sp.kind != kind || sp.dataset != dataset || sp.snapshot != snapshot {
 		return false

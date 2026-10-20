@@ -679,10 +679,14 @@ func TestExpire_ForeignFileRef_IsSkipped(t *testing.T) {
 		"datasets/events/snapshots/123/data/x.jsonl",                     // another snapshot
 		"datasets/events/snapshots/" + string(first.ID) + "/data/../x",   // not canonical
 		"elsewhere/x.jsonl", // not a data path
+		"datasets/events/snapshots/" + string(first.ID) + `/data/x\y`, // no store accepts it
 	}
+	stored := foreign[:len(foreign)-1] // the last is not a storable key
 	m := *first.Manifest
 	for _, p := range foreign {
 		m.Files = append(m.Files, FileRef{Path: p, SizeBytes: 1})
+	}
+	for _, p := range stored {
 		if err := store.Put(t.Context(), p, strings.NewReader("keep")); err != nil {
 			t.Fatal(err)
 		}
@@ -699,7 +703,7 @@ func TestExpire_ForeignFileRef_IsSkipped(t *testing.T) {
 	if report.Objects != len(first.Manifest.Files) {
 		t.Errorf("Objects = %d, want %d (foreign paths are not counted)", report.Objects, len(first.Manifest.Files))
 	}
-	for _, p := range foreign {
+	for _, p := range stored {
 		if ok, _ := store.Exists(t.Context(), p); !ok {
 			t.Errorf("foreign object deleted: %s", p)
 		}
