@@ -1,0 +1,198 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<style>
+@font-face { font-family: "EBG"; src: url("fonts/EBGaramond.ttf"); font-weight: 400 800; }
+@font-face { font-family: "EBG"; src: url("fonts/EBGaramond-Italic.ttf"); font-style: italic; font-weight: 400 800; }
+html, body { margin: 0; background: #000; }
+svg { display: block; }
+text { font-family: "EBG", Georgia, serif; font-kerning: normal; }
+</style></head>
+<body><div id="root"></div>
+<script>
+const dark = location.hash === "#dark";
+const W = 1280, H = 560, M = 22;              // plate size, frame margin
+const CX = 770;                                // crest of the anticline
+
+const PAL = dark ? {
+  paper: "#16130f", ink: "#e9e0cf", soft: "#b3a68f", sky0: "#0f141c", sky1: "#1d2431", star: "#e9e0cf",
+  rock: ["#5c4632", "#9c7f45", "#56635a", "#a29b86", "#2f2c29", "#874c34", "#7a6a55", "#6f6262"],
+  pat:  ["#2a1f15", "#4f3c1c", "#2a3330", "#5a5446", "#77706a", "#40231a", "#3d3428", "#3a3233"],
+  ore0: "#b47a28", ore1: "#f2c96a", quartz: "#fff3d4", ground: "#3a3f2c", tree: "#c8c0ad", shaft: "#0b0a08",
+} : {
+  paper: "#f2ead8", ink: "#2b241c", soft: "#5f5244", sky0: "#f4ecd8", sky1: "#e9dcbe", star: "#000",
+  rock: ["#8a6a4a", "#dcb867", "#97a593", "#e6dec6", "#5d5852", "#c47754", "#b9a07f", "#ae9a9b"],
+  pat:  ["#4d3926", "#8a6a2a", "#4f5a4c", "#a39a80", "#c9c2b6", "#7d3f27", "#6e5b42", "#6a5859"],
+  ore0: "#b07a1f", ore1: "#f0c75c", quartz: "#fffaf0", ground: "#7d8a52", tree: "#3b3a28", shaft: "#1c1814",
+};
+
+// --- geology -----------------------------------------------------------------
+const BASE = [120, 200, 250, 298, 342, 388, 440, 500, 600];
+const AMP  = [ 95, 112, 112, 104,  96,  86,  74,  58,  40];
+const WID = 340;
+const FAULTS = [ { x: 520, slope: 0.22, dy: 24 }, { x: 1030, slope: -0.18, dy: -20 } ];
+const fx = (f, y) => f.x + f.slope * (y - 260);
+function shift(x, y) { let s = 0; for (const f of FAULTS) if (x > fx(f, y)) s += f.dy; return s; }
+function bnd(i, x) { return BASE[i] - AMP[i] * Math.exp(-(((x - CX) / WID) ** 2)) + 4 * Math.sin(x / 90 + i); }
+// fault offsets: the block right of a fault moves; evaluate the shift at the boundary's own depth
+function bndF(i, x) { const y = bnd(i, x); return y + shift(x, y); }
+function surface(x) { return 252 - 26 * Math.exp(-(((x - 800) / 260) ** 2)) + 7 * Math.sin(x / 70) + 4 * Math.sin(x / 23 + 1); }
+
+const xs = []; for (let x = M - 10; x <= W - M + 10; x += 4) xs.push(x);
+const pathOf = pts => "M" + pts.map(p => p[0].toFixed(1) + " " + p[1].toFixed(1)).join(" L");
+const curve = f => xs.map(x => [x, f(x)]);
+
+function strata() {
+  const out = [];
+  for (let i = 0; i < BASE.length - 1; i++) {
+    const top = curve(x => bndF(i, x)), bot = curve(x => bndF(i + 1, x)).reverse();
+    const d = pathOf(top) + " L" + bot.map(p => p[0].toFixed(1) + " " + p[1].toFixed(1)).join(" L") + " Z";
+    out.push(`<path d="${d}" fill="${PAL.rock[i]}"/><path d="${d}" fill="url(#p${i})"/>`);
+  }
+  const deep = curve(x => bndF(BASE.length - 1, x));
+  out.push(`<path d="${pathOf(deep)} L${W} ${H} L0 ${H} Z" fill="${PAL.rock[7]}"/><path d="${pathOf(deep)} L${W} ${H} L0 ${H} Z" fill="url(#p7)"/>`);
+  for (let i = 0; i < BASE.length; i++) out.push(`<path d="${pathOf(curve(x => bndF(i, x)))}" fill="none" stroke="${PAL.ink}" stroke-width="0.9" stroke-opacity="0.75"/>`);
+  return out.join("");
+}
+
+// lithology patterns, after survey convention: soil, sandstone, shale, limestone, coal shale, red sandstone, conglomerate, granite
+function patterns() {
+  const c = PAL.pat, p = [];
+  const pat = (i, w, h, body) => p.push(`<pattern id="p${i}" patternUnits="userSpaceOnUse" width="${w}" height="${h}">${body}</pattern>`);
+  pat(0, 9, 9, `<circle cx="2" cy="2" r="0.9" fill="${c[0]}"/><circle cx="6.5" cy="6.5" r="0.7" fill="${c[0]}"/><path d="M4 7 l2 -1.5" stroke="${c[0]}" stroke-width="0.7"/>`);
+  pat(1, 8, 8, `<circle cx="2" cy="2" r="0.8" fill="${c[1]}"/><circle cx="6" cy="6" r="0.8" fill="${c[1]}"/>`);
+  pat(2, 16, 7, `<path d="M1 2 h6 M9 5.5 h6" stroke="${c[2]}" stroke-width="1"/>`);
+  pat(3, 24, 12, `<path d="M0 0.5 H24 M0 6.5 H24 M0.5 0.5 V6.5 M12.5 6.5 V12 M12.5 0 V0.5" stroke="${c[3]}" stroke-width="0.9" fill="none"/>`);
+  pat(4, 10, 4, `<path d="M0 1.5 H10" stroke="${c[4]}" stroke-width="0.6" stroke-opacity="0.6"/>`);
+  pat(5, 7, 7, `<circle cx="1.5" cy="1.5" r="0.8" fill="${c[5]}"/><circle cx="5" cy="5" r="0.6" fill="${c[5]}"/>`);
+  pat(6, 22, 16, `<ellipse cx="6" cy="5" rx="3.6" ry="2.4" fill="none" stroke="${c[6]}" stroke-width="0.8"/><ellipse cx="17" cy="12" rx="2.6" ry="1.8" fill="none" stroke="${c[6]}" stroke-width="0.8"/><circle cx="15" cy="3" r="0.8" fill="${c[6]}"/>`);
+  pat(7, 18, 18, `<path d="M4 2 v5 M1.5 4.5 h5 M13 11 v5 M10.5 13.5 h5" stroke="${c[7]}" stroke-width="0.9"/>`);
+  return p.join("");
+}
+
+// the lode: a lens of gold-bearing quartz along boundary 4, thickest at the crest
+function lode() {
+  const cx = x => Math.exp(-(((x - CX) / 170) ** 2));
+  const top = [], bot = [];
+  for (let x = CX - 360; x <= CX + 300; x += 3) {
+    const t = 2 + 17 * cx(x) + 2.5 * Math.sin(x / 19) * cx(x);
+    const y = bndF(4, x);
+    top.push([x, y - t * 0.45]); bot.push([x, y + t * 0.55]);
+  }
+  const d = pathOf(top) + " L" + bot.reverse().map(p => p[0].toFixed(1) + " " + p[1].toFixed(1)).join(" L") + " Z";
+  // quartz specks and native gold flecks
+  let s = "", seed = 11; const r = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  for (let k = 0; k < 140; k++) {
+    const x = CX - 300 + r() * 560, y = bndF(4, x) + (r() - 0.5) * 16 * cx(x);
+    if (cx(x) < 0.25) continue;
+    s += r() < 0.7 ? `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${(0.6 + r()).toFixed(2)}" fill="${PAL.quartz}" fill-opacity="0.75"/>`
+                   : `<path d="M${x.toFixed(1)} ${(y - 2).toFixed(1)} l1.6 2 l-1.6 2 l-1.6 -2 Z" fill="${PAL.ore1}"/>`;
+  }
+  return `<path d="${d}" fill="url(#ore)" stroke="${PAL.ink}" stroke-width="0.9"/>${s}`;
+}
+
+// faults: heavy line with half-arrows showing the throw
+function faults() {
+  return FAULTS.map(f => {
+    const y0 = 200, y1 = H;
+    const line = `<path d="M${fx(f, y0)} ${y0} L${fx(f, y1)} ${y1}" stroke="${PAL.ink}" stroke-width="2"/>`;
+    const ym = 470, xm = fx(f, ym);
+    const up = f.dy < 0;  // right block up?
+    const arrow = (dx, dir) => `<path d="M${xm + dx} ${ym - 14 * dir} l0 ${28 * dir} l${dx > 0 ? 4 : -4} ${-7 * dir}" fill="none" stroke="${PAL.ink}" stroke-width="1.3"/>`;
+    return line + arrow(-9, up ? 1 : -1) + arrow(9, up ? -1 : 1);
+  }).join("");
+}
+
+// the mine: headframe on the hill, shaft to the lode, drifts along it
+function mine() {
+  const sx = 812, gy = surface(sx), vy = bndF(4, sx);
+  const lvl2 = vy + 52;
+  const shaft = `<rect x="${sx - 7}" y="${gy}" width="14" height="${lvl2 - gy + 8}" fill="${PAL.shaft}"/>` +
+    Array.from({ length: Math.floor((lvl2 - gy) / 9) }, (_, k) => `<path d="M${sx - 6} ${gy + 6 + k * 9} h12" stroke="${PAL.rock[3]}" stroke-width="0.7" stroke-opacity="0.6"/>`).join("");
+  const drift = (dy, x0, x1) => { const pts = []; for (let x = x0; x <= x1; x += 4) pts.push([x, bndF(4, x) + dy]); return `<path d="${pathOf(pts)}" fill="none" stroke="${PAL.shaft}" stroke-width="4.5" stroke-linecap="round"/>`; };
+  const drifts = drift(3, sx - 130, sx + 120) + drift(lvl2 - vy, sx - 90, sx + 100);
+  // headframe: two legs, back-brace, sheave wheel; hoist house beside it
+  const hx = sx, hy = gy;
+  const frame = `<g stroke="${PAL.ink}" stroke-width="1.6" fill="none" stroke-linecap="round">
+    <path d="M${hx - 13} ${hy} L${hx - 3} ${hy - 62} L${hx + 3} ${hy - 62} L${hx + 13} ${hy}"/>
+    <path d="M${hx - 9} ${hy - 20} H${hx + 9} M${hx - 6} ${hy - 40} H${hx + 6}"/>
+    <path d="M${hx + 3} ${hy - 58} L${hx + 40} ${hy}"/>
+    <circle cx="${hx}" cy="${hy - 66}" r="7"/><path d="M${hx} ${hy - 66} L${hx + 50} ${hy - 22}" stroke-width="0.8"/>
+  </g>
+  <g fill="${PAL.ink}"><path d="M${hx + 44} ${hy + 1} v-22 l14 -10 l14 10 v22 Z"/></g>
+  <rect x="${hx + 52}" y="${hy - 14}" width="5" height="6" fill="${PAL.sky1}"/>`;
+  return { below: shaft + drifts, above: frame };
+}
+
+function land() {
+  const top = curve(surface);
+  const under = curve(x => surface(x) + 7).reverse();
+  const ground = `<path d="${pathOf(top)} L${under.map(p => p[0].toFixed(1) + " " + p[1].toFixed(1)).join(" L")} Z" fill="${PAL.ground}"/>`;
+  const line = `<path d="${pathOf(top)}" fill="none" stroke="${PAL.ink}" stroke-width="1.6"/>`;
+  let trees = "", seed = 5; const r = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  for (let k = 0; k < 46; k++) {
+    const x = 40 + r() * 1200; if (Math.abs(x - 830) < 70) continue;
+    const y = surface(x), h = 10 + r() * 12;
+    trees += r() < 0.65
+      ? `<path d="M${x.toFixed(1)} ${(y - h).toFixed(1)} l${(h * 0.32).toFixed(1)} ${h.toFixed(1)} h${(-h * 0.64).toFixed(1)} Z" fill="${PAL.tree}"/>`
+      : `<path d="M${x.toFixed(1)} ${y.toFixed(1)} v${(-h * 0.5).toFixed(1)}" stroke="${PAL.tree}" stroke-width="1"/><circle cx="${x.toFixed(1)}" cy="${(y - h * 0.62).toFixed(1)}" r="${(h * 0.3).toFixed(1)}" fill="${PAL.tree}"/>`;
+  }
+  return ground + line + trees;
+}
+
+function sky() {
+  let s = `<rect width="${W}" height="${H}" fill="url(#sky)"/>`;
+  if (dark) {
+    let seed = 3; const r = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+    for (let k = 0; k < 90; k++) s += `<circle cx="${(30 + r() * 1220).toFixed(1)}" cy="${(30 + r() * 170).toFixed(1)}" r="${(0.4 + r() * 0.9).toFixed(2)}" fill="${PAL.star}" fill-opacity="${(0.3 + r() * 0.6).toFixed(2)}"/>`;
+    s += `<circle cx="1010" cy="70" r="15" fill="${PAL.ink}" fill-opacity="0.9"/><circle cx="1016" cy="66" r="13" fill="${PAL.sky0}"/>`;
+  } else {
+    s += `<circle cx="1010" cy="74" r="20" fill="none" stroke="${PAL.ink}" stroke-width="1.1"/>`;
+    for (let k = 0; k < 16; k++) { const a = k * Math.PI / 8; s += `<path d="M${1010 + 26 * Math.cos(a)} ${74 + 26 * Math.sin(a)} L${1010 + (k % 2 ? 32 : 36) * Math.cos(a)} ${74 + (k % 2 ? 32 : 36) * Math.sin(a)}" stroke="${PAL.ink}" stroke-width="1"/>`; }
+  }
+  return s;
+}
+
+function titleblock() {
+  return `<g fill="${PAL.ink}">
+    <text x="62" y="66" font-size="13" letter-spacing="2.6" fill="${PAL.soft}" style="font-variant: small-caps">PLATE I. — SECTION THROUGH A FOLDED SEAM</text>
+    <text x="58" y="150" font-size="104" letter-spacing="-1.5">Lode</text>
+    <text x="63" y="186" font-size="22" font-style="italic" fill="${PAL.soft}">Structured persistence for object storage.</text>
+  </g>`;
+}
+
+function legend() {
+  const x = 1086, y = 128, row = 22;
+  const item = (k, sw, label) => `<g transform="translate(${x},${y + k * row})">${sw}<text x="34" y="9" font-size="13" font-style="italic" fill="${PAL.ink}">${label}</text></g>`;
+  return `<g>
+    <text x="${x}" y="${y - 14}" font-size="11" letter-spacing="2" fill="${PAL.soft}">LEGEND</text>
+    ${item(0, `<rect width="24" height="12" fill="${PAL.rock[3]}" stroke="${PAL.ink}" stroke-width="0.6"/><rect width="24" height="12" fill="url(#p3)"/>`, "stratum — a snapshot")}
+    ${item(1, `<path d="M12 -1 V13" stroke="${PAL.ink}" stroke-width="2"/>`, "fault — a partition")}
+    ${item(2, `<rect width="24" height="12" fill="url(#ore)" stroke="${PAL.ink}" stroke-width="0.6"/>`, "vein — the lode")}
+    ${item(3, `<rect x="8" y="-1" width="8" height="14" fill="${PAL.shaft}"/>`, "shaft — the latest")}
+  </g>`;
+}
+
+const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}">
+<defs>
+  <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${PAL.sky0}"/><stop offset="0.5" stop-color="${PAL.sky1}"/></linearGradient>
+  <linearGradient id="ore" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${PAL.ore1}"/><stop offset="1" stop-color="${PAL.ore0}"/></linearGradient>
+  ${patterns()}
+  <clipPath id="earth"><path d="${pathOf(curve(surface))} L${W} ${H} L0 ${H} Z"/></clipPath>
+  <clipPath id="frame"><rect x="${M}" y="${M}" width="${W - 2 * M}" height="${H - 2 * M}"/></clipPath>
+  <filter id="paper" x="0" y="0" width="100%" height="100%"><feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" seed="4"/><feColorMatrix values="0 0 0 0 0.5  0 0 0 0 0.45  0 0 0 0 0.4  0 0 0 0.10 0"/></filter>
+</defs>
+<rect width="${W}" height="${H}" fill="${PAL.paper}"/>
+<g clip-path="url(#frame)">
+  ${sky()}
+  <g clip-path="url(#earth)">${strata()}${lode()}${faults()}${mine().below}</g>
+  ${land()}
+  ${mine().above}
+</g>
+${titleblock()}
+${legend()}
+<rect x="${M}" y="${M}" width="${W - 2 * M}" height="${H - 2 * M}" fill="none" stroke="${PAL.ink}" stroke-width="1.4"/>
+<rect x="${M - 6}" y="${M - 6}" width="${W - 2 * M + 12}" height="${H - 2 * M + 12}" fill="none" stroke="${PAL.ink}" stroke-width="0.6"/>
+<rect width="${W}" height="${H}" filter="url(#paper)"/>
+</svg>`;
+document.getElementById("root").innerHTML = svg;
+</script></body></html>
