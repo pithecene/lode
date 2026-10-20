@@ -223,10 +223,12 @@ store without `ConditionalWriter`, in a dataset written before the pointer
 existed, or after a hand edit. None of these lets retention tell the head
 safely: the largest ID is what `Latest` serves there, but a clock that
 rolled back between two commits can give the last one the smaller ID. Any
-commit creates the pointer, after which retention proceeds. (`Latest`'s own
-scan still serves the largest ID that is not expired: an interrupted expiry
-can leave a partition manifest of an expired snapshot behind, and that
-leftover is never served.)
+commit creates the pointer, after which retention proceeds. `Latest`'s own
+pointer-less scan still serves the largest ID that is not expired (an
+interrupted expiry can leave a partition manifest of an expired snapshot
+behind, and that leftover is never served); with a rolled-back clock or
+commits in the same nanosecond that is not necessarily the last commit,
+which is why retention never relies on it.
 
 Rationale: the `latest` pointer is the live CAS target for every writer.
 Retention MUST never move it, and MUST never remove the manifest it names:
@@ -604,7 +606,7 @@ selects, T the tombstones, D the objects deleted (manifests and data alike).
 | Operation | Store Calls | Memory |
 |-----------|-------------|--------|
 | `Expire` | 1 List (the `Partition` subtree, else the snapshot prefix) + (K + 1) pointer Gets, each followed by at most one `Exists` (and one List of the snapshot prefix when the named snapshot has no canonical manifest, to find a legacy partition-only copy) + K manifest Gets + K tombstone Gets (the recorded inventory, if any; also one per requested ID with no manifest) + 1 Get per manifest path of each selected snapshot (every copy is checked against the tombstone before it is written) + K tombstone writes (each + at most 1 read-back Get when it already exists) + Σ(manifests + files) Deletes; when the pointer is absent, +1 List of the whole snapshot prefix (even for a `Partition` request) to tell an empty dataset from a refused one | O(N + K × manifest) |
-| `Sweep` | 2 Lists (tombstones, snapshot prefix) + 1 pointer Get + T tombstone Gets + 1 Get per manifest path of each tombstoned snapshot with anything left in the listing + 1 `Exists` per manifest path of each orphaned group about to be reclaimed (stopping at the first present) + D Deletes; when the pointer names a snapshot, 1 `Exists` (+1 List when it has no canonical manifest) to tell whether it is committed | O(N + Σ tombstone inventories) |
+| `Sweep` | 2 Lists (tombstones, snapshot prefix) + 1 pointer Get + T tombstone Gets + 1 Get per manifest path of each tombstoned snapshot with anything left in the listing + 1 `Exists` per manifest path of each group past grace with no listed manifest, whether or not it is then reclaimed (stopping at the first present) + D Deletes; when the pointer names a snapshot, 1 `Exists` (+1 List when it has no canonical manifest) to tell whether it is committed | O(N + Σ tombstone inventories) |
 | `Snapshot(id)`, `Read(id)` expired path | +1 Get (tombstone) | O(1) |
 
 Pointer Gets: one preflight read plus one re-read per selected snapshot,
