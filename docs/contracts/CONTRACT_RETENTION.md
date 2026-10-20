@@ -218,7 +218,9 @@ checks `RetainedHead` and runs the request again after a newer commit.
 Only the pointer names the head. When it is absent beside any snapshot,
 `Expire` and `Sweep` return `ErrHeadUncommitted` and remove nothing. A
 tombstone counts: it shows that snapshots existed even when no manifest is
-left. A dataset with neither needs no pointer. Every commit writes the
+left. A dataset with neither needs no pointer. A pointer whose content is
+not a snapshot ID (one that, joined into a path, would name another
+location) is corruption: retention fails rather than confirm it. Every commit writes the
 pointer, so it is missing only for the moment of a Delete+Put commit on a
 store without `ConditionalWriter`, in a dataset written before the pointer
 existed, or after a hand edit. None of these lets retention tell the head
@@ -473,7 +475,10 @@ commit is in flight and the head is unknown, so no tombstoned snapshot is
 settled in that run; orphans past grace are still reclaimed. With no
 pointer, a dataset whose listing shows a manifest or a tombstone is refused
 with `ErrHeadUncommitted` (§Head protection); one that shows neither has no
-head and only orphans to reclaim. `Expire` writes a tombstone only
+head and only orphans to reclaim. Objects of the committed head the pointer
+names are never orphans, even when the listing omitted its manifests; a
+crashed commit the pointer still names is not committed, so its data ages
+out like any other orphan. `Expire` writes a tombstone only
 for a snapshot observed as non-head (§Head protection), so this guard never
 fires for tombstones Lode wrote; it keeps a misplaced object under
 `expired/` from ever removing the head. A protected tombstoned snapshot is
