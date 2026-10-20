@@ -10,6 +10,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/pithecene-io/lode/internal/storepath"
 )
 
 // tombstone is the persisted record of an expiry (CONTRACT_RETENTION
@@ -124,6 +126,31 @@ func (ts tombstones) list(ctx context.Context) ([]string, error) {
 func isTombstoneName(key, prefix string) bool {
 	_, ok := snapshotInstant(DatasetSnapshotID(strings.TrimPrefix(key, prefix)))
 	return ok
+}
+
+// recorded reads the tombstone at a listed key. valid is false unless the
+// key is canonical and the tombstone records the snapshot its own path
+// names with an inventory (CONTRACT_RETENTION §Definition); an invalid one
+// settles nothing.
+func (ts tombstones) recorded(ctx context.Context, key string) (t tombstone, valid bool, err error) {
+	id := DatasetSnapshotID(strings.TrimPrefix(key, ts.layout.tombstonesPrefix(ts.dataset)))
+	if !ts.isCanonicalPath(key, id) {
+		return t, false, nil
+	}
+	data, err := ts.readRaw(ctx, key)
+	if err != nil {
+		return t, false, err
+	}
+	t, err = validTombstone(key, data, id)
+	return t, err == nil, nil
+}
+
+// isCanonicalPath reports whether key is a canonical store key and exactly
+// the path of snapshot id's tombstone.
+func (ts tombstones) isCanonicalPath(key string, id DatasetSnapshotID) bool {
+	canonical, ok := storepath.Key(key)
+	p, named := ts.path(id)
+	return ok && named && canonical == key && key == p
 }
 
 // create writes p only if it is absent: atomically when the store is a

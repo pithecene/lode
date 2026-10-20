@@ -1,0 +1,401 @@
+package lode
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+)
+
+func putObject(t *testing.T, store Store, p string) {
+	t.Helper()
+	if err := store.Put(t.Context(), p, strings.NewReader("x")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func exists(t *testing.T, store Store, p string) bool {
+	t.Helper()
+	ok, err := store.Exists(t.Context(), p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ok
+}
+
+const sweepGrace = 24 * time.Hour
+
+func TestSweep_RejectsNonPositiveGrace(t *testing.T) {
+	for _, grace := range []time.Duration{0, -time.Second} {
+		fs := newFaultStore(NewMemory())
+		ds := newDefaultRetention(t, fs)
+		report, err := ds.Sweep(t.Context(), SweepRequest{Grace: grace})
+		if !errors.Is(err, ErrInvalidArgument) || report == nil {
+			t.Errorf("Sweep(grace=%s) = %v, %v; want ErrInvalidArgument and a report", grace, report, err)
+		}
+		if n := len(fs.ListCalls()); n != 0 {
+			t.Errorf("Sweep(grace=%s) listed %d times before validating", grace, n)
+		}
+	}
+}
+
+func TestSweep_ReclaimsOnlyOrphansPastGrace(t *testing.T) {
+	store := NewMemory()
+	ds := newHiveRetention(t, store)
+	live := writeRun(t, ds, "a", "x")
+
+	old := "datasets/events/partitions/run_id=a/event_type=x/segments/" + string(idAt(time.Now().Add(-48*time.Hour))) + "/data/part.jsonl"
+	young := "datasets/events/partitions/run_id=a/event_type=x/segments/" + string(idAt(time.Now())) + "/data/part.jsonl"
+	noInstant := "datasets/events/partitions/run_id=a/event_type=x/segments/abc/data/part.jsonl"
+	sidecar := "datasets/events/partitions/run_id=a/files/run.json"
+	for _, p := range []string{old, young, noInstant, sidecar} {
+		putObject(t, store, p)
+	}
+
+	report, err := ds.Sweep(t.Context(), SweepRequest{Grace: sweepGrace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Objects != 1 || report.Orphans != 1 || report.Unsized != 1 || report.Bytes != 0 || len(report.Settled) != 0 {
+		t.Errorf("report = %+v, want one orphan reclaimed", report)
+	}
+	if !slices.Equal(report.Unparseable, []string{noInstant}) {
+		t.Errorf("Unparseable = %v, want [%s] (the sidecar is out of scope)", report.Unparseable, noInstant)
+	}
+	want := map[string]bool{old: false, young: true, noInstant: true, sidecar: true}
+	for p, kept := range want {
+		if exists(t, store, p) != kept {
+			t.Errorf("%s present = %v, want %v", p, !kept, kept)
+		}
+	}
+	assertPresent(t, ds, live)
+}
+
+func TestSweep_LiveSnapshotKeepsUnlistedObjects(t *testing.T) {
+	store := NewMemory()
+	ds := newDefaultRetention(t, store)
+	live := writeRecord(t, ds, 1)
+	// An object in a live snapshot's data prefix that Files[] does not list
+	// (a caller inventory kept in Metadata) is kept: reclaim is per snapshot.
+	stray := "datasets/events/snapshots/" + string(live.ID) + "/data/extra.bin"
+	putObject(t, store, stray)
+
+	report, err := ds.Sweep(t.Context(), SweepRequest{Grace: time.Nanosecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Objects != 0 || !exists(t, store, stray) {
+		t.Errorf("report = %+v, stray present = %v; want nothing reclaimed", report, exists(t, store, stray))
+	}
+}
+
+func TestSweep_SettlesInterruptedExpiry(t *testing.T) {
+	mem := NewMemory()
+	hs := &hookStore{Store: mem}
+	ds := newHiveRetention(t, casHookStore{hs})
+	run := writeRun(t, ds, "a", "x", "y")
+	writeRun(t, ds, "b", "x")
+	stray := "datasets/events/partitions/run_id=a/event_type=x/segments/" + string(run.ID) + "/data/partial.bin"
+	putObject(t, mem, stray)
+
+	hs.onDelete = func(p string) error {
+		if strings.Contains(p, "partitions/") && strings.HasSuffix(p, manifestFile) {
+			return errors.New("injected")
+		}
+		return nil
+	}
+	if _, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{run.ID}}); err == nil {
+		t.Fatal("Expire succeeded despite the injected failure")
+	}
+	hs.onDelete = nil
+
+	report, err := ds.Sweep(t.Context(), SweepRequest{Grace: 1000 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(report.Settled, []DatasetSnapshotID{run.ID}) {
+		t.Errorf("Settled = %v, want [%s]", report.Settled, run.ID)
+	}
+	// Two recorded data files plus the stray the inventory never listed, all
+	// regardless of grace: the recorded ones are sized, the stray is not.
+	if report.Objects != 3 || report.Bytes != totalBytes(run.Manifest.Files) || report.Unsized != 1 || report.Orphans != 0 {
+		t.Errorf("report = %+v, want 3 objects, %d bytes, 1 unsized, 0 orphans", report, totalBytes(run.Manifest.Files))
+	}
+	assertGone(t, mem, ds, run)
+}
+
+func TestSweep_CompletesExpiryWithNoManifestLeft(t *testing.T) {
+	mem := NewMemory()
+	hs := &hookStore{Store: mem}
+	ds := newDefaultRetention(t, casHookStore{hs})
+	first := writeRecord(t, ds, 1)
+	writeRecord(t, ds, 2)
+	hs.onDelete = func(p string) error {
+		if strings.Contains(p, "/data/") {
+			return errors.New("injected")
+		}
+		return nil
+	}
+	if _, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{first.ID}}); err == nil {
+		t.Fatal("Expire succeeded despite the injected failure")
+	}
+	hs.onDelete = nil
+
+	report, err := ds.Sweep(t.Context(), SweepRequest{Grace: 1000 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Expire already removed every manifest, so nothing is settled this
+	// run; the tombstone still marks the data as reclaimable.
+	if len(report.Settled) != 0 || report.Objects != len(first.Manifest.Files) ||
+		report.Bytes != totalBytes(first.Manifest.Files) || report.Unsized != 0 {
+		t.Errorf("report = %+v, want %s's data reclaimed with its recorded sizes", report, first.ID)
+	}
+	assertGone(t, mem, ds, first)
+}
+
+func TestSweep_InvalidTombstonesSettleNothing(t *testing.T) {
+	store := NewMemory()
+	ds := newDefaultRetention(t, store)
+	first := writeRecord(t, ds, 1)
+	second := writeRecord(t, ds, 2)
+	third := writeRecord(t, ds, 3)
+	writeRecord(t, ds, 4) // head
+	prefix := "datasets/events/expired/"
+	invalid := []string{
+		prefix + string(first.ID),  // records another snapshot
+		prefix + string(second.ID), // zero-length
+		prefix + string(third.ID),  // no inventory
+	}
+	putTombstone(t, store, first.ID, "123", first.Manifest.Files)
+	if err := store.Put(t.Context(), invalid[1], strings.NewReader("")); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Put(t.Context(), invalid[2], strings.NewReader(`{"snapshot_id":"`+string(third.ID)+`"}`)); err != nil {
+		t.Fatal(err)
+	}
+	// Not snapshot-ID names, so not tombstones: neither reported nor acted on.
+	victim := "datasets/events/snapshots/nested/self/manifest.json"
+	putObject(t, store, victim)
+	outOfScope := map[string]string{
+		prefix + "nested/self": `{"snapshot_id":"nested/self"}`,
+		prefix + "x.lock":      "",
+		prefix + "00123":       `{"snapshot_id":"00123"}`, // generateID never pads
+		prefix + "+123":        `{"snapshot_id":"+123"}`,
+	}
+	for p, body := range outOfScope {
+		if err := store.Put(t.Context(), p, strings.NewReader(body)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	report, err := ds.Sweep(t.Context(), SweepRequest{Grace: sweepGrace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	slices.Sort(invalid)
+	if !slices.Equal(report.Unparseable, invalid) || len(report.Settled) != 0 {
+		t.Errorf("report = %+v, want invalid tombstones %v and nothing settled", report, invalid)
+	}
+	if !exists(t, store, victim) {
+		t.Error("a non-tombstone under expired/ steered a delete")
+	}
+	assertPresent(t, ds, first)
+	assertPresent(t, ds, second)
+	assertPresent(t, ds, third)
+}
+
+func TestSweep_NeverSettlesTheHead(t *testing.T) {
+	store := NewMemory()
+	ds := newDefaultRetention(t, store)
+	head := writeRecord(t, ds, 1)
+	putTombstone(t, store, head.ID, head.ID, head.Manifest.Files) // misplaced: Lode never tombstones a head
+
+	report, err := ds.Sweep(t.Context(), SweepRequest{Grace: time.Nanosecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Settled) != 0 || report.Objects != 0 {
+		t.Errorf("report = %+v, want the head untouched", report)
+	}
+	assertPresent(t, ds, head)
+}
+
+func TestSweep_CrashedCommitDataIsAnOrphan(t *testing.T) {
+	store := NewMemory()
+	ds := newDefaultRetention(t, store)
+	writeRecord(t, ds, 1)
+	// A commit advanced the pointer, then crashed before its manifest.
+	crashed := idAt(time.Now().Add(-48 * time.Hour))
+	data := "datasets/events/snapshots/" + string(crashed) + "/data/x"
+	putObject(t, store, data)
+	setPointer(t, store, string(crashed))
+
+	report, err := ds.Sweep(t.Context(), SweepRequest{Grace: sweepGrace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Orphans != 1 || exists(t, store, data) {
+		t.Errorf("report = %+v, want the crashed commit's data reclaimed after grace", report)
+	}
+}
+
+func TestSweep_HeldTombstoneKeepsItsData(t *testing.T) {
+	store := NewMemory()
+	ds := newDefaultRetention(t, store)
+	writeRecord(t, ds, 1)
+	// A misplaced tombstone names the pointer's snapshot, whose manifest is
+	// gone: the guard holds it back, and its data must stay too.
+	held := idAt(time.Now().Add(-48 * time.Hour))
+	data := "datasets/events/snapshots/" + string(held) + "/data/x"
+	putObject(t, store, data)
+	putTombstone(t, store, held, held, nil)
+	setPointer(t, store, string(held))
+
+	report, err := ds.Sweep(t.Context(), SweepRequest{Grace: sweepGrace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Settled) != 0 || report.Objects != 0 || !exists(t, store, data) {
+		t.Errorf("report = %+v, want the held snapshot and its data untouched", report)
+	}
+}
+
+func TestSweep_NonCanonicalKeysAreOutOfScope(t *testing.T) {
+	mem := NewMemory()
+	listed := []string{
+		"datasets/events/expired/1\\2", // no snapshot ID, and no store accepts it
+		"datasets/events/snapshots/" + string(idAt(time.Now().Add(-48*time.Hour))) + "/data/../../../other/x", // cleans elsewhere
+	}
+	lister := &listInjector{Store: mem, extra: listed}
+	ds := newDefaultRetention(t, lister)
+	writeRecord(t, ds, 1)
+
+	report, err := ds.Sweep(t.Context(), SweepRequest{Grace: sweepGrace})
+	if err != nil {
+		t.Fatalf("Sweep = %v, want invalid keys handled, not fatal", err)
+	}
+	if len(report.Unparseable) != 0 || report.Objects != 0 {
+		t.Errorf("report = %+v, want both keys out of scope: not reported, not deleted", report)
+	}
+	if n := len(lister.deleted); n != 0 {
+		t.Errorf("deleted %v, want nothing", lister.deleted)
+	}
+}
+
+// listInjector adds raw keys to listings, as a store that does not
+// normalize its keys might return, and records deletes.
+type listInjector struct {
+	Store
+	extra   []string
+	deleted []string
+}
+
+func (l *listInjector) List(ctx context.Context, prefix string) ([]string, error) {
+	keys, err := l.Store.List(ctx, prefix)
+	for _, k := range l.extra {
+		if strings.HasPrefix(k, prefix) {
+			keys = append(keys, k)
+		}
+	}
+	return keys, err
+}
+
+func (l *listInjector) Delete(ctx context.Context, p string) error {
+	l.deleted = append(l.deleted, p)
+	return l.Store.Delete(ctx, p)
+}
+
+func (l *listInjector) CompareAndSwap(ctx context.Context, p, expected, replacement string) error {
+	return l.Store.(ConditionalWriter).CompareAndSwap(ctx, p, expected, replacement)
+}
+
+func TestSweep_FilesystemStore_RepeatedRunIsQuiet(t *testing.T) {
+	dir := t.TempDir()
+	ds, err := NewDataset("events", NewFSFactory(dir), WithCodec(NewJSONLCodec()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := writeRecord(t, ds, 1)
+	writeRecord(t, ds, 2)
+	if _, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{first.ID}}); err != nil {
+		t.Fatal(err)
+	}
+	// The filesystem store's CAS leaves a .lock companion next to the
+	// tombstone; it is not a tombstone, and a finished expiry is not news.
+	report, err := ds.Sweep(t.Context(), SweepRequest{Grace: sweepGrace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Settled)+report.Objects+len(report.Unparseable) != 0 {
+		t.Errorf("report = %+v, want nothing to do", report)
+	}
+}
+
+func TestSweep_DryRunReportsTheRealRun(t *testing.T) {
+	setup := func(t *testing.T) (Store, Dataset) {
+		store := NewMemory()
+		ds := newDefaultRetention(t, store)
+		first := writeRecord(t, ds, 1)
+		writeRecord(t, ds, 2)
+		putTombstone(t, store, first.ID, first.ID, first.Manifest.Files)
+		putObject(t, store, "datasets/events/snapshots/"+string(idAt(time.Now().Add(-48*time.Hour)))+"/data/x")
+		return store, ds
+	}
+
+	store, ds := setup(t)
+	before := storeKeys(t, store)
+	dry, err := ds.Sweep(t.Context(), SweepRequest{Grace: sweepGrace, DryRun: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after := storeKeys(t, store); !slices.Equal(before, after) {
+		t.Error("dry run changed the store")
+	}
+
+	_, ds = setup(t)
+	wet, err := ds.Sweep(t.Context(), SweepRequest{Grace: sweepGrace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Separate setups mint different IDs; everything else must agree.
+	shape := func(r *SweepReport) string {
+		return fmt.Sprint(len(r.Settled), r.Objects, r.Bytes, r.Unsized, r.Orphans, r.Unparseable)
+	}
+	if shape(dry) != shape(wet) {
+		t.Errorf("dry run %+v != real run %+v", dry, wet)
+	}
+	if wet.Objects != 2 || wet.Orphans != 1 || len(wet.Settled) != 1 {
+		t.Errorf("real run = %+v, want one settled snapshot and one orphan", wet)
+	}
+}
+
+func TestSweep_DeleteFailure_ReportsCompletedWork(t *testing.T) {
+	mem := NewMemory()
+	hs := &hookStore{Store: mem}
+	ds := newDefaultRetention(t, casHookStore{hs})
+	writeRecord(t, ds, 1)
+	old := time.Now().Add(-48 * time.Hour)
+	first := "datasets/events/snapshots/" + string(idAt(old)) + "/data/a"
+	second := "datasets/events/snapshots/" + string(idAt(old.Add(time.Second))) + "/data/b"
+	putObject(t, mem, first)
+	putObject(t, mem, second)
+
+	injected := errors.New("injected")
+	hs.onDelete = func(p string) error {
+		if p == second {
+			return injected
+		}
+		return nil
+	}
+	report, err := ds.Sweep(t.Context(), SweepRequest{Grace: sweepGrace})
+	if !errors.Is(err, injected) {
+		t.Fatalf("Sweep = %v, want the injected error", err)
+	}
+	if report.Objects != 1 || report.Orphans != 1 {
+		t.Errorf("report = %+v, want the one orphan deleted before the failure", report)
+	}
+}

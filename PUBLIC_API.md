@@ -640,7 +640,7 @@ On abort or error before commit:
 - No manifest is written (the snapshot does not exist).
 - A failed `Put` leaves nothing behind (`CONTRACT_STORAGE.md` §Put is all-or-nothing); the writer never deletes after a failed `Put`.
 - A data object that was fully written but whose commit failed is deleted best-effort and may remain in storage.
-- Callers should not rely on automatic cleanup of partial objects.
+- Callers should not rely on automatic cleanup of partial objects; `Dataset.Sweep` reclaims them once they are older than its grace period (§Retention).
 - Cleanup uses an independent context to maximize success even if the caller's
   context was canceled.
 
@@ -653,8 +653,9 @@ Failure to delete a partial object does not create a snapshot.
 ## Retention
 
 Lode never removes anything on its own. `Dataset.Expire` removes snapshots
-the caller selects; which snapshots to keep, and for how long, is the
-caller's policy (`CONTRACT_RETENTION.md`).
+the caller selects, and `Dataset.Sweep` reclaims what interrupted writes
+and expiries left behind. Which snapshots to keep, for how long, and when
+to run either, is the caller's policy (`CONTRACT_RETENTION.md`).
 
 <!-- illustrative -->
 ```go
@@ -686,14 +687,36 @@ if report.RetainedHead != "" {
   `ErrSnapshotExpired`, which also matches `ErrNotFound`.
 - **Expiry is resumable.** The report is non-nil on error and lists the
   work done. The expiry's tombstone records the snapshot's files, so
-  running the same `IDs` request again completes it from any point.
-  `Objects` and `Bytes` count what each run deleted; totals across runs
-  add up.
+  running the same `IDs` request again completes it from any point, and so
+  does `Sweep`. `Objects` and `Bytes` count what each run deleted; totals
+  across runs add up.
 - **Lode deletes only what it wrote.** Objects a caller put next to the
   dataset through `Store.Put` (sidecar files) are never deleted by
   `Expire`; delete them after their snapshots are expired.
 - **Readers mid-read may fail.** A `Read` that loaded a manifest before its
   expiry began can see `ErrNotFound` on a data file. Lode has no read lease.
+
+<!-- illustrative -->
+```go
+// From the caller's own cron: finish interrupted expiries and reclaim
+// objects of writes that never committed, once older than a day.
+report, err := ds.Sweep(ctx, lode.SweepRequest{Grace: 24 * time.Hour})
+// report.Settled, report.Objects, report.Bytes, report.Unsized, report.Orphans
+```
+
+- **Grace is required.** An object of a snapshot that never committed is
+  deleted only once its write began longer ago than `Grace`, so an
+  in-flight write is never swept. `Grace` must exceed the longest write;
+  zero or negative returns `ErrInvalidArgument`.
+- **Reclaim is per snapshot.** Objects in a live snapshot's data prefix are
+  kept whether or not its `Files[]` lists them; once the snapshot is
+  expired, all of them go.
+- **Bytes are counted only where recorded.** `Bytes` sums the sizes an
+  expiry's tombstone recorded for the objects deleted. Objects with no
+  recorded size (orphans, and objects a snapshot's `Files[]` never listed)
+  are counted in `Unsized`, never estimated.
+- **Out-of-topology objects are never touched.** Sidecars, the pointer and
+  tombstones are neither reported nor deleted.
 
 ---
 
