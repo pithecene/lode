@@ -335,6 +335,34 @@ func TestSweep_FilesystemStore_RepeatedRunIsQuiet(t *testing.T) {
 	}
 }
 
+func TestSweep_NoPointer_HoldsTheScannedHead(t *testing.T) {
+	store := NewMemory()
+	ds := newDefaultRetention(t, store)
+	writeRecord(t, ds, 1)
+	head := writeRecord(t, ds, 2)
+	putTombstone(t, store, head.ID, head.ID, head.Manifest.Files) // misplaced
+	if err := store.Delete(t.Context(), "datasets/events/latest"); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := ds.Sweep(t.Context(), SweepRequest{Grace: time.Nanosecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Settled) != 0 || report.Objects != 0 {
+		t.Errorf("report = %+v, want the scanned head held", report)
+	}
+	assertPresent(t, ds, head)
+}
+
+func TestSweep_EmptyDataset(t *testing.T) {
+	ds := newDefaultRetention(t, NewMemory())
+	report, err := ds.Sweep(t.Context(), SweepRequest{Grace: sweepGrace})
+	if err != nil || report.Objects+len(report.Settled)+len(report.Unparseable) != 0 {
+		t.Errorf("Sweep = %+v, %v; want an empty report", report, err)
+	}
+}
+
 func TestSweep_DryRunReportsTheRealRun(t *testing.T) {
 	setup := func(t *testing.T) (Store, Dataset) {
 		store := NewMemory()
