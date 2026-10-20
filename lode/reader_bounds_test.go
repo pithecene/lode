@@ -4,6 +4,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/pithecene-io/lode/internal/validate"
 )
 
 // Boundary tests for the read API: limits that equal the result size, the
@@ -52,7 +54,7 @@ func TestValidateManifest_ZeroIsValid_NegativeRejected(t *testing.T) {
 			}
 			continue
 		}
-		var verr *manifestValidationError
+		var verr *validate.ManifestError
 		if !errors.As(err, &verr) || verr.Field != c.wantField {
 			t.Errorf("%s: got %v, want validation error on %q", c.name, err, c.wantField)
 		}

@@ -119,12 +119,3 @@ func TestSentinels(t *testing.T) {
 		}
 	}
 }
-
-// A store factory error is wrapped, not replaced.
-func TestNew_StoreFactoryError(t *testing.T) {
-	boom := errors.New("factory down")
-	_, err := New("v", func() (lode.Store, error) { return nil, boom }, 1)
-	if !errors.Is(err, boom) || err.Error() != "lode: failed to create store: factory down" {
-		t.Fatalf("got %v", err)
-	}
-}

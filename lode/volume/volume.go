@@ -15,6 +15,7 @@ import (
 
 	"github.com/pithecene-io/lode/internal/history"
 	"github.com/pithecene-io/lode/internal/retry"
+	"github.com/pithecene-io/lode/internal/validate"
 	"github.com/pithecene-io/lode/lode"
 )
 
@@ -77,16 +78,24 @@ func toVolumeSnapshot(s *history.Snapshot[SnapshotID, Manifest]) *Snapshot {
 	return &Snapshot{ID: s.ID, Manifest: s.Manifest}
 }
 
+// historyErrors are the sentinels a volume's history returns, so history
+// errors keep lode's public identities.
+var historyErrors = history.Errors{
+	NotFound:         lode.ErrNotFound,
+	NoSnapshots:      lode.ErrNoSnapshots,
+	SnapshotConflict: lode.ErrSnapshotConflict,
+}
+
 // New creates a volume with a fixed total length.
 func New(id ID, storeFactory lode.StoreFactory, totalLength int64, opts ...Option) (Volume, error) {
 	if storeFactory == nil {
-		return nil, invalidArgument("store factory must not be nil")
+		return nil, validate.Argument("store factory must not be nil")
 	}
 	if id == "" {
-		return nil, invalidArgument("volume ID must not be empty")
+		return nil, validate.Argument("volume ID must not be empty")
 	}
 	if totalLength <= 0 {
-		return nil, invalidArgument("total length must be positive")
+		return nil, validate.Argument("total length must be positive")
 	}
 
 	cfg := &config{
@@ -104,7 +113,7 @@ func New(id ID, storeFactory lode.StoreFactory, totalLength int64, opts ...Optio
 		return nil, fmt.Errorf("lode: failed to create store: %w", err)
 	}
 	if store == nil {
-		return nil, invalidArgument("store factory returned nil store")
+		return nil, validate.Argument("store factory returned nil store")
 	}
 
 	return &volume{
@@ -148,7 +157,7 @@ func volumeLatestPointerPath(id ID) string {
 // Staged data is not visible until Commit is called.
 func (v *volume) StageWriteAt(ctx context.Context, offset int64, r io.Reader) (BlockRef, error) {
 	if offset < 0 {
-		return BlockRef{}, invalidArgument("offset must be non-negative")
+		return BlockRef{}, validate.Argument("offset must be non-negative")
 	}
 
 	data, err := io.ReadAll(r)
@@ -158,10 +167,10 @@ func (v *volume) StageWriteAt(ctx context.Context, offset int64, r io.Reader) (B
 
 	length := int64(len(data))
 	if length == 0 {
-		return BlockRef{}, invalidArgument("block data must not be empty")
+		return BlockRef{}, validate.Argument("block data must not be empty")
 	}
 	if length > v.totalLength-offset {
-		return BlockRef{}, invalidArgument("block exceeds volume address space (offset=%d, length=%d, totalLength=%d)", offset, length, v.totalLength)
+		return BlockRef{}, validate.Argument("block exceeds volume address space (offset=%d, length=%d, totalLength=%d)", offset, length, v.totalLength)
 	}
 
 	blockPath := volumeBlockPath(v.id, offset, length)
@@ -193,24 +202,24 @@ func (v *volume) Commit(ctx context.Context, blocks []BlockRef, metadata lode.Me
 		metadata = lode.Metadata{}
 	}
 	if len(blocks) == 0 {
-		return nil, invalidArgument("commit must include at least one new block")
+		return nil, validate.Argument("commit must include at least one new block")
 	}
 
 	// Validate all new blocks have required fields, conform to fixed layout, and are within bounds.
 	// This is invariant across retries — checked once before the commit loop.
 	for _, b := range blocks {
 		if b.Offset < 0 {
-			return nil, invalidArgument("block offset must be non-negative (offset=%d)", b.Offset)
+			return nil, validate.Argument("block offset must be non-negative (offset=%d)", b.Offset)
 		}
 		if b.Length <= 0 {
-			return nil, invalidArgument("block length must be positive (length=%d)", b.Length)
+			return nil, validate.Argument("block length must be positive (length=%d)", b.Length)
 		}
 		if b.Length > v.totalLength-b.Offset {
-			return nil, invalidArgument("block exceeds volume address space (offset=%d, length=%d, totalLength=%d)", b.Offset, b.Length, v.totalLength)
+			return nil, validate.Argument("block exceeds volume address space (offset=%d, length=%d, totalLength=%d)", b.Offset, b.Length, v.totalLength)
 		}
 		expectedPath := volumeBlockPath(v.id, b.Offset, b.Length)
 		if b.Path != expectedPath {
-			return nil, invalidArgument("block path %q does not match expected layout path %q", b.Path, expectedPath)
+			return nil, validate.Argument("block path %q does not match expected layout path %q", b.Path, expectedPath)
 		}
 	}
 
@@ -226,7 +235,7 @@ func (v *volume) Commit(ctx context.Context, blocks []BlockRef, metadata lode.Me
 			existing, parentID = parent.Manifest.Blocks, parent.ID
 		}
 		if !hasNewBlock(existing, blocks) {
-			return invalidArgument("commit must include at least one new block (all provided blocks already committed)")
+			return validate.Argument("commit must include at least one new block (all provided blocks already committed)")
 		}
 
 		// Cumulative block set, sorted by offset for O(log B) lookups: existing
@@ -345,16 +354,16 @@ func validateNoOverlaps(blocks []BlockRef) error {
 // ReadAt reads a fully committed range from a snapshot.
 func (v *volume) ReadAt(ctx context.Context, snapshotID SnapshotID, offset, length int64) ([]byte, error) {
 	if offset < 0 {
-		return nil, invalidArgument("offset must be non-negative")
+		return nil, validate.Argument("offset must be non-negative")
 	}
 	if length <= 0 {
-		return nil, invalidArgument("length must be positive")
+		return nil, validate.Argument("length must be positive")
 	}
 	if length > v.totalLength-offset {
-		return nil, invalidArgument("read exceeds volume address space (offset=%d, length=%d, totalLength=%d)", offset, length, v.totalLength)
+		return nil, validate.Argument("read exceeds volume address space (offset=%d, length=%d, totalLength=%d)", offset, length, v.totalLength)
 	}
 	if length > math.MaxInt {
-		return nil, invalidArgument("read length %d exceeds maximum allocation size", length)
+		return nil, validate.Argument("read length %d exceeds maximum allocation size", length)
 	}
 
 	snapshot, err := v.Snapshot(ctx, snapshotID)
@@ -487,16 +496,16 @@ func parseVolumeSnapshotID(p string) SnapshotID {
 // these guards from the mutation gate.
 func validateBlock(i int, b BlockRef, totalLength int64) error {
 	if b.Offset < 0 {
-		return &manifestValidationError{Field: fmt.Sprintf("blocks[%d].offset", i), Message: "must be non-negative"}
+		return &validate.ManifestError{Field: fmt.Sprintf("blocks[%d].offset", i), Message: "must be non-negative"}
 	}
 	if b.Length <= 0 {
-		return &manifestValidationError{Field: fmt.Sprintf("blocks[%d].length", i), Message: "must be positive"}
+		return &validate.ManifestError{Field: fmt.Sprintf("blocks[%d].length", i), Message: "must be positive"}
 	}
 	if b.Path == "" {
-		return &manifestValidationError{Field: fmt.Sprintf("blocks[%d].path", i), Message: "is required"}
+		return &validate.ManifestError{Field: fmt.Sprintf("blocks[%d].path", i), Message: "is required"}
 	}
 	if b.Length > totalLength-b.Offset {
-		return &manifestValidationError{
+		return &validate.ManifestError{
 			Field:   fmt.Sprintf("blocks[%d]", i),
 			Message: fmt.Sprintf("exceeds total_length (offset=%d, length=%d, total_length=%d)", b.Offset, b.Length, totalLength),
 		}
@@ -519,19 +528,19 @@ func ensureBlocksSortedByOffset(blocks []BlockRef) {
 // fields per CONTRACT_VOLUME.md.
 func validateVolumeManifest(m *Manifest) error {
 	if m == nil {
-		return &manifestValidationError{Field: "manifest", Message: "is nil"}
+		return &validate.ManifestError{Field: "manifest", Message: "is nil"}
 	}
-	checks := []fieldCheck{
-		{m.SchemaName == "", "schema_name", "is required"},
-		{m.FormatVersion == "", "format_version", "is required"},
-		{m.VolumeID == "", "volume_id", "is required"},
-		{m.SnapshotID == "", "snapshot_id", "is required"},
-		{m.CreatedAt.IsZero(), "created_at", "is required"},
-		{m.Metadata == nil, "metadata", "must not be nil (use empty map for no metadata)"},
-		{m.Blocks == nil, "blocks", "must not be nil (use empty slice for no blocks)"},
-		{m.TotalLength <= 0, "total_length", "must be positive"},
+	checks := []validate.Check{
+		{Invalid: m.SchemaName == "", Field: "schema_name", Message: "is required"},
+		{Invalid: m.FormatVersion == "", Field: "format_version", Message: "is required"},
+		{Invalid: m.VolumeID == "", Field: "volume_id", Message: "is required"},
+		{Invalid: m.SnapshotID == "", Field: "snapshot_id", Message: "is required"},
+		{Invalid: m.CreatedAt.IsZero(), Field: "created_at", Message: "is required"},
+		{Invalid: m.Metadata == nil, Field: "metadata", Message: "must not be nil (use empty map for no metadata)"},
+		{Invalid: m.Blocks == nil, Field: "blocks", Message: "must not be nil (use empty slice for no blocks)"},
+		{Invalid: m.TotalLength <= 0, Field: "total_length", Message: "must be positive"},
 	}
-	if err := firstInvalid(checks); err != nil {
+	if err := validate.FirstInvalid(checks); err != nil {
 		return err
 	}
 	// Block checks run only once total_length is known valid. They are plain
@@ -550,7 +559,7 @@ func validateVolumeManifest(m *Manifest) error {
 	ensureBlocksSortedByOffset(m.Blocks)
 
 	if err := validateNoOverlaps(m.Blocks); err != nil {
-		return &manifestValidationError{Field: "blocks", Message: "contain overlapping ranges"}
+		return &validate.ManifestError{Field: "blocks", Message: "contain overlapping ranges"}
 	}
 
 	return nil

@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pithecene-io/lode/internal/testutil"
 	"github.com/pithecene-io/lode/lode"
 )
 
@@ -609,14 +610,14 @@ func TestVolume_Commit_Manifest(t *testing.T) {
 	})
 
 	t.Run("manifest put error no snapshot", func(t *testing.T) {
-		fs := newFaultStore(lode.NewMemory())
+		fs := testutil.NewFaultStore(lode.NewMemory())
 		vol := newTestVolume(t, "test-vol", newFaultStoreFactory(fs), 100)
 		ctx := t.Context()
 
 		blk := stageBlock(t, vol, 0, bytes.Repeat([]byte("A"), 10))
 
 		// Inject error on manifest write.
-		fs.SetPutError(errInjectedPut, "manifest.json")
+		fs.SetPutError(testutil.ErrInjectedPut, "manifest.json")
 
 		_, err := vol.Commit(ctx, []BlockRef{blk}, lode.Metadata{})
 		if err == nil {
@@ -1092,11 +1093,11 @@ func TestVolume_StageWriteAt(t *testing.T) {
 	})
 
 	t.Run("put error returns error", func(t *testing.T) {
-		fs := newFaultStore(lode.NewMemory())
+		fs := testutil.NewFaultStore(lode.NewMemory())
 		vol := newTestVolume(t, "test-vol", newFaultStoreFactory(fs), 100)
 
 		// Inject error on all Put calls.
-		fs.SetPutError(errInjectedPut)
+		fs.SetPutError(testutil.ErrInjectedPut)
 
 		_, err := vol.StageWriteAt(t.Context(), 0, bytes.NewReader([]byte("data")))
 		if err == nil {
@@ -1459,7 +1460,7 @@ func TestVolume_LatestPointer(t *testing.T) {
 		// After Commit, the pointer file must exist and Latest() must resolve
 		// via pointer without calling List.
 		store := lode.NewMemory()
-		fs := newFaultStore(store)
+		fs := testutil.NewFaultStore(store)
 		vol := newTestVolume(t, "test-vol", newFaultStoreFactory(fs), 100)
 
 		blk := stageBlock(t, vol, 0, bytes.Repeat([]byte("A"), 10))
@@ -1799,7 +1800,7 @@ func TestVolume_Commit_Pointer(t *testing.T) {
 	// TestVolume_Commit_PointerWriteFailure_AbortsCommit verifies that when
 	// writeLatestPointer fails, the commit is aborted and no manifest is written.
 	t.Run("pointer write failure aborts commit", func(t *testing.T) {
-		fs := newFaultStore(lode.NewMemory())
+		fs := testutil.NewFaultStore(lode.NewMemory())
 		factory := newFaultStoreFactory(fs)
 
 		vol, err := New("test-vol", factory, 1024*1024)

@@ -10,6 +10,8 @@ import (
 	"context"
 	"io"
 	"time"
+
+	"github.com/pithecene-io/lode/internal/validate"
 )
 
 // -----------------------------------------------------------------------------
@@ -475,7 +477,7 @@ var (
 	// used: a nil store factory, a negative offset, a block outside the
 	// volume, a blob write without exactly one []byte. The message names the
 	// value. Not retry-safe; fix the call.
-	ErrInvalidArgument error = errInvalidArgument{}
+	ErrInvalidArgument error = validate.ErrInvalidArgument
 
 	// ErrInvalidPath indicates a storage path or range the store refuses:
 	// a key that is empty or escapes the root, a partition prefix that is not
@@ -484,7 +486,7 @@ var (
 	ErrInvalidPath error = errInvalidPath{}
 
 	// ErrManifestInvalid indicates a manifest failed validation.
-	ErrManifestInvalid error = errManifestInvalid{}
+	ErrManifestInvalid error = validate.ErrManifestInvalid
 
 	// ErrOptionNotValidForDataset indicates an option was used with NewDataset
 	// that only applies to NewDatasetReader.
@@ -553,17 +555,9 @@ type errSnapshotConflict struct{}
 
 func (errSnapshotConflict) Error() string { return "snapshot conflict: another writer committed" }
 
-type errInvalidArgument struct{}
-
-func (errInvalidArgument) Error() string { return "invalid argument" }
-
 type errInvalidPath struct{}
 
 func (errInvalidPath) Error() string { return "invalid path" }
-
-type errManifestInvalid struct{}
-
-func (errManifestInvalid) Error() string { return "invalid manifest" }
 
 type errOptionNotValidForDataset struct{}
 

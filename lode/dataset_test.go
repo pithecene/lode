@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/pithecene-io/lode/internal/testutil"
 )
 
 // -----------------------------------------------------------------------------
@@ -1351,7 +1353,7 @@ func TestDataset_StreamWrite_Lineage(t *testing.T) {
 	t.Run("latest pointer skips scan", func(t *testing.T) {
 		// StreamWrite → Commit must write the pointer so that a subsequent
 		// Write uses O(1) parent resolution.
-		fs := newFaultStore(NewMemory())
+		fs := testutil.NewFaultStore(NewMemory())
 		ds, err := NewDataset("test-ds", newFaultStoreFactory(fs))
 		if err != nil {
 			t.Fatal(err)
@@ -1810,7 +1812,7 @@ func TestDataset_StreamWriteRecords_Commit(t *testing.T) {
 
 	t.Run("latest pointer skips scan", func(t *testing.T) {
 		// StreamWriteRecords must write the pointer.
-		fs := newFaultStore(NewMemory())
+		fs := testutil.NewFaultStore(NewMemory())
 		ds, err := NewDataset("test-ds", newFaultStoreFactory(fs),
 			WithCodec(NewJSONLCodec()),
 		)
@@ -2348,7 +2350,7 @@ func TestDataset_Write_Pointer(t *testing.T) {
 	t.Run("latest pointer skips scan", func(t *testing.T) {
 		// After the first Write creates the pointer, subsequent writes must not
 		// call store.List to resolve the parent snapshot ID (O(1) via pointer).
-		fs := newFaultStore(NewMemory())
+		fs := testutil.NewFaultStore(NewMemory())
 		ds, err := NewDataset("test-ds", newFaultStoreFactory(fs),
 			WithCodec(NewJSONLCodec()),
 		)
@@ -2479,7 +2481,7 @@ func TestDataset_Write_Pointer(t *testing.T) {
 	// writeLatestPointer fails, the commit is aborted and no manifest is written.
 	// This is the core of the pointer-before-manifest protocol.
 	t.Run("pointer write failure aborts commit", func(t *testing.T) {
-		fs := newFaultStore(NewMemory())
+		fs := testutil.NewFaultStore(NewMemory())
 		factory := newFaultStoreFactory(fs)
 
 		ds, err := NewDataset("test-ds", factory, WithCodec(NewJSONLCodec()))
@@ -2532,7 +2534,7 @@ func TestDataset_LatestPointer(t *testing.T) {
 		// After a write, the pointer file must exist in the store and
 		// Latest() must resolve via pointer (no List calls).
 		store := NewMemory()
-		fs := newFaultStore(store)
+		fs := testutil.NewFaultStore(store)
 		ds, err := NewDataset("test-ds", newFaultStoreFactory(fs),
 			WithCodec(NewJSONLCodec()),
 		)
@@ -2724,7 +2726,7 @@ func TestDataset_HiveLayout(t *testing.T) {
 	// with HiveLayout does NOT require a List call. The canonical manifest is always
 	// written alongside partition manifests, so a single Get resolves the snapshot.
 	t.Run("snapshot by ID no list call", func(t *testing.T) {
-		fs := newFaultStore(NewMemory())
+		fs := testutil.NewFaultStore(NewMemory())
 		factory := newFaultStoreFactory(fs)
 
 		ds, err := NewDataset("test-ds", factory,
@@ -2765,7 +2767,7 @@ func TestDataset_HiveLayout(t *testing.T) {
 	// TestDataset_HiveLayout_CanonicalManifestWritten verifies that writeManifests
 	// writes the canonical manifest alongside partition manifests for HiveLayout.
 	t.Run("canonical manifest written", func(t *testing.T) {
-		fs := newFaultStore(NewMemory())
+		fs := testutil.NewFaultStore(NewMemory())
 		factory := newFaultStoreFactory(fs)
 
 		ds, err := NewDataset("test-ds", factory,
@@ -2815,7 +2817,7 @@ func TestDataset_HiveLayout(t *testing.T) {
 	// falls back to findSnapshotByID when the canonical manifest is missing (pre-fix data).
 	t.Run("backward compat fallback scan", func(t *testing.T) {
 		mem := NewMemory()
-		fs := newFaultStore(mem)
+		fs := testutil.NewFaultStore(mem)
 		factory := newFaultStoreFactory(fs)
 
 		ds, err := NewDataset("test-ds", factory,

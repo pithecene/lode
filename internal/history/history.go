@@ -105,12 +105,6 @@ func New[ID ~string, M any](store Store, kind Kind[ID, M], noun string, errs Err
 	return History[ID, M]{noun: noun, store: store, kind: kind, errs: errs}
 }
 
-// closer returns a function that closes c, ignoring the error: deferred
-// closes of read-only streams.
-func closer(c io.Closer) func() {
-	return func() { _ = c.Close() }
-}
-
 // -----------------------------------------------------------------------------
 // Reading snapshots
 // -----------------------------------------------------------------------------
@@ -121,7 +115,7 @@ func (h *History[ID, M]) load(ctx context.Context, id ID, path string) (*Snapsho
 	if err != nil {
 		return nil, err
 	}
-	defer closer(rc)()
+	defer func() { _ = rc.Close() }() // read-only stream
 	m, err := h.kind.Decode(rc)
 	if err != nil {
 		return nil, err
@@ -237,7 +231,7 @@ func (h *History[ID, M]) readPointer(ctx context.Context) (ID, error) {
 	if err != nil {
 		return "", err
 	}
-	defer closer(rc)()
+	defer func() { _ = rc.Close() }() // read-only stream
 	data, err := io.ReadAll(rc)
 	if err != nil {
 		return "", fmt.Errorf("lode: failed to read latest pointer: %w", err)
