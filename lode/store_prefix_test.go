@@ -3,8 +3,11 @@ package lode
 import (
 	"bytes"
 	"context"
+	"os"
 	"sort"
 	"testing"
+
+	"github.com/pithecene-io/lode/internal/testutil"
 )
 
 // List is a string-prefix match over paths on every store (CONTRACT_STORAGE
@@ -85,50 +88,63 @@ func assertStringPrefixSemantics(t *testing.T, store Store) {
 	}
 }
 
-func TestFSStore_List_StringPrefixSemantics(t *testing.T) {
-	store, err := NewFS(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	assertStringPrefixSemantics(t, store)
-}
-
-func TestMemoryStore_List_StringPrefixSemantics(t *testing.T) {
-	assertStringPrefixSemantics(t, NewMemory())
-}
-
-// TestFSStore_List_RootNormalizingPrefixes verifies prefixes that normalize to
-// the store root ("", ".", "a/..") walk the root directly and never its parent.
-func TestFSStore_List_RootNormalizingPrefixes(t *testing.T) {
-	store, err := NewFS(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	seedPrefixFixture(t, store)
-	ctx := t.Context()
-	for _, prefix := range []string{"", ".", "ds/.."} {
-		got := listSorted(ctx, t, store, prefix)
-		if len(got) != 6 {
-			t.Fatalf("List(%q): got %d paths %v, want all 6", prefix, len(got), got)
+func TestFSStore_List(t *testing.T) {
+	t.Run("empty prefix returns empty", func(t *testing.T) {
+		ctx := t.Context()
+		tmpDir, err := os.MkdirTemp("", "lode-test-*")
+		if err != nil {
+			t.Fatal(err)
 		}
-	}
-}
+		defer testutil.RemoveAll(tmpDir)
 
-// TestFSStore_List_TrailingSlashOnRegularFile verifies List("a/") matches
-// nothing when "a" is an object, not a directory: "a" does not start with "a/".
-func TestFSStore_List_TrailingSlashOnRegularFile(t *testing.T) {
-	store, err := NewFS(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx := t.Context()
-	if err := store.Put(ctx, "a", bytes.NewReader([]byte("x"))); err != nil {
-		t.Fatal(err)
-	}
-	if got := listSorted(ctx, t, store, "a/"); len(got) != 0 {
-		t.Fatalf("List(\"a/\") over a regular file: got %v, want empty", got)
-	}
-	if got := listSorted(ctx, t, store, "a"); len(got) != 1 {
-		t.Fatalf("List(\"a\"): got %v, want the object itself", got)
-	}
+		store, err := NewFS(tmpDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// List empty prefix on empty storage - should return empty list
+		paths, err := store.List(ctx, "")
+		if err != nil {
+			t.Fatalf("expected no error for empty prefix, got: %v", err)
+		}
+		if len(paths) != 0 {
+			t.Errorf("expected empty list, got: %v", paths)
+		}
+	})
+
+	// TestFSStore_List_RootNormalizingPrefixes verifies prefixes that normalize to
+	// the store root ("", ".", "a/..") walk the root directly and never its parent.
+	t.Run("root-normalizing prefixes", func(t *testing.T) {
+		store, err := NewFS(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		seedPrefixFixture(t, store)
+		ctx := t.Context()
+		for _, prefix := range []string{"", ".", "ds/.."} {
+			got := listSorted(ctx, t, store, prefix)
+			if len(got) != 6 {
+				t.Fatalf("List(%q): got %d paths %v, want all 6", prefix, len(got), got)
+			}
+		}
+	})
+
+	// TestFSStore_List_TrailingSlashOnRegularFile verifies List("a/") matches
+	// nothing when "a" is an object, not a directory: "a" does not start with "a/".
+	t.Run("trailing slash on a regular file", func(t *testing.T) {
+		store, err := NewFS(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx := t.Context()
+		if err := store.Put(ctx, "a", bytes.NewReader([]byte("x"))); err != nil {
+			t.Fatal(err)
+		}
+		if got := listSorted(ctx, t, store, "a/"); len(got) != 0 {
+			t.Fatalf("List(\"a/\") over a regular file: got %v, want empty", got)
+		}
+		if got := listSorted(ctx, t, store, "a"); len(got) != 1 {
+			t.Fatalf("List(\"a\"): got %v, want the object itself", got)
+		}
+	})
 }

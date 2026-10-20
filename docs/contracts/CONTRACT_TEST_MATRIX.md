@@ -69,7 +69,7 @@ Gaps are tracked with codes indicating category and priority:
 
 **Immutability**: All covered ✅
 
-- Data files immutable: `TestFSStore_Put_ErrPathExists`, `TestMemoryStore_Put_ErrPathExists`, `TestStore_Put/err_path_exists`
+- Data files immutable: `TestStore_Put/err_path_exists`, `TestStore_Put/err_path_exists`, `TestStore_Put/err_path_exists`
 - Linear history: `TestDataset_StreamWrite_Lineage/parent_snapshot_linked`, `TestDataset_StreamWriteRecords_Commit/parent_snapshot_linked`
 
 ---
@@ -161,7 +161,7 @@ Gaps are tracked with codes indicating category and priority:
 | Requirement | Test |
 |-------------|------|
 | ErrPathExists on duplicate (atomic) | `TestStore_PutAtomic/put_atomic_duplicate_returns_err_path_exists` |
-| All-or-nothing on reader failure | `TestFSStore_Put_AllOrNothing`, `TestMemoryStore_Put_AllOrNothing`, `TestStore_Put_AllOrNothing` |
+| All-or-nothing on reader failure | `TestStore_Put/all_or_nothing`, `TestStore_Put/all_or_nothing`, `TestStore_Put_AllOrNothing` |
 | Multipart preflight check | `TestStore_PutMultipartFromFile/pre_existing_returns_err_path_exists` |
 | Multipart conditional completion | `TestStore_PutMultipartFromFile/conditional_completion_returns_err_path_exists` |
 | Conditional completion documented | `TestStore_PutMultipartFromFile/multipart_conditional_completion` |
@@ -184,7 +184,7 @@ Gaps are tracked with codes indicating category and priority:
 | ErrNotFound | `TestStore_ReadRange/not_found` |
 | Invalid params | `TestStore_ReadRange_Bounds/negative_offset`, `TestStore_ReadRange_Bounds/negative_length`, etc. |
 | Beyond EOF | `TestStore_ReadRange/beyond_EOF`, `TestStore_ReadRange/offset_beyond_EOF` |
-| Exact bounds; allocation bounded by available bytes | `TestFSStore_ReadRange_Bounds`, `TestMemoryStore_ReadRange_Bounds` |
+| Exact bounds; allocation bounded by available bytes | `TestStore_ReadRange_Bounds/exact_bounds`, `TestStore_ReadRange_Bounds/exact_bounds` |
 
 **ReaderAt**: All covered ✅
 
