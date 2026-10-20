@@ -119,7 +119,7 @@ func (d *dataset) rejectedTombstoneIDs(keys []string) map[DatasetSnapshotID]bool
 // Lode never tombstones a head, so this only keeps a misplaced object under
 // expired/ from removing one.
 func (d *dataset) sweepGuard(ctx context.Context, inv sweepInventory) (func(DatasetSnapshotID) bool, error) {
-	_, err := d.history.readPointer(ctx)
+	head, err := d.history.readPointer(ctx)
 	if errors.Is(err, ErrNotFound) {
 		if len(inv.manifests) > 0 || len(inv.tombstones) > 0 || len(inv.invalidTombstones) > 0 {
 			return nil, fmt.Errorf("lode: latest pointer is absent: %w", ErrHeadUncommitted)
@@ -129,7 +129,8 @@ func (d *dataset) sweepGuard(ctx context.Context, inv sweepInventory) (func(Data
 	if err != nil {
 		return nil, fmt.Errorf("lode: failed to resolve head: %w", err)
 	}
-	head, err := d.history.CommittedHead(ctx, "")
+	// One pointer read decides: the value just read is the one confirmed.
+	err = d.history.confirmCommitted(ctx, head)
 	if errors.Is(err, ErrHeadUncommitted) {
 		return holdsAll, nil
 	}

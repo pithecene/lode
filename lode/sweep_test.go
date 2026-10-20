@@ -257,6 +257,30 @@ func TestSweep_Settle(t *testing.T) {
 		}
 	})
 
+	t.Run("a snapshot the listing shows nothing of is left alone", func(t *testing.T) {
+		mem := NewMemory()
+		lister := &listInjector{Store: mem}
+		ds := newDefaultRetention(t, lister)
+		first := writeRecord(t, ds, 1)
+		writeRecord(t, ds, 2)
+		putTombstone(t, mem, first.ID, newTombstone(first.ID, first.Manifest)) // misplaced
+		// A lagging listing omits every manifest and object of the snapshot.
+		for _, k := range storeKeys(t, mem) {
+			if strings.Contains(k, string(first.ID)) && !strings.Contains(k, "expired/") {
+				lister.hidden = append(lister.hidden, k)
+			}
+		}
+
+		report, err := ds.Sweep(t.Context(), SweepRequest{Grace: sweepGrace})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(report.Settled) != 0 || len(lister.deleted) != 0 {
+			t.Errorf("report = %+v, deleted %v; want nothing touched", report, lister.deleted)
+		}
+		assertPresent(t, ds, first)
+	})
+
 	t.Run("an interrupted expiry", func(t *testing.T) {
 		mem := NewMemory()
 		hs := &hookStore{Store: mem}
