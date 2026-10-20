@@ -173,10 +173,12 @@ that resolve to a set:
   §Snapshot ID) and naming a tombstone. Paths are derived only from IDs
   selected this way; any other value is never turned into a store path, so
   no requested ID can reach another dataset. `Partition` and `Before`
-  select from manifests only, so they do not reselect a snapshot whose
-  expiry stopped after step 2; `Sweep`, or `Expire` naming its ID,
-  completes it. Tombstones are permanent, and selecting from them would
-  revisit every past expiry on every run.
+  select from manifests only. While an interrupted expiry has a manifest
+  left (a partition manifest after step 2), they select it and complete it
+  from its tombstone like any other, reporting it in `Expired`; once step 3
+  has removed the last manifest they no longer see it, and `Sweep`, or
+  `Expire` naming its ID, completes it. Tombstones are permanent, and
+  selecting from them would revisit every past expiry on every run.
 - `Partition` — a partition path (Hive layouts only; see CONTRACT_LAYOUT).
   Resolves to every snapshot that has a partition manifest in that partition
   or beneath it. Matching is **whole-segment**: `run_id=run-1` selects
