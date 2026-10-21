@@ -63,7 +63,11 @@ It is authoritative for any `Dataset` implementation.
   atomic (`CONTRACT_STORAGE.md` §Put), so a failed stream leaves no object
   of its own, and a path whose `Put` returned `ErrPathExists` belongs to
   another writer. Removal of data files applies only to objects whose `Put`
-  succeeded and whose commit subsequently failed.
+  succeeded and whose commit then failed before any manifest write was
+  attempted. A failed manifest write does not show whether the manifest was
+  stored (a lost response stores it), so the snapshot may be visible; the
+  data object MUST then be retained, and `Dataset.Sweep` reclaims it if the
+  commit did fail.
 
 ### StreamWriteRecords Semantics
 
@@ -82,8 +86,9 @@ It is authoritative for any `Dataset` implementation.
 - On success, the manifest is written and the new snapshot is returned.
 - On error (an iterator failure, a codec error, or a storage error), no
   manifest is written. A failed `Put` leaves no object (`CONTRACT_STORAGE.md`
-  §Put); a data object whose `Put` succeeded but whose commit failed is
-  deleted on a best-effort basis.
+  §Put). A data object whose `Put` succeeded is deleted on a best-effort
+  basis if the commit failed before any manifest write was attempted, and
+  retained otherwise, as for `StreamWrite`.
 - If the store's `Put` returns before consuming the stream, `StreamWriteRecords`
   MUST return that error in preference to any iterator or finalization error
   reported afterward, and MUST NOT block on the store or the pipe. The `Put`
