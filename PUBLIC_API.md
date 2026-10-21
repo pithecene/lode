@@ -779,51 +779,57 @@ set:
 | `Partition` | Snapshots in this partition or beneath it, matched by whole segment (`run_id=r1` never matches `run_id=r10`); Hive layouts only |
 | `Before` | Snapshots whose write began before this instant (derived from the snapshot ID, so selection loads no manifest) |
 
-- **The head is never expired.** When the selection includes it, it is kept
-  and reported in `ExpireReport.RetainedHead`; that is not an error.
-- **Mixed snapshots are kept.** A snapshot selected by `Partition` that also
-  has files outside it is reported in `Mixed`. Name it in `IDs` to expire it.
+- **The head is never expired.** When the selection includes the head, it
+  is retained and reported in `ExpireReport.RetainedHead`; this is not an
+  error.
+- **Mixed snapshots are retained.** A snapshot selected by `Partition` that
+  also has files outside the partition is reported in `Mixed`. Name it in
+  `IDs` to expire it.
 - **Expiry is recorded.** `Snapshot` and `Read` on an expired ID return
   `ErrSnapshotExpired`, which also matches `ErrNotFound`.
 - **Expiry is resumable.** The report is non-nil on error and lists the
-  work done. The expiry's tombstone records the snapshot's files, so
-  running the same `IDs` request again completes it from any point, and so
-  does `Sweep`. `Objects` and `Bytes` count what each run deleted; totals
-  across runs add up.
-- **Lode deletes only what it wrote.** Objects a caller put next to the
-  dataset through `Store.Put` (sidecar files) are never deleted by
-  `Expire`; delete them after their snapshots are expired.
-- **Readers mid-read may fail.** A `Read` that loaded a manifest before its
-  expiry began can see `ErrNotFound` on a data file. Lode has no read lease.
+  work completed. The expiry's tombstone records the snapshot's files, so
+  repeating the same `IDs` request completes the expiry from any point, as
+  does `Sweep`. `Objects` and `Bytes` count what each run deleted, and the
+  totals across runs sum correctly.
+- **Lode deletes only what it wrote.** Objects that a caller placed beside
+  the dataset through `Store.Put` (sidecar files) are never deleted by
+  `Expire`; delete them after their snapshots have expired.
+- **A read in progress may fail.** A `Read` that loaded a manifest before
+  its expiry began can encounter `ErrNotFound` on a data file. Lode
+  provides no read lease.
 
 <!-- illustrative -->
 ```go
-// From the caller's own cron: finish interrupted expiries and reclaim
-// objects of writes that never committed, once older than a day.
+// From the caller's own scheduler: complete interrupted expiries and
+// reclaim objects of writes that never committed, once they are older
+// than a day.
 report, err := ds.Sweep(ctx, lode.SweepRequest{Grace: 24 * time.Hour})
 // report.Settled, report.Objects, report.Bytes, report.Unsized, report.Orphans
 ```
 
-- **Grace is required.** An object of a snapshot that never committed is
-  deleted only once its write began longer ago than `Grace`, so an
-  in-flight write is never swept. `Grace` must exceed the longest write;
-  zero or negative returns `ErrInvalidArgument`.
-- **Reclaim is per snapshot.** Objects in a live snapshot's data prefix are
-  kept whether or not its `Files[]` lists them; once the snapshot is
-  expired, all of them go.
-- **Bytes are counted only where recorded.** `Bytes` sums the sizes an
-  expiry's tombstone recorded for the objects deleted. Objects with no
-  recorded size (orphans, and objects a snapshot's `Files[]` never listed)
-  are counted in `Unsized`, never estimated.
-- **Out-of-topology objects are never touched.** Sidecars, the pointer and
-  tombstones are neither reported nor deleted.
+- **A grace period is required.** An object of a snapshot that never
+  committed is deleted only once its write began longer ago than `Grace`,
+  so a write in progress is never reclaimed. `Grace` must exceed the
+  duration of the longest write; a zero or negative value returns
+  `ErrInvalidArgument`.
+- **Reclamation operates per snapshot.** Objects in a live snapshot's data
+  prefix are retained whether or not its `Files[]` lists them; once the
+  snapshot has expired, all of them are deleted.
+- **Bytes are counted only where recorded.** `Bytes` is the sum of the
+  sizes that an expiry's tombstone recorded for the objects deleted.
+  Objects without a recorded size (orphaned objects, and objects that a
+  snapshot's `Files[]` never listed) are counted in `Unsized` and never
+  estimated.
+- **Objects outside the data topology are never modified.** Sidecar files,
+  the pointer, and tombstones are neither reported nor deleted.
 
 ---
 
 ## Errors
 
-Errors are returned for invalid configuration, storage failures, or
-missing objects. Error semantics are stable and documented.
+Errors are returned for invalid configuration, storage failures, and
+missing objects. Their semantics are stable and documented.
 
 ### Sentinel Errors
 
@@ -833,53 +839,58 @@ Use `errors.Is()` to check for sentinel errors:
 ```go
 snap, err := ds.Latest(ctx)
 if errors.Is(err, lode.ErrNoSnapshots) {
-    // Dataset exists but has no committed snapshots
+    // The dataset exists but has no committed snapshots.
 }
 ```
 
 | Sentinel | Meaning | Typical Source |
 |----------|---------|----------------|
-| `ErrNotFound` | Object/path does not exist | Storage, DatasetReader |
-| `ErrNoSnapshots` | Dataset or Volume has no committed snapshots | Dataset, Volume |
+| `ErrNotFound` | The object or path does not exist | Storage, DatasetReader |
+| `ErrNoSnapshots` | The Dataset or Volume has no committed snapshots | Dataset, Volume |
 | `ErrNoManifests` | Storage has objects but no valid manifests | DatasetReader |
-| `ErrPathExists` | Write to existing path (immutability violation) | Storage |
-| `ErrInvalidPath` | Key escapes root or is empty; prefix not canonical; bad `ReadRange` bounds | Storage, DatasetReader |
-| `ErrInvalidArgument` | Caller-supplied value cannot be used (nil factory, bad offset, blob write shape, …) | Dataset, DatasetReader, Volume |
-| `ErrDatasetsNotModeled` | Layout doesn't support dataset enumeration | DatasetReader |
-| `ErrPartitionPrefixNotSupported` | `Prefix` set on a layout without partitions | DatasetReader |
-| `ErrManifestInvalid` | Manifest fails validation | DatasetReader |
-| `ErrCodecConfigured` | StreamWrite called with codec configured | Dataset |
-| `ErrCodecNotStreamable` | StreamWriteRecords with non-streaming codec | Dataset |
-| `ErrNilIterator` | Nil iterator passed to StreamWriteRecords | Dataset |
-| `ErrOptionNotValidForDataset` | Option not applicable to Dataset | Dataset |
-| `ErrOptionNotValidForDatasetReader` | Option not applicable to DatasetReader | DatasetReader |
-| `ErrPartitioningNotSupported` | StreamWriteRecords with partitioning | Dataset |
-| `ErrRangeReadNotSupported` | Store doesn't support range reads | Storage |
-| `ErrSnapshotConflict` | Another writer committed since parent was resolved (CAS) | Dataset, Volume |
-| `ErrSnapshotExpired` | Snapshot was removed by `Expire`; also matches `ErrNotFound` | Dataset |
-| `ErrHeadUncommitted` | Latest pointer names a snapshot whose manifest is not written yet, or is missing beside existing snapshots | Dataset.Expire, Dataset.Sweep (missing pointer only) |
-| `ErrSchemaViolation` | Record doesn't conform to Parquet schema | Parquet Codec |
-| `ErrInvalidFormat` | Malformed or corrupted Parquet file | Parquet Codec |
+| `ErrPathExists` | A write to an existing path (a violation of immutability) | Storage |
+| `ErrInvalidPath` | The key escapes the root or is empty, the prefix is not canonical, or the `ReadRange` bounds are invalid | Storage, DatasetReader |
+| `ErrInvalidArgument` | A value supplied by the caller cannot be used (a `nil` factory, an invalid offset, an incorrectly shaped blob write, and so on) | Dataset, DatasetReader, Volume |
+| `ErrDatasetsNotModeled` | The layout does not support dataset enumeration | DatasetReader |
+| `ErrPartitionPrefixNotSupported` | `Prefix` was specified on a layout without partitions | DatasetReader |
+| `ErrManifestInvalid` | A manifest fails validation | DatasetReader |
+| `ErrCodecConfigured` | `StreamWrite` was called while a codec is configured | Dataset |
+| `ErrCodecNotStreamable` | `StreamWriteRecords` was called with a codec that does not stream | Dataset |
+| `ErrNilIterator` | A `nil` iterator was supplied to `StreamWriteRecords` | Dataset |
+| `ErrOptionNotValidForDataset` | The option does not apply to a Dataset | Dataset |
+| `ErrOptionNotValidForDatasetReader` | The option does not apply to a DatasetReader | DatasetReader |
+| `ErrPartitioningNotSupported` | `StreamWriteRecords` was called with partitioning | Dataset |
+| `ErrRangeReadNotSupported` | The store does not support range reads | Storage |
+| `ErrSnapshotConflict` | Another writer committed after the parent was resolved (CAS) | Dataset, Volume |
+| `ErrSnapshotExpired` | The snapshot was removed by `Expire`; the error also matches `ErrNotFound` | Dataset |
+| `ErrHeadUncommitted` | The latest pointer names a snapshot whose manifest has not been persisted, or is absent while snapshots exist | Dataset.Expire, Dataset.Sweep (absent pointer only) |
+| `ErrSchemaViolation` | A record does not conform to the Parquet schema | Parquet codec |
+| `ErrInvalidFormat` | A Parquet file is malformed or corrupt | Parquet codec |
 
-Volume (experimental) adds two sentinels in package `volume`:
+Volume (experimental) adds two sentinels in the package `volume`:
 `volume.ErrRangeMissing` (a `ReadAt` range is not fully committed) and
 `volume.ErrOverlappingBlocks` (committed blocks overlap in the cumulative
 manifest). It also returns the shared sentinels above where they apply.
 
 ### Error Handling Guidelines
 
-**Retry-safe:**
-- Storage I/O errors (network, timeout) — may retry
-- `ErrNotFound` during race — may retry if expecting eventual consistency
-- `ErrSnapshotConflict` — re-read `Latest()`, merge state, re-commit (or use `WithRetryCount` for automatic retry)
-- `ErrHeadUncommitted` — retry `Expire` or `Sweep` once the in-flight commit completes; a dataset written before the pointer existed needs one commit, which creates it
+**Safe to retry:**
+- Storage I/O errors (network failures, timeouts): the caller may retry.
+- `ErrNotFound` during a race: the caller may retry if the store is
+  eventually consistent.
+- `ErrSnapshotConflict`: call `Latest()` again, merge state, and commit
+  again (or use `WithRetryCount` for automatic retries).
+- `ErrHeadUncommitted`: retry `Expire` or `Sweep` once the pending commit
+  completes; a dataset written before the pointer was introduced requires
+  one commit, which creates the pointer.
 
-**Non-retry (configuration/logic error):**
-- `ErrDatasetsNotModeled` — reconfigure with different layout
-- `ErrInvalidArgument` — fix the call; the message names the value
-- `ErrManifestInvalid` — data corruption, investigate source
-- `ErrPathExists` — logic error (double-write attempt)
-- Component mismatch — reconfigure dataset or use matching snapshot
+**Not to be retried (configuration or logic errors):**
+- `ErrDatasetsNotModeled`: reconfigure with a different layout.
+- `ErrInvalidArgument`: correct the call; the message names the value.
+- `ErrManifestInvalid`: the data is corrupt; investigate its source.
+- `ErrPathExists`: a logic error (an attempt to write the same path twice).
+- A component mismatch: reconfigure the dataset or read a snapshot with
+  matching components.
 
 *Contract reference: [`CONTRACT_ERRORS.md`](docs/contracts/CONTRACT_ERRORS.md)*
 
@@ -890,11 +901,12 @@ manifest). It also returns the shared sentinels above where they apply.
 The `lode/s3` package provides an S3-compatible storage adapter.
 
 **Public API:**
-- `s3.New(client, config)` - Create store from AWS SDK client
-- `s3.Config{Bucket, Prefix}` - Store configuration
+- `s3.New(client, config)`: creates a store from an AWS SDK client
+- `s3.Config{Bucket, Prefix}`: the store's configuration
 
-Client construction uses the AWS SDK directly. This keeps Lode's API surface
-minimal while giving you full control over credentials, endpoints, and options.
+The client is constructed with the AWS SDK directly. This keeps Lode's API
+surface minimal while leaving the caller full control over credentials,
+endpoints, and options.
 
 ### AWS S3
 
@@ -978,14 +990,16 @@ client := awss3.NewFromConfig(cfg, func(o *awss3.Options) {
 store, _ := s3.New(client, s3.Config{Bucket: "my-bucket"})
 ```
 
-**Bucket requirement:** The bucket must exist before use. Lode does not create buckets.
+**Bucket requirement:** the bucket must exist before use; Lode does not
+create buckets.
 
 **Consistency:** AWS S3 provides strong read-after-write consistency.
-Other backends may differ — consult their documentation.
+Other backends may differ; consult their documentation.
 
 ---
 
 ## Examples
 
-Examples under `examples/` use the public API only and demonstrate the
-default bundle, explicit configuration, and required metadata.
+The examples under [`examples/`](examples/) use only the public API and
+demonstrate the default components, explicit configuration, and the
+required metadata.
