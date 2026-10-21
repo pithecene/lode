@@ -2,6 +2,7 @@ package chaos
 
 import (
 	"fmt"
+	"math/rand/v2"
 	"slices"
 	"sync"
 
@@ -103,6 +104,17 @@ func (l *Ledger) violate(check, format string, args ...any) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.violations = append(l.violations, v)
+}
+
+// randomCommit returns an acknowledged commit chosen with rng, without
+// copying the ledger; ok is false while there is none.
+func (l *Ledger) randomCommit(rng *rand.Rand) (c Commit, ok bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if len(l.commits) == 0 {
+		return Commit{}, false
+	}
+	return l.commits[rng.IntN(len(l.commits))], true
 }
 
 // Commits returns a copy of the acknowledged commits.

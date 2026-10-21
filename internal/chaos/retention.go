@@ -73,11 +73,10 @@ func expireBefore(ctx context.Context, ds lode.Dataset, _ *rand.Rand, cfg Config
 
 // expireOne expires one acknowledged snapshot by ID.
 func expireOne(ctx context.Context, ds lode.Dataset, rng *rand.Rand, _ Config, ledger *Ledger) error {
-	commits := ledger.Commits()
-	if len(commits) == 0 {
+	c, ok := ledger.randomCommit(rng)
+	if !ok {
 		return nil
 	}
-	c := commits[rng.IntN(len(commits))]
 	report, err := ds.Expire(ctx, lode.ExpireRequest{IDs: []lode.DatasetSnapshotID{c.ID}})
 	recordExpiry(report, ledger)
 	return err

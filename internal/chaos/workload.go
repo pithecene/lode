@@ -117,8 +117,8 @@ func reader(ctx context.Context, cfg Config, store lode.Store, index int, ledger
 		}
 		r := read{ctx: ctx, ds: ds, retention: cfg.Retention, ledger: ledger}
 		err := r.head()
-		if commits := ledger.Commits(); err == nil && len(commits) > 0 {
-			err = r.commit(commits[rng.IntN(len(commits))])
+		if c, ok := ledger.randomCommit(rng); err == nil && ok {
+			err = r.commit(c)
 		}
 		if errors.Is(err, errKilled) {
 			ds = nil
