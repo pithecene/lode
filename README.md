@@ -144,7 +144,7 @@ release is described in [`CHANGELOG.md`](CHANGELOG.md).
 
 ## License
 
-Apache License 2.0 (see [`LICENSE`](LICENSE)). Copyright © 2026 Pithecene.
+Apache License 2.0 (see [`LICENSE`](LICENSE)). Copyright © 2026 Pithecene LLC.
 
 Contact: contact@pithecene.sh. To report a vulnerability, follow
 [`SECURITY.md`](SECURITY.md).
