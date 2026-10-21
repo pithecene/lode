@@ -77,6 +77,39 @@ Lode is built around a small set of invariants:
 
 If you know the snapshot ID, you know exactly what data you are reading.
 
+How a dataset sits in storage (default layout):
+
+```mermaid
+flowchart LR
+    P["latest<br/>(pointer)"] -->|names the head| S3
+    subgraph snapshots
+        S1["snapshot 1<br/>manifest.json"] --> D1[data files]
+        S2["snapshot 2<br/>manifest.json"] --> D2[data files]
+        S3["snapshot 3<br/>manifest.json"] --> D3[data files]
+    end
+    S3 -.->|parent| S2 -.->|parent| S1
+```
+
+Each write adds a snapshot; nothing earlier changes. A commit becomes visible
+in a fixed order:
+
+```mermaid
+sequenceDiagram
+    participant W as writer
+    participant S as store
+    W->>S: write data files under the new snapshot ID
+    W->>S: move the latest pointer (CAS from the parent it read)
+    W->>S: write the manifest
+    Note over W,S: visible: readers see a snapshot once its manifest exists
+```
+
+If another writer moved the pointer first, the CAS fails with
+`ErrSnapshotConflict`. With `WithRetryCount`, Lode re-reads the head and
+retries with the same staged data, which may still publish the snapshot. If
+the commit fails for good, data files a buffered write staged stay behind as
+orphans until `Dataset.Sweep` reclaims them; a stream write deletes its
+object on a best-effort basis.
+
 ---
 
 ## Quick Start (5 minutes)
@@ -179,6 +212,15 @@ See [`examples/`](#examples) for complete runnable code.
 3. Is it a large stream of records? → Use `StreamWriteRecords` with a streaming codec
 4. Is it a sparse/resumable byte address space? → Use `volume.Volume` (experimental)
 
+```mermaid
+flowchart TD
+    A{Already in memory?} -- yes --> W[Write]
+    A -- no --> B{What is it?}
+    B -- one large blob --> SW[StreamWrite]
+    B -- a large record stream --> R["StreamWriteRecords<br/>(streaming codec)"]
+    B -- sparse, resumable byte ranges --> V["Volume:<br/>StageWriteAt + Commit"]
+```
+
 ---
 
 ## Guarantees
@@ -200,7 +242,7 @@ What Lode explicitly does NOT provide:
 | Distributed coordination | Lode detects conflicts (CAS) but does not provide locks, consensus, or leader election |
 | Query execution | Lode structures data; query engines consume it |
 | Background compaction | No implicit mutations; callers control lifecycle |
-| Automatic cleanup | Nothing is removed implicitly; `Expire` and `Sweep` remove snapshots and leftovers when the caller runs them |
+| Automatic cleanup | Nothing is removed implicitly; `Expire` and `Sweep` remove snapshots and leftovers when the caller runs them (see [the retention guide](docs/guides/retention.md)) |
 
 For full contract details: [`docs/contracts/`](docs/contracts/)
 
