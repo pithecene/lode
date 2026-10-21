@@ -100,7 +100,7 @@ is part of the release checklist.
 `task bench` runs **all** benchmarks — in-memory and S3 integration:
 
 ```bash
-task s3:up      # start LocalStack + MinIO
+task s3:up      # start LocalStack + RustFS
 task bench      # run all benchmarks
 task s3:down    # stop services
 ```
@@ -114,7 +114,7 @@ In-memory benchmarks always run. S3 benchmarks require services to be up first.
 summaries. Raw output is saved to `bench-inmemory.txt` and `bench-s3.txt`.
 
 ```bash
-task s3:up          # start LocalStack + MinIO
+task s3:up          # start LocalStack + RustFS
 task bench:stat     # -count=10, benchstat summary
 task s3:down        # stop services
 ```

@@ -30,7 +30,8 @@
 //	|---------------|------------------------|-----------------------|
 //	| Cloudflare R2 | Supported              | ✅ Production verified |
 //	| AWS S3        | Supported              | ✅ Expected compatible |
-//	| MinIO         | Unknown                | ⚠️ Test backend only   |
+//	| RustFS        | Supported              | ⚠️ Test backend only   |
+//	| MinIO         | Unknown                | ⚠️ Not tested          |
 //	| LocalStack    | Unknown                | ⚠️ Test backend only   |
 //
 // For backends marked ⚠️: these are used for integration testing only. If

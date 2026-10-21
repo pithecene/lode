@@ -3,7 +3,7 @@
 // This example demonstrates using the S3 storage adapter with Lode.
 //
 // Requirements:
-// - An S3-compatible service (LocalStack or MinIO)
+// - An S3-compatible service (LocalStack or RustFS)
 // - The bucket must exist (e.g., `aws --endpoint-url=http://localhost:4566 s3 mb s3://lode-example`)
 // - Environment variables (optional, defaults provided below)
 //
