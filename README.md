@@ -200,7 +200,7 @@ What Lode explicitly does NOT provide:
 | Distributed coordination | Lode detects conflicts (CAS) but does not provide locks, consensus, or leader election |
 | Query execution | Lode structures data; query engines consume it |
 | Background compaction | No implicit mutations; callers control lifecycle |
-| Automatic cleanup | Partial objects from failed writes may remain |
+| Automatic cleanup | Nothing is removed implicitly; `Expire` and `Sweep` remove snapshots and leftovers when the caller runs them |
 
 For full contract details: [`docs/contracts/`](docs/contracts/)
 
@@ -213,7 +213,7 @@ Common pitfalls when using Lode:
 - **Metadata defaults to empty** — `nil` metadata is coalesced to `Metadata{}`; pass `nil` or `Metadata{}` for empty metadata.
 - **Raw mode expects `[]byte`** — Without a codec, `Write` expects exactly one `[]byte` element.
 - **Concurrent writes need CAS-capable stores** — Without `ConditionalWriter`, concurrent writers may corrupt history. Built-in Memory and S3 adapters support CAS; FS supports CAS on Unix only (non-Unix FS falls back to single-writer Delete+Put).
-- **Cleanup is best-effort** — Failed streams may leave partial objects in storage.
+- **Cleanup is best-effort** — Failed streams may leave partial objects in storage until `Dataset.Sweep` reclaims them past its grace period.
 - **StreamWriteRecords requires streaming codec** — Not all codecs support streaming.
 
 See [`PUBLIC_API.md`](PUBLIC_API.md) for complete usage guidance.
@@ -313,6 +313,7 @@ This keeps Lode's core APIs explicit and predictable.
 | [`volume_sparse`](examples/volume_sparse) | Sparse Volume: stage, commit, read with gaps | `go run ./examples/volume_sparse` |
 | [`vector_artifacts`](examples/vector_artifacts) | Vector artifact pipeline: embeddings, indices, pointers | `go run ./examples/vector_artifacts` |
 | [`optimistic_concurrency`](examples/optimistic_concurrency) | CAS conflict detection and retry pattern | `go run ./examples/optimistic_concurrency` |
+| [`retention`](examples/retention) | Expire runs by partition with a preview, then sweep | `go run ./examples/retention` |
 | [`s3`](examples/s3) | S3 adapter with LocalStack/MinIO | `go run ./examples/s3` |
 
 Each example is self-contained and runnable. See the example source for detailed comments.
