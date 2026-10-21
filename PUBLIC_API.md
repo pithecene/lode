@@ -732,11 +732,16 @@ single-writer semantics in the application.
 **The removal of partial objects is best-effort, not guaranteed.**
 
 On an abort, or on an error before commit:
-- No manifest is written, so the snapshot does not exist.
+- If the failure occurs before any manifest is written, the snapshot does
+  not exist.
 - A failed `Put` leaves no object (`CONTRACT_STORAGE.md` §Put is atomic),
   and the writer never deletes anything after a failed `Put`.
-- A data object that was fully written but whose commit failed is deleted
-  on a best-effort basis and may remain in storage.
+- A stream's data object whose commit failed before any manifest write is
+  deleted on a best-effort basis and may remain in storage.
+- If a manifest write fails, the manifest may nevertheless have been
+  stored (when only the response was lost), so the snapshot may be visible.
+  Lode therefore retains the data object; if the commit did fail,
+  `Dataset.Sweep` reclaims it.
 - Callers should not rely on the automatic removal of partial objects;
   `Dataset.Sweep` reclaims them once they are older than its grace period
   (§Retention).

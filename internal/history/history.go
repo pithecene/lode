@@ -520,11 +520,27 @@ func (h *History[ID, M]) resolve(ctx context.Context) (id ID, scanned *Snapshot[
 	return s.ID, s, observed, nil
 }
 
+// ErrManifestUncertain marks a commit that failed after its pointer advanced,
+// while it was writing manifests. A failed Put does not say whether the
+// object was stored (a lost response stores it), so the snapshot may be
+// visible, and nothing it references may be deleted. Errors carrying it keep
+// the message of the underlying failure.
+var ErrManifestUncertain = errors.New("history: the commit's manifest may have been persisted")
+
+// manifestUncertain wraps a manifest write failure so that it matches
+// ErrManifestUncertain without changing its message.
+type manifestUncertain struct{ err error }
+
+func (e manifestUncertain) Error() string        { return e.err.Error() }
+func (e manifestUncertain) Unwrap() error        { return e.err }
+func (e manifestUncertain) Is(target error) bool { return target == ErrManifestUncertain }
+
 // Advance commits a snapshot: the pointer first (CAS against expected), then
 // every manifest path. The pointer goes first so a crash between the two
-// leaves a pointer to a missing snapshot — which Resolve treats as stale and
-// a cold start recovers by scan — never a committed manifest the pointer
-// skips. On success the new head is remembered.
+// leaves a pending commit that the next commit adopts as its parent
+// (CONTRACT_CORE §Head Pointer), never a committed manifest the pointer
+// skips. A failure after the pointer advanced matches ErrManifestUncertain.
+// On success the new head is remembered.
 func (h *History[ID, M]) Advance(ctx context.Context, expected string, id ID, manifest *M, paths []string) error {
 	data, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
@@ -535,7 +551,7 @@ func (h *History[ID, M]) Advance(ctx context.Context, expected string, id ID, ma
 	}
 	for _, p := range paths {
 		if err := h.store.Put(ctx, p, bytes.NewReader(data)); err != nil {
-			return fmt.Errorf("lode: failed to write %s: %w", h.noun, err)
+			return manifestUncertain{fmt.Errorf("lode: failed to write %s: %w", h.noun, err)}
 		}
 	}
 	h.remember(id, string(id))
