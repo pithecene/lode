@@ -23,6 +23,7 @@ Do not update for internal refactors.
 - `PUBLIC_API.md` — developer-facing public API spec (product contract)
 - `README.md` — project overview and goals
 - `CONTRIBUTING.md` — contribution guidelines
+- `SECURITY.md` — supported versions and vulnerability reporting
 
 ---
 
@@ -47,9 +48,11 @@ Plans, contracts, and research notes. Contracts define **system behavior**.
 - `contracts/CONTRACT_EXAMPLES.md` — example and callsite conventions
 - `contracts/CONTRACT_VOLUME.md` — contract for Volume persistence model
 - `contracts/CONTRACT_COMPLEXITY.md` — complexity bounds for all public operations
+- `contracts/CONTRACT_RETENTION.md` — snapshot expiry and unreferenced-object sweep
 - `BENCHMARKS.md` — benchmark results and performance baselines
 - `DESIGN_SCOPED_CONCURRENCY.md` — scoped concurrency design for non-overlapping writers
 - `SNIPPET_POLICY.md` — markdown code fence conventions
+- `guides/` — explanatory guides (non-normative): `concepts.md` (storage model, commits, choosing a write API), `retention.md` (expiry, tombstones, sweep), `snapshot-ids.md` (ID format, ordering, uniqueness)
 - `assets/` — README splash (light and dark JPEG); `assets/source/` holds the illustrated section and `render.sh` that regenerate it
 
 Contracts are authoritative over code.
@@ -80,7 +83,7 @@ Internal implementations.
 
 ## examples/
 
-Example usage and integration references.
+Example usage and integration references; `README.md` indexes them.
 
 - `default_layout/` — write → list → read with DefaultLayout
 - `hive_layout/` — partition-first layout with Hive partitioner
@@ -91,6 +94,7 @@ Example usage and integration references.
 - `volume_sparse/` — sparse Volume: stage, commit, read with gaps
 - `optimistic_concurrency/` — CAS conflict detection and retry pattern
 - `vector_artifacts/` — vector artifact pipeline: embeddings, indices, active pointers
+- `retention/` — expire runs by partition with a dry-run preview, then sweep
 - `s3/` — S3 adapter example
 
 ---

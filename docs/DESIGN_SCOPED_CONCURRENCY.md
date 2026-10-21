@@ -14,9 +14,9 @@ non-overlapping partitions within the same dataset, they contend on a
 single pointer — even though their data paths never intersect.
 
 With CAS (PR #135), this contention produces `ErrSnapshotConflict` and
-the caller must retry. The retry is cheap (data files already persisted;
-cost is one manifest write + one pointer swap), but the ceremony
-shouldn't exist for provably non-overlapping work.
+the caller must retry. The retry is inexpensive (the data files are already
+persisted, so its cost is one manifest write and one pointer swap), but
+work that provably does not overlap should not require it.
 
 Without scoped concurrency, consumers must either:
 1. Fragment one logical dataset into N datasets (one per writer), then
@@ -24,7 +24,7 @@ Without scoped concurrency, consumers must either:
 2. Serialize writes externally (defeating concurrency).
 3. Accept CAS retry overhead for non-overlapping work.
 
-None of these is a satisfying answer for a v1.0 library.
+None of these options is satisfactory for a v1.0 library.
 
 ---
 
@@ -48,7 +48,7 @@ None of these is a satisfying answer for a v1.0 library.
 
 ---
 
-## Constraint: Don't Overindex on Hive
+## Constraint: Avoid Overemphasizing Hive
 
 The dogfooding evidence comes from a Hive-partitioned pipeline with
 concurrent crawlers writing to non-overlapping partition keys. This is
@@ -135,6 +135,26 @@ Timeline:
 4. B's files are only in beta/ — no overlap
 5. B re-parents to S1, retries: CAS(S1 → S2)              ✓
 6. History: S0 → S1 → S2 (linear, no fork)
+```
+
+The same timeline as a sequence:
+
+```mermaid
+sequenceDiagram
+    participant A as Writer A (alpha)
+    participant P as latest pointer
+    participant B as Writer B (beta)
+    A->>P: read head: S0
+    B->>P: read head: S0
+    A->>P: CAS S0 → S1
+    A->>A: write S1's manifest
+    Note over A,P: S1 committed (files in alpha/)
+    B->>P: CAS S0 → S2
+    P-->>B: conflict: head is S1
+    B->>B: read S1's manifest: alpha/ only, no overlap with beta/
+    B->>P: re-parent to S1, CAS S1 → S2
+    B->>B: write S2's manifest
+    Note over P: history S0 → S1 → S2, linear
 ```
 
 Steps 3-5 happen inside `Write()` / `StreamWrite()`, invisible to the
@@ -258,7 +278,7 @@ ds, _ := lode.NewDataset("data", factory, lode.WithWriteLane("alpha"))
 ```
 
 **Strengths:**
-- General: any scoping dimension, not just partitions.
+- General: any scoping dimension, not only partitions.
 - Explicit: the caller declares intent.
 
 **Weaknesses:**
@@ -351,7 +371,7 @@ overlapping writes only.
 
 ### PUBLIC_API.md
 - §Concurrency: document non-overlapping write behavior.
-- §Usage Gotchas: update concurrent write note.
+- §Usage Pitfalls: update the note on concurrent writes.
 
 ### Manifest
 No change. File paths already encode partition information.

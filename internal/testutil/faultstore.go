@@ -49,6 +49,7 @@ type FaultStore struct {
 	putErr      error
 	putErrMatch string // if set, only inject putErr on paths containing this substring
 	getErr      error
+	getErrMatch string // if set, only inject getErr on paths containing this substring
 	deleteErr   error
 	existsErr   error
 	listErr     error
@@ -96,6 +97,19 @@ func (f *FaultStore) SetPutError(err error, match ...string) {
 		f.putErrMatch = match[0]
 	} else {
 		f.putErrMatch = ""
+	}
+}
+
+// SetGetError sets an error to be returned by Get calls.
+// If match is non-empty, error is only returned for paths containing match.
+func (f *FaultStore) SetGetError(err error, match ...string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.getErr = err
+	if len(match) > 0 {
+		f.getErrMatch = match[0]
+	} else {
+		f.getErrMatch = ""
 	}
 }
 
@@ -261,10 +275,11 @@ func (f *FaultStore) Put(ctx context.Context, path string, r io.Reader) error {
 func (f *FaultStore) Get(ctx context.Context, path string) (io.ReadCloser, error) {
 	f.mu.Lock()
 	injectedErr := f.getErr
+	errMatch := f.getErrMatch
 	f.getCalls = append(f.getCalls, path)
 	f.mu.Unlock()
 
-	if injectedErr != nil {
+	if injectedErr != nil && (errMatch == "" || strings.Contains(path, errMatch)) {
 		return nil, injectedErr
 	}
 	return f.inner.Get(ctx, path)

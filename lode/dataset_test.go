@@ -2529,6 +2529,150 @@ func TestDataset_Write_Pointer(t *testing.T) {
 	})
 }
 
+func TestDataset_LatestPointer_PendingCommit(t *testing.T) {
+	// Advance writes the pointer before the manifest, so a pointer that
+	// names a snapshot without a manifest may belong to a pending commit.
+	// Latest serves the scan result but must not replace the pointer, and the
+	// next commit must adopt the pending commit as parent once its manifest
+	// is persisted.
+	store := NewMemory()
+	open := func() Dataset {
+		ds, err := NewDataset("test-ds", NewMemoryFactoryFrom(store), WithCodec(NewJSONLCodec()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ds
+	}
+	reader, other := open(), open()
+	snap1, err := reader.Write(t.Context(), R(D{"a": 1}), Metadata{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, err := other.Write(t.Context(), R(D{"b": 2}), Metadata{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestPath := "datasets/test-ds/snapshots/" + string(pending.ID) + "/manifest.json"
+	moveObject(t, store, manifestPath, "pending/manifest.json")
+	if err := store.Delete(t.Context(), manifestPath); err != nil {
+		t.Fatal(err)
+	}
+
+	latest, err := reader.Latest(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latest.ID != snap1.ID {
+		t.Errorf("Latest = %s, want the committed %s", latest.ID, snap1.ID)
+	}
+	rc, err := store.Get(t.Context(), "datasets/test-ds/latest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pointer, _ := io.ReadAll(rc)
+	_ = rc.Close()
+	if string(pointer) != string(pending.ID) {
+		t.Errorf("pointer = %q, want it to remain at the pending %q", pointer, pending.ID)
+	}
+
+	moveObject(t, store, "pending/manifest.json", manifestPath)
+	next, err := reader.Write(t.Context(), R(D{"c": 3}), Metadata{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next.Manifest.ParentSnapshotID != pending.ID {
+		t.Errorf("parent = %s, want the landed %s", next.Manifest.ParentSnapshotID, pending.ID)
+	}
+}
+
+// TestDataset_Write_ParentsOnPendingCommit verifies that a commit beginning
+// after another commit has advanced the pointer, but before that commit has
+// persisted its manifest, adopts the pending commit as its parent. Any other
+// parent would fork the history (CONTRACT_CORE §Head Pointer).
+func TestDataset_Write_ParentsOnPendingCommit(t *testing.T) {
+	store := NewMemory()
+	open := func() Dataset {
+		ds, err := NewDataset("test-ds", NewMemoryFactoryFrom(store), WithCodec(NewJSONLCodec()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ds
+	}
+	first, other := open(), open()
+	if _, err := first.Write(t.Context(), R(D{"a": 1}), Metadata{}); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := other.Write(t.Context(), R(D{"b": 2}), Metadata{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestPath := "datasets/test-ds/snapshots/" + string(pending.ID) + "/manifest.json"
+	moveObject(t, store, manifestPath, "pending/manifest.json")
+	if err := store.Delete(t.Context(), manifestPath); err != nil {
+		t.Fatal(err)
+	}
+
+	next, err := open().Write(t.Context(), R(D{"c": 3}), Metadata{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next.Manifest.ParentSnapshotID != pending.ID {
+		t.Errorf("parent = %s, want the pending %s", next.Manifest.ParentSnapshotID, pending.ID)
+	}
+}
+
+// writeInvertedHead persists the history shape in which lode#208 forked: the
+// head's snapshot ID is smaller than its parent's, because the head's write
+// began first and committed second, so the largest ID names the parent. It
+// returns the head.
+func writeInvertedHead(t *testing.T, store Store) DatasetSnapshotID {
+	t.Helper()
+	base := time.Now().Add(-time.Hour)
+	parent, head := idAt(base.Add(2*time.Second)), idAt(base.Add(time.Second))
+	for _, link := range []struct{ id, parent DatasetSnapshotID }{{parent, ""}, {head, parent}} {
+		m := validTestManifest()
+		m.SnapshotID, m.ParentSnapshotID = link.id, link.parent
+		writeManifest(t.Context(), t, store, m)
+	}
+	if err := store.Put(t.Context(), "datasets/test-ds/latest", strings.NewReader(string(head))); err != nil {
+		t.Fatal(err)
+	}
+	return head
+}
+
+// TestDataset_TransientHeadReadErrors verifies that a failed read of the
+// pointer or of the head's manifest is returned to the caller. Treating it
+// as an absent pointer or manifest selects the largest snapshot ID, which is
+// the head's parent in this shape (CONTRACT_CORE §Head Pointer, lode#208).
+func TestDataset_TransientHeadReadErrors(t *testing.T) {
+	open := func(t *testing.T, fs *testutil.FaultStore) Dataset {
+		t.Helper()
+		ds, err := NewDataset("test-ds", newFaultStoreFactory(fs))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ds
+	}
+	t.Run("Latest returns a failed head load", func(t *testing.T) {
+		store := NewMemory()
+		head := writeInvertedHead(t, store)
+		fs := testutil.NewFaultStore(store)
+		fs.SetGetError(errGetFailed, "/"+string(head)+"/")
+		if snap, err := open(t, fs).Latest(t.Context()); !errors.Is(err, errGetFailed) {
+			t.Fatalf("got %v, %v; want the failed read", snap, err)
+		}
+	})
+	t.Run("Write returns a failed pointer read", func(t *testing.T) {
+		store := NewMemory()
+		writeInvertedHead(t, store)
+		fs := testutil.NewFaultStore(store)
+		fs.SetGetError(errGetFailed, "/latest")
+		if snap, err := open(t, fs).Write(t.Context(), []any{[]byte("x")}, nil); !errors.Is(err, errGetFailed) {
+			t.Fatalf("got %v, %v; want the failed read", snap, err)
+		}
+	})
+}
+
 func TestDataset_LatestPointer(t *testing.T) {
 	t.Run("read after write", func(t *testing.T) {
 		// After a write, the pointer file must exist in the store and

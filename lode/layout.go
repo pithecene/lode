@@ -4,34 +4,66 @@ import (
 	"path"
 	"strings"
 
+	"github.com/pithecene-io/lode/internal/storepath"
 	"github.com/pithecene-io/lode/internal/validate"
 )
 
-// layout is the internal interface that combines path topology with partitioning.
-// Per CONTRACT_LAYOUT.md, these are unified - users configure both through Layout constructors.
+// layout is everything a dataset or reader needs from one path grammar and
+// its partitioner. Per CONTRACT_LAYOUT.md the two are unified: users
+// configure both through Layout constructors. It is composed from one
+// interface per concern, so a consumer that needs only one concern holds
+// only that one.
 type layout interface {
-	// Path topology methods
-	supportsDatasetEnumeration() bool
-	supportsPartitions() bool
-	datasetsPrefix() string
+	snapshotPaths
+	partitionPaths
+	datasetPaths
+	tombstonePaths
+	partitioner() partitioner
+}
+
+// snapshotPaths is where a dataset's snapshots live: the pointer, every
+// manifest copy and data object, and parsing those paths back.
+type snapshotPaths interface {
+	// snapshotsPrefix covers every manifest of the dataset.
 	snapshotsPrefix(dataset DatasetID) string
-	snapshotsPrefixForPartition(dataset DatasetID, partition string) string
-	// partitionsPrefix returns the storage prefix covering every segment whose
-	// partition path starts with partitionPrefix (a raw string prefix, no
-	// key boundary implied). Only meaningful when supportsPartitions().
-	partitionsPrefix(dataset DatasetID, partitionPrefix string) string
-	isManifest(p string) bool
-	parseDatasetID(manifestPath string) DatasetID
-	parseSnapshotID(manifestPath string) DatasetSnapshotID
-	parsePartitionFromManifest(manifestPath string) string
-	extractPartitionPath(filePath string) string
 	manifestPath(dataset DatasetID, snapshot DatasetSnapshotID) string
 	manifestPathInPartition(dataset DatasetID, snapshot DatasetSnapshotID, partition string) string
 	dataFilePath(dataset DatasetID, snapshot DatasetSnapshotID, partition, filename string) string
 	latestPointerPath(dataset DatasetID) string
+	// parse reads a path as a manifest or data object of this layout.
+	parse(p string) (snapshotPath, bool)
+	// manifest is parse restricted to manifest paths.
+	manifest(p string) (snapshotPath, bool)
+	// isObjectOf reports whether p is, in canonical form, an object of the
+	// given kind (manifest or data) of this snapshot of this dataset.
+	isObjectOf(dataset DatasetID, snapshot DatasetSnapshotID, kind pathKind, p string) bool
+}
 
-	// Partitioning (unified with layout)
-	partitioner() partitioner
+// partitionPaths is how partitions appear in paths; only meaningful when
+// supportsPartitions().
+type partitionPaths interface {
+	supportsPartitions() bool
+	snapshotsPrefixForPartition(dataset DatasetID, partition string) string
+	// partitionsPrefix returns the storage prefix covering every segment whose
+	// partition path starts with partitionPrefix (a raw string prefix, no
+	// key boundary implied).
+	partitionsPrefix(dataset DatasetID, partitionPrefix string) string
+	// extractPartitionPath is the partition of a manifest or data path, ""
+	// when it has none.
+	extractPartitionPath(filePath string) string
+}
+
+// datasetPaths is where datasets themselves are enumerated.
+type datasetPaths interface {
+	supportsDatasetEnumeration() bool
+	datasetsPrefix() string
+}
+
+// tombstonePaths is where Dataset.Expire records an expired snapshot;
+// tombstonesPrefix lists every tombstone of a dataset.
+type tombstonePaths interface {
+	tombstonePath(dataset DatasetID, snapshot DatasetSnapshotID) string
+	tombstonesPrefix(dataset DatasetID) string
 }
 
 // Layout constants
@@ -43,6 +75,7 @@ const (
 	partitionsDir = "partitions"
 	segmentsDir   = "segments"
 	latestFile    = "latest"
+	tombstonesDir = "expired"
 )
 
 // -----------------------------------------------------------------------------
@@ -300,29 +333,49 @@ func (l *pathLayout) latestPointerPath(dataset DatasetID) string {
 	return join(l.grammar.root, string(dataset), latestFile)
 }
 
-// manifest parses p as a manifest path of this layout; the zero snapshotPath
-// for anything else, so callers never see partial fields.
-func (l *pathLayout) manifest(p string) snapshotPath {
-	if sp, ok := l.grammar.parse(p); ok && sp.kind == manifestLeaf {
-		return sp
+func (l *pathLayout) tombstonePath(dataset DatasetID, snapshot DatasetSnapshotID) string {
+	return join(l.grammar.datasetDir(dataset), tombstonesDir, string(snapshot))
+}
+
+func (l *pathLayout) tombstonesPrefix(dataset DatasetID) string {
+	return join(l.grammar.datasetDir(dataset), tombstonesDir) + "/"
+}
+
+func (l *pathLayout) parse(p string) (snapshotPath, bool) {
+	return l.grammar.parse(p)
+}
+
+// leafDir is the directory under a snapshot that holds each kind of leaf.
+var leafDir = map[pathKind]string{manifestLeaf: "", dataLeaf: dataDir}
+
+// isObjectOf requires p to be a key every store accepts, already in clean
+// form, and to survive a parse-and-rebuild round trip unchanged: no "..",
+// backslash, empty or foreign segment can make a delete land outside the
+// snapshot or fail in the store.
+func (l *pathLayout) isObjectOf(dataset DatasetID, snapshot DatasetSnapshotID, kind pathKind, p string) bool {
+	if key, ok := storepath.Key(p); !ok || key != p {
+		return false
 	}
-	return snapshotPath{}
+	sp, ok := l.grammar.parse(p)
+	if !ok || sp.kind != kind || sp.dataset != dataset || sp.snapshot != snapshot {
+		return false
+	}
+	return l.grammar.objectPath(dataset, sp.partition, snapshot, leafDir[kind], path.Base(p)) == p
 }
 
-func (l *pathLayout) isManifest(p string) bool {
-	return l.manifest(p).kind == manifestLeaf
+// withinPartition reports whether partition p is partition or lies beneath
+// it, comparing whole segments: "run_id=1" does not contain "run_id=10".
+func withinPartition(p, partition string) bool {
+	return p == partition || strings.HasPrefix(p, partition+"/")
 }
 
-func (l *pathLayout) parseDatasetID(manifestPath string) DatasetID {
-	return l.manifest(manifestPath).dataset
-}
-
-func (l *pathLayout) parseSnapshotID(manifestPath string) DatasetSnapshotID {
-	return l.manifest(manifestPath).snapshot
-}
-
-func (l *pathLayout) parsePartitionFromManifest(manifestPath string) string {
-	return l.manifest(manifestPath).partition
+// manifest parses p as a manifest path of this layout; false, with the zero
+// snapshotPath, for anything else, so callers never see partial fields.
+func (l *pathLayout) manifest(p string) (snapshotPath, bool) {
+	if sp, ok := l.grammar.parse(p); ok && sp.kind == manifestLeaf {
+		return sp, true
+	}
+	return snapshotPath{}, false
 }
 
 // extractPartitionPath returns the partition of a manifest or data path, ""

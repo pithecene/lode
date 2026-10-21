@@ -55,8 +55,8 @@ func TestHiveLayout_Manifests(t *testing.T) {
 			{"datasets/segments/segments/1/manifest.json", true},
 		}
 		for _, c := range cases {
-			if got := l.isManifest(c.path); got != c.want {
-				t.Errorf("isManifest(%q) = %v, want %v", c.path, got, c.want)
+			if got := isManifestPath(l, c.path); got != c.want {
+				t.Errorf("manifest(%q) ok = %v, want %v", c.path, got, c.want)
 			}
 		}
 	})
@@ -73,11 +73,11 @@ func TestHiveLayout_Manifests(t *testing.T) {
 			"datasets/ds/partitions/segments/s1/manifest.json",
 			"datasets/ds/partitions/day=1/manifest.json",
 		} {
-			if l.isManifest(p) {
-				t.Errorf("isManifest(%q) = true, want false", p)
+			if isManifestPath(l, p) {
+				t.Errorf("manifest(%q) ok = true, want false", p)
 			}
-			if id := l.parseSnapshotID(p); id != "" {
-				t.Errorf("parseSnapshotID(%q) = %q, want empty", p, id)
+			if id := manifestFields(l, p).snapshot; id != "" {
+				t.Errorf("manifest(%q).snapshot = %q, want empty", p, id)
 			}
 		}
 	})
@@ -97,11 +97,11 @@ func TestHiveLayout_Manifests(t *testing.T) {
 			{"datasets/ds/segments/1/data/f.jsonl", "", ""},
 		}
 		for _, c := range cases {
-			if got := l.parseDatasetID(c.path); got != c.wantDataset {
-				t.Errorf("parseDatasetID(%q) = %q, want %q", c.path, got, c.wantDataset)
+			if got := manifestFields(l, c.path).dataset; got != c.wantDataset {
+				t.Errorf("manifest(%q).dataset = %q, want %q", c.path, got, c.wantDataset)
 			}
-			if got := l.parseSnapshotID(c.path); got != c.wantSegment {
-				t.Errorf("parseSnapshotID(%q) = %q, want %q", c.path, got, c.wantSegment)
+			if got := manifestFields(l, c.path).snapshot; got != c.wantSegment {
+				t.Errorf("manifest(%q).snapshot = %q, want %q", c.path, got, c.wantSegment)
 			}
 		}
 	})
@@ -130,11 +130,23 @@ func TestHiveLayout_Manifests(t *testing.T) {
 			{"datasets/partitions/partitions/day=1/segments/1/manifest.json", "day=1"},
 		}
 		for _, c := range cases {
-			if got := l.parsePartitionFromManifest(c.path); got != c.want {
-				t.Errorf("parsePartitionFromManifest(%q) = %q, want %q", c.path, got, c.want)
+			if got := manifestFields(l, c.path).partition; got != c.want {
+				t.Errorf("manifest(%q).partition = %q, want %q", c.path, got, c.want)
 			}
 		}
 	})
+}
+
+// manifestFields is what layout.manifest parses from p: zero fields when p
+// is not a manifest path, so tables can list both cases.
+func manifestFields(l layout, p string) snapshotPath {
+	sp, _ := l.manifest(p)
+	return sp
+}
+
+func isManifestPath(l layout, p string) bool {
+	_, ok := l.manifest(p)
+	return ok
 }
 
 func TestHiveLayout_ExtractPartitionPath(t *testing.T) {

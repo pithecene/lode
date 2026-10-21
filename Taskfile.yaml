@@ -45,6 +45,7 @@ tasks:
       - go run ./examples/optimistic_concurrency
       - go run ./examples/volume_sparse
       - go run ./examples/vector_artifacts
+      - go run ./examples/retention
 
   snippets:
     desc: Verify runnable markdown snippets

@@ -1,6 +1,7 @@
 # Contract-to-Test Traceability Matrix
 
-This document maps contract requirements to tests and tracks coverage gaps.
+This document maps contract requirements to tests and records gaps in
+coverage.
 
 ---
 
@@ -16,7 +17,7 @@ This document maps contract requirements to tests and tracks coverage gaps.
 
 ### Gap Codes
 
-Gaps are tracked with codes indicating category and priority:
+Gaps are recorded with codes that indicate category and priority:
 
 | Prefix | Category | Description |
 |--------|----------|-------------|
@@ -62,14 +63,23 @@ Gaps are tracked with codes indicating category and priority:
 | FileRef.Stats (absent) | `TestDataset_Write_Stats/JSONL_codec_stats_nil`, `TestDataset_Write_Stats/raw_blob_stats_nil` |
 | FileRef.Stats (JSON round-trip) | `TestFileRef_Stats/JSON_round_trip`, `TestFileRef_Stats/backward_compat`, `TestFileRef_Stats/omitted_when_nil` |
 
+**Snapshot ID**: All covered ✅
+
+| Rule | Test |
+|------|------|
+| `<instant>-<nonce>` form; legacy `<instant>` accepted | `TestSnapshotID/instant_only_from_the_generated_form`, `TestSnapshotID/format_round-trips_the_instant` |
+| Unique when the clock repeats | `TestSnapshotID/unique_within_one_instant` |
+| New IDs carry the clock's instant | `TestSnapshotID/new_IDs_carry_the_clock` |
+| String order follows instant; legacy sorts first on a tie | `TestSnapshotID/string_order_follows_the_instant` |
+
 **Metadata Rules**: All covered ✅
 
-- nil metadata coalesced: `TestDataset_Write_Metadata/nil_metadata_coalesces_to_empty`, `TestDataset_StreamWrite_Metadata/nil_metadata_coalesces_to_empty`, `TestDataset_StreamWriteRecords_Metadata/nil_metadata_coalesces_to_empty`
-- Empty metadata valid: `TestDataset_Write_Metadata/empty_metadata_valid_and_persisted`, etc.
+- `nil` metadata converted to empty metadata: `TestDataset_Write_Metadata/nil_metadata_coalesces_to_empty`, `TestDataset_StreamWrite_Metadata/nil_metadata_coalesces_to_empty`, `TestDataset_StreamWriteRecords_Metadata/nil_metadata_coalesces_to_empty`
+- Empty metadata is valid: `TestDataset_Write_Metadata/empty_metadata_valid_and_persisted`, etc.
 
 **Immutability**: All covered ✅
 
-- Data files immutable: `TestStore_Put/err_path_exists`, `TestStore_Put/err_path_exists`, `TestStore_Put/err_path_exists`
+- Data files are immutable: `TestStore_Put/err_path_exists`, `TestStore_Put/err_path_exists`, `TestStore_Put/err_path_exists`
 - Linear history: `TestDataset_StreamWrite_Lineage/parent_snapshot_linked`, `TestDataset_StreamWriteRecords_Commit/parent_snapshot_linked`
 
 ---
@@ -262,14 +272,49 @@ All error sentinels covered ✅
 | ErrPartitioningNotSupported | `TestDataset_StreamWriteRecords_Rejects/with_partitioner` |
 | volume.ErrRangeMissing | `TestVolume_ReadAt/missing_range_returns_err_range_missing`, `TestVolume_ReadAt/gap_at_start_returns_err_range_missing`, `TestVolume_ReadAt/gap_in_middle_returns_err_range_missing` |
 | volume.ErrOverlappingBlocks | `TestVolume_Commit_Overlaps/overlapping_blocks_returns_err_overlapping_blocks`, `TestVolume_Commit_Overlaps/contained_block_overlap`, `TestVolume_Commit_Overlaps/same_start_offset_overlap`, `TestVolume_Commit_Overlaps/overlap_with_existing_rejected`, `TestVolume_Commit_Overlaps/three_block_overlap` |
+| ErrRangeMissing | `TestVolume_ReadAt/missing_range_returns_err_range_missing`, `TestVolume_ReadAt/gap_at_start_returns_err_range_missing`, `TestVolume_ReadAt/gap_in_middle_returns_err_range_missing` |
+| ErrOverlappingBlocks | `TestVolume_Commit_Overlaps/overlapping_blocks_returns_err_overlapping_blocks`, `TestVolume_Commit_Overlaps/contained_block_overlap`, `TestVolume_Commit_Overlaps/same_start_offset_overlap`, `TestVolume_Commit_Overlaps/overlap_with_existing_rejected`, `TestVolume_Commit_Overlaps/three_block_overlap` |
+| ErrSnapshotExpired | `TestExpire_Selection/by_ID_removes_manifest_and_data`, `TestExpire_Resumption/interrupted_after_the_canonical_delete_is_not_resurrected` |
+| ErrHeadUncommitted | `TestExpire_Head/uncommitted_expires_nothing`, `TestExpire_Head/uncommitted_mid-run_reports_completed_work` |
+
+---
+
+### CONTRACT_RETENTION.md — Snapshot Expiry
+
+| Requirement | Test | Status |
+|-------------|------|--------|
+| An empty request, or a malformed or unsupported `Partition`, is rejected before any store call | `TestExpire_Validation` | ✅ |
+| Expiry removes manifests and data and retains a tombstone; `Snapshot` and `Read` then return `ErrSnapshotExpired` | `TestExpire_Selection/by_ID_removes_manifest_and_data`, `TestExpire_Selection/flat_layout` | ✅ |
+| `Partition` matches whole path segments | `TestExpire_Partition/matches_whole_segments`, `TestExpire_Partition/a_trailing_slash_is_valid` | ✅ |
+| A mixed snapshot is retained under `Partition` and can be expired through `IDs` | `TestExpire_Partition/mixed_snapshot_is_kept`, `TestExpire_Partition/a_resumed_expiry_is_checked_against_the_partition` | ✅ |
+| `Before` selects by the snapshot ID's instant, and the selectors intersect | `TestExpire_Selection/before_uses_the_snapshot_ID_instant`, `TestExpire_Selection/selectors_intersect` | ✅ |
+| The head is retained and reported, and no tombstone is written for it; a head superseded during the run remains retained | `TestExpire_Head/retained_and_reported`, `TestExpire_Head/superseded_mid-run_stays_retained` | ✅ |
+| An uncommitted head terminates expiry, including at the check before a retained head, and the report lists the work completed | `TestExpire_Head/uncommitted_expires_nothing`, `TestExpire_Head/uncommitted_mid-run_reports_completed_work`, `TestExpire_Head/uncommitted_before_a_retained_head_stops_the_run` | ✅ |
+| A dry run writes and deletes nothing and fails wherever a real run would fail | `TestExpire_DryRun/changes_nothing`, `TestExpire_DryRun/fails_where_a_real_run_would` | ✅ |
+| An existing tombstone for the same ID resumes the expiry, and one for another ID fails it (with and without CAS). A tombstone records the whole `Files[]` and the manifest's `CreatedAt`. A tombstone without a commit instant, with a missing or invalid inventory, or of zero length with no manifest remaining is corrupt. Nothing is recorded from a manifest that violates the manifest invariants | `TestExpire_Tombstone/existing`, `TestExpire_Tombstone/zero_length`, `TestExpire_Tombstone/records_the_inventory`, `TestExpire_InvalidManifest`, `TestExpire_CorruptTombstone/no_commit_instant`, `TestExpire_CorruptTombstone/a_corrupt_one_does_not_expire_a_legacy_snapshot`, `TestExpire_CorruptTombstone/invalid_inventory`, `TestExpire_CorruptTombstone/zero_length_with_no_manifest_left` | ✅ |
+| A recorded expiry resumes from its tombstone when no manifest remains, and each run counts only what it deleted | `TestExpire_Resumption/from_a_tombstone_with_no_manifest_left` | ✅ |
+| An ID not in the generated form never becomes a store path. A tombstone that does not describe every manifest copy (by commit instant and inventory) is refused, and a concurrently created tombstone is accepted only if its inventory is the same | `TestExpire_Tombstone/ID_not_in_the_generated_form_never_reaches_a_path`, `TestSnapshot_IDNotInGeneratedForm_IsNotExpired`, `TestExpire_ReusedID/same_files_with_another_commit_instant_is_refused`, `TestExpire_ReusedID/a_fresh_expiry_checks_every_manifest_copy`, `TestExpire_ReusedID/tombstone_of_another_inventory_is_refused`, `TestExpire_ReusedID/recorded_tombstone_must_match_every_manifest_copy`, `TestExpire_ReusedID/copy_reappearing_at_a_derived_path_is_checked`, `TestExpire_ReusedID/manifest_reappearing_for_a_tombstone_is_checked`, `TestExpire_Tombstone/concurrent_one_is_accepted`, `TestExpire_Tombstone/concurrent_one_of_another_inventory_is_refused` | ✅ |
+| A dataset with snapshots but no pointer is refused with `ErrHeadUncommitted`, regardless of its IDs; an empty dataset requires no pointer | `TestExpire_HeadResolution/a_pointer-less_dataset_is_refused`, `TestExpire_HeadResolution/a_pointer_missing_beside_new-form_IDs_is_refused`, `TestExpire_HeadResolution/tombstones_without_a_pointer_or_manifest_are_refused`, `TestExpire_HeadResolution/an_empty_dataset_needs_no_pointer`, `TestExpire_HeadResolution/a_pointer_that_is_not_a_snapshot_ID_is_refused`, `TestExpire_HeadResolution/a_pointer_outside_the_generated_form_is_refused` | ✅ |
+| The scan fallback does not restore an expired snapshot, and a repeated run completes the expiry | `TestExpire_Resumption/interrupted_after_the_canonical_delete_is_not_resurrected` | ✅ |
+| Foreign `Files[]` paths are reported in `Skipped` and never deleted, and no derived path leaves the dataset | `TestExpire_PathSafety/foreign_FileRef_is_skipped`, `TestExpire_PathSafety/a_path_listed_twice_is_counted_once`, `TestExpire_PathSafety/a_snapshot_left_unexpired_reports_no_skipped_paths`, `TestExpire_PathSafety/a_failed_expiry_reports_no_skipped_paths`, `TestExpire_Partition/a_foreign_file_does_not_make_a_snapshot_mixed`, `TestExpire_PathSafety/traversal_in_a_FileRef_deletes_nothing_outside` | ✅ |
+| A legacy head with partition manifests only is treated as committed | `TestExpire_HeadResolution/legacy_partition-only_head_is_committed` | ✅ |
+| `Sweep` rejects a grace period that is not positive before any listing | `TestSweep_Request/non-positive_grace_is_rejected` | ✅ |
+| Orphaned objects older than the grace period are reclaimed, including those of an abandoned commit that the pointer names; younger objects and objects without an instant are retained; auxiliary files are outside the scope | `TestSweep_Reclaim/only_orphans_past_grace`, `TestSweep_Reclaim/an_orphan_whose_manifest_the_listing_omits_is_kept`, `TestSweep_Reclaim/a_crashed_commit's_data_is_an_orphan` | ✅ |
+| A live snapshot retains objects that its `Files[]` does not list | `TestSweep_Reclaim/a_live_snapshot_keeps_unlisted_objects` | ✅ |
+| Interrupted expiries are completed from the tombstone's inventory, and settled objects are reclaimed irrespective of the grace period; recorded sizes are summed in `Bytes`, and the remaining objects are counted in `Unsized` | `TestSweep_Settle/an_interrupted_expiry`, `TestSweep_Settle/a_manifest_the_listing_omits_is_still_removed`, `TestSweep_Settle/an_inventory_object_the_listing_omits_is_still_removed`, `TestSweep_Settle/a_snapshot_the_listing_shows_nothing_of_is_left_alone`, `TestSweep_Settle/an_expiry_with_no_manifest_left` | ✅ |
+| Invalid tombstones, and tombstones that do not describe every remaining manifest copy, are reported and settle nothing. The head is never settled: without a pointer while snapshots exist, `Sweep` is refused, and while a commit is pending, nothing is settled. A held or rejected tombstone retains its data after the grace period | `TestSweep_RejectedTombstone/invalid_ones_settle_nothing`, `TestSweep_RejectedTombstone/same_files_with_another_commit_instant_settles_nothing`, `TestSweep_RejectedTombstone/another_inventory_settles_nothing`, `TestSweep_RejectedTombstone/one_a_partition_copy_contradicts_settles_nothing`, `TestSweep_Head/is_never_settled`, `TestSweep_Head/a_held_tombstone_keeps_its_data`, `TestSweep_RejectedTombstone/its_data_is_held_past_grace`, `TestSweep_RejectedTombstone/one_contradicting_the_head_is_reported`, `TestSweep_HeadResolution/a_pointer_missing_beside_new-form_IDs_is_refused`, `TestSweep_HeadResolution/a_pointer-less_dataset_is_refused`, `TestSweep_HeadResolution/a_pointer-less_dataset_of_orphans_only_is_swept`, `TestSweep_HeadResolution/a_commit_in_flight_settles_nothing`, `TestSweep_HeadResolution/the_pointer's_head_keeps_its_objects_when_the_listing_omits_its_manifests`, `TestSweep_Request/empty_dataset` | ✅ |
+| Listed keys that are not canonical, and names under `expired/` that are not IDs (the filesystem store's `.lock` companions), are outside the scope; a completed expiry is not reported again | `TestSweep_Reclaim/non-canonical_keys_are_out_of_scope`, `TestSweep_Reclaim/a_repeated_filesystem_run_is_quiet` | ✅ |
+| A dry-run `Sweep` reports what a real run would do and changes nothing | `TestSweep_Request/dry_run_reports_the_real_run` | ✅ |
+| A failed `Sweep` reports the work completed | `TestSweep_Request/a_delete_failure_reports_completed_work`, `TestSweep_Request/a_listing_failure_still_reports_invalid_tombstones`, `TestSweep_Request/a_tombstone_read_failure_still_reports_earlier_invalid_ones` | ✅ |
+| Enumeration omits manifests deleted after the listing | `TestEnumeration_ToleratesDeletion/listings_skip_a_manifest_deleted_after_listing`, `TestLatestScan/skips_a_manifest_deleted_after_listing`, `TestLatestScan/falls_back_to_another_copy_of_a_snapshot`, `TestLatestScan/passes_over_an_expired_leftover` | ✅ |
 
 ---
 
 ### CONTRACT_VOLUME.md — Volume Persistence
 
-Tests live in package `lode/volume` (experimental; `V1_API_DECISIONS.md` D9).
-Argument-error cases, including the Volume retry options:
-`lode/volume/invalid_argument_test.go`.
+The tests reside in the package `lode/volume` (experimental;
+`V1_API_DECISIONS.md` D9). Argument-error cases, including those for the
+Volume retry options, are in `lode/volume/invalid_argument_test.go`.
 
 **Construction**: All covered ✅
 
@@ -380,11 +425,13 @@ Argument-error cases, including the Volume retry options:
 
 ## Performance: O(1) Resolution and Complexity Guarantees
 
-These tests verify that hot-path operations use O(1) store calls or O(log B) lookups
-instead of O(N) full scans. Regressions here would cause wall-clock degradation
-proportional to dataset/volume size on remote stores (S3/R2).
+These tests verify that hot-path operations use O(1) store calls or
+O(log B) lookups instead of O(N) scans. A regression here would increase
+elapsed time in proportion to the size of the dataset or volume on remote
+stores (S3, R2).
 
-**Dataset — Latest Pointer**: Persistent `latest` file enables O(1) resolution.
+**Dataset — Latest Pointer**: the persisted `latest` object enables O(1)
+resolution.
 
 | Requirement | Test |
 |-------------|------|
@@ -392,13 +439,15 @@ proportional to dataset/volume size on remote stores (S3/R2).
 | Pointer tracks most recent | `TestDataset_LatestPointer/updates_across_writes` |
 | Backward compat: scan fallback | `TestDataset_LatestPointer/backward_compat` |
 | Corrupt pointer: scan fallback | `TestDataset_LatestPointer/corrupt_pointer` |
+| Pointer names a snapshot without a manifest: `Latest` does not replace the pointer | `TestDataset_LatestPointer_PendingCommit`, `TestLatest/stale_pointer_is_left_for_the_next_commit` |
+| Pointer names a snapshot without a manifest: the next Write adopts it as parent | `TestDataset_Write_ParentsOnPendingCommit`, `TestResolve/stale_pointer_is_the_parent` |
+| Parent resolution through the pointer: 1 Get, no manifest check | `TestResolve/pointer_costs_one_Get_and_no_manifest_check` |
+| Pointer read fails with an error other than not-found: `Write` returns the error and does not scan | `TestDataset_TransientHeadReadErrors/Write_returns_a_failed_pointer_read`, `TestResolve/failed_pointer_read_is_returned,_not_scanned` |
+| Pointer or head-manifest read fails with an error other than not-found: `Latest` returns the error and does not scan | `TestDataset_TransientHeadReadErrors/Latest_returns_a_failed_head_load`, `TestLatest/failed_pointer_read_is_returned,_not_scanned`, `TestLatest/failed_head_load_is_returned,_not_scanned` |
 | Pointer paths for all layouts | `TestDataset_LatestPointer/all_layouts` |
 | Write: 0 List calls after pointer | `TestDataset_Write_Pointer/latest_pointer_skips_scan` |
 | StreamWrite: 0 List calls | `TestDataset_StreamWrite_Lineage/latest_pointer_skips_scan` |
 | StreamWriteRecords: 0 List calls | `TestDataset_StreamWriteRecords_Commit/latest_pointer_skips_scan` |
-| Existence-check error returned, not stale (lode#208) | `TestHistoryFork_IDOrderInvertedAndExistsFails`, `TestResolve/failed_existence_check_is_an_error,_not_stale` |
-| Head load error during retry refresh returned (lode#208) | `TestHistoryFork_RetryRefreshGetFails`, `TestLatest/failed_head_load_is_returned,_not_scanned` |
-| Latest never writes the pointer (lode#208) | `TestHistoryFork_LatestInsidePointerManifestWindow`, `TestLatest/no_pointer_scans_for_the_largest_ID_and_writes_nothing` |
 
 **Dataset — HiveLayout Canonical Manifest**: O(1) `Snapshot(ctx, id)`.
 
@@ -408,7 +457,7 @@ proportional to dataset/volume size on remote stores (S3/R2).
 | Canonical manifest written | `TestDataset_HiveLayout/canonical_manifest_written` |
 | Backward compat: scan fallback | `TestDataset_HiveLayout/backward_compat_fallback_scan` |
 
-**Volume — Latest Pointer**: Same O(1) pattern for volumes.
+**Volume — Latest Pointer**: the same O(1) pattern for volumes.
 
 | Requirement | Test |
 |-------------|------|
@@ -416,7 +465,7 @@ proportional to dataset/volume size on remote stores (S3/R2).
 | Pointer tracks most recent | `TestVolume_LatestPointer/multiple_commits` |
 | Backward compat: scan fallback | `TestVolume_LatestPointer/backward_compat` |
 
-**Volume — Block Operations**: Sorted blocks and O(log B) lookup.
+**Volume — Block Operations**: sorted blocks and O(log B) lookup.
 
 | Requirement | Test |
 |-------------|------|
@@ -427,16 +476,18 @@ proportional to dataset/volume size on remote stores (S3/R2).
 | Sorted overlap rejection | `TestVolume_ValidateNoOverlaps/sorted_overlap` |
 | Load-time block sorting | `TestVolume_Snapshots/load_snapshot_sorts_blocks_at_load_time` |
 
-**Pointer Verification**: Corrupt/stale pointers fall back correctly.
+**Pointer Verification**: Each kind of bad pointer is handled as specified.
 
 | Requirement | Test |
 |-------------|------|
-| Dataset: nonexistent pointer target → scan fallback | `TestDataset_Write_Pointer/corrupt_pointer_falls_back_to_scan` |
-| Volume: nonexistent pointer target → scan fallback | `TestVolume_Commit_Pointer/stale_pointer_falls_back_to_scan` |
+| Dataset: pointer holds no snapshot ID → scan fallback | `TestDataset_Write_Pointer/corrupt_pointer_falls_back_to_scan` |
+| Volume: pointer holds no snapshot ID → scan fallback | `TestVolume_Commit_Pointer/stale_pointer_falls_back_to_scan` |
+| Volume: pointer names a snapshot without a manifest → `ErrSnapshotConflict` | `TestVolume_Commit_PendingCommit`, `TestResolveParent/pointer's_manifest_missing_is_a_conflict` |
 | Dataset: existing-but-stale pointer → in-memory cache wins | `TestDataset_Write_Pointer/stale_but_existing_pointer_uses_in_memory_cache` |
 | Volume: existing-but-stale pointer → in-memory cache wins | `TestVolume_Commit_Pointer/stale_but_existing_pointer_uses_in_memory_cache` |
 
-**Cross-Process / Cold-Start Pointer**: Pointer correctness across process restarts.
+**Cross-Process and Cold-Start Pointer**: the pointer remains correct
+across process restarts.
 
 | Requirement | Test |
 |-------------|------|
@@ -447,7 +498,8 @@ proportional to dataset/volume size on remote stores (S3/R2).
 | Volume: cold start with corrupt pointer → scan fallback | `TestVolume_Commit_ColdStart/corrupt_pointer_falls_back_to_scan` |
 | Volume: pointer write failure aborts commit | `TestVolume_Commit_Pointer/pointer_write_failure_aborts_commit` |
 
-**Hive Canonical Manifest**: Canonical manifest excluded from listing.
+**Hive Canonical Manifest**: the canonical manifest is excluded from
+listing.
 
 | Requirement | Test |
 |-------------|------|
@@ -483,7 +535,7 @@ proportional to dataset/volume size on remote stores (S3/R2).
 | `Volume.Snapshots()` | O(S × B_avg) memory | Cumulative manifests |
 | `Volume.Commit` manifest | O(B) per commit | Cumulative design |
 | `Dataset.Read(id)` | O(R_total) memory | Returns all records |
-| `latestByScan` | O(N) List | Backward-compat; read-only, the next commit writes the pointer |
+| `latestByScan` | O(N) List | Backward-compat; self-heals via pointer write |
 | `ListManifests` validation | M Gets | Contractually required by CONTRACT_ERRORS.md (CX-2) |
 | `Snapshot(id)` fallback | O(N) scan | Degraded path for pre-canonical data; self-heals (CX-4) |
 | `Write` partitioned memory | O(R interface aliases) | Partition map holds references, not copies (CX-5) |
@@ -494,7 +546,8 @@ proportional to dataset/volume size on remote stores (S3/R2).
 
 ### G3-4: Streaming Failure Semantics
 
-The following invariants are now **deterministically tested** via fault injection:
+The following invariants are now **tested deterministically** through
+fault injection:
 
 | Invariant | Coverage |
 |-----------|----------|
@@ -503,12 +556,14 @@ The following invariants are now **deterministically tested** via fault injectio
 | Cleanup errors ignored (best-effort) | ✅ Explicit test |
 | Snapshot invisibility preserved | ✅ All failure paths |
 
-**Deterministic test infrastructure**: `internal/testutil/faultstore.go` provides a fault-injection
-store wrapper with error injection, call observation, and blocking for synchronization.
+**Deterministic test infrastructure**: `internal/testutil/faultstore.go`
+provides a store wrapper that injects errors, records calls, and blocks for
+synchronization.
 
 ### Residual Risk: STORE-CTX-CANCEL (Addressed)
 
-**Context cancellation cleanup timing is adapter-dependent.**
+**The timing of removal after context cancellation depends on the
+adapter.**
 
 | Aspect | Status |
 |--------|--------|
@@ -518,18 +573,22 @@ store wrapper with error injection, call observation, and blocking for synchroni
 | FS adapter timing | ✅ Integration tests in `lode/adapter_timing_test.go` |
 | S3 adapter timing | ✅ Integration tests in `lode/s3/integration_test.go` (gated) |
 
-**Why timing matters:**
-- In-memory stores complete synchronously before cancellation takes effect
-- Real adapters (S3, FS) have varying timing windows
-- Whether cleanup Delete runs before or after context deadline is nondeterministic
+**Why the timing matters:**
+- In-memory stores complete synchronously before cancellation takes
+  effect.
+- Real adapters (S3, filesystem) have intervals of varying length.
+- Whether the removing `Delete` runs before or after the context deadline
+  is nondeterministic.
 
 **Mitigation:**
-- Core invariants are tested deterministically via `TestStreamWrite_PutFailure/blocked_put_context_cancel_no_manifest`
-- FS adapter timing verified via `TestFSAdapter_ContextCancel/stream_write_context_cancel_no_snapshot`
-- S3 adapter timing verified via `TestIntegration_Writes/stream_write_context_cancel` (requires `go test ./lode/s3/... -integration` against the docker-compose services)
-- Cleanup is documented as best-effort per CONTRACT_ERRORS.md
+- The core invariants are tested deterministically through `TestStreamWrite_PutFailure/blocked_put_context_cancel_no_manifest`
+- The filesystem adapter's timing is verified through `TestFSAdapter_ContextCancel/stream_write_context_cancel_no_snapshot`
+- The S3 adapter's timing is verified through `TestIntegration_Writes/stream_write_context_cancel` (requires `go test ./lode/s3/... -integration` against the docker-compose services)
+- Removal is documented as best-effort in CONTRACT_ERRORS.md.
 
-**Status**: Core invariants covered. Adapter-specific timing tests exercise real behavior without asserting on inherently nondeterministic outcomes.
+**Status**: the core invariants are covered. Timing tests specific to each
+adapter exercise real behavior without asserting on outcomes that are
+inherently nondeterministic.
 
 ---
 
@@ -553,4 +612,5 @@ ok  	github.com/pithecene-io/lode/lode
 ok  	github.com/pithecene-io/lode/lode/s3
 ```
 
-All contracts have test coverage except for deferred gaps and documented residual risk.
+Every contract has test coverage, apart from the deferred gaps and the
+documented residual risk.

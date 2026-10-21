@@ -19,19 +19,19 @@ import (
 // minimal kind, so every branch is reached without a container on top.
 // Lode's Dataset and Volume tests exercise the same code end to end.
 //
-// Known equivalent mutants, left alive: scan's `entries[i].id > latest.id`
-// → `>=` (snapshot IDs are unique within a history, so the greatest is found
-// either way); manifests' `p < cur` → `<=` (two manifest copies of one
-// snapshot are never the same path, so equality never occurs).
+// Known equivalent mutant, left alive: smallestFirst's `<` → `<=` (two
+// manifest copies of one snapshot are never the same path, so equality never
+// occurs).
 
 var (
 	errNotFound = errors.New("not found")
 	errNoSnaps  = errors.New("no snapshots")
 	errConflict = errors.New("conflict")
 	errBoom     = errors.New("boom")
+	errHead     = errors.New("head uncommitted")
 )
 
-var testErrors = Errors{NotFound: errNotFound, NoSnapshots: errNoSnaps, SnapshotConflict: errConflict}
+var testErrors = Errors{NotFound: errNotFound, NoSnapshots: errNoSnaps, SnapshotConflict: errConflict, HeadUncommitted: errHead}
 
 // --- store ---
 
@@ -157,6 +157,9 @@ func (testKind) ParseManifest(p string) (id, bool) {
 	seg, _, _ := strings.Cut(rest, "/")
 	return id(seg), true
 }
+
+// NotExpired is always true: the core has no retention of its own.
+func (testKind) NotExpired(context.Context, id) (bool, error) { return true, nil }
 
 func (testKind) Decode(r io.Reader) (*manifest, error) {
 	var m manifest
@@ -329,7 +332,7 @@ func TestReadPointer(t *testing.T) {
 			s := newMemStore()
 			s.objects[pointer] = []byte(c.content)
 			h := newTestHistory(s)
-			got, err := h.readPointer(t.Context())
+			got, err := h.ReadPointer(t.Context())
 			if got != c.want || !errors.Is(err, c.wantErr) {
 				t.Fatalf("got %q, %v; want %q, %v", got, err, c.want, c.wantErr)
 			}
@@ -337,12 +340,12 @@ func TestReadPointer(t *testing.T) {
 	}
 	t.Run("read error is wrapped", func(t *testing.T) {
 		h := newTestHistory(errReaderStore{newMemStore()})
-		_, err := h.readPointer(t.Context())
+		_, err := h.ReadPointer(t.Context())
 		wantMessage(t, err, "lode: failed to read latest pointer: boom")
 	})
 }
 
-// errReaderStore returns a reader that fails, for readPointer's read error.
+// errReaderStore returns a reader that fails, for ReadPointer's read error.
 type errReaderStore struct{ *memStore }
 
 func (errReaderStore) Get(context.Context, string) (io.ReadCloser, error) {
@@ -381,18 +384,11 @@ func TestWritePointer(t *testing.T) {
 	})
 }
 
-// writesNothing asserts that Latest left storage and memory alone: a scan is
-// not proof of the head, so Latest neither writes the pointer nor remembers a
-// scan result as the CAS expectation (lode#208).
-func writesNothing(t *testing.T, s *memStore, h History[id, manifest], wantPointer string) {
+// assertNoScan fails if the history listed its snapshots.
+func assertNoScan(t *testing.T, s *memStore) {
 	t.Helper()
-	for _, op := range s.ops {
-		if strings.HasPrefix(op, "put ") || strings.HasPrefix(op, "cas ") || strings.HasPrefix(op, "delete ") {
-			t.Fatalf("Latest wrote: ops = %v", s.ops)
-		}
-	}
-	if string(s.objects[pointer]) != wantPointer || h.head != "" || h.pointer != "" {
-		t.Fatalf("pointer = %q, memory = %q/%q", s.objects[pointer], h.head, h.pointer)
+	if slices.ContainsFunc(s.ops, func(op string) bool { return strings.HasPrefix(op, "list ") }) {
+		t.Fatalf("scanned after a failed read: ops = %v", s.ops)
 	}
 }
 
@@ -411,7 +407,7 @@ func TestLatest(t *testing.T) {
 			t.Fatalf("memory = %q/%q, want 1/1", h.head, h.pointer)
 		}
 	})
-	t.Run("no pointer scans for the largest ID and writes nothing", func(t *testing.T) {
+	t.Run("no pointer scans for the largest ID and heals", func(t *testing.T) {
 		s := newMemStore()
 		put(t, s, "1", "one")
 		put(t, s, "3", "three")
@@ -421,19 +417,40 @@ func TestLatest(t *testing.T) {
 		if err != nil || got.ID != "3" {
 			t.Fatalf("got %+v, %v; want snapshot 3", got, err)
 		}
-		writesNothing(t, s, h, "")
+		if string(s.objects[pointer]) != "3" || h.head != "3" || h.pointer != "3" {
+			t.Fatalf("pointer = %q, memory = %q/%q", s.objects[pointer], h.head, h.pointer)
+		}
 	})
-	t.Run("pointer to a missing manifest scans and leaves the pointer", func(t *testing.T) {
+	// A pointer naming a snapshot with no manifest may be a commit in
+	// flight; rewriting it would roll the head back over that commit.
+	t.Run("stale pointer is left for the next commit", func(t *testing.T) {
 		s := newMemStore()
 		put(t, s, "1", "one")
 		s.objects[pointer] = []byte("9")
 		h := newTestHistory(casStore{s})
-		h.remember("7", "7")
+		h.remember("1", "1")
 		got, err := h.Latest(t.Context())
 		if err != nil || got.ID != "1" {
 			t.Fatalf("got %+v, %v", got, err)
 		}
-		writesNothing(t, s, h, "9")
+		if slices.Contains(s.ops, "cas "+pointer+" 9") || string(s.objects[pointer]) != "9" {
+			t.Fatalf("ops = %v, pointer = %q", s.ops, s.objects[pointer])
+		}
+		if h.head != "" || h.pointer != "" {
+			t.Fatalf("memory = %q/%q, want it dropped", h.head, h.pointer)
+		}
+	})
+	// A failed read is not evidence that the pointer or the manifest is
+	// absent; a scan would return an older snapshot as the head (lode#208).
+	t.Run("failed pointer read is returned, not scanned", func(t *testing.T) {
+		s := newMemStore()
+		put(t, s, "1", "one")
+		s.objects[pointer] = []byte("1")
+		s.fail = failOn("get", pointer, errBoom)
+		h := newTestHistory(casStore{s})
+		_, err := h.Latest(t.Context())
+		wantMessage(t, err, "lode: failed to read latest pointer: boom")
+		assertNoScan(t, s)
 	})
 	t.Run("failed head load is returned, not scanned", func(t *testing.T) {
 		s := newMemStore()
@@ -444,20 +461,20 @@ func TestLatest(t *testing.T) {
 		h := newTestHistory(casStore{s})
 		_, err := h.Latest(t.Context())
 		wantMessage(t, err, "lode: failed to load latest snapshot: boom")
-		if slices.ContainsFunc(s.ops, func(op string) bool { return strings.HasPrefix(op, "list ") }) {
-			t.Fatalf("scanned after a failed load: ops = %v", s.ops)
-		}
-		writesNothing(t, s, h, "1")
+		assertNoScan(t, s)
 	})
-	t.Run("failed pointer read is returned, not scanned", func(t *testing.T) {
+	t.Run("failed creation still returns the scan result", func(t *testing.T) {
 		s := newMemStore()
 		put(t, s, "1", "one")
-		s.objects[pointer] = []byte("1")
-		s.fail = failOn("get", pointer, errBoom)
+		s.fail = failOn("cas", "", errBoom)
 		h := newTestHistory(casStore{s})
-		_, err := h.Latest(t.Context())
-		wantMessage(t, err, "lode: failed to read latest pointer: boom")
-		writesNothing(t, s, h, "1")
+		got, err := h.Latest(t.Context())
+		if err != nil || got.ID != "1" {
+			t.Fatalf("got %+v, %v", got, err)
+		}
+		if h.head != "" || h.pointer != "" {
+			t.Fatalf("memory = %q/%q, want none for a pointer not written", h.head, h.pointer)
+		}
 	})
 	t.Run("empty history", func(t *testing.T) {
 		h := newTestHistory(newMemStore())
@@ -504,30 +521,42 @@ func TestResolve(t *testing.T) {
 			t.Fatalf("got %q/%q/%v", parent, expected, err)
 		}
 	})
-	t.Run("stale pointer: parent from scan, expected is the pointer", func(t *testing.T) {
+	// A pointer that names a snapshot without a manifest may belong to a
+	// pending commit; adopting any other parent would fork the history.
+	t.Run("stale pointer is the parent", func(t *testing.T) {
 		s := newMemStore()
 		put(t, s, "1", "one")
 		s.objects[pointer] = []byte("9")
 		h := newTestHistory(s)
 		parent, expected, err := h.Resolve(t.Context())
-		if parent != "1" || expected != "9" || err != nil {
+		if parent != "9" || expected != "9" || err != nil {
 			t.Fatalf("got %q/%q/%v", parent, expected, err)
 		}
 	})
-	t.Run("failed existence check is an error, not stale", func(t *testing.T) {
+	t.Run("pointer costs one Get and no manifest check", func(t *testing.T) {
 		s := newMemStore()
 		put(t, s, "1", "one")
-		put(t, s, "2", "two")
 		s.objects[pointer] = []byte("1")
-		s.fail = failOn("exists", "", errBoom)
+		h := newTestHistory(s)
+		s.ops = nil
+		if _, _, err := h.Resolve(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		if len(s.ops) != 1 {
+			t.Fatalf("ops = %v, want only the pointer Get", s.ops)
+		}
+	})
+	t.Run("pointer holding no snapshot ID: parent from scan, expected is the pointer", func(t *testing.T) {
+		s := newMemStore()
+		put(t, s, "1", "one")
+		s.objects[pointer] = []byte("not-an-id")
 		h := newTestHistory(s)
 		parent, expected, err := h.Resolve(t.Context())
-		if parent != "" || expected != "" || !errors.Is(err, errBoom) {
+		if parent != "1" || expected != "not-an-id" || err != nil {
 			t.Fatalf("got %q/%q/%v", parent, expected, err)
 		}
-		wantMessage(t, err, "lode: failed to check snapshot: boom")
 	})
-	t.Run("failed pointer read is an error, not a scan", func(t *testing.T) {
+	t.Run("failed pointer read is returned, not scanned", func(t *testing.T) {
 		s := newMemStore()
 		put(t, s, "1", "one")
 		put(t, s, "2", "two")
@@ -538,9 +567,7 @@ func TestResolve(t *testing.T) {
 		if parent != "" || expected != "" || !errors.Is(err, errBoom) {
 			t.Fatalf("got %q/%q/%v", parent, expected, err)
 		}
-		if slices.ContainsFunc(s.ops, func(op string) bool { return strings.HasPrefix(op, "list ") }) {
-			t.Fatalf("scanned after a failed pointer read: ops = %v", s.ops)
-		}
+		assertNoScan(t, s)
 	})
 	t.Run("empty history parents on nothing", func(t *testing.T) {
 		h := newTestHistory(newMemStore())
@@ -607,14 +634,16 @@ func TestResolveParent(t *testing.T) {
 		_, _, err := h.ResolveParent(t.Context())
 		wantMessage(t, err, "lode: failed to load snapshot: boom")
 	})
-	t.Run("pointer's manifest missing is stale", func(t *testing.T) {
+	// The blocks of a pending commit cannot be merged until its manifest is
+	// persisted, so the commit conflicts and retries.
+	t.Run("pointer's manifest missing is a conflict", func(t *testing.T) {
 		s := newMemStore()
 		put(t, s, "1", "one")
 		s.objects[pointer] = []byte("9")
 		h := newTestHistory(s)
 		parent, expected, err := h.ResolveParent(t.Context())
-		if err != nil || parent.ID != "1" || expected != "9" {
-			t.Fatalf("got %+v/%q/%v", parent, expected, err)
+		if !errors.Is(err, errConflict) || parent != nil || expected != "" {
+			t.Fatalf("got %+v/%q/%v, want a conflict", parent, expected, err)
 		}
 	})
 	t.Run("first commit has no parent", func(t *testing.T) {
@@ -792,13 +821,4 @@ func TestCommitLoop(t *testing.T) {
 			t.Fatalf("got %v after %d calls", err, calls)
 		}
 	})
-}
-
-func TestNewID(t *testing.T) {
-	a, b := NewID(), NewID()
-	na, errA := strconv.ParseInt(a, 10, 64)
-	nb, errB := strconv.ParseInt(b, 10, 64)
-	if errA != nil || errB != nil || nb < na || na <= 0 {
-		t.Fatalf("IDs %q, %q: want increasing positive integers", a, b)
-	}
 }

@@ -1,0 +1,93 @@
+package history
+
+import (
+	"testing"
+	"time"
+)
+
+// TestSnapshotID covers the ID form, uniqueness and order (CONTRACT_CORE
+// §Snapshot ID).
+func TestSnapshotID(t *testing.T) {
+	t.Run("instant only from the generated form", func(t *testing.T) {
+		for id, want := range map[string]bool{
+			"1792459022524750970":                   true,
+			"0":                                     true,
+			"1792459022524750970-0123456789abcdef":  true,
+			"0-0000000000000000":                    true,
+			"1792459022524750970-0123456789ABCDEF":  false,
+			"1792459022524750970-0123456789abcde":   false,
+			"1792459022524750970-0123456789abcdef0": false,
+			"1792459022524750970-0123456789abcdeg":  false,
+			"1792459022524750970-":                  false,
+			"-0123456789abcdef":                     false,
+			"00123-0123456789abcdef":                false,
+			"00123":                                 false,
+			"+123":                                  false,
+			"-1":                                    false,
+			"abc":                                   false,
+			"":                                      false,
+		} {
+			if _, ok := Instant(id); ok != want {
+				t.Errorf("Instant(%q) ok = %v, want %v", id, ok, want)
+			}
+		}
+	})
+
+	t.Run("format round-trips the instant", func(t *testing.T) {
+		at := time.Unix(0, 1792459022524750970)
+		id := FormatID(at, [NonceBytes]byte{0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef})
+		if id != "1792459022524750970-0123456789abcdef" {
+			t.Fatalf("FormatID = %q", id)
+		}
+		if got, ok := Instant(id); !ok || !got.Equal(at) {
+			t.Fatalf("Instant(%q) = %v, %v; want %v, true", id, got, ok, at)
+		}
+	})
+
+	t.Run("new IDs carry the clock", func(t *testing.T) {
+		before := time.Now()
+		a, b := NewID(), NewID()
+		at, okA := Instant(a)
+		bt, okB := Instant(b)
+		if !okA || !okB || at.Before(before.Truncate(time.Nanosecond)) || bt.Before(at) {
+			t.Fatalf("IDs %q, %q: want instants from the clock, in order", a, b)
+		}
+	})
+
+	// A repeated clock must not repeat an ID (CONTRACT_CORE §Snapshot ID).
+	t.Run("unique within one instant", func(t *testing.T) {
+		const n = 1000
+		seen := make(map[string]bool, n)
+		for range n {
+			id := NewID()
+			if seen[id] {
+				t.Fatalf("NewID repeated %q", id)
+			}
+			seen[id] = true
+			if _, ok := Instant(id); !ok {
+				t.Fatalf("NewID returned %q, not in the generated form", id)
+			}
+		}
+	})
+
+	// String order is instant order, and a legacy ID sorts before a new ID with
+	// the same instant.
+	t.Run("string order follows the instant", func(t *testing.T) {
+		var zero, ones [NonceBytes]byte
+		for i := range ones {
+			ones[i] = 0xff
+		}
+		ordered := []string{
+			"1792459022524750969",
+			FormatID(time.Unix(0, 1792459022524750969), ones),
+			"1792459022524750970",
+			FormatID(time.Unix(0, 1792459022524750970), zero),
+			FormatID(time.Unix(0, 1792459022524750971), zero),
+		}
+		for i := 1; i < len(ordered); i++ {
+			if ordered[i-1] >= ordered[i] {
+				t.Errorf("%q does not sort before %q", ordered[i-1], ordered[i])
+			}
+		}
+	})
+}

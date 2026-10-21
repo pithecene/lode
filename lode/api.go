@@ -377,6 +377,115 @@ type Dataset interface {
 	// through a streaming-capable codec. Returns an error if metadata is nil or if
 	// the configured codec does not support streaming.
 	StreamWriteRecords(ctx context.Context, records RecordIterator, metadata Metadata) (*DatasetSnapshot, error)
+
+	// Expire removes the selected snapshots: their manifests and the data
+	// objects their manifests list. The head is never expired; when the
+	// selection includes it, it is kept and reported in RetainedHead. The
+	// report is non-nil, also on error, and describes the work done before
+	// the error. See CONTRACT_RETENTION.md.
+	Expire(ctx context.Context, req ExpireRequest) (*ExpireReport, error)
+
+	// Sweep completes interrupted expiries and reclaims data objects of
+	// snapshots that were never committed, once they are older than
+	// req.Grace. It never deletes an object a manifest still describes, nor
+	// any object outside the layout's data topology. The report is non-nil,
+	// also on error. See CONTRACT_RETENTION.md.
+	Sweep(ctx context.Context, req SweepRequest) (*SweepReport, error)
+}
+
+// -----------------------------------------------------------------------------
+// Retention
+// -----------------------------------------------------------------------------
+
+// ExpireRequest selects the snapshots Dataset.Expire removes. Set fields
+// intersect; at least one of IDs, Partition and Before must be set.
+type ExpireRequest struct {
+	// IDs selects these snapshots, including any whose expiry an earlier
+	// run recorded but did not finish: the request completes it.
+	IDs []DatasetSnapshotID
+
+	// Partition selects snapshots with a partition manifest in this
+	// partition or beneath it. Matching is by whole path segment:
+	// "run_id=run-1" never selects "run_id=run-10". Hive layouts only.
+	Partition string
+
+	// Before selects snapshots whose write began strictly before this
+	// instant. The instant is read from the snapshot ID, so selection loads
+	// no manifest.
+	Before time.Time
+
+	// DryRun resolves the selection and reports what would be removed,
+	// without writing or deleting anything.
+	DryRun bool
+}
+
+// SweepRequest configures Dataset.Sweep.
+type SweepRequest struct {
+	// Grace is how old an unreferenced object must be before it is deleted,
+	// measured from when its write began. It must exceed the longest write
+	// in flight plus the largest clock difference between a writing host
+	// and the sweeping one, and must be positive; there is no default.
+	Grace time.Duration
+
+	// DryRun reports what would be reclaimed, without deleting anything.
+	DryRun bool
+}
+
+// SweepReport describes what Dataset.Sweep reclaimed, or would reclaim on a
+// dry run.
+type SweepReport struct {
+	// Settled lists expired snapshots whose remaining manifests this run
+	// removed, oldest first.
+	Settled []DatasetSnapshotID
+
+	// Objects counts the data objects this run deleted.
+	Objects int
+
+	// Bytes sums the sizes recorded for those objects in a tombstone's
+	// inventory.
+	Bytes int64
+
+	// Unsized counts, of Objects, those with no recorded size: orphans and
+	// objects a settled snapshot's inventory does not list. Lode never
+	// recorded their size, so they are counted, never estimated.
+	Unsized int
+
+	// Orphans counts, of Unsized, those of snapshots never committed.
+	Orphans int
+
+	// Unparseable lists invalid tombstones, tombstones that do not describe
+	// a manifest still present (another commit instant or inventory), and
+	// unreferenced data objects whose snapshot ID carries no instant.
+	// Nothing listed is deleted.
+	Unparseable []string
+}
+
+// ExpireReport describes what Dataset.Expire removed, or would remove on a
+// dry run.
+type ExpireReport struct {
+	// Expired lists the expired snapshots, oldest first.
+	Expired []DatasetSnapshotID
+
+	// Mixed lists snapshots selected by Partition that also have files
+	// outside it. They are kept.
+	Mixed []DatasetSnapshotID
+
+	// RetainedHead is the head snapshot when the selection included it.
+	// The head is never expired. Empty otherwise.
+	RetainedHead DatasetSnapshotID
+
+	// Objects counts the data objects this run deleted that its listing
+	// showed. An object an earlier, interrupted run already deleted is not
+	// counted again; runs that overlap can both count one.
+	Objects int
+
+	// Bytes sums the sizes the snapshots' inventories record for those
+	// objects.
+	Bytes int64
+
+	// Skipped lists inventory paths that are not data objects of the
+	// expired snapshot in this dataset. They are left in place.
+	Skipped []string
 }
 
 // -----------------------------------------------------------------------------
@@ -485,6 +594,18 @@ var (
 	// bounds.
 	ErrInvalidPath error = errInvalidPath{}
 
+	// ErrSnapshotExpired indicates the snapshot was removed by
+	// Dataset.Expire. It also matches ErrNotFound.
+	ErrSnapshotExpired error = errSnapshotExpired{}
+
+	// ErrHeadUncommitted indicates retention cannot tell the committed head:
+	// the latest pointer names a snapshot whose manifest is not written yet
+	// (a commit is in flight, or crashed before writing it), or is missing
+	// beside existing snapshots. Retry once the commit completes; the next
+	// commit replaces a pointer a crashed commit left behind, and any commit
+	// creates a missing one.
+	ErrHeadUncommitted error = errHeadUncommitted{}
+
 	// ErrManifestInvalid indicates a manifest failed validation.
 	ErrManifestInvalid error = validate.ErrManifestInvalid
 
@@ -500,6 +621,18 @@ var (
 type errNotFound struct{}
 
 func (errNotFound) Error() string { return "not found" }
+
+type errSnapshotExpired struct{}
+
+func (errSnapshotExpired) Error() string { return "snapshot expired" }
+
+// Is makes an expired snapshot also a missing one, so callers matching
+// ErrNotFound keep working.
+func (errSnapshotExpired) Is(target error) bool { return target == ErrNotFound }
+
+type errHeadUncommitted struct{}
+
+func (errHeadUncommitted) Error() string { return "head snapshot is not committed yet" }
 
 type errNoSnapshots struct{}
 
