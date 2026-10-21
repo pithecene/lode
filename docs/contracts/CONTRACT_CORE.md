@@ -34,6 +34,50 @@ Logical collection of snapshots. A dataset has a stable `DatasetID`.
 Immutable point-in-time state of a dataset. Each snapshot has a stable
 `SnapshotID` and (optionally) a parent snapshot ID.
 
+### Snapshot ID
+Lode generates every snapshot ID, for Datasets and Volumes alike; callers
+never choose one. From v0.11.0 an ID has the form `<instant>-<nonce>`:
+
+- `<instant>` — the Unix time in nanoseconds when the write begins, in
+  decimal with no sign or leading zero.
+- `<nonce>` — 16 lowercase hexadecimal digits from a cryptographically
+  secure random source.
+
+Uniqueness does not depend on the clock: two IDs coincide only when two
+writes begin in the same nanosecond *and* draw the same 64-bit nonce, a
+probability of 2⁻⁶⁴ for each such pair, however often the clock repeats or
+rolls back. Lode does not reserve IDs against existing ones. Should IDs
+coincide anyway, the colliding commit fails on its create-only manifest
+write while the earlier snapshot exists, but only after the pointer has
+moved (pointer before manifest), so the pointer can be left naming the
+earlier snapshot until the next commit replaces it; and retention refuses
+a tombstone that does not describe the manifest (CONTRACT_RETENTION
+§Tombstone). Instant-only IDs written before v0.11.0 collided whenever two
+writes shared a nanosecond, with the same effect. IDs are opaque strings to
+callers and MUST NOT be parsed as numbers. Compared as strings, IDs order
+by instant: the instant has a fixed 19 digits from September 2001 until
+signed 64-bit nanoseconds run out in April 2262, so only an ID from a clock
+set before 2001-09-09 01:46:40 UTC (a shorter instant) would sort out of
+time order. IDs with the same instant
+order by nonce, which is not commit order. The pointer names the head;
+`Latest` and parent resolution fall back to the largest ID only when the
+pointer is missing or names a snapshot with no manifest (a crash, a hand
+edit, or the moment of a non-CAS Delete+Put), and then take it as the head.
+`Latest` creates a missing pointer from that result but never rewrites an
+existing one: a pointer naming a snapshot with no manifest may be a commit
+in flight (the pointer is written before the manifests), and rewriting it
+would roll the head back over that commit. The next commit replaces a
+stale pointer through its CAS.
+With a rolled-back clock, or two commits that began in the same nanosecond,
+that may not be the last commit. Instant-only IDs had the same limit, and
+same-nanosecond writes then shared one ID outright. Retention never uses
+this fallback (CONTRACT_RETENTION §Head protection).
+
+IDs written before v0.11.0 are `<instant>` alone. They remain valid and
+are read, selected and retained exactly like new IDs. An ID is in the
+*generated form* when it is in either form; a legacy ID sorts before every
+new ID with the same instant.
+
 ### Manifest
 The authoritative description of a snapshot and its data files.
 
@@ -97,6 +141,11 @@ Manifests are immutable once written.
 - Snapshots are immutable after commit.
 - Data files are immutable after write.
 - Commits create new state; they do not mutate existing state.
+- Retention (Datasets only; Volume retention is deferred) removes
+  committed snapshots and their data files; it never rewrites them. Expiring a committed snapshot is recorded by a new object
+  (a tombstone), and retention never reassigns a snapshot ID. Objects of
+  writes that never committed are reclaimed without a record, because no
+  snapshot ever existed (`CONTRACT_RETENTION.md`).
 
 ---
 

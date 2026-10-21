@@ -281,6 +281,33 @@ never returned; callers must ensure single-writer semantics as before.
 
 ---
 
+### 11. Retention Errors
+
+These are returned by snapshot expiry and the unreferenced-object sweep
+(`CONTRACT_RETENTION.md`).
+
+| Error | Source | Meaning |
+|-------|--------|---------|
+| `lode.ErrSnapshotExpired` | Dataset.Snapshot, Dataset.Read | The snapshot was expired by `Expire`; also matches `ErrNotFound` |
+| `lode.ErrHeadUncommitted` | Dataset.Expire, Dataset.Sweep | The head is not committed yet: the latest pointer names a snapshot whose manifest is not yet written (`Expire`), or is missing beside existing snapshots (both) |
+| `lode.ErrInvalidArgument` | Dataset.Expire, Dataset.Sweep | `ExpireRequest` with no selector field set; `SweepRequest.Grace` zero or negative |
+| `lode.ErrInvalidPath` | Dataset.Expire | `ExpireRequest.Partition` is not a canonical relative partition path |
+| `lode.ErrPartitionPrefixNotSupported` | Dataset.Expire | `ExpireRequest.Partition` set on a layout without partitions |
+
+**Behavior**:
+- Selecting the head snapshot is not an error: `Expire` keeps it and reports
+  it in `ExpireReport.RetainedHead`.
+- `ErrHeadUncommitted` is retryable: retry once the in-flight commit
+  completes. A pointer left behind by a crashed commit is replaced by the
+  next commit; `Latest` never rewrites an existing pointer.
+- `Expire` and `Sweep` return a non-nil report with every error, describing
+  the work completed before it. After a retryable failure the next
+  `Expire` or `Sweep` completes the rest; corruption (an invalid or
+  contradicted tombstone, an invalid manifest) recurs until repaired
+  (CONTRACT_RETENTION §Accounting).
+
+---
+
 ## Error Handling Guidelines
 
 ### Retry-Safe Errors
@@ -291,7 +318,7 @@ never returned; callers must ensure single-writer semantics as before.
 ### Non-Retry Errors
 - `ErrDatasetsNotModeled` — reconfigure with different layout.
 - `ManifestValidationError` — data corruption, investigate source.
-- `ErrPathExists` — logic error in caller (double-write attempt).
+- `ErrPathExists` — logic error in caller (double-write attempt). Retention's tombstone create is the exception: there it means another run recorded the expiry first, which retention checks and accepts (`CONTRACT_RETENTION.md` §Order of operations).
 - `ErrOverlappingBlocks` — logic error in caller (overlapping byte ranges).
 - Component mismatch — reconfigure dataset or use matching snapshot.
 
@@ -306,11 +333,17 @@ never returned; callers must ensure single-writer semantics as before.
 Errors MUST NOT imply:
 - Mutable state (no "update failed" semantics).
 - Background recovery (no "will retry later" semantics).
-- Partial success (writes are atomic via manifest).
+- Partial success (writes are atomic via manifest). Retention is the one
+  exception: `Expire` and `Sweep` report the work completed before an error,
+  and every step they take is idempotent (`CONTRACT_RETENTION.md`).
 
 All operations are:
 - **Idempotent reads**: Same input, same output (modulo storage consistency).
 - **Atomic writes**: Manifest presence is the sole commit signal.
+
+  Retention (`Expire`, `Sweep`) is not a snapshot commit. Its only writes are
+  tombstones, created create-only (`CONTRACT_RETENTION.md` §Order of
+  operations); everything else it does is an idempotent delete.
 
 ---
 

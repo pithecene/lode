@@ -47,6 +47,7 @@ Plans, contracts, and research notes. Contracts define **system behavior**.
 - `contracts/CONTRACT_EXAMPLES.md` — example and callsite conventions
 - `contracts/CONTRACT_VOLUME.md` — contract for Volume persistence model
 - `contracts/CONTRACT_COMPLEXITY.md` — complexity bounds for all public operations
+- `contracts/CONTRACT_RETENTION.md` — snapshot expiry and unreferenced-object sweep
 - `BENCHMARKS.md` — benchmark results and performance baselines
 - `DESIGN_SCOPED_CONCURRENCY.md` — scoped concurrency design for non-overlapping writers
 - `SNIPPET_POLICY.md` — markdown code fence conventions

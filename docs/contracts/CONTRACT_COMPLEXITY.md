@@ -60,15 +60,15 @@ Hot-path operations MUST NOT scale with dataset/volume history size.
 
 | Operation | Store Calls (warm) | Store Calls (cold) | Memory |
 |-----------|-------------------|--------------------|--------|
-| Write (no partitions) | 4 fixed | +1 List (scan) | O(R + encoded) |
-| Write (P partitions) | 2P + 3 | +1 List (scan) | O(R + encoded) |
-| StreamWrite | 4 fixed | +1 List (scan) | O(1) streaming |
-| StreamWriteRecords | 4 fixed | +1 List (scan) | O(1) streaming |
+| Write (no partitions) | 4 fixed | scan fallback (below) | O(R + encoded) |
+| Write (P partitions) | 2P + 3 | scan fallback (below) | O(R + encoded) |
+| StreamWrite | 4 fixed | scan fallback (below) | O(1) streaming |
+| StreamWriteRecords | 4 fixed | scan fallback (below) | O(1) streaming |
 
 Parent resolution:
 - In-memory cache: 0 calls
 - Pointer + Exists: 2 calls
-- Scan fallback (degraded): O(N) via List. Self-heals.
+- Scan fallback (degraded): O(N) via List, plus for a Dataset 1 tombstone Get per snapshot scanned (+1 canonical-manifest Exists per scanned snapshot that has a tombstone), newest first until one is not expired. Creates a missing pointer; never rewrites a stale one (CONTRACT_CORE §Snapshot ID).
 
 Parent resolution MUST NOT use List when a valid pointer exists.
 
@@ -79,9 +79,9 @@ Parent resolution MUST NOT use List when a valid pointer exists.
 | Operation | Path | Store Calls | Memory | CPU |
 |-----------|------|-------------|--------|-----|
 | Latest (warm) | Hot | 2 (pointer + manifest) | O(manifest) | O(1) |
-| Latest (cold) | Degraded | 1 List + 1 Get | O(N) | O(N) |
+| Latest (cold) | Degraded | 1 List + 1 Get + 1 tombstone Get per snapshot scanned (+1 canonical-manifest Exists per scanned snapshot that has a tombstone) | O(N) | O(N) |
 | Snapshot(id) | Hot | 1 Get | O(manifest) | O(1) |
-| Snapshot(id) fallback | Degraded | 1 List + scan | O(N) | O(N) |
+| Snapshot(id) fallback | Degraded | 1 Get (canonical miss) + 1 tombstone Get + 1 List + scan | O(N) | O(N) |
 | Snapshots() | Cold | 1 List + S Gets | O(S × manifest) | O(S × B_avg + S log S) |
 | Read(id) | Hot | 1 + F Gets | O(R_total) | O(R_total) |
 
@@ -102,6 +102,23 @@ ListPartitions MUST NOT double-deserialize manifests.
 `Prefix` narrows N and M to the matching subtree on partition-aware layouts.
 `StartAfter` and `Limit` are applied after enumeration: they bound the result
 set, not the store calls. Sorting adds O(N log N) CPU, no store calls.
+
+---
+
+## Dataset — Retention
+
+| Operation | Path | Store Calls | Memory |
+|-----------|------|-------------|--------|
+| Expire (K selected) | Cold | 1 List + (K + 1) pointer Gets (each + at most 1 Exists, + 1 List when the head has no canonical manifest) + K manifest Gets + K tombstone Gets + 1 Get per manifest path of each selected snapshot + K tombstone writes (each + at most 1 read-back Get) + Σ(manifests + files) Deletes | O(N + K × manifest) |
+| Sweep (T tombstones, D objects deleted, manifests included) | Cold | 2 Lists + 1 pointer Get + T Gets + 1 Get per manifest path of a tombstoned snapshot with anything left + ≤ 1 Exists per manifest path of each unlisted-manifest group past grace + D Deletes | O(N + Σ tombstone inventories + one snapshot's manifest copies) |
+| Snapshot(id), Read(id) expired | Hot miss | +1 Get (tombstone) | O(1) |
+
+`Expire` with `Partition` lists only that partition subtree; otherwise N is
+the whole snapshot prefix. With no pointer, retention lists the whole
+snapshot prefix even for a `Partition` request, to tell an empty dataset
+from one it must refuse. Selection by `Before` reads snapshot IDs from
+paths and loads no manifest beyond the K selected. Full bounds and their
+derivation are in `CONTRACT_RETENTION.md` §Complexity Bounds.
 
 ---
 
