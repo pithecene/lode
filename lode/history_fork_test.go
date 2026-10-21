@@ -53,6 +53,10 @@ func assertLinear(t *testing.T, store Store) {
 	}
 	reached := 0
 	for id := head.ID; id != ""; id = parent[id] {
+		if _, ok := parent[id]; !ok {
+			t.Errorf("history broken: head %s reaches missing snapshot %s", head.ID, id)
+			break
+		}
 		reached++
 	}
 	if reached != len(all) {
