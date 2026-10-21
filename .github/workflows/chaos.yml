@@ -1,0 +1,65 @@
+name: 🌪️ Chaos
+
+# On demand only: the harness is long-running and is started by hand, like
+# the Nightly workflow, to conserve CI minutes.
+on:
+  workflow_dispatch:
+    inputs:
+      backends:
+        description: Comma-separated backends (memory, fs, localstack, rustfs, s3)
+        default: memory,fs,localstack,rustfs
+      layouts:
+        description: Comma-separated layouts (default, hive)
+        default: default,hive
+      duration:
+        description: Duration of each configuration (Go duration)
+        default: 60s
+      writers:
+        description: Concurrent writers
+        default: "8"
+      seed:
+        description: Seed (0 picks one from the clock)
+        default: "0"
+
+permissions:
+  contents: read
+
+jobs:
+  chaos:
+    name: 🌪️ Chaos Harness
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🧰 Setup
+        uses: jdx/mise-action@v2
+
+      - name: 🐳 Start S3 Services
+        if: contains(inputs.backends, 'localstack') || contains(inputs.backends, 'rustfs')
+        run: task s3:up
+
+      - name: 🌪️ Chaos Harness
+        # Inputs pass through the environment, never into the script text.
+        # The S3 secrets reach this step only (the "s3" backend: AWS S3,
+        # Cloudflare R2, ...), never the third-party actions above.
+        env:
+          CHAOS_S3_ENDPOINT: ${{ secrets.CHAOS_S3_ENDPOINT }}
+          CHAOS_S3_REGION: ${{ secrets.CHAOS_S3_REGION }}
+          CHAOS_S3_PATH_STYLE: ${{ secrets.CHAOS_S3_PATH_STYLE }}
+          CHAOS_S3_BUCKET: ${{ secrets.CHAOS_S3_BUCKET }}
+          CHAOS_S3_ACCESS_KEY_ID: ${{ secrets.CHAOS_S3_ACCESS_KEY_ID }}
+          CHAOS_S3_SECRET_ACCESS_KEY: ${{ secrets.CHAOS_S3_SECRET_ACCESS_KEY }}
+          IN_BACKENDS: ${{ inputs.backends }}
+          IN_LAYOUTS: ${{ inputs.layouts }}
+          IN_DURATION: ${{ inputs.duration }}
+          IN_WRITERS: ${{ inputs.writers }}
+          IN_SEED: ${{ inputs.seed }}
+        run: >-
+          task chaos
+          BACKENDS="$IN_BACKENDS" LAYOUTS="$IN_LAYOUTS" DURATION="$IN_DURATION"
+          WRITERS="$IN_WRITERS" SEED="$IN_SEED"
+
+      - name: 🐳 Stop S3 Services
+        if: always() && (contains(inputs.backends, 'localstack') || contains(inputs.backends, 'rustfs'))
+        run: task s3:down

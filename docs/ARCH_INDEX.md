@@ -74,6 +74,7 @@ Public API surface.
 Internal implementations.
 
 - `testutil/` — internal test helpers, including the fault-injection store
+- `chaos/` — randomized concurrency harness with invariant checks, run on demand (`task chaos`, Chaos workflow)
 - `storepath/` — key, prefix, and range rules shared by every Store adapter
 - `history/` — snapshot-history core (snapshot chain, latest pointer, CAS commit loop) shared by every container
 - `retry/` — CAS-conflict retry configuration and backoff shared by every container
@@ -121,7 +122,8 @@ AI governance: repo-local skill definitions.
 CI/CD workflows (GitHub Actions).
 
 - `workflows/ci.yml` — continuous integration
-- `workflows/nightly.yml` — nightly checks
+- `workflows/nightly.yml` — nightly checks (run on demand)
+- `workflows/chaos.yml` — chaos harness (run on demand)
 - `workflows/release.yml` — release automation
 
 ---
