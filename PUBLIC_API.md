@@ -651,8 +651,10 @@ concurrent use by several goroutines.
 A writer that terminates after advancing the `latest` pointer and before
 persisting its manifest leaves an *abandoned commit*. The history remains
 linear, but the next Dataset snapshot names a parent that has no manifest,
-and every Volume commit returns `ErrSnapshotConflict` until an operator
-repairs the pointer (CONTRACT_CORE §Head Pointer).
+and every Volume commit returns `ErrSnapshotConflict` until the pointer
+names a snapshot whose manifest exists, either because the missing manifest
+is persisted or because an operator sets the pointer to an earlier snapshot
+(CONTRACT_CORE §Head Pointer, CONTRACT_VOLUME §Error Semantics).
 
 On a conflict, with manual retries:
 1. Receive `ErrSnapshotConflict`.
