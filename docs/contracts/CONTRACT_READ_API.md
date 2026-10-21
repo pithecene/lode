@@ -1,25 +1,29 @@
 # Lode Read API — Design and Implementation
 
-This document defines the **Lode Read API**, its goals, non-goals, adapter contracts, and implementation nuances.
-It is intended to be authoritative for any storage adapter or higher-level tooling (Quarry CLI, UI, query engines)
-that consumes data written by Lode.
+This document defines the **Lode Read API**: its goals, non-goals, adapter
+contracts, and implementation considerations. It is authoritative for any
+storage adapter or higher-level tool (the Quarry CLI, user interfaces, query
+engines) that consumes data written by Lode.
 
 ---
 
 ## Goals
 
-1. **Adapter-agnostic**: support S3-like object stores, local filesystems, etc.
-2. **Manifest-driven**: planning decisions must be made from metadata before touching data.
-3. **Range-read capable**: adapters must support efficient byte-range reads.
-4. **Streaming-friendly**: sequential scans and tail-style reads must be natural.
-5. **Stable semantics**: expose stored facts, not interpretations.
+1. **Independence from adapters**: support S3-compatible object stores, local
+   filesystems, and similar backends.
+2. **Manifest-driven planning**: planning decisions are made from metadata
+   before any data is read.
+3. **Range reads**: adapters support efficient byte-range reads.
+4. **Streaming**: sequential scans and reads from the end of an object are
+   straightforward.
+5. **Stable semantics**: the API exposes stored facts, not interpretations.
 
 ---
 
-## Non-goals
+## Non-Goals
 
-- SQL execution engine
-- Join planner or optimizer
+- An SQL execution engine
+- A join planner or optimizer
 - Arbitrary filtering beyond partition pruning and manifest statistics
 - Mutable state or control-plane semantics
 
@@ -29,16 +33,20 @@ that consumes data written by Lode.
 
 ### Dataset → Partition → Segment → Object
 
-- **Dataset**: logical collection (e.g. `nyc-rent/items`) **when the layout models datasets**.
-- **Partition**: path-encoded organization, **as defined by the layout**.
-- **Segment**: immutable append unit (often a run/attempt or time slice).
-- **Object**: immutable blob (data file, index, manifest, artifact).
+- **Dataset**: a logical collection (for example, `nyc-rent/items`), **when
+  the layout models datasets**.
+- **Partition**: an organization encoded in paths, **as defined by the
+  layout**.
+- **Segment**: an immutable unit of appended data (often a run, an attempt,
+  or a time interval).
+- **Object**: an immutable blob (a data file, index, manifest, or artifact).
 
 ---
 
 ## Storage Adapter Interface
 
-Adapters are the critical contract. Range reads must be *real*, not simulated.
+Adapters are the critical contract. Range reads must be genuine, not
+emulated.
 
 The authoritative adapter shape is `Store` (see `lode/api.go` and
 `docs/contracts/CONTRACT_STORAGE.md`):
@@ -55,38 +63,43 @@ type Store interface {
 }
 ```
 
-### Adapter obligations (read-facing emphasis)
+### Adapter Obligations (Read Path)
 
-- `ReadRange` must map to true range requests (e.g. HTTP Range on S3).
-- `ReaderAt` must provide random-access reads and be safe for concurrent offsets.
-- Adapters must document consistency guarantees and mitigations (see
-  `CONTRACT_STORAGE.md` for full obligations).
+- `ReadRange` must correspond to genuine range requests (for example, HTTP
+  `Range` requests on S3).
+- `ReaderAt` must provide random-access reads and be safe for concurrent
+  reads at different offsets.
+- Adapters must document their consistency guarantees and mitigations (see
+  `CONTRACT_STORAGE.md` for the complete obligations).
 
-### Range read access paths
+### Range-Read Access Paths
 
-The `DatasetReader` façade provides `ReaderAt(ctx, ObjectRef)` for random access reads.
-Callers needing direct byte-range reads have two options:
+The `DatasetReader` façade provides `ReaderAt(ctx, ObjectRef)` for random
+access. Callers that need direct byte-range reads have two options:
 
-1. **Via DatasetReader.ReaderAt**: Returns `io.ReaderAt` for standard random access.
-   Suitable for most use cases (Parquet footers, block indexes, etc.).
+1. **`DatasetReader.ReaderAt`** returns an `io.ReaderAt` for standard
+   random access, which suits most uses (Parquet footers, block indexes, and
+   similar structures).
 
-2. **Via Store.ReadRange**: Direct byte-range reads on the underlying store.
-   Callers with access to the `Store` interface can use `ReadRange(ctx, path, offset, length)`.
+2. **`Store.ReadRange`** reads a byte range directly from the underlying
+   store. Callers with access to the `Store` interface can use
+   `ReadRange(ctx, path, offset, length)`.
 
-The `DatasetReader` interface intentionally omits a direct `ReadRange` method because
-`io.ReaderAt` covers the majority of range-read use cases and provides a
-standard Go interface for interoperability with existing libraries.
+The `DatasetReader` interface deliberately omits a direct `ReadRange`
+method, because `io.ReaderAt` covers most range-read uses and is a standard
+Go interface that existing libraries already accept.
 
 ---
 
 ## ReaderAt Caching (Recommended)
 
-- Page size: 256KiB–1MiB
-- Cache size: 32–256 pages
-- Optional sequential prefetch
-- Metrics: range calls, bytes fetched
+- Page size: 256 KiB to 1 MiB
+- Cache size: 32 to 256 pages
+- Optional sequential prefetching
+- Metrics: range calls and bytes fetched
 
-This is essential for Parquet footers, Arrow metadata, and block indexes.
+Caching is essential for Parquet footers, Arrow metadata, and block
+indexes.
 
 ---
 
@@ -110,46 +123,49 @@ type ReadAPI interface {
 - `ListDatasets` MUST return an empty list only when storage is truly empty.
 ```
 
-This layer understands Lode’s layout and semantics but performs **no interpretation**.
+This layer understands Lode's layout and semantics but performs **no
+interpretation**.
 
 ### Listing Order and Cursors
 
-Store listing order is unspecified (CONTRACT_STORAGE §List), so the read API
-imposes its own:
+The order of a store listing is unspecified (CONTRACT_STORAGE §List), so the
+read API imposes its own order:
 
 - `ListDatasets` MUST return results in lexicographic order of `DatasetID`.
 - `ListPartitions` MUST return results in lexicographic order of
   `PartitionRef.Path`.
 - `ListManifests` MUST return results ordered by `(Partition, ID)`,
   lexicographically. When a snapshot has several partition manifests, the
-  returned `ManifestRef` MUST carry the lexicographically smallest partition,
-  so the same storage state always yields the same refs.
-- `StartAfter` resumes strictly after the given cursor in that order. The last
-  element of a previous result is always a valid cursor. A cursor that matches
-  no element resumes at the next element greater than it.
+  returned `ManifestRef` MUST carry the lexicographically smallest
+  partition, so that the same storage state always yields the same
+  references.
+- `StartAfter` resumes strictly after the given cursor in that order. The
+  last element of a previous result is always a valid cursor. A cursor that
+  matches no element resumes at the next element greater than the cursor.
 - `Limit` bounds the result set, not the number of store calls. Sorting and
   the cursor are applied after enumeration.
 
 ### Partition Prefix
 
-`PartitionListOptions.Prefix` is a raw string prefix over partition paths; no
-key or value boundary is implied (`day=2026-10` matches `day=2026-10-18`).
+`PartitionListOptions.Prefix` is a raw string prefix over partition paths; it
+implies no key or value boundary (`day=2026-10` matches `day=2026-10-18`).
 
-- On layouts that model partitions, the prefix MUST also narrow the storage
-  listing to the matching subtree (CONTRACT_LAYOUT §Hive-style: manifests live
-  under partition prefixes, so no committed segment can be missed).
-- A snapshot found under the prefix MAY reference files in partitions outside
-  it; those partitions MUST NOT appear in the result.
-- An empty result under a prefix means no partitions match. `ErrNotFound` is
-  reserved for the no-prefix case where the dataset has no manifests at all.
-- On layouts without partitions a non-empty prefix MUST return
+- On layouts that model partitions, the prefix MUST also restrict the
+  storage listing to the matching subtree (CONTRACT_LAYOUT §Layout-Specific
+  Requirements: Hive-style manifests reside under partition prefixes, so no
+  committed segment can be omitted).
+- A snapshot found under the prefix MAY reference files in partitions
+  outside it; those partitions MUST NOT appear in the result.
+- An empty result under a prefix means that no partition matches.
+  `ErrNotFound` is reserved for the case without a prefix in which the
+  dataset has no manifests at all.
+- On layouts without partitions, a non-empty prefix MUST return
   `ErrPartitionPrefixNotSupported`.
-- The prefix MUST be a canonical relative partition path fragment: no leading
-  `/`, no `\` anywhere, no empty, `.` or `..` segment (a trailing `/` is
-  allowed). It is
-  resolved beneath the dataset's partitions directory, so anything else could
-  address another dataset; such a prefix MUST return `ErrInvalidPath` before
-  any store call.
+- The prefix MUST be a canonical fragment of a relative partition path, with
+  no leading `/`, no `\` anywhere, and no empty, `.`, or `..` segment (a
+  trailing `/` is permitted). It is resolved beneath the dataset's
+  partitions directory, so any other value could address another dataset;
+  such a prefix MUST return `ErrInvalidPath` before any store call.
 
 ---
 
@@ -157,69 +173,72 @@ key or value boundary is implied (`day=2026-10` matches `day=2026-10-18`).
 
 Manifests are immutable and authoritative.
 
-### Minimum required fields
+### Minimum Required Fields
 
-- schema name + version
-- list of files with sizes and checksums (when configured)
-- row/event counts (total data units in snapshot)
-- min/max timestamp (when data units are timestamped; omit if not applicable)
-- references to sidecar indexes (optional)
+- the schema name and version
+- the list of files, with sizes and, when configured, checksums
+- the row or event count (the total number of data units in the snapshot)
+- the minimum and maximum timestamps, when data units carry timestamps
+  (omitted otherwise)
+- references to auxiliary indexes (optional)
 
-When no codec is configured, reads MUST return raw bytes for the object
-referenced by the manifest.
+When no codec is configured, reads MUST return the raw bytes of the object
+that the manifest references.
 
-Manifests must be readable in a single small object fetch.
+A manifest must be readable in a single fetch of a small object.
 
 ---
 
 ## Range Read Use Cases
 
-### Columnar formats (Parquet / Arrow)
+### Columnar Formats (Parquet, Arrow)
 
-- Read footer via `ReadRange`
-- Plan row groups and columns
-- Fetch only required ranges
+- Read the footer through `ReadRange`.
+- Plan the row groups and columns.
+- Fetch only the required ranges.
 
-### Block-framed logs
+### Block-Framed Logs
 
-- Fixed block headers with size + stats
-- Optional sidecar index of block offsets
-- Planner selects blocks, then issues range reads
+- Fixed block headers record size and statistics.
+- An optional auxiliary index records block offsets.
+- The planner selects blocks and then issues range reads.
 
 ### Artifacts
 
-- Partial reads for previews
-- Full reads only when explicitly requested
+- Partial reads serve previews.
+- Full reads occur only when explicitly requested.
 
 ---
 
 ## Consistency and Commit Semantics
 
-- Manifests (or explicit COMMIT markers) define segment visibility.
-- Readers must treat manifest presence as the commit signal.
-- Listing is discovery; manifests are truth.
+- Manifests (or explicit commit markers) determine segment visibility.
+- Readers must treat the presence of a manifest as the signal that a commit
+  is complete.
+- Listing serves discovery; manifests are authoritative.
 
 ---
 
 ## Layout
 
-Layout is the **authoritative abstraction** for read/write path topology and
-partition encoding. It governs:
-- How manifests are discovered (commit visibility).
-- How segment IDs are parsed from manifest paths.
-- Whether datasets are modeled and how dataset IDs are discovered.
-- How (and if) partitions are encoded in object paths.
+Layout is the **authoritative abstraction** for the path topology of reads
+and writes and for partition encoding. It governs:
+- how manifests are discovered (commit visibility);
+- how segment IDs are parsed from manifest paths;
+- whether datasets are modeled, and how dataset IDs are discovered; and
+- whether and how partitions are encoded in object paths.
 
-**Layout is unified**: partition encoding is part of topology. Path-based partitioning
-is not a separate concern from layout.
+**Layout is unified**: partition encoding is part of the topology.
+Partitioning by path is not a concern separate from layout.
 
-Implementations MAY compose Layout internally from subcomponents (e.g., topology +
-partition encoding), but the **public surface MUST remain unified**. Internal
-composition MUST validate compatibility and reject illogical combinations.
+Implementations MAY compose a layout internally from subcomponents (for
+example, topology and partition encoding), but the **public surface MUST
+remain unified**. Internal composition MUST validate compatibility and
+reject incoherent combinations.
 
-Directory topology is **not strictly enforced** by the library. Users may configure
-layout strategies via an abstraction layer. The following is a **reference and
-novice-friendly** layout (not canonical):
+The library does **not strictly enforce** a directory topology. Users may
+configure layout strategies through an abstraction layer. The following is
+a **reference layout suitable for new users** (not a canonical one):
 
 ```
 /datasets/<dataset>/
@@ -231,46 +250,50 @@ novice-friendly** layout (not canonical):
       /artifacts/
 ```
 
-Alternative layouts are valid provided:
-- Manifests remain discoverable via listing
-- Object paths recorded in manifests are accurate and resolvable
-- Commit semantics (manifest presence = visibility) are preserved
+Alternative layouts are valid provided that:
+- manifests remain discoverable through listing;
+- object paths recorded in manifests are accurate and resolvable; and
+- commit semantics (the presence of a manifest denotes visibility) are
+  preserved.
 
-Layout abstraction enables efficient prefix listing and pruning for specific backends,
-but layouts may also choose manifest-driven discovery when no path topology exists.
+The layout abstraction enables efficient prefix listing and pruning on
+particular backends, but a layout may also adopt manifest-driven discovery
+when no path topology exists.
 
 ### Partition Semantics
 
-Partitioning schemes (hive-style keys, ranges, hash buckets, spatial tiling, etc.)
-are encoded by the layout. If partition information is **not** encoded in paths,
-it MUST be recorded explicitly in manifests so consumers can interpret it.
+The layout encodes partitioning schemes (Hive-style keys, ranges, hash
+buckets, spatial tiling, and similar schemes). If partition information is
+**not** encoded in paths, it MUST be recorded explicitly in manifests so
+that consumers can interpret it.
 
 ### Reference Layouts (Curated)
 
-The library SHOULD provide a **small, curated set** of layout implementations that
-are known-good combinations, to reduce user friction and avoid illogical pairings.
-Examples include:
-- Default (novice-friendly) layout.
-- Hive-style (path-encoded key/value partitions).
-- Flat layout (minimal topology; no dataset enumeration).
+The library SHOULD provide a **small, curated set** of layout
+implementations that are known to combine soundly, in order to simplify
+adoption and avoid incoherent pairings. Examples include:
+- the default layout, suitable for new users;
+- the Hive-style layout (key/value partitions encoded in paths); and
+- the flat layout (minimal topology, without dataset enumeration).
 
-Manifest-driven discovery is a **pattern**, not a distinct layout: discovery is
-always manifest-driven, but layouts still define how manifests are found and
-how dataset/segment IDs are parsed from paths.
+Manifest-driven discovery is a **pattern**, not a distinct layout:
+discovery is always manifest-driven, but layouts still define how manifests
+are found and how dataset and segment IDs are parsed from paths.
 
-Additional layouts (spatial tiling, temporal hierarchies, range partitioning) are
-valid future extensions, but MUST follow the same invariants.
+Additional layouts (spatial tiling, temporal hierarchies, range
+partitioning) are valid future extensions, but they MUST observe the same
+invariants.
 
-#### Default Layout (Novice-Friendly)
+#### Default Layout
 
 The default layout MUST:
-- Model datasets as the top-level discriminator.
-- Be **segment-anchored**.
-- Use **flat (unpartitioned)** data paths by default.
-- Recognize manifests **only** at:
-  `datasets/<dataset>/snapshots/<segment>/manifest.json`
-- Treat datasets as existing **only** when at least one valid manifest path
-  matches the strict default layout pattern.
+- model datasets as the top-level discriminator;
+- be **anchored at segments**;
+- use **flat (unpartitioned)** data paths by default;
+- recognize manifests **only** at
+  `datasets/<dataset>/snapshots/<segment>/manifest.json`; and
+- treat a dataset as existing **only** when at least one valid manifest path
+  matches the strict pattern of the default layout.
 
 Reference shape:
 ```
@@ -283,21 +306,23 @@ Reference shape:
 
 ### Future Extensions (Exploratory Matrix)
 
-The following layout strategies and partition semantics are **non-normative**
-examples intended to guide future exploration. They are not required for the
-current implementation.
+The following layout strategies and partition semantics are
+**non-normative** examples intended to guide future exploration. The
+current implementation does not require them.
 
-**Layout Strategy (topology / placement rules)**
-- Segment-anchored: `.../<segment>/data/<partition...>/file`
-- Partition-anchored: `.../<partition...>/<segment>/file`
-- Manifest-only: only manifests have structure; data objects are opaque paths listed in manifest
-- Flat: no partition dirs; everything under a segment is flat
-- Keyed envelope: partitions encoded in filename, not path (e.g., `file__day=...__region=...`)
+**Layout Strategy (Topology and Placement Rules)**
+- Anchored at segments: `.../<segment>/data/<partition...>/file`
+- Anchored at partitions: `.../<partition...>/<segment>/file`
+- Manifest only: only manifests have structure; data objects are opaque
+  paths listed in the manifest
+- Flat: no partition directories; everything under a segment is flat
+- Keyed envelope: partitions encoded in the file name rather than the path
+  (for example, `file__day=...__region=...`)
 
 **Partition Semantics**
-- Attribute K/V (Hive style: `day=`, `region=`)
+- Attribute key/value (Hive style: `day=`, `region=`)
 - Range (`ts_range=2026-01-01_2026-01-07`)
-- Hash/Bucket (`bucket=42`)
+- Hash bucket (`bucket=42`)
 - Spatial tile (`h3=...`, `quadkey=...`)
 - Temporal hierarchy (`2026/02/02` or `year=2026/month=02`)
 - Prefix (`prefix=ab`)
@@ -305,35 +330,39 @@ current implementation.
 
 **Discouraged Pairings (Non-normative)**
 
-Some combinations are intentionally discouraged because they degrade discovery
-semantics or pruning behavior. This is a primary reason the public interface
-exposes a **unified layout** rather than free mix-and-match components.
+Some combinations are deliberately discouraged because they degrade
+discovery semantics or pruning. This is a principal reason that the public
+interface exposes a **unified layout** rather than components that can be
+combined freely.
 
 Examples of discouraged pairings:
-- Partition-anchored + Hash/Bucket (high fan-out, poor locality for discovery).
-- Flat + Attribute K/V (hides partitions from listing; forces manifest-only discovery).
-- Keyed envelope + Spatial tile (opaque to prefix listing and typical spatial tooling).
+- Anchored at partitions with hash buckets (high fan-out and poor locality
+  for discovery).
+- Flat with attribute key/value partitions (conceals partitions from
+  listing and compels discovery through manifests alone).
+- Keyed envelope with spatial tiles (opaque to prefix listing and to typical
+  spatial tools).
 
 ---
 
 ## Implementation Phases
 
-### R1 — Storage adapters
-- Local FS
-- S3 (HTTP range)
-- ReaderAt cache
+### R1: Storage Adapters
+- Local filesystem
+- S3 (HTTP range requests)
+- `ReaderAt` cache
 
-### R2 — Enumeration
-- Dataset, partition, segment listing
-- Canonical path parsing
-- Commit rule enforcement
+### R2: Enumeration
+- Listing of datasets, partitions, and segments
+- Parsing of canonical paths
+- Enforcement of the commit rule
 
-### R3 — Manifest handling
-- Schema + parser + validator
-- Object open + random access
+### R3: Manifest Handling
+- Schema, parser, and validator
+- Opening of objects and random access
 
-### R4 — Reference helpers (optional)
-- Manifest-based pruning helpers
+### R4: Reference Helpers (Optional)
+- Pruning helpers based on manifests
 - Parquet footer reader
 - Block index reader
 
@@ -341,19 +370,20 @@ Examples of discouraged pairings:
 
 ## Adapter Checklist
 
-Any adapter must demonstrate:
+Every adapter must demonstrate:
 
-1. True range reads
-2. Efficient random access
-3. Prefix listing with pagination
-4. Cheap and accurate stat
-5. Documented consistency semantics
+1. genuine range reads;
+2. efficient random access;
+3. prefix listing with pagination;
+4. inexpensive and accurate metadata queries; and
+5. documented consistency semantics.
 
 ---
 
 ## Complexity Bounds
 
-See [CONTRACT_COMPLEXITY.md](CONTRACT_COMPLEXITY.md) for full definitions and variable glossary.
+See [CONTRACT_COMPLEXITY.md](CONTRACT_COMPLEXITY.md) for complete definitions
+and a glossary of variables.
 
 ### Enumeration
 
@@ -365,10 +395,12 @@ See [CONTRACT_COMPLEXITY.md](CONTRACT_COMPLEXITY.md) for full definitions and va
 | `GetManifest` | 1 Get | O(manifest) |
 | `OpenObject` | 1 Get | O(1) streaming |
 
-`ListManifests` MUST extract snapshot IDs from paths without full-content deserialization
-beyond what is required for CONTRACT_ERRORS.md validation.
+`ListManifests` MUST extract snapshot IDs from paths and MUST NOT
+deserialize content beyond what validation under CONTRACT_ERRORS.md
+requires.
 
-`ListPartitions` MUST NOT deserialize manifests that were already deserialized by `ListManifests`.
+`ListPartitions` MUST NOT deserialize manifests that `ListManifests` has
+already deserialized.
 
 ### Dataset Operations
 
@@ -379,8 +411,8 @@ beyond what is required for CONTRACT_ERRORS.md validation.
 | `Snapshots` | 1 List + S Gets | O(S × manifest) |
 | `Read(id)` | 1 + F Gets | O(R_total) |
 
-`Snapshots()` is a cold-path enumeration with cost proportional to history depth.
-Callers MUST NOT use `Snapshots()` on hot paths.
+`Snapshots()` is a cold-path enumeration whose cost is proportional to the
+depth of the history. Callers MUST NOT use `Snapshots()` on hot paths.
 
 ---
 
