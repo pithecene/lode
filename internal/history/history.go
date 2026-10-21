@@ -6,8 +6,8 @@
 //
 // History owns everything about the head that the containers would otherwise
 // duplicate: the persisted pointer, the in-process memory of the last head
-// this writer observed (the CAS expected value for the next advance),
-// self-heal after a scan, the scan itself, and manifest I/O.
+// this writer observed (the CAS expected value for the next advance), the
+// scan, and manifest I/O. Only a commit writes the pointer: a read never does.
 //
 // The package does not import lode: it reads the store through the Store
 // subset below and returns the sentinels the container passes in (Errors),
@@ -266,28 +266,32 @@ func (h *History[ID, M]) Forget() {
 }
 
 // Latest returns the head snapshot: through the pointer when it names a
-// loadable snapshot, otherwise by scan — and then self-heals the pointer (a
-// CAS conflict there means a concurrent commit already advanced it). The
-// result is remembered so a later advance expects the right pointer content.
+// loadable snapshot, otherwise by scan. A pointer or manifest read that fails
+// for any reason other than absence is returned, never read as "stale": a
+// transient error on a valid head must not substitute an older snapshot
+// (lode#208). Latest never writes the pointer — a scan result is not proof of
+// the head, and writing it back could rewind the pointer past a commit. Only
+// a pointer-confirmed head is remembered as the CAS expectation.
 func (h *History[ID, M]) Latest(ctx context.Context) (*Snapshot[ID, M], error) {
-	var observed string
-	if id, err := h.readPointer(ctx); err == nil {
-		if s, err := h.Snapshot(ctx, id); err == nil {
+	id, err := h.readPointer(ctx)
+	if err == nil {
+		s, err := h.Snapshot(ctx, id)
+		if err == nil {
 			h.remember(id, string(id))
 			return s, nil
 		}
-		observed = string(id) // stale: names a missing snapshot
+		if !errors.Is(err, h.errs.NotFound) {
+			return nil, fmt.Errorf("lode: failed to load latest snapshot: %w", err)
+		}
+	} else if !errors.Is(err, h.errs.NotFound) {
+		return nil, fmt.Errorf("lode: failed to read latest pointer: %w", err)
 	}
 
 	s, err := h.scan(ctx)
 	if err != nil {
 		return nil, err
 	}
-	// Self-heal is best-effort: a conflict means another writer repaired or
-	// advanced the pointer first, and any other failure leaves the next
-	// Latest to scan again. Either way the scan result stands.
-	_ = h.writePointer(ctx, observed, s.ID)
-	h.remember(s.ID, string(s.ID))
+	h.Forget()
 	return s, nil
 }
 
@@ -354,11 +358,15 @@ func (h *History[ID, M]) resolve(ctx context.Context, verify func(context.Contex
 	return s.ID, s, observed, nil
 }
 
-// verifyExists confirms a snapshot by its canonical manifest's existence;
-// a failed check counts as stale.
+// verifyExists confirms a snapshot by its canonical manifest's existence; a
+// missing manifest is stale, a failed check is an error (lode#208: treating
+// it as stale parented a commit on an older snapshot).
 func (h *History[ID, M]) verifyExists(ctx context.Context, id ID) (*Snapshot[ID, M], bool, error) { //nolint:unparam // shares the verifier signature with verifyLoad, which does return a snapshot
 	exists, err := h.store.Exists(ctx, h.kind.ManifestPath(id))
-	return nil, err == nil && exists, nil
+	if err != nil {
+		return nil, false, fmt.Errorf("lode: failed to check snapshot: %w", err)
+	}
+	return nil, exists, nil
 }
 
 // verifyLoad confirms a snapshot by loading it; a missing manifest is stale,

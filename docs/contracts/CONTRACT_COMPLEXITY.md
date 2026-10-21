@@ -38,7 +38,7 @@ Hot-path operations MUST NOT scale with dataset/volume history size.
 
 - Hot path: per-read, per-write. O(S), O(B), O(M) is a bug.
 - Cold path: explicit listing (Snapshots(), ListDatasets). Documented cost; acknowledged scaling.
-- Degraded path: backward-compat fallback (scan when pointer missing). Documented, self-healing.
+- Degraded path: backward-compat fallback (scan when pointer missing). Documented; read-only (the next commit writes the pointer).
 
 ---
 
@@ -68,7 +68,7 @@ Hot-path operations MUST NOT scale with dataset/volume history size.
 Parent resolution:
 - In-memory cache: 0 calls
 - Pointer + Exists: 2 calls
-- Scan fallback (degraded): O(N) via List. Self-heals.
+- Scan fallback (degraded): O(N) via List. Read-only.
 
 Parent resolution MUST NOT use List when a valid pointer exists.
 

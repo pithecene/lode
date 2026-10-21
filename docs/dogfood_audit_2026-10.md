@@ -143,6 +143,16 @@ CAS expectation still matches the pointer. This is a **candidate** mechanism
 consistent with the data. It is not reproduced. Tracked in
 [lode#208](https://github.com/pithecene/lode/issues/208).
 
+**Update 2026-10-20 (root cause).** The window above lasts milliseconds; the
+second child committed 5 minutes after the first, so the window cannot
+explain it. A read-only replay of all 34,642 CAS-era snapshots found 290
+commits from a fresh writer (no in-memory head) made while the head's ID was
+smaller than an older snapshot's. 289 parented on the head; only this one took
+the larger ID. Its writer found the pointer valid, its existence check on the
+head failed, v0.9.0 read that as a stale pointer, scanned to the largest ID
+(the head's parent), and the CAS still matched the pointer. Reproduced and
+fixed; see `V1_READINESS.md` §10.
+
 ### F4 — Two snapshots reference a parent that does not exist · LIMITATION (historical)
 
 Both are from 2026-02-12, when the consumer ran Lode v0.7.3. The missing parent
@@ -223,9 +233,11 @@ policy) a real dependency, not a hypothetical one.
 
 ## Open Questions
 
-1. F3 ([#208](https://github.com/pithecene/lode/issues/208)): reproduce the scan-fallback fork (two writers, one landing in the
+1. ~~F3 ([#208](https://github.com/pithecene/lode/issues/208)): reproduce the scan-fallback fork (two writers, one landing in the
    pointer-before-manifest window) and decide whether `scan` must order by
-   commit (e.g. `CreatedAt` or the parent chain) instead of ID.
+   commit (e.g. `CreatedAt` or the parent chain) instead of ID.~~ Resolved
+   2026-10-20: root cause in F3's update. The window mechanism is reproduced
+   separately and left to the commit-protocol decision.
 2. F6: confirm whether the six snapshots `ListManifests` does not return are
    canonical-only.
 3. F5: which March runs left 1.98 GB unreferenced (join orphans to run

@@ -396,6 +396,9 @@ proportional to dataset/volume size on remote stores (S3/R2).
 | Write: 0 List calls after pointer | `TestDataset_Write_Pointer/latest_pointer_skips_scan` |
 | StreamWrite: 0 List calls | `TestDataset_StreamWrite_Lineage/latest_pointer_skips_scan` |
 | StreamWriteRecords: 0 List calls | `TestDataset_StreamWriteRecords_Commit/latest_pointer_skips_scan` |
+| Existence-check error returned, not stale (lode#208) | `TestHistoryFork_IDOrderInvertedAndExistsFails`, `TestResolve/failed_existence_check_is_an_error,_not_stale` |
+| Head load error during retry refresh returned (lode#208) | `TestHistoryFork_RetryRefreshGetFails`, `TestLatest/failed_head_load_is_returned,_not_scanned` |
+| Latest never writes the pointer (lode#208) | `TestHistoryFork_LatestInsidePointerManifestWindow`, `TestLatest/no_pointer_scans_for_the_largest_ID_and_writes_nothing` |
 
 **Dataset — HiveLayout Canonical Manifest**: O(1) `Snapshot(ctx, id)`.
 
@@ -480,7 +483,7 @@ proportional to dataset/volume size on remote stores (S3/R2).
 | `Volume.Snapshots()` | O(S × B_avg) memory | Cumulative manifests |
 | `Volume.Commit` manifest | O(B) per commit | Cumulative design |
 | `Dataset.Read(id)` | O(R_total) memory | Returns all records |
-| `latestByScan` | O(N) List | Backward-compat; self-heals via pointer write |
+| `latestByScan` | O(N) List | Backward-compat; read-only, the next commit writes the pointer |
 | `ListManifests` validation | M Gets | Contractually required by CONTRACT_ERRORS.md (CX-2) |
 | `Snapshot(id)` fallback | O(N) scan | Degraded path for pre-canonical data; self-heals (CX-4) |
 | `Write` partitioned memory | O(R interface aliases) | Partition map holds references, not copies (CX-5) |

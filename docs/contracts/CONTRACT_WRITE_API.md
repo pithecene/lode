@@ -267,9 +267,20 @@ See [CONTRACT_COMPLEXITY.md](CONTRACT_COMPLEXITY.md) for full definitions and va
 
 - In-memory cache (within process): **0 store calls**.
 - Persistent pointer (cold start): **2 store calls** (1 Get + 1 Exists).
-- Scan fallback (no pointer, backward compat): **O(N) via List**. Self-heals on completion.
+- Scan fallback (no pointer, backward compat): **O(N) via List**. The scan
+  never writes the pointer; the next commit does.
 
 Parent resolution MUST NOT use List when a valid pointer exists.
+
+A pointer is stale only when the manifest it names is **absent** (the store
+reports not-found). Any other failure to read the pointer or to check or load
+its manifest MUST be returned to the caller. It MUST NOT be treated as a stale
+pointer: a scan picks the largest snapshot ID, IDs are taken when a write
+starts rather than when it commits, so a transient error on a valid head
+would otherwise parent the commit on an older snapshot and fork history
+(lode#208).
+
+`Latest` MUST NOT write the pointer. Only a commit advances it.
 
 ### Write Operations
 

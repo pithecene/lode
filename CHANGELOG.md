@@ -25,6 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   Volume has its own `Option` type, so dataset options no longer compile as Volume options and `ErrOptionNotValidForVolume` is removed. Behavior, error messages, the shared sentinels (`lode.ErrNotFound`, `ErrNoSnapshots`, `ErrSnapshotConflict`, `ErrInvalidArgument`, `ErrManifestInvalid`), the on-disk path grammar and the manifest JSON are unchanged: Volumes written by earlier releases read as before. Migration is mechanical: import `github.com/pithecene-io/lode/lode/volume` and rename per the table.
 
+### Fixed
+
+- **History fork under CAS** ([#208](https://github.com/pithecene/lode/issues/208)): a failed existence check or manifest read on a valid head was treated as a stale pointer. The scan fallback then picked the largest snapshot ID, which is not the head when a write that started first committed second, and the commit's CAS still matched the pointer, so it forked history. Such errors are now returned to the caller. `Latest` no longer writes the pointer after a scan (it could rewind the pointer past a commit); the next commit writes it. Applies to Dataset and Volume.
+
 ### Changed
 
 - **Shared internals**: the snapshot-history core (snapshot chain, latest pointer, CAS commit loop) moved to `internal/history`, the retry configuration and backoff to `internal/retry`, the argument and manifest validation errors to `internal/validate`, and the fault-injection test store to `internal/testutil`. `ErrInvalidArgument` and `ErrManifestInvalid` are re-exported from `internal/validate`: same values, same static type `error`, same messages. No API or behavior change; this lets a second package share them ahead of `V1_API_DECISIONS.md` D9.

@@ -23,9 +23,13 @@ Based on the full-history audit of the production dataset
 
 - **Holds:** no corruption detected and zero manifest decode failures across 96,478
   snapshots over 8 months on R2; `Manifest` format stable since 2026-02-06.
-- **Blocker:** one history fork under CAS + retry (2026-08-25, §10). Snapshot
-  ID order does not match commit order, which breaks an assumption in the
-  latest-by-scan fallback ([#208](https://github.com/pithecene/lode/issues/208)).
+- **Blocker:** one history fork under CAS + retry (2026-08-25, §10). Root
+  cause found and fixed in Unreleased: a transient error on a valid head was
+  read as a stale pointer, and the scan fallback picked an older snapshot
+  because snapshot ID order is not commit order
+  ([#208](https://github.com/pithecene/lode/issues/208)). A second mechanism
+  (a writer inside another commit's pointer-to-manifest window) is reproduced
+  and still open; it needs a commit-protocol decision.
 - **Not yet met, time-gated:** API and sentinel freeze windows reopened by
   v0.10.0 and reopened again by the next release, which moves Volume out of
   `lode` (§1); `V1_API_DECISIONS.md` D1–D8 open.
@@ -396,9 +400,11 @@ nearest candidate is pithecene/quarry#255.
 
 - [ ] Zero snapshot history inconsistencies (forked history, missing parent, duplicate ID)
 
-> **Evidence:** 0 duplicate IDs. 2 missing parents (2026-02-12, Lode v0.7.3). 1,113 forks, of which 1,112 predate the consumer's CAS adoption (2026-03-08) and are expected without concurrency control. **1 fork happened under Lode v0.9.0 CAS + retry (2026-08-25)** ([`dogfood_audit_2026-10.md`](dogfood_audit_2026-10.md) F3). The same fork shows a child whose ID precedes its parent's: ID order is not commit order, which breaks the assumption in the latest-by-scan fallback (`history.go` `scan`, unchanged in v0.10.0). Candidate mechanism; not reproduced.
+> **Evidence:** 0 duplicate IDs. 2 missing parents (2026-02-12, Lode v0.7.3). 1,113 forks, of which 1,112 predate the consumer's CAS adoption (2026-03-08) and are expected without concurrency control. **1 fork happened under Lode v0.9.0 CAS + retry (2026-08-25)** ([`dogfood_audit_2026-10.md`](dogfood_audit_2026-10.md) F3). The same fork shows a child whose ID precedes its parent's: ID order is not commit order, which breaks the assumption in the latest-by-scan fallback (`history.go` `scan`, unchanged in v0.10.0).
+>
+> **Root cause (2026-10-20, read-only replay of the 34,642 CAS-era snapshots since 2026-03-08):** 290 commits from a fresh writer (no in-memory head) landed while the head's ID was smaller than an older snapshot's. 289 parented on the head through the pointer; only the forking commit took the larger ID. Its writer found the pointer valid, its existence check on the head failed, v0.9.0 read that as a stale pointer, scanned to the largest ID (the head's parent), and its CAS still matched the pointer. Reproduced in `lode/history_fork_test.go` and fixed in Unreleased: such errors are returned, never read as stale, and `Latest` no longer rewrites the pointer. The tests also reproduce a second mechanism production has not hit: a writer that resolves inside another commit's pointer-to-manifest window forks with no error. Fixing it changes the commit protocol and is open.
 > Date: 2026-10-20 | Observer: @pithecene-io | Project: private-A
-> Summary: Not met. Blocker until the CAS-era fork is explained and fixed or bounded.
+> Summary: Not met. The observed fork is explained and fixed; the pointer-to-manifest window mechanism stays open until the commit protocol is decided.
 > Issue: [#208](https://github.com/pithecene/lode/issues/208)
 
 ---

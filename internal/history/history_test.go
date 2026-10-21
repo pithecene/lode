@@ -381,6 +381,21 @@ func TestWritePointer(t *testing.T) {
 	})
 }
 
+// writesNothing asserts that Latest left storage and memory alone: a scan is
+// not proof of the head, so Latest neither writes the pointer nor remembers a
+// scan result as the CAS expectation (lode#208).
+func writesNothing(t *testing.T, s *memStore, h History[id, manifest], wantPointer string) {
+	t.Helper()
+	for _, op := range s.ops {
+		if strings.HasPrefix(op, "put ") || strings.HasPrefix(op, "cas ") || strings.HasPrefix(op, "delete ") {
+			t.Fatalf("Latest wrote: ops = %v", s.ops)
+		}
+	}
+	if string(s.objects[pointer]) != wantPointer || h.head != "" || h.pointer != "" {
+		t.Fatalf("pointer = %q, memory = %q/%q", s.objects[pointer], h.head, h.pointer)
+	}
+}
+
 func TestLatest(t *testing.T) {
 	t.Run("pointer wins over a larger ID", func(t *testing.T) {
 		s := newMemStore()
@@ -396,7 +411,7 @@ func TestLatest(t *testing.T) {
 			t.Fatalf("memory = %q/%q, want 1/1", h.head, h.pointer)
 		}
 	})
-	t.Run("no pointer scans for the largest ID and heals", func(t *testing.T) {
+	t.Run("no pointer scans for the largest ID and writes nothing", func(t *testing.T) {
 		s := newMemStore()
 		put(t, s, "1", "one")
 		put(t, s, "3", "three")
@@ -406,32 +421,43 @@ func TestLatest(t *testing.T) {
 		if err != nil || got.ID != "3" {
 			t.Fatalf("got %+v, %v; want snapshot 3", got, err)
 		}
-		if string(s.objects[pointer]) != "3" || h.head != "3" || h.pointer != "3" {
-			t.Fatalf("pointer = %q, memory = %q/%q", s.objects[pointer], h.head, h.pointer)
-		}
+		writesNothing(t, s, h, "")
 	})
-	t.Run("stale pointer heals against its own content", func(t *testing.T) {
+	t.Run("pointer to a missing manifest scans and leaves the pointer", func(t *testing.T) {
 		s := newMemStore()
 		put(t, s, "1", "one")
 		s.objects[pointer] = []byte("9")
 		h := newTestHistory(casStore{s})
+		h.remember("7", "7")
 		got, err := h.Latest(t.Context())
 		if err != nil || got.ID != "1" {
 			t.Fatalf("got %+v, %v", got, err)
 		}
-		if !slices.Contains(s.ops, "cas "+pointer+" 9") || string(s.objects[pointer]) != "1" {
-			t.Fatalf("ops = %v, pointer = %q", s.ops, s.objects[pointer])
-		}
+		writesNothing(t, s, h, "9")
 	})
-	t.Run("failed heal still returns the scan result", func(t *testing.T) {
+	t.Run("failed head load is returned, not scanned", func(t *testing.T) {
 		s := newMemStore()
 		put(t, s, "1", "one")
-		s.fail = failOn("cas", "", errBoom)
+		put(t, s, "2", "two")
+		s.objects[pointer] = []byte("1")
+		s.fail = failOn("get", testKind{}.ManifestPath("1"), errBoom)
 		h := newTestHistory(casStore{s})
-		got, err := h.Latest(t.Context())
-		if err != nil || got.ID != "1" {
-			t.Fatalf("got %+v, %v", got, err)
+		_, err := h.Latest(t.Context())
+		wantMessage(t, err, "lode: failed to load latest snapshot: boom")
+		if slices.ContainsFunc(s.ops, func(op string) bool { return strings.HasPrefix(op, "list ") }) {
+			t.Fatalf("scanned after a failed load: ops = %v", s.ops)
 		}
+		writesNothing(t, s, h, "1")
+	})
+	t.Run("failed pointer read is returned, not scanned", func(t *testing.T) {
+		s := newMemStore()
+		put(t, s, "1", "one")
+		s.objects[pointer] = []byte("1")
+		s.fail = failOn("get", pointer, errBoom)
+		h := newTestHistory(casStore{s})
+		_, err := h.Latest(t.Context())
+		wantMessage(t, err, "lode: failed to read latest pointer: boom")
+		writesNothing(t, s, h, "1")
 	})
 	t.Run("empty history", func(t *testing.T) {
 		h := newTestHistory(newMemStore())
@@ -488,7 +514,7 @@ func TestResolve(t *testing.T) {
 			t.Fatalf("got %q/%q/%v", parent, expected, err)
 		}
 	})
-	t.Run("failed existence check counts as stale", func(t *testing.T) {
+	t.Run("failed existence check is an error, not stale", func(t *testing.T) {
 		s := newMemStore()
 		put(t, s, "1", "one")
 		put(t, s, "2", "two")
@@ -496,9 +522,10 @@ func TestResolve(t *testing.T) {
 		s.fail = failOn("exists", "", errBoom)
 		h := newTestHistory(s)
 		parent, expected, err := h.Resolve(t.Context())
-		if parent != "2" || expected != "1" || err != nil {
+		if parent != "" || expected != "" || !errors.Is(err, errBoom) {
 			t.Fatalf("got %q/%q/%v", parent, expected, err)
 		}
+		wantMessage(t, err, "lode: failed to check snapshot: boom")
 	})
 	t.Run("empty history parents on nothing", func(t *testing.T) {
 		h := newTestHistory(newMemStore())
