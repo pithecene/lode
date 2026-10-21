@@ -21,6 +21,9 @@ func TestKey(t *testing.T) {
 		{"/file.txt", "file.txt", true},
 		{"a/./b//c", "a/b/c", true},
 		{"a/../b", "b", true}, // resolves inside the root
+		{".lode-tmp-x", "", false},
+		{"a/.lode-tmp-cas-1", "", false},
+		{".lode-tmp-x/a", ".lode-tmp-x/a", true}, // only the final segment is reserved
 	}
 	for _, c := range cases {
 		got, ok := Key(c.in)

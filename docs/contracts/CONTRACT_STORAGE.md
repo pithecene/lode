@@ -24,7 +24,10 @@ without reporting it.
 - MUST write data to the given path.
 - Paths are slash-separated on every platform. A path that is empty, escapes
   the root, or contains a backslash MUST return `ErrInvalidPath`; adapters
-  MUST NOT read a backslash as a separator.
+  MUST NOT read a backslash as a separator. A path whose final segment
+  begins with the reserved prefix `.lode-tmp-` MUST also return
+  `ErrInvalidPath` on every adapter, because the filesystem adapter names
+  its temporary files with that prefix (below).
 - If it detects an existing path, it MUST return `ErrPathExists`.
 - The detection mechanism and its guarantee vary by upload path (see the
   table below).
@@ -35,6 +38,19 @@ without reporting it.
   path MUST be left as it was before the call, and a `Put` that created an
   object and then failed MUST remove it. If that removal itself fails, `Put`
   MUST return an error that reports both failures.
+- An object MUST become visible to `Get`, `Exists`, and `List` only once it
+  is complete: a concurrent reader observes the whole object or none of it.
+  A reader that observed a partial manifest would treat an incomplete commit
+  as complete (§Commit Semantics). The filesystem adapter writes the object
+  under a temporary name in the same directory and publishes it with a hard
+  link, which fails if the path exists; the adapter therefore requires a
+  filesystem that supports hard links, and on one that does not, `Put`
+  returns an error. A published object has the mode that creating it with
+  mode 0644 under the process umask gives. Temporary names begin with the
+  reserved prefix `.lode-tmp-`, and `List` omits them. The adapter
+  removes the temporary name after publishing; if that removal fails, or the
+  process ends first, an inert temporary file remains that no Lode operation
+  observes, and an operator may delete it.
 - A remote backend can accept an object and then lose the response (through
   a network or context timeout). The adapter MUST NOT attempt to resolve
   such an indeterminate outcome by deleting the key, because it cannot know
