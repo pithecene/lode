@@ -257,16 +257,6 @@ def vsep(tn):
 
 lines_vein = streamlines(vein, vdir, vtone, vsep, 60, 3, step=1.0)
 
-stip_pts = []
-srng = np.random.default_rng(77)
-for _ in range(60000):
-    x, y = srng.random() * W, srng.random() * H
-    if not sample(face, x, y):
-        continue
-    tn = sample(tone, x, y)
-    if 0.02 < tn < 0.16 and srng.random() < (0.16 - tn) * 4:
-        pass
-
 # sky: ruled horizontal lines, darker high up, thinning and stopping toward the right
 sky_tone = np.clip(0.30 - 0.26 * (yy / 560) - 0.16 * (xx / W) + 0.10 * (fbm(260, 2, 50) - 0.5), 0, 1)
 sky_lines = []
@@ -328,9 +318,6 @@ for theme, ink, vink in (("light", "#2a2219", "#5c3a0c"), ("dark", "#0b1020", "#
         to_svg(lines_main, main_w, ink, fh)
         to_svg(lines_cross, cross_w, ink, fh, taper=0.3)
         to_svg(sky_lines, sky_w, ink, fh, taper=0.08)
-        fh.write(f'</g><g fill="{ink}">\n')
-        for (x, y, r_) in stip_pts:
-            fh.write(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{r_:.2f}"/>')
         fh.write(f'</g><g fill="none" stroke="{vink}" stroke-linecap="round">\n')
         for item in lines_vein:
             pts = item[0]
