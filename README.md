@@ -143,4 +143,8 @@ release is described in [`CHANGELOG.md`](CHANGELOG.md).
 ---
 
 ## License
-Apache License 2.0. Copyright © 2026 Andrew Hu <me@andrewhu.nyc>.
+
+Apache License 2.0 (see [`LICENSE`](LICENSE)). Copyright © 2026 Pithecene.
+
+Contact: contact@pithecene.sh. To report a vulnerability, follow
+[`SECURITY.md`](SECURITY.md).
