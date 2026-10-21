@@ -581,12 +581,48 @@ remove what it created on the store.
 |-----------|-------|
 | Every commit the library acknowledged has a manifest | `acknowledged-commits-persist` |
 | `Latest` returns the settling commit; no snapshot has two children (CONTRACT_WRITE_API §Concurrency: linear under CAS); the chain has no more ends than missing parents account for; and, with no missing parent, the chain from the head reaches every snapshot | `history-shape` |
-| A parent without a manifest is an abandoned commit, which no writer was told had committed | `parents-explained` |
+| A parent without a manifest is an abandoned commit, which no writer was told had committed, or an expired snapshot | `parents-explained` |
 | Every snapshot reads back its manifest's row count, and an acknowledged one its writer's rows | `contents-match-manifests` |
 | During the run, the head and acknowledged snapshots read back in full | `read-head`, `read-commit` |
 
 After the workload stops, a clean handle makes one settling commit, which
 `Latest` must then return.
+
+With `-chaos.faults=mild` or `heavy`, every handle reaches the store
+through a faulty store that delays calls, fails them before or after they
+take effect (a lost response), omits keys from listings, and kills the
+handle's process at a random call, possibly in the middle of a commit. A
+killed writer restarts with a new handle. Faults may leave abandoned
+commits (CONTRACT_CORE §Head Pointer), which `parents-explained` accepts
+as missing parents and `history-shape` as one extra end of chain each;
+every other invariant holds unchanged.
+
+With `-chaos.retention`, a janitor runs `Expire` (by instant and by ID) and
+`Sweep` concurrently with the writers, with a grace period longer than the
+run, and the run ends with a final `Sweep`.
+
+| Invariant | Check |
+|-----------|-------|
+| An acknowledged commit without a manifest reads as expired | `acknowledged-commits-persist` |
+| A report never lists its retained head as expired | `head-retained` |
+| Every snapshot a report listed as expired reads as expired | `expired-snapshots-read-as-expired` |
+| After the final sweep, a dry-run `Sweep` finds nothing to settle, delete, or reject as unparseable | `expiries-settled` |
+| Every read that failed during the run concerned a snapshot that is now expired | `failed-reads-were-expired` |
+
+With `-chaos.volume`, each writer stages and commits blocks in its own
+stripe of one Volume's address space. After the workload stops, a clean
+handle commits one block in a stripe of its own. After an abandoned commit
+that settling commit conflicts, as every Volume commit does until an
+operator repairs the pointer (CONTRACT_VOLUME), and the run is reported as
+stalled rather than failed.
+
+| Invariant | Check |
+|-----------|-------|
+| Every commit the library acknowledged has a manifest | `acknowledged-commits-persist` |
+| `Latest` returns the settling commit when there is one; the history is linear and the head reaches every snapshot | `history-shape` |
+| Every parent has a manifest: a Volume commit never builds on a parent without one | `parents-exist` |
+| The head's cumulative manifest holds no overlapping blocks | `blocks-disjoint` |
+| The head's manifest holds every acknowledged block, and each reads back its bytes | `blocks-read-back` |
 
 ---
 

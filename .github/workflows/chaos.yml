@@ -11,6 +11,17 @@ on:
       layouts:
         description: Comma-separated layouts (default, hive)
         default: default,hive
+      faults:
+        description: Comma-separated fault levels (none, mild, heavy)
+        default: none,heavy
+      retention:
+        description: Run Expire and Sweep concurrently with the writers
+        type: boolean
+        default: true
+      volume:
+        description: Also run the Volume workload
+        type: boolean
+        default: true
       duration:
         description: Duration of each configuration (Go duration)
         default: 60s
@@ -52,13 +63,17 @@ jobs:
           CHAOS_S3_SECRET_ACCESS_KEY: ${{ secrets.CHAOS_S3_SECRET_ACCESS_KEY }}
           IN_BACKENDS: ${{ inputs.backends }}
           IN_LAYOUTS: ${{ inputs.layouts }}
+          IN_FAULTS: ${{ inputs.faults }}
+          IN_RETENTION: ${{ inputs.retention }}
+          IN_VOLUME: ${{ inputs.volume }}
           IN_DURATION: ${{ inputs.duration }}
           IN_WRITERS: ${{ inputs.writers }}
           IN_SEED: ${{ inputs.seed }}
         run: >-
           task chaos
-          BACKENDS="$IN_BACKENDS" LAYOUTS="$IN_LAYOUTS" DURATION="$IN_DURATION"
-          WRITERS="$IN_WRITERS" SEED="$IN_SEED"
+          BACKENDS="$IN_BACKENDS" LAYOUTS="$IN_LAYOUTS" FAULTS="$IN_FAULTS"
+          RETENTION="$IN_RETENTION" VOLUME="$IN_VOLUME"
+          DURATION="$IN_DURATION" WRITERS="$IN_WRITERS" SEED="$IN_SEED"
 
       - name: 🐳 Stop S3 Services
         if: always() && (contains(inputs.backends, 'localstack') || contains(inputs.backends, 'rustfs'))
