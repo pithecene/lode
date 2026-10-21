@@ -30,6 +30,21 @@ tasks:
     cmds:
       - ./scripts/fuzz.sh {{.FUZZTIME}}
 
+  chaos:
+    desc: Run the chaos harness (BACKENDS, LAYOUTS, DURATION, WRITERS, SEED); start s3:up first for localstack or rustfs
+    vars:
+      BACKENDS: '{{.BACKENDS | default "memory,fs"}}'
+      LAYOUTS: '{{.LAYOUTS | default "default,hive"}}'
+      DURATION: '{{.DURATION | default "30s"}}'
+      WRITERS: '{{.WRITERS | default "8"}}'
+      SEED: '{{.SEED | default "0"}}'
+    cmds:
+      - >-
+        go test ./internal/chaos -run TestChaos -count=1 -v -timeout 0 -chaos
+        -chaos.backends={{shellQuote .BACKENDS}} -chaos.layouts={{shellQuote .LAYOUTS}}
+        -chaos.duration={{shellQuote .DURATION}} -chaos.writers={{shellQuote .WRITERS}}
+        -chaos.seed={{shellQuote .SEED}}
+
   mutate:
     desc: Run mutation tests on the module (lode, internal; gremlins; config in .gremlins.yaml)
     cmds:

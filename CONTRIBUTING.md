@@ -27,6 +27,7 @@ This command installs:
 | `task examples` | Run all examples |
 | `task snippets` | Verify the runnable Markdown snippets |
 | `task fuzz` | Run every fuzz target (`FUZZTIME=30s` each by default) |
+| `task chaos` | Run the chaos harness (see `internal/chaos`; start `s3:up` first for `localstack` or `rustfs`) |
 | `task bench` | Run all benchmarks (run `s3:up` first for S3) |
 | `task bench:stat` | Run the benchmarks with `-count=10` and summarize them with benchstat |
 | `task bench:compare` | Compare two files of benchmark results with benchstat |

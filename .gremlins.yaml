@@ -21,10 +21,12 @@ unleash:
   # The whole module is mutated: shared internals (internal/history,
   # internal/retry) carry logic lode depends on, and gremlins measures
   # coverage per package, so they are gated by their own tests. Excluded:
-  # examples, and internal/testutil (test doubles, not product code).
+  # examples, internal/testutil (test doubles, not product code), and
+  # internal/chaos (the on-demand stress harness, not product code).
   exclude-files:
     - examples/
     - internal/testutil/
+    - internal/chaos/
   # Baseline (2026-10-20, gremlins v0.6.0, whole module after the history
   # core, retry config and validation errors moved to internal/, produced by
   # `task mutate` with exactly this file — workers 2, timeout-coefficient 20,
