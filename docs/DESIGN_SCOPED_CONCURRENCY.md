@@ -14,9 +14,9 @@ non-overlapping partitions within the same dataset, they contend on a
 single pointer — even though their data paths never intersect.
 
 With CAS (PR #135), this contention produces `ErrSnapshotConflict` and
-the caller must retry. The retry is cheap (data files already persisted;
-cost is one manifest write + one pointer swap), but the ceremony
-shouldn't exist for provably non-overlapping work.
+the caller must retry. The retry is inexpensive (the data files are already
+persisted, so its cost is one manifest write and one pointer swap), but
+work that provably does not overlap should not require it.
 
 Without scoped concurrency, consumers must either:
 1. Fragment one logical dataset into N datasets (one per writer), then
@@ -24,7 +24,7 @@ Without scoped concurrency, consumers must either:
 2. Serialize writes externally (defeating concurrency).
 3. Accept CAS retry overhead for non-overlapping work.
 
-None of these is a satisfying answer for a v1.0 library.
+None of these options is satisfactory for a v1.0 library.
 
 ---
 
@@ -48,7 +48,7 @@ None of these is a satisfying answer for a v1.0 library.
 
 ---
 
-## Constraint: Don't Overindex on Hive
+## Constraint: Avoid Overemphasizing Hive
 
 The dogfooding evidence comes from a Hive-partitioned pipeline with
 concurrent crawlers writing to non-overlapping partition keys. This is
@@ -278,7 +278,7 @@ ds, _ := lode.NewDataset("data", factory, lode.WithWriteLane("alpha"))
 ```
 
 **Strengths:**
-- General: any scoping dimension, not just partitions.
+- General: any scoping dimension, not only partitions.
 - Explicit: the caller declares intent.
 
 **Weaknesses:**

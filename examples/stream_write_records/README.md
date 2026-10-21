@@ -1,54 +1,61 @@
 # StreamWriteRecords — Streaming Record Writes
 
-This example demonstrates `StreamWriteRecords` for streaming large record sets
-without loading all data into memory.
+This example demonstrates `StreamWriteRecords`, which streams large sets of
+records without loading all of the data into memory.
 
 ## What This Demonstrates
 
-1. **Pull-based streaming**: Records are pulled from an iterator one at a time
-2. **Memory efficiency**: Only one record in memory at a time (iterator controls pace)
-3. **Atomic completion**: Either all records are written and manifest created, or nothing
-4. **Metadata explicitness**: `nil` metadata is coalesced to `Metadata{}` (pass `nil` or `{}` for empty)
+1. **Pull-based streaming**: records are retrieved from an iterator one at a
+   time.
+2. **Memory efficiency**: only one record is in memory at a time (the
+   iterator determines the pace).
+3. **Atomic completion**: either all records are written and the manifest
+   is created, or nothing is committed.
+4. **Explicit metadata**: `nil` metadata is converted to `Metadata{}` (pass
+   `nil` or `{}` for empty metadata).
 
-Note: Commit visibility (snapshot invisible before manifest) is documented behavior but
-not explicitly demonstrated here. See `manifest_driven` example for visibility semantics.
+Note: commit visibility (a snapshot is invisible until its manifest exists)
+is documented behavior but is not demonstrated here. See the
+`manifest_driven` example for visibility semantics.
 
 ## When to Use StreamWriteRecords
 
 Use `StreamWriteRecords` when:
-- You have large record streams that shouldn't be buffered in memory
-- Records come from a database cursor, file reader, or channel
-- You're using a streaming-capable codec (e.g., JSONL)
+- You have large streams of records that should not be buffered in memory
+- Records come from a database cursor, a file reader, or a channel
+- You are using a codec that supports streaming (for example, JSONL)
 
-Do NOT use `StreamWriteRecords` when:
-- You need partitioning (single-pass streaming cannot partition)
-- Your codec doesn't support streaming
-- Data is already in memory (use `Write` instead)
+Do not use `StreamWriteRecords` when:
+- You need partitioning (single-pass streaming cannot partition records)
+- Your codec does not support streaming
+- The data is already in memory (use `Write` instead)
 
 ## Failure Modes
 
-`StreamWriteRecords` validates configuration and input before streaming begins.
+`StreamWriteRecords` validates its configuration and input before streaming
+begins.
 
 **Sentinel errors** (use `errors.Is()` to check):
 
-| Error | Cause | Fix |
+| Error | Cause | Remedy |
 |-------|-------|-----|
-| `ErrNilIterator` | Passed `nil` as iterator | Provide a valid `RecordIterator` |
-| `ErrCodecNotStreamable` | Codec doesn't support streaming | Use a streaming codec (e.g., JSONL) or use `Write` |
-| `ErrPartitioningNotSupported` | Dataset has partitioning configured | Use `Write` for partitioned data |
+| `ErrNilIterator` | `nil` was passed as the iterator | Supply a valid `RecordIterator` |
+| `ErrCodecNotStreamable` | The codec does not support streaming | Use a streaming codec (for example, JSONL) or use `Write` |
+| `ErrPartitioningNotSupported` | The dataset has partitioning configured | Use `Write` for partitioned data |
 
 ### Iterator Errors
 
-If `iterator.Err()` returns non-nil during streaming:
-- Streaming stops immediately
-- No manifest is written (no snapshot created)
-- Partial data may remain in storage (best-effort cleanup)
+If `iterator.Err()` returns a non-nil error during streaming:
+- Streaming stops immediately.
+- No manifest is written, so no snapshot is created.
+- Partial data may remain in storage (its removal is best-effort, and
+  `Dataset.Sweep` reclaims it later).
 
 ### Abort Semantics
 
-`StreamWriteRecords` is atomic: either all records are written and the manifest
-is created, or nothing is committed. There is no explicit `Abort()` — errors
-during iteration implicitly abort.
+`StreamWriteRecords` is atomic: either all records are written and the
+manifest is created, or nothing is committed. There is no explicit
+`Abort()`; an error during iteration aborts the write implicitly.
 
 *Contract references: [`CONTRACT_ERRORS.md`](../../docs/contracts/CONTRACT_ERRORS.md), [`CONTRACT_WRITE_API.md`](../../docs/contracts/CONTRACT_WRITE_API.md)*
 
