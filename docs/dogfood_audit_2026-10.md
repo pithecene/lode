@@ -148,10 +148,25 @@ second child committed 5 minutes after the first, so the window cannot
 explain it. A read-only replay of all 34,642 CAS-era snapshots found 290
 commits from a fresh writer (no in-memory head) made while the head's ID was
 smaller than an older snapshot's. 289 parented on the head; only this one took
-the larger ID. Its writer found the pointer valid, its existence check on the
-head failed, v0.9.0 read that as a stale pointer, scanned to the largest ID
-(the head's parent), and the CAS still matched the pointer. Reproduced and
-fixed; see `V1_READINESS.md` §10.
+the larger ID, so v0.9.0 did not scan systematically (a read-only probe of
+the pointer path on R2 also succeeds).
+
+Proven: the commit took the scan's answer (largest ID, the head's parent)
+while its CAS matched the pointer. In v0.9.0 that happens only when a read of
+a valid head fails and is read as a stale pointer, in one of two ways:
+
+1. The forking writer's existence check on the head failed, so it scanned
+   while its CAS still expected the pointer's content.
+2. Another writer's retry refresh (`Latest`) failed to read the head, scanned,
+   and rewound the pointer to the parent; the forking writer then legitimately
+   built on it. That writer's own commit must then have failed, since the
+   parent has no third child.
+
+Inferred: which of the two. The store error itself is not recorded (Quarry
+does not classify write failures, F7). Both paths are reproduced and fixed;
+see `V1_READINESS.md` §10. The pointer-to-manifest window and a non-atomic CAS
+are both ruled out, because both need the two children's commits to overlap
+and they were 5 minutes apart.
 
 ### F4 — Two snapshots reference a parent that does not exist · LIMITATION (historical)
 
