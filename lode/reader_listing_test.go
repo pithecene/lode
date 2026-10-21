@@ -477,10 +477,13 @@ func TestDatasetReader_ListDatasets_Order(t *testing.T) {
 	// dataset at a time using the last result as the cursor.
 	t.Run("start after pages", func(t *testing.T) {
 		reader := writeDatasets(t, "ds-b", "ds-c", "ds-a")
+		want := []DatasetID{"ds-a", "ds-b", "ds-c"}
 
+		// The walk is bounded: a cursor that fails to advance must fail the
+		// test, not loop and accumulate pages until memory is exhausted.
 		var pages [][]DatasetID
 		opts := DatasetListOptions{Limit: 1}
-		for {
+		for range len(want) + 1 {
 			page, err := reader.ListDatasets(t.Context(), opts)
 			if err != nil {
 				t.Fatal(err)
@@ -491,7 +494,6 @@ func TestDatasetReader_ListDatasets_Order(t *testing.T) {
 			pages = append(pages, page)
 			opts.StartAfter = page[len(page)-1]
 		}
-		want := []DatasetID{"ds-a", "ds-b", "ds-c"}
 		if len(pages) != len(want) {
 			t.Fatalf("got pages %v, want one per dataset %v", pages, want)
 		}
