@@ -371,7 +371,7 @@ overlapping writes only.
 
 ### PUBLIC_API.md
 - §Concurrency: document non-overlapping write behavior.
-- §Usage Gotchas: update concurrent write note.
+- §Usage Pitfalls: update the note on concurrent writes.
 
 ### Manifest
 No change. File paths already encode partition information.

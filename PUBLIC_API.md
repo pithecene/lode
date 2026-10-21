@@ -532,9 +532,12 @@ enumerate them.
 
 ## Choosing a Write API
 
-- Use `Write` for in-memory data, partitioned data, or codecs that do not support streaming.
-- Use `StreamWrite` for large binary payloads that should be streamed once (no codec).
-- Use `StreamWriteRecords` for large record streams with streaming-capable codecs (no partitioning).
+- Use `Write` for in-memory data, partitioned data, or codecs that do not
+  support streaming.
+- Use `StreamWrite` for large binary payloads that should be streamed once
+  (without a codec).
+- Use `StreamWriteRecords` for large streams of records with codecs that
+  support streaming (without partitioning).
 
 ---
 
@@ -542,14 +545,16 @@ enumerate them.
 
 | Compressor | Use When | Trade-offs |
 |------------|----------|------------|
-| `NewNoOpCompressor()` | Data is already compressed, or compression overhead not justified | No CPU cost; no size reduction |
-| `NewGzipCompressor()` | Broad compatibility required (gzip is universal) | Good ratio; moderate speed |
-| `NewZstdCompressor()` | Best compression ratio or fast decompression needed | Better ratio than gzip; faster decompression |
+| `NewNoOpCompressor()` | The data is already compressed, or compression does not justify its cost | No CPU cost; no reduction in size |
+| `NewGzipCompressor()` | Broad compatibility is required (gzip is universally supported) | A good ratio at moderate speed |
+| `NewZstdCompressor()` | The best ratio or fast decompression is required | A better ratio than gzip and faster decompression |
 
 **Notes:**
-- Compressor choice is recorded in manifests; readers must support the compressor used
-- Compression is applied after codec encoding (if any)
-- Streaming writes (`StreamWrite`, `StreamWriteRecords`) apply compression on-the-fly
+- The choice of compressor is recorded in manifests; readers must support
+  the compressor used.
+- Compression is applied after codec encoding, if any.
+- Streaming writes (`StreamWrite`, `StreamWriteRecords`) compress data as
+  they stream it.
 
 *Contract reference: [`CONTRACT_LAYOUT.md`](docs/contracts/CONTRACT_LAYOUT.md) §Compressor*
 
@@ -557,29 +562,33 @@ enumerate them.
 
 ## Storage Prerequisites
 
-**Ensure storage exists before constructing a dataset, volume, or reader.**
+**Ensure that storage exists before constructing a dataset, volume, or
+reader.**
 
-Lode does not create storage infrastructure (directories, buckets). This is intentional:
+Lode does not create storage infrastructure (directories, buckets). This
+is deliberate:
 
-- **No hidden side effects**: Constructors do not modify external state
-- **Explicit provisioning**: Callers control when and how storage is created
-- **Backend symmetry**: Same pattern for filesystem, S3, and other adapters
+- **No concealed side effects**: constructors do not modify external state.
+- **Explicit provisioning**: callers control when and how storage is
+  created.
+- **Uniformity across backends**: the same pattern applies to the
+  filesystem, S3, and other adapters.
 
 ### Required Setup
 
 | Backend | Prerequisite | Example |
 |---------|--------------|---------|
-| Filesystem | Directory must exist | `mkdir -p /data/lode` |
-| S3 | Bucket must exist | `aws s3 mb s3://my-bucket` |
-| Memory | None (in-process) | — |
+| Filesystem | The directory must exist | `mkdir -p /data/lode` |
+| S3 | The bucket must exist | `aws s3 mb s3://my-bucket` |
+| Memory | None (in process) | — |
 
-### Bootstrap Pattern
+### Provisioning Pattern
 
-If provisioning helpers are needed, implement them outside Lode's core APIs:
+Provisioning helpers, if needed, belong outside Lode's core APIs:
 
 <!-- illustrative -->
 ```go
-// Wrapper that ensures storage exists before constructing dataset
+// A wrapper that ensures storage exists before constructing the dataset.
 func EnsureFSDataset(id, root string, opts ...lode.Option) (lode.Dataset, error) {
     if err := os.MkdirAll(root, 0755); err != nil {
         return nil, fmt.Errorf("create storage root: %w", err)
@@ -588,7 +597,8 @@ func EnsureFSDataset(id, root string, opts ...lode.Option) (lode.Dataset, error)
 }
 ```
 
-This keeps Lode's constructors pure and predictable.
+This arrangement keeps Lode's constructors free of side effects and
+predictable.
 
 *Contract reference: [`CONTRACT_STORAGE.md`](docs/contracts/CONTRACT_STORAGE.md)*
 
@@ -598,76 +608,81 @@ This keeps Lode's constructors pure and predictable.
 
 ### Commit Semantics
 
-**Manifest presence is the commit signal.**
+**The presence of a manifest signifies that a commit is complete.**
 
-A snapshot becomes visible only after its manifest is successfully written to storage.
-Data files may exist before the manifest, but they are not discoverable until the
-manifest references them.
+A snapshot becomes visible only after its manifest has been written to
+storage. Data files may exist before the manifest, but they cannot be
+discovered until the manifest references them.
 
-- `StreamWriter.Commit()` writes the manifest; the snapshot is invisible until then.
-- `StreamWriter.Abort()` or `Close()` without `Commit()` ensures no manifest is written.
-- On error during streaming, no manifest is written (the write never "happened").
+- `StreamWriter.Commit()` writes the manifest; the snapshot is invisible
+  until then.
+- `StreamWriter.Abort()`, or `Close()` without `Commit()`, ensures that no
+  manifest is written.
+- On an error during streaming, no manifest is written, and the write is
+  as though it never occurred.
 
-*Contract reference: [`CONTRACT_WRITE_API.md`](docs/contracts/CONTRACT_WRITE_API.md) §Read-after-write Visibility, [`CONTRACT_STORAGE.md`](docs/contracts/CONTRACT_STORAGE.md) §Commit Semantics*
+*Contract reference: [`CONTRACT_WRITE_API.md`](docs/contracts/CONTRACT_WRITE_API.md) §Read-After-Write Visibility, [`CONTRACT_STORAGE.md`](docs/contracts/CONTRACT_STORAGE.md) §Commit Semantics*
 
 ### Concurrency and CAS
 
-Lode uses optimistic concurrency (CAS) to detect conflicting writes.
-Whether CAS is available depends on which storage adapter you use:
+Lode uses optimistic concurrency control (CAS) to detect conflicting
+writes. Whether CAS is available depends on the storage adapter:
 
 #### Adapter CAS Support
 
 | Adapter | CAS | Concurrent writers | What happens on conflict |
 |---------|-----|--------------------|--------------------------|
-| **Memory** | ✅ | Safe without coordination | `ErrSnapshotConflict` — retry with `Latest()` |
-| **S3** | ✅ | Safe without coordination | `ErrSnapshotConflict` — retry with `Latest()` |
-| **FS (Unix)** | ✅ | Safe without coordination | `ErrSnapshotConflict` — retry with `Latest()` |
-| **FS (non-Unix)** | ❌ | Single-writer only | Undefined — serialize writes externally |
-| **Custom adapter** | Depends | Implement `ConditionalWriter` for CAS | Falls back to Delete+Put without it |
+| **Memory** | ✅ | Safe without coordination | `ErrSnapshotConflict`; retry after `Latest()` |
+| **S3** | ✅ | Safe without coordination | `ErrSnapshotConflict`; retry after `Latest()` |
+| **Filesystem (Unix)** | ✅ | Safe without coordination | `ErrSnapshotConflict`; retry after `Latest()` |
+| **Filesystem (other platforms)** | ❌ | A single writer only | Undefined; serialize writes externally |
+| **Custom adapter** | Depends on the adapter | Implement `ConditionalWriter` for CAS | Uses Delete+Put without it |
 
-CAS is always-on when the adapter supports it. No configuration required.
+CAS is always enabled when the adapter supports it, and no configuration
+is required.
 
-#### With CAS (Memory, S3, FS on Unix)
+#### With CAS (Memory, S3, and the Filesystem on Unix)
 
-Multiple **separate process instances** (or separate `Dataset`/`Volume` values)
-MAY safely write to the same dataset or volume without external coordination.
-A single `Dataset` or `Volume` value is NOT safe for concurrent use by multiple
-goroutines.
+Several **separate processes** (or separate `Dataset` or `Volume` values)
+MAY write to the same dataset or volume safely without external
+coordination. A single `Dataset` or `Volume` value is NOT safe for
+concurrent use by several goroutines.
 
-On conflict (manual retry):
-1. Catch `ErrSnapshotConflict`
-2. Re-read state via `Latest()`
-3. Merge or rebuild, then re-commit
+On a conflict, with manual retries:
+1. Receive `ErrSnapshotConflict`.
+2. Read the state again through `Latest()`.
+3. Merge or reconstruct, and then commit again.
 
-On conflict (automatic retry):
-Configure `WithRetryCount(n)` at construction time. The commit path
-automatically refreshes state and re-parents the manifest on conflict,
-with jittered exponential backoff. Data files are written once — only
-the manifest and pointer CAS are retried. Customize backoff with
-`WithRetryBaseDelay`, `WithRetryMaxDelay`, and `WithRetryJitter`.
-Observe retries (e.g. for a retry counter metric) with
+On a conflict, with automatic retries: configure `WithRetryCount(n)` at
+construction time. On a conflict, the commit path refreshes its state and
+assigns the manifest a new parent automatically, with an exponential
+backoff and jitter between attempts. Data files are written once; only the
+manifest and the pointer CAS are retried. Configure the backoff with
+`WithRetryBaseDelay`, `WithRetryMaxDelay`, and `WithRetryJitter`. Observe
+retries (for example, to count them in a metric) with
 `WithRetryObserver(fn)`: `fn(attempt)` is called synchronously once per
-retry, before the backoff sleep, with a 1-indexed attempt number.
+retry, before the backoff interval, with the attempt number counted from 1.
 
-Data files are immutable and already persisted — retry cost is one manifest
-write plus one pointer swap.
+Data files are immutable and already persisted, so the cost of a retry is
+one manifest write plus one pointer swap.
 
-#### Without CAS (FS on non-Unix, custom adapters without `ConditionalWriter`)
+#### Without CAS (the Filesystem on Other Platforms, and Custom Adapters without `ConditionalWriter`)
 
-Callers MUST ensure at most one writer is active per dataset or volume at any
-time. External coordination (locks, queues, leader election) is the caller's
-responsibility. Without this, concurrent writers may corrupt snapshot history.
+Callers MUST ensure that at most one writer is active per dataset or volume
+at any time. External coordination (locks, queues, leader election) is the
+caller's responsibility; without it, concurrent writers may corrupt the
+snapshot history.
 
 *Contract reference: [`CONTRACT_WRITE_API.md`](docs/contracts/CONTRACT_WRITE_API.md) §Concurrency, [`CONTRACT_VOLUME.md`](docs/contracts/CONTRACT_VOLUME.md) §Concurrency, [`CONTRACT_STORAGE.md`](docs/contracts/CONTRACT_STORAGE.md) §ConditionalWriter Capability*
 
 ### Performance
 
-CAS replaces Delete+Put (2 store calls) with a single `CompareAndSwap`,
-reducing both latency and allocation count. Stores without `ConditionalWriter`
-retain the existing Delete+Put path with no change.
+CAS replaces Delete+Put (two store calls) with a single `CompareAndSwap`,
+which reduces both latency and the number of allocations. Stores without
+`ConditionalWriter` retain the Delete+Put path unchanged.
 
-Benchmarks on the in-memory adapter (20 sequential writes per iteration,
-AMD Ryzen 9 5900XT):
+Benchmarks on the in-memory adapter (twenty sequential writes per
+iteration, AMD Ryzen 9 5900XT):
 
 | Metric | Delete+Put | CAS (ConditionalWriter) | Delta |
 |--------|------------|-------------------------|-------|
@@ -677,48 +692,57 @@ AMD Ryzen 9 5900XT):
 
 ### Large Upload Guarantees
 
-For uploads exceeding the storage adapter's atomic threshold (e.g., 5GB for S3),
-the S3 adapter uses conditional completion (`If-None-Match` on `CompleteMultipartUpload`)
-to provide the same atomic no-overwrite guarantee as small uploads.
+For uploads that exceed the storage adapter's atomic threshold (for
+example, 5 GB for S3), the S3 adapter uses conditional completion
+(`If-None-Match` on `CompleteMultipartUpload`) to provide the same atomic
+guarantee against overwriting as for small uploads.
 
-Both upload paths now provide atomic no-overwrite guarantees:
-- **Small uploads** (≤ 5GB): Atomic via `PutObject` with `If-None-Match`
-- **Large uploads** (> 5GB): Atomic via `CompleteMultipartUpload` with `If-None-Match`
+Both upload paths therefore guarantee atomically that nothing is
+overwritten:
+- **Small uploads** (at most 5 GB): atomic through `PutObject` with
+  `If-None-Match`
+- **Large uploads** (above 5 GB): atomic through `CompleteMultipartUpload`
+  with `If-None-Match`
 
-Preflight existence checks are retained as a fail-fast optimization to avoid
-uploading parts for objects that already exist.
+A preliminary existence check is retained so that an upload fails early,
+before uploading parts for an object that already exists.
 
-**Backend Compatibility Caveat:**
+**Caveat Regarding Backend Compatibility:**
 
-The atomic guarantee for large uploads (>5GB) depends on backend support for
-`If-None-Match` on `CompleteMultipartUpload`:
+The atomic guarantee for large uploads (above 5 GB) depends on the
+backend's support for `If-None-Match` on `CompleteMultipartUpload`:
 
 | Backend | Conditional Multipart | Status |
 |---------|----------------------|--------|
-| Cloudflare R2 | Supported | ✅ Production verified |
-| AWS S3 | Supported | ✅ Expected compatible |
+| Cloudflare R2 | Supported | ✅ Verified in production |
+| AWS S3 | Supported | ✅ Expected to be compatible |
 | MinIO | Unknown | ⚠️ Test backend only |
 | LocalStack | Unknown | ⚠️ Test backend only |
 
-For backends marked ⚠️: these are used for integration testing only. If deploying
-against a backend not listed as verified, test with large uploads (>5GB) before
-relying on the multipart path, or ensure single-writer semantics at the application level.
+The backends marked ⚠️ are used for integration testing only. Before
+deploying against a backend that is not listed as verified, test large
+uploads (above 5 GB) before relying on the multipart path, or ensure
+single-writer semantics in the application.
 
 *Contract reference: [`CONTRACT_STORAGE.md`](docs/contracts/CONTRACT_STORAGE.md) §Put Upload Paths, [`CONTRACT_WRITE_API.md`](docs/contracts/CONTRACT_WRITE_API.md) §Storage-Level Concurrency*
 
 ### Cleanup Behavior
 
-**Cleanup of partial objects is best-effort, not guaranteed.**
+**The removal of partial objects is best-effort, not guaranteed.**
 
-On abort or error before commit:
-- No manifest is written (the snapshot does not exist).
-- A failed `Put` leaves nothing behind (`CONTRACT_STORAGE.md` §Put is all-or-nothing); the writer never deletes after a failed `Put`.
-- A data object that was fully written but whose commit failed is deleted best-effort and may remain in storage.
-- Callers should not rely on automatic cleanup of partial objects; `Dataset.Sweep` reclaims them once they are older than its grace period (§Retention).
-- Cleanup uses an independent context to maximize success even if the caller's
-  context was canceled.
+On an abort, or on an error before commit:
+- No manifest is written, so the snapshot does not exist.
+- A failed `Put` leaves no object (`CONTRACT_STORAGE.md` §Put is atomic),
+  and the writer never deletes anything after a failed `Put`.
+- A data object that was fully written but whose commit failed is deleted
+  on a best-effort basis and may remain in storage.
+- Callers should not rely on the automatic removal of partial objects;
+  `Dataset.Sweep` reclaims them once they are older than its grace period
+  (§Retention).
+- Removal uses an independent context, to maximize the likelihood of
+  success even if the caller's context was canceled.
 
-Failure to delete a partial object does not create a snapshot.
+A failure to delete a partial object does not create a snapshot.
 
 *Contract reference: [`CONTRACT_ERRORS.md`](docs/contracts/CONTRACT_ERRORS.md) §Streaming API Errors, [`CONTRACT_STORAGE.md`](docs/contracts/CONTRACT_STORAGE.md) §Streaming Write Atomicity*
 
@@ -726,10 +750,11 @@ Failure to delete a partial object does not create a snapshot.
 
 ## Retention
 
-Lode never removes anything on its own. `Dataset.Expire` removes snapshots
-the caller selects, and `Dataset.Sweep` reclaims what interrupted writes
-and expiries left behind. Which snapshots to keep, for how long, and when
-to run either, is the caller's policy (`CONTRACT_RETENTION.md`).
+Lode never removes anything on its own initiative. `Dataset.Expire`
+removes the snapshots that the caller selects, and `Dataset.Sweep`
+reclaims the residual data of interrupted writes and expiries. Which
+snapshots to retain, for how long, and when to run either operation are
+matters of the caller's policy (`CONTRACT_RETENTION.md`).
 
 <!-- illustrative -->
 ```go
@@ -741,17 +766,18 @@ preview, err := ds.Expire(ctx, req)
 req.DryRun = false
 report, err := ds.Expire(ctx, req)
 if report.RetainedHead != "" {
-    // The newest snapshot is the head and is kept; expire it after a newer commit.
+    // The newest snapshot is the head and is retained; expire it after a newer commit.
 }
 ```
 
-`ExpireRequest` fields intersect; at least one of them must be set:
+The fields of `ExpireRequest` intersect, and at least one of them must be
+set:
 
 | Field | Selects |
 |-------|---------|
-| `IDs` | These snapshots |
-| `Partition` | Snapshots in this partition or beneath it, by whole segment (`run_id=r1` never matches `run_id=r10`). Hive layouts only |
-| `Before` | Snapshots whose write began before this instant (read from the snapshot ID; no manifest is loaded to select) |
+| `IDs` | The named snapshots |
+| `Partition` | Snapshots in this partition or beneath it, matched by whole segment (`run_id=r1` never matches `run_id=r10`); Hive layouts only |
+| `Before` | Snapshots whose write began before this instant (derived from the snapshot ID, so selection loads no manifest) |
 
 - **The head is never expired.** When the selection includes it, it is kept
   and reported in `ExpireReport.RetainedHead`; that is not an error.

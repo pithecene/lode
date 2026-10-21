@@ -51,7 +51,7 @@ Plans, contracts, and research notes. Contracts define **system behavior**.
 - `BENCHMARKS.md` — benchmark results and performance baselines
 - `DESIGN_SCOPED_CONCURRENCY.md` — scoped concurrency design for non-overlapping writers
 - `SNIPPET_POLICY.md` — markdown code fence conventions
-- `guides/` — explanatory guides (non-normative): `retention.md` (expiry, tombstones, sweep), `snapshot-ids.md` (ID format, ordering, uniqueness)
+- `guides/` — explanatory guides (non-normative): `concepts.md` (storage model, commits, choosing a write API), `retention.md` (expiry, tombstones, sweep), `snapshot-ids.md` (ID format, ordering, uniqueness)
 - `assets/` — README splash (light and dark JPEG); `assets/source/` holds the illustrated section and `render.sh` that regenerate it
 
 Contracts are authoritative over code.
@@ -82,7 +82,7 @@ Internal implementations.
 
 ## examples/
 
-Example usage and integration references.
+Example usage and integration references; `README.md` indexes them.
 
 - `default_layout/` — write → list → read with DefaultLayout
 - `hive_layout/` — partition-first layout with Hive partitioner
