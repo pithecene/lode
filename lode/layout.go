@@ -4,6 +4,7 @@ import (
 	"path"
 	"strings"
 
+	"github.com/pithecene-io/lode/internal/storepath"
 	"github.com/pithecene-io/lode/internal/validate"
 )
 
@@ -29,6 +30,15 @@ type layout interface {
 	manifestPathInPartition(dataset DatasetID, snapshot DatasetSnapshotID, partition string) string
 	dataFilePath(dataset DatasetID, snapshot DatasetSnapshotID, partition, filename string) string
 	latestPointerPath(dataset DatasetID) string
+	// tombstonePath is where Dataset.Expire records an expired snapshot;
+	// tombstonesPrefix lists every tombstone of a dataset.
+	tombstonePath(dataset DatasetID, snapshot DatasetSnapshotID) string
+	tombstonesPrefix(dataset DatasetID) string
+	// parse reads a path as a manifest or data object of this layout.
+	parse(p string) (snapshotPath, bool)
+	// isObjectOf reports whether p is, in canonical form, an object of the
+	// given kind (manifest or data) of this snapshot of this dataset.
+	isObjectOf(dataset DatasetID, snapshot DatasetSnapshotID, kind pathKind, p string) bool
 
 	// Partitioning (unified with layout)
 	partitioner() partitioner
@@ -43,6 +53,7 @@ const (
 	partitionsDir = "partitions"
 	segmentsDir   = "segments"
 	latestFile    = "latest"
+	tombstonesDir = "expired"
 )
 
 // -----------------------------------------------------------------------------
@@ -298,6 +309,42 @@ func (l *pathLayout) dataFilePath(dataset DatasetID, snapshot DatasetSnapshotID,
 
 func (l *pathLayout) latestPointerPath(dataset DatasetID) string {
 	return join(l.grammar.root, string(dataset), latestFile)
+}
+
+func (l *pathLayout) tombstonePath(dataset DatasetID, snapshot DatasetSnapshotID) string {
+	return join(l.grammar.datasetDir(dataset), tombstonesDir, string(snapshot))
+}
+
+func (l *pathLayout) tombstonesPrefix(dataset DatasetID) string {
+	return join(l.grammar.datasetDir(dataset), tombstonesDir) + "/"
+}
+
+func (l *pathLayout) parse(p string) (snapshotPath, bool) {
+	return l.grammar.parse(p)
+}
+
+// leafDir is the directory under a snapshot that holds each kind of leaf.
+var leafDir = map[pathKind]string{manifestLeaf: "", dataLeaf: dataDir}
+
+// isObjectOf requires p to be a key every store accepts, already in clean
+// form, and to survive a parse-and-rebuild round trip unchanged: no "..",
+// backslash, empty or foreign segment can make a delete land outside the
+// snapshot or fail in the store.
+func (l *pathLayout) isObjectOf(dataset DatasetID, snapshot DatasetSnapshotID, kind pathKind, p string) bool {
+	if key, ok := storepath.Key(p); !ok || key != p {
+		return false
+	}
+	sp, ok := l.grammar.parse(p)
+	if !ok || sp.kind != kind || sp.dataset != dataset || sp.snapshot != snapshot {
+		return false
+	}
+	return l.grammar.objectPath(dataset, sp.partition, snapshot, leafDir[kind], path.Base(p)) == p
+}
+
+// withinPartition reports whether partition p is partition or lies beneath
+// it, comparing whole segments: "run_id=1" does not contain "run_id=10".
+func withinPartition(p, partition string) bool {
+	return p == partition || strings.HasPrefix(p, partition+"/")
 }
 
 // manifest parses p as a manifest path of this layout; the zero snapshotPath

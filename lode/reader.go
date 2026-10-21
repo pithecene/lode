@@ -3,6 +3,7 @@ package lode
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -130,9 +131,12 @@ func (r *reader) ListPartitions(ctx context.Context, dataset DatasetID, opts Par
 	seen := make(map[string]bool)
 	var partitions []PartitionRef
 	for _, m := range listing.manifests {
-		manifest, err := r.loadManifest(ctx, m.path)
+		manifest, err := r.loadListed(ctx, m)
+		if errors.Is(err, ErrNotFound) {
+			continue
+		}
 		if err != nil {
-			return nil, fmt.Errorf("failed to load manifest %s: %w", m.path, err)
+			return nil, err
 		}
 		for _, f := range manifest.Files {
 			p := r.layout.extractPartitionPath(f.Path)
@@ -161,8 +165,12 @@ func (r *reader) ListManifests(ctx context.Context, dataset DatasetID, partition
 	// smallest-partition one, which the listing order guarantees comes first.
 	refs := make([]ManifestRef, 0, len(listing.manifests))
 	for _, m := range listing.manifests {
-		if _, err := r.loadManifest(ctx, m.path); err != nil {
-			return nil, fmt.Errorf("failed to load manifest %s: %w", m.path, err)
+		_, err := r.loadListed(ctx, m)
+		if errors.Is(err, ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return nil, err
 		}
 		refs = append(refs, ManifestRef{ID: m.id, Partition: m.partition})
 	}
@@ -298,6 +306,17 @@ func (r *reader) ReaderAt(ctx context.Context, obj ObjectRef) (io.ReaderAt, erro
 	return r.store.ReaderAt(ctx, obj.Path)
 }
 
+// loadListed loads and validates a manifest a listing returned. ErrNotFound
+// means it was deleted after the listing: an expiry removed it, which
+// enumeration skips rather than reports (CONTRACT_RETENTION §Lineage).
+func (r *reader) loadListed(ctx context.Context, m listedManifest) (*Manifest, error) {
+	manifest, err := r.loadManifest(ctx, m.path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load manifest %s: %w", m.path, err)
+	}
+	return manifest, nil
+}
+
 func (r *reader) loadManifest(ctx context.Context, manifestPath string) (*Manifest, error) {
 	rc, err := r.store.Get(ctx, manifestPath)
 	if err != nil {
@@ -343,7 +362,13 @@ func validateManifest(m *Manifest) error {
 	}); err != nil {
 		return err
 	}
-	for i, f := range m.Files {
+	return validateFiles(m.Files)
+}
+
+// validateFiles checks every FileRef of an inventory: a manifest's, or the
+// copy a retention tombstone records (CONTRACT_ERRORS §File Validation).
+func validateFiles(files []FileRef) error {
+	for i, f := range files {
 		if err := validate.FirstInvalid([]validate.Check{
 			{Invalid: f.Path == "", Field: fmt.Sprintf("files[%d].path", i), Message: "is required"},
 			{Invalid: f.SizeBytes < 0, Field: fmt.Sprintf("files[%d].size_bytes", i), Message: "must be non-negative"},

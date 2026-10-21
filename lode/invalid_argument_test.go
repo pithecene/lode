@@ -78,6 +78,8 @@ func TestSentinels_Messages(t *testing.T) {
 		{ErrManifestInvalid, "invalid manifest"},
 		{ErrOptionNotValidForDataset, "option not valid for dataset"},
 		{ErrOptionNotValidForDatasetReader, "option not valid for reader"},
+		{ErrSnapshotExpired, "snapshot expired"},
+		{ErrHeadUncommitted, "head snapshot is not committed yet"},
 	}
 	for _, c := range cases {
 		if c.err.Error() != c.want {

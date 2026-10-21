@@ -273,6 +273,7 @@ type dataset struct {
 type datasetKind struct {
 	id     DatasetID
 	layout layout
+	store  Store // read for tombstones: retention's expiries hide snapshots from the scan
 }
 
 func (k datasetKind) SnapshotsPrefix() string { return k.layout.snapshotsPrefix(k.id) }
@@ -287,6 +288,21 @@ func (k datasetKind) ParseManifest(p string) (DatasetSnapshotID, bool) {
 	}
 	id := k.layout.parseSnapshotID(p)
 	return id, id != ""
+}
+
+// NotExpired is false only for an expired snapshot: one with a tombstone
+// and no canonical manifest (CONTRACT_RETENTION §Expired snapshot). An
+// expiring snapshot, its canonical manifest still present, is readable.
+func (k datasetKind) NotExpired(ctx context.Context, id DatasetSnapshotID) (bool, error) {
+	absent, err := tombstones{store: k.store, layout: k.layout, dataset: k.id}.absent(ctx, id)
+	if err != nil || absent {
+		return absent, err
+	}
+	present, err := k.store.Exists(ctx, k.ManifestPath(id))
+	if err != nil {
+		return false, fmt.Errorf("lode: failed to check manifest: %w", err)
+	}
+	return present, nil
 }
 
 func (k datasetKind) Decode(r io.Reader) (*Manifest, error) {
@@ -362,7 +378,7 @@ func NewDataset(id DatasetID, factory StoreFactory, opts ...Option) (Dataset, er
 		codec:      cfg.codec,
 		checksum:   cfg.checksum,
 		retry:      cfg.retry,
-		history:    history.New(store, datasetKind{id: id, layout: cfg.layout}, "manifest", historyErrors),
+		history:    history.New(store, datasetKind{id: id, layout: cfg.layout, store: store}, "manifest", historyErrors),
 	}, nil
 }
 
@@ -382,9 +398,14 @@ func (d *dataset) Write(ctx context.Context, data []any, metadata Metadata) (*Da
 
 // Snapshot loads a snapshot by ID. A dataset written before canonical
 // manifests existed is found by scan when the canonical path is absent.
+// An expired snapshot is reported before that scan: its partition manifests
+// may outlive the canonical one, and the scan would resurrect it.
 func (d *dataset) Snapshot(ctx context.Context, id DatasetSnapshotID) (*DatasetSnapshot, error) {
 	s, err := d.history.Snapshot(ctx, id)
 	if errors.Is(err, ErrNotFound) {
+		if expired := d.tombstones().expiredError(ctx, id); expired != nil {
+			return nil, expired
+		}
 		s, err = d.history.Find(ctx, id)
 	}
 	if err != nil {
@@ -567,4 +588,5 @@ var historyErrors = history.Errors{
 	NotFound:         ErrNotFound,
 	NoSnapshots:      ErrNoSnapshots,
 	SnapshotConflict: ErrSnapshotConflict,
+	HeadUncommitted:  ErrHeadUncommitted,
 }

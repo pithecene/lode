@@ -7,7 +7,7 @@
 // History owns everything about the head that the containers would otherwise
 // duplicate: the persisted pointer, the in-process memory of the last head
 // this writer observed (the CAS expected value for the next advance),
-// self-heal after a scan, the scan itself, and manifest I/O.
+// creating a missing pointer after a scan, the scan itself, and manifest I/O.
 //
 // The package does not import lode: it reads the store through the Store
 // subset below and returns the sentinels the container passes in (Errors),
@@ -18,6 +18,7 @@ package history
 
 import (
 	"bytes"
+	"container/heap"
 	"context"
 	"encoding/json"
 	"errors"
@@ -25,7 +26,6 @@ import (
 	"io"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/pithecene-io/lode/internal/retry"
 )
@@ -53,6 +53,9 @@ type Errors struct {
 	NotFound         error
 	NoSnapshots      error
 	SnapshotConflict error
+	// HeadUncommitted is returned by CommittedHead when the pointer names a
+	// snapshot with no manifest, or is missing beside existing snapshots.
+	HeadUncommitted error
 }
 
 // Kind is what a container knows about its own snapshots: where they live
@@ -69,18 +72,15 @@ type Kind[ID ~string, M any] interface {
 	ParseManifest(path string) (ID, bool)
 	// Decode reads and validates a manifest.
 	Decode(r io.Reader) (*M, error)
+	// NotExpired reports whether a pointer-less scan may take snapshot id as
+	// the head: false only for one retention has expired.
+	NotExpired(ctx context.Context, id ID) (bool, error)
 }
 
 // Snapshot pairs a snapshot ID with its decoded manifest.
 type Snapshot[ID ~string, M any] struct {
 	ID       ID
 	Manifest *M
-}
-
-// NewID returns a new snapshot ID: the current time in Unix nanoseconds.
-// Scan relies on IDs ordering by creation time.
-func NewID() string {
-	return fmt.Sprintf("%d", time.Now().UnixNano())
 }
 
 // History is one container's snapshot sequence and head pointer.
@@ -109,8 +109,8 @@ func New[ID ~string, M any](store Store, kind Kind[ID, M], noun string, errs Err
 // Reading snapshots
 // -----------------------------------------------------------------------------
 
-// load decodes the manifest at path as snapshot id.
-func (h *History[ID, M]) load(ctx context.Context, id ID, path string) (*Snapshot[ID, M], error) {
+// LoadAt decodes the manifest copy at path as snapshot id.
+func (h *History[ID, M]) LoadAt(ctx context.Context, id ID, path string) (*Snapshot[ID, M], error) {
 	rc, err := h.store.Get(ctx, path)
 	if err != nil {
 		return nil, err
@@ -125,14 +125,15 @@ func (h *History[ID, M]) load(ctx context.Context, id ID, path string) (*Snapsho
 
 // Snapshot loads a snapshot by ID from its canonical manifest.
 func (h *History[ID, M]) Snapshot(ctx context.Context, id ID) (*Snapshot[ID, M], error) {
-	return h.load(ctx, id, h.kind.ManifestPath(id))
+	return h.LoadAt(ctx, id, h.kind.ManifestPath(id))
 }
 
 // manifests lists every manifest path with the snapshot ID it names, one
 // entry per snapshot, in no particular order. A snapshot may have several
-// manifest copies (canonical plus one per partition); the lexicographically
-// smallest path is kept so the same storage state always yields the same
-// entries. One pass, no sort: a dataset prefix covers every data file too,
+// manifest copies (canonical plus one per partition); all are kept, the
+// lexicographically smallest first, so the same storage state always loads
+// the same copy and a copy deleted after the listing falls back to another.
+// One pass, no sort: a dataset prefix covers every data file too,
 // and CONTRACT_COMPLEXITY bounds degraded Latest/Snapshot at O(N) in listed
 // keys. Snapshots orders the entries itself, within its own S log S bound.
 func (h *History[ID, M]) manifests(ctx context.Context) ([]manifestEntry[ID], error) {
@@ -140,26 +141,47 @@ func (h *History[ID, M]) manifests(ctx context.Context) ([]manifestEntry[ID], er
 	if err != nil {
 		return nil, fmt.Errorf("lode: failed to list snapshots: %w", err)
 	}
-	byID := make(map[ID]string)
+	byID := make(map[ID][]string)
 	for _, p := range paths {
-		id, ok := h.kind.ParseManifest(p)
-		if !ok {
-			continue
-		}
-		if cur, seen := byID[id]; !seen || p < cur {
-			byID[id] = p
+		if id, ok := h.kind.ParseManifest(p); ok {
+			byID[id] = smallestFirst(append(byID[id], p))
 		}
 	}
 	out := make([]manifestEntry[ID], 0, len(byID))
-	for id, p := range byID {
-		out = append(out, manifestEntry[ID]{id, p})
+	for id, copies := range byID {
+		out = append(out, manifestEntry[ID]{id, copies})
 	}
 	return out, nil
 }
 
+// smallestFirst moves the last path to the front when it is the smallest,
+// so the front is always the minimum without sorting the rest.
+func smallestFirst(paths []string) []string {
+	if last := len(paths) - 1; paths[last] < paths[0] {
+		paths[0], paths[last] = paths[last], paths[0]
+	}
+	return paths
+}
+
+// manifestEntry is one snapshot a listing found, with every manifest copy
+// it showed, smallest path first.
 type manifestEntry[ID ~string] struct {
-	id   ID
-	path string
+	id    ID
+	paths []string
+}
+
+// loadEntry loads the snapshot from the first of its listed copies that is
+// still present. errs.NotFound means an expiry removed every copy after the
+// listing, which enumeration skips rather than reports
+// (CONTRACT_RETENTION §Lineage).
+func (h *History[ID, M]) loadEntry(ctx context.Context, e manifestEntry[ID]) (*Snapshot[ID, M], error) {
+	for _, p := range e.paths {
+		s, err := h.LoadAt(ctx, e.id, p)
+		if !errors.Is(err, h.errs.NotFound) {
+			return s, err
+		}
+	}
+	return nil, fmt.Errorf("lode: snapshot %s: every listed manifest is gone: %w", e.id, h.errs.NotFound)
 }
 
 // Snapshots loads every snapshot, ordered by ID so that callers sorting on
@@ -172,7 +194,12 @@ func (h *History[ID, M]) Snapshots(ctx context.Context) ([]*Snapshot[ID, M], err
 	slices.SortFunc(entries, func(a, b manifestEntry[ID]) int { return strings.Compare(string(a.id), string(b.id)) })
 	out := make([]*Snapshot[ID, M], 0, len(entries))
 	for _, e := range entries {
-		s, err := h.load(ctx, e.id, e.path)
+		// A manifest an expiry deleted after the listing is skipped, not
+		// reported (CONTRACT_RETENTION §Lineage).
+		s, err := h.loadEntry(ctx, e)
+		if errors.Is(err, h.errs.NotFound) {
+			continue
+		}
 		if err != nil {
 			return nil, fmt.Errorf("lode: failed to load snapshot %s: %w", e.id, err)
 		}
@@ -190,34 +217,66 @@ func (h *History[ID, M]) Find(ctx context.Context, id ID) (*Snapshot[ID, M], err
 	}
 	for _, e := range entries {
 		if e.id == id {
-			return h.load(ctx, e.id, e.path)
+			return h.loadEntry(ctx, e)
 		}
 	}
 	return nil, h.errs.NotFound
 }
 
-// scan finds the latest snapshot by listing: IDs are nanosecond timestamps,
-// so the lexicographically largest ID is the latest. Returns errs.NoSnapshots
-// when the container is empty.
+// scan finds the latest snapshot by listing: IDs begin with a nanosecond
+// instant, so the lexicographically largest ID is the latest. A manifest
+// expired after the listing is passed over for the next largest. Returns
+// errs.NoSnapshots when the container is empty.
 func (h *History[ID, M]) scan(ctx context.Context) (*Snapshot[ID, M], error) {
 	entries, err := h.manifests(ctx)
 	if err != nil {
 		return nil, err
 	}
-	var latest *manifestEntry[ID]
-	for i := range entries {
-		if latest == nil || entries[i].id > latest.id {
-			latest = &entries[i]
+	// A max-heap, not a sort: building it is O(N), the bound
+	// CONTRACT_COMPLEXITY sets for the degraded path, and each manifest that
+	// vanished mid-scan costs only O(log N) more.
+	byNewest := newestFirst[ID](entries)
+	heap.Init(&byNewest)
+	for byNewest.Len() > 0 {
+		e := heap.Pop(&byNewest).(manifestEntry[ID])
+		s, err := h.loadUnexpired(ctx, e)
+		if errors.Is(err, h.errs.NotFound) {
+			continue
 		}
+		if err != nil {
+			return nil, fmt.Errorf("lode: failed to load latest snapshot: %w", err)
+		}
+		return s, nil
 	}
-	if latest == nil {
-		return nil, h.errs.NoSnapshots
-	}
-	s, err := h.load(ctx, latest.id, latest.path)
+	return nil, h.errs.NoSnapshots
+}
+
+// loadUnexpired loads entry e unless retention expired it: an interrupted
+// expiry can leave a partition copy of the newest snapshot, which must
+// never become the head. A passed-over entry reads as errs.NotFound.
+func (h *History[ID, M]) loadUnexpired(ctx context.Context, e manifestEntry[ID]) (*Snapshot[ID, M], error) {
+	live, err := h.kind.NotExpired(ctx, e.id)
 	if err != nil {
-		return nil, fmt.Errorf("lode: failed to load latest snapshot: %w", err)
+		return nil, err
 	}
-	return s, nil
+	if !live {
+		return nil, fmt.Errorf("lode: snapshot %s is expired: %w", e.id, h.errs.NotFound)
+	}
+	return h.loadEntry(ctx, e)
+}
+
+// newestFirst is a max-heap of manifest entries by ID (container/heap).
+type newestFirst[ID ~string] []manifestEntry[ID]
+
+func (q newestFirst[ID]) Len() int           { return len(q) }
+func (q newestFirst[ID]) Less(i, j int) bool { return q[i].id > q[j].id }
+func (q newestFirst[ID]) Swap(i, j int)      { q[i], q[j] = q[j], q[i] }
+func (q *newestFirst[ID]) Push(x any)        { *q = append(*q, x.(manifestEntry[ID])) }
+func (q *newestFirst[ID]) Pop() any {
+	old := *q
+	e := old[len(old)-1]
+	*q = old[:len(old)-1]
+	return e
 }
 
 // -----------------------------------------------------------------------------
@@ -243,6 +302,77 @@ func (h *History[ID, M]) readPointer(ctx context.Context) (ID, error) {
 	return id, nil
 }
 
+// CommittedHead returns the head retention must never remove: the snapshot
+// the pointer names ("" for a history with no snapshot at all). known is a
+// head an earlier call confirmed; a pointer still naming it costs no
+// further call. A pointer naming a snapshot with no manifest is a commit in
+// flight, whose parent the pointer no longer names: errs.HeadUncommitted.
+func (h *History[ID, M]) CommittedHead(ctx context.Context, known ID) (ID, error) {
+	id, err := h.readPointer(ctx)
+	if errors.Is(err, h.errs.NotFound) {
+		return "", h.pointerless(ctx)
+	}
+	if err != nil {
+		return "", fmt.Errorf("lode: failed to resolve head: %w", err)
+	}
+	if id == known {
+		return id, nil
+	}
+	return id, h.confirmCommitted(ctx, id)
+}
+
+// confirmCommitted is nil when snapshot id, read from the pointer, has a
+// manifest, and errs.HeadUncommitted when it has none: a commit in flight,
+// whose parent the pointer no longer names. A pointer that does not hold a
+// snapshot ID is corruption, never confirmed.
+func (h *History[ID, M]) confirmCommitted(ctx context.Context, id ID) error {
+	// A corrupt pointer must not reach a path or stand for the head: Lode
+	// writes only generated IDs there, which are path-safe.
+	if !IsGeneratedID(id) {
+		return fmt.Errorf("lode: latest pointer holds %q, which is not a snapshot ID", id)
+	}
+	committed, err := h.hasManifest(ctx, id)
+	if err != nil {
+		return fmt.Errorf("lode: failed to resolve head: %w", err)
+	}
+	if !committed {
+		return fmt.Errorf("lode: latest pointer names %s: %w", id, h.errs.HeadUncommitted)
+	}
+	return nil
+}
+
+// pointerless is nil for a history with no snapshot and errs.HeadUncommitted
+// otherwise. Every commit writes the pointer, so it is missing beside a
+// snapshot only for the moment of a Delete+Put commit on a store without
+// ConditionalWriter, in a history written before the pointer existed, or
+// after a hand edit. In none of these can the head be told safely: a
+// clock that rolled back may have given the last commit a smaller ID.
+func (h *History[ID, M]) pointerless(ctx context.Context) error {
+	entries, err := h.manifests(ctx)
+	if err != nil {
+		return err
+	}
+	if len(entries) == 0 {
+		return nil
+	}
+	return fmt.Errorf("lode: latest pointer is absent: %w", h.errs.HeadUncommitted)
+}
+
+// hasManifest reports whether snapshot id has any manifest: its canonical
+// one (one Exists), or, for data written before canonical manifests, any
+// listed copy (one List, only on that miss).
+func (h *History[ID, M]) hasManifest(ctx context.Context, id ID) (bool, error) {
+	exists, err := h.store.Exists(ctx, h.kind.ManifestPath(id))
+	if err != nil || exists {
+		return exists, err
+	}
+	entries, err := h.manifests(ctx)
+	if err != nil {
+		return false, err
+	}
+	return slices.ContainsFunc(entries, func(e manifestEntry[ID]) bool { return e.id == id }), nil
+}
+
 // writePointer persists id as the pointer. With a ConditionalWriter the write
 // is a CAS against expected (the pointer content the writer believes is
 // current); otherwise Delete+Put under the single-writer assumption.
@@ -266,29 +396,41 @@ func (h *History[ID, M]) Forget() {
 }
 
 // Latest returns the head snapshot: through the pointer when it names a
-// loadable snapshot, otherwise by scan — and then self-heals the pointer (a
-// CAS conflict there means a concurrent commit already advanced it). The
-// result is remembered so a later advance expects the right pointer content.
+// loadable snapshot, otherwise by scan. A missing pointer is then created
+// from the scan; a stale one is left for the next commit to replace. A
+// pointer naming a snapshot with no manifest may be a commit in flight
+// (Advance writes the pointer first), and overwriting it would roll the
+// head back over that commit. The head is remembered only while the pointer
+// is known to name it; otherwise the memory is dropped, so the next Resolve
+// consults storage and parents on that commit once it lands.
 func (h *History[ID, M]) Latest(ctx context.Context) (*Snapshot[ID, M], error) {
-	var observed string
-	if id, err := h.readPointer(ctx); err == nil {
+	id, err := h.readPointer(ctx)
+	if err == nil {
 		if s, err := h.Snapshot(ctx, id); err == nil {
 			h.remember(id, string(id))
 			return s, nil
 		}
-		observed = string(id) // stale: names a missing snapshot
 	}
+	pointerMissing := errors.Is(err, h.errs.NotFound)
 
 	s, err := h.scan(ctx)
 	if err != nil {
 		return nil, err
 	}
-	// Self-heal is best-effort: a conflict means another writer repaired or
-	// advanced the pointer first, and any other failure leaves the next
-	// Latest to scan again. Either way the scan result stands.
-	_ = h.writePointer(ctx, observed, s.ID)
-	h.remember(s.ID, string(s.ID))
+	h.Forget()
+	if pointerMissing {
+		h.createPointer(ctx, s.ID)
+	}
 	return s, nil
+}
+
+// createPointer creates a missing pointer naming head, the scan's result.
+// Best-effort: a conflict means a concurrent commit created it first, and
+// any other failure leaves the next Latest to scan again.
+func (h *History[ID, M]) createPointer(ctx context.Context, head ID) {
+	if h.writePointer(ctx, "", head) == nil {
+		h.remember(head, string(head))
+	}
 }
 
 // Resolve returns the ID a new commit parents on ("" for the first) and the

@@ -377,6 +377,67 @@ type Dataset interface {
 	// through a streaming-capable codec. Returns an error if metadata is nil or if
 	// the configured codec does not support streaming.
 	StreamWriteRecords(ctx context.Context, records RecordIterator, metadata Metadata) (*DatasetSnapshot, error)
+
+	// Expire removes the selected snapshots: their manifests and the data
+	// objects their manifests list. The head is never expired; when the
+	// selection includes it, it is kept and reported in RetainedHead. The
+	// report is non-nil, also on error, and describes the work done before
+	// the error. See CONTRACT_RETENTION.md.
+	Expire(ctx context.Context, req ExpireRequest) (*ExpireReport, error)
+}
+
+// -----------------------------------------------------------------------------
+// Retention
+// -----------------------------------------------------------------------------
+
+// ExpireRequest selects the snapshots Dataset.Expire removes. Set fields
+// intersect; at least one of IDs, Partition and Before must be set.
+type ExpireRequest struct {
+	// IDs selects these snapshots, including any whose expiry an earlier
+	// run recorded but did not finish: the request completes it.
+	IDs []DatasetSnapshotID
+
+	// Partition selects snapshots with a partition manifest in this
+	// partition or beneath it. Matching is by whole path segment:
+	// "run_id=run-1" never selects "run_id=run-10". Hive layouts only.
+	Partition string
+
+	// Before selects snapshots whose write began strictly before this
+	// instant. The instant is read from the snapshot ID, so selection loads
+	// no manifest.
+	Before time.Time
+
+	// DryRun resolves the selection and reports what would be removed,
+	// without writing or deleting anything.
+	DryRun bool
+}
+
+// ExpireReport describes what Dataset.Expire removed, or would remove on a
+// dry run.
+type ExpireReport struct {
+	// Expired lists the expired snapshots, oldest first.
+	Expired []DatasetSnapshotID
+
+	// Mixed lists snapshots selected by Partition that also have files
+	// outside it. They are kept.
+	Mixed []DatasetSnapshotID
+
+	// RetainedHead is the head snapshot when the selection included it.
+	// The head is never expired. Empty otherwise.
+	RetainedHead DatasetSnapshotID
+
+	// Objects counts the data objects this run deleted that its listing
+	// showed. An object an earlier, interrupted run already deleted is not
+	// counted again; runs that overlap can both count one.
+	Objects int
+
+	// Bytes sums the sizes the snapshots' inventories record for those
+	// objects.
+	Bytes int64
+
+	// Skipped lists inventory paths that are not data objects of the
+	// expired snapshot in this dataset. They are left in place.
+	Skipped []string
 }
 
 // -----------------------------------------------------------------------------
@@ -485,6 +546,18 @@ var (
 	// bounds.
 	ErrInvalidPath error = errInvalidPath{}
 
+	// ErrSnapshotExpired indicates the snapshot was removed by
+	// Dataset.Expire. It also matches ErrNotFound.
+	ErrSnapshotExpired error = errSnapshotExpired{}
+
+	// ErrHeadUncommitted indicates retention cannot tell the committed head:
+	// the latest pointer names a snapshot whose manifest is not written yet
+	// (a commit is in flight, or crashed before writing it), or is missing
+	// beside existing snapshots. Retry once the commit completes; the next
+	// commit replaces a pointer a crashed commit left behind, and any commit
+	// creates a missing one.
+	ErrHeadUncommitted error = errHeadUncommitted{}
+
 	// ErrManifestInvalid indicates a manifest failed validation.
 	ErrManifestInvalid error = validate.ErrManifestInvalid
 
@@ -500,6 +573,18 @@ var (
 type errNotFound struct{}
 
 func (errNotFound) Error() string { return "not found" }
+
+type errSnapshotExpired struct{}
+
+func (errSnapshotExpired) Error() string { return "snapshot expired" }
+
+// Is makes an expired snapshot also a missing one, so callers matching
+// ErrNotFound keep working.
+func (errSnapshotExpired) Is(target error) bool { return target == ErrNotFound }
+
+type errHeadUncommitted struct{}
+
+func (errHeadUncommitted) Error() string { return "head snapshot is not committed yet" }
 
 type errNoSnapshots struct{}
 

@@ -62,6 +62,15 @@ Gaps are tracked with codes indicating category and priority:
 | FileRef.Stats (absent) | `TestDataset_Write_Stats/JSONL_codec_stats_nil`, `TestDataset_Write_Stats/raw_blob_stats_nil` |
 | FileRef.Stats (JSON round-trip) | `TestFileRef_Stats/JSON_round_trip`, `TestFileRef_Stats/backward_compat`, `TestFileRef_Stats/omitted_when_nil` |
 
+**Snapshot ID**: All covered ✅
+
+| Rule | Test |
+|------|------|
+| `<instant>-<nonce>` form; legacy `<instant>` accepted | `TestSnapshotID/instant_only_from_the_generated_form`, `TestSnapshotID/format_round-trips_the_instant` |
+| Unique when the clock repeats | `TestSnapshotID/unique_within_one_instant` |
+| New IDs carry the clock's instant | `TestSnapshotID/new_IDs_carry_the_clock` |
+| String order follows instant; legacy sorts first on a tie | `TestSnapshotID/string_order_follows_the_instant` |
+
 **Metadata Rules**: All covered ✅
 
 - nil metadata coalesced: `TestDataset_Write_Metadata/nil_metadata_coalesces_to_empty`, `TestDataset_StreamWrite_Metadata/nil_metadata_coalesces_to_empty`, `TestDataset_StreamWriteRecords_Metadata/nil_metadata_coalesces_to_empty`
@@ -262,6 +271,33 @@ All error sentinels covered ✅
 | ErrPartitioningNotSupported | `TestDataset_StreamWriteRecords_Rejects/with_partitioner` |
 | volume.ErrRangeMissing | `TestVolume_ReadAt/missing_range_returns_err_range_missing`, `TestVolume_ReadAt/gap_at_start_returns_err_range_missing`, `TestVolume_ReadAt/gap_in_middle_returns_err_range_missing` |
 | volume.ErrOverlappingBlocks | `TestVolume_Commit_Overlaps/overlapping_blocks_returns_err_overlapping_blocks`, `TestVolume_Commit_Overlaps/contained_block_overlap`, `TestVolume_Commit_Overlaps/same_start_offset_overlap`, `TestVolume_Commit_Overlaps/overlap_with_existing_rejected`, `TestVolume_Commit_Overlaps/three_block_overlap` |
+| ErrRangeMissing | `TestVolume_ReadAt/missing_range_returns_err_range_missing`, `TestVolume_ReadAt/gap_at_start_returns_err_range_missing`, `TestVolume_ReadAt/gap_in_middle_returns_err_range_missing` |
+| ErrOverlappingBlocks | `TestVolume_Commit_Overlaps/overlapping_blocks_returns_err_overlapping_blocks`, `TestVolume_Commit_Overlaps/contained_block_overlap`, `TestVolume_Commit_Overlaps/same_start_offset_overlap`, `TestVolume_Commit_Overlaps/overlap_with_existing_rejected`, `TestVolume_Commit_Overlaps/three_block_overlap` |
+| ErrSnapshotExpired | `TestExpire_Selection/by_ID_removes_manifest_and_data`, `TestExpire_Resumption/interrupted_after_the_canonical_delete_is_not_resurrected` |
+| ErrHeadUncommitted | `TestExpire_Head/uncommitted_expires_nothing`, `TestExpire_Head/uncommitted_mid-run_reports_completed_work` |
+
+---
+
+### CONTRACT_RETENTION.md — Snapshot Expiry
+
+| Requirement | Test | Status |
+|-------------|------|--------|
+| Empty request, malformed or unsupported `Partition` rejected before any store call | `TestExpire_Validation` | ✅ |
+| Expiry removes manifests and data, keeps a tombstone; `Snapshot`/`Read` return `ErrSnapshotExpired` | `TestExpire_Selection/by_ID_removes_manifest_and_data`, `TestExpire_Selection/flat_layout` | ✅ |
+| `Partition` matches whole segments | `TestExpire_Partition/matches_whole_segments`, `TestExpire_Partition/a_trailing_slash_is_valid` | ✅ |
+| Mixed snapshots kept under `Partition`, expirable by `IDs` | `TestExpire_Partition/mixed_snapshot_is_kept`, `TestExpire_Partition/a_resumed_expiry_is_checked_against_the_partition` | ✅ |
+| `Before` selects by snapshot ID instant; selectors intersect | `TestExpire_Selection/before_uses_the_snapshot_ID_instant`, `TestExpire_Selection/selectors_intersect` | ✅ |
+| Head retained and reported, no tombstone written for it; a head superseded mid-run stays retained | `TestExpire_Head/retained_and_reported`, `TestExpire_Head/superseded_mid-run_stays_retained` | ✅ |
+| Uncommitted head stops expiry, including at a retained head's recheck; report lists completed work | `TestExpire_Head/uncommitted_expires_nothing`, `TestExpire_Head/uncommitted_mid-run_reports_completed_work`, `TestExpire_Head/uncommitted_before_a_retained_head_stops_the_run` | ✅ |
+| Dry run writes and deletes nothing, and fails where a real run would | `TestExpire_DryRun/changes_nothing`, `TestExpire_DryRun/fails_where_a_real_run_would` | ✅ |
+| Existing tombstone: same ID resumes, other ID fails (CAS and non-CAS); tombstone records the whole `Files[]` and the manifest's `CreatedAt`; one with no commit instant, a missing or invalid inventory, or zero length with no manifest left is corrupt; nothing is recorded from a manifest that breaks the manifest invariants | `TestExpire_Tombstone/existing`, `TestExpire_Tombstone/zero_length`, `TestExpire_Tombstone/records_the_inventory`, `TestExpire_InvalidManifest`, `TestExpire_CorruptTombstone/no_commit_instant`, `TestExpire_CorruptTombstone/a_corrupt_one_does_not_expire_a_legacy_snapshot`, `TestExpire_CorruptTombstone/invalid_inventory`, `TestExpire_CorruptTombstone/zero_length_with_no_manifest_left` | ✅ |
+| A recorded expiry resumes from its tombstone with no manifest left; each run meters only what it deleted | `TestExpire_Resumption/from_a_tombstone_with_no_manifest_left` | ✅ |
+| IDs not in the generated form never reach a store path; a tombstone that does not describe every manifest copy (commit instant and inventory) is refused; a concurrent tombstone is accepted only with the same inventory | `TestExpire_Tombstone/ID_not_in_the_generated_form_never_reaches_a_path`, `TestSnapshot_IDNotInGeneratedForm_IsNotExpired`, `TestExpire_ReusedID/same_files_with_another_commit_instant_is_refused`, `TestExpire_ReusedID/a_fresh_expiry_checks_every_manifest_copy`, `TestExpire_ReusedID/tombstone_of_another_inventory_is_refused`, `TestExpire_ReusedID/recorded_tombstone_must_match_every_manifest_copy`, `TestExpire_ReusedID/copy_reappearing_at_a_derived_path_is_checked`, `TestExpire_ReusedID/manifest_reappearing_for_a_tombstone_is_checked`, `TestExpire_Tombstone/concurrent_one_is_accepted`, `TestExpire_Tombstone/concurrent_one_of_another_inventory_is_refused` | ✅ |
+| A dataset with snapshots and no pointer is refused with `ErrHeadUncommitted`, whatever its IDs; an empty dataset needs none | `TestExpire_HeadResolution/a_pointer-less_dataset_is_refused`, `TestExpire_HeadResolution/a_pointer_missing_beside_new-form_IDs_is_refused`, `TestExpire_HeadResolution/tombstones_without_a_pointer_or_manifest_are_refused`, `TestExpire_HeadResolution/an_empty_dataset_needs_no_pointer`, `TestExpire_HeadResolution/a_pointer_that_is_not_a_snapshot_ID_is_refused`, `TestExpire_HeadResolution/a_pointer_outside_the_generated_form_is_refused` | ✅ |
+| Expired snapshot not resurrected by the scan fallback; rerun completes | `TestExpire_Resumption/interrupted_after_the_canonical_delete_is_not_resurrected` | ✅ |
+| Foreign `Files[]` paths reported in `Skipped`, never deleted; no derived path escapes the dataset | `TestExpire_PathSafety/foreign_FileRef_is_skipped`, `TestExpire_PathSafety/a_path_listed_twice_is_counted_once`, `TestExpire_PathSafety/a_snapshot_left_unexpired_reports_no_skipped_paths`, `TestExpire_PathSafety/a_failed_expiry_reports_no_skipped_paths`, `TestExpire_Partition/a_foreign_file_does_not_make_a_snapshot_mixed`, `TestExpire_PathSafety/traversal_in_a_FileRef_deletes_nothing_outside` | ✅ |
+| A legacy head with only partition manifests is committed | `TestExpire_HeadResolution/legacy_partition-only_head_is_committed` | ✅ |
+| Enumeration skips manifests deleted after listing | `TestEnumeration_ToleratesDeletion/listings_skip_a_manifest_deleted_after_listing`, `TestLatestScan/skips_a_manifest_deleted_after_listing`, `TestLatestScan/falls_back_to_another_copy_of_a_snapshot`, `TestLatestScan/passes_over_an_expired_leftover` | ✅ |
 
 ---
 
@@ -392,6 +428,7 @@ proportional to dataset/volume size on remote stores (S3/R2).
 | Pointer tracks most recent | `TestDataset_LatestPointer/updates_across_writes` |
 | Backward compat: scan fallback | `TestDataset_LatestPointer/backward_compat` |
 | Corrupt pointer: scan fallback | `TestDataset_LatestPointer/corrupt_pointer` |
+| Stale pointer left for the commit in flight; next commit parents on it | `TestDataset_LatestPointer_CommitInFlight`, `TestLatest/stale_pointer_is_left_for_the_next_commit` |
 | Pointer paths for all layouts | `TestDataset_LatestPointer/all_layouts` |
 | Write: 0 List calls after pointer | `TestDataset_Write_Pointer/latest_pointer_skips_scan` |
 | StreamWrite: 0 List calls | `TestDataset_StreamWrite_Lineage/latest_pointer_skips_scan` |

@@ -19,19 +19,19 @@ import (
 // minimal kind, so every branch is reached without a container on top.
 // Lode's Dataset and Volume tests exercise the same code end to end.
 //
-// Known equivalent mutants, left alive: scan's `entries[i].id > latest.id`
-// → `>=` (snapshot IDs are unique within a history, so the greatest is found
-// either way); manifests' `p < cur` → `<=` (two manifest copies of one
-// snapshot are never the same path, so equality never occurs).
+// Known equivalent mutant, left alive: smallestFirst's `<` → `<=` (two
+// manifest copies of one snapshot are never the same path, so equality never
+// occurs).
 
 var (
 	errNotFound = errors.New("not found")
 	errNoSnaps  = errors.New("no snapshots")
 	errConflict = errors.New("conflict")
 	errBoom     = errors.New("boom")
+	errHead     = errors.New("head uncommitted")
 )
 
-var testErrors = Errors{NotFound: errNotFound, NoSnapshots: errNoSnaps, SnapshotConflict: errConflict}
+var testErrors = Errors{NotFound: errNotFound, NoSnapshots: errNoSnaps, SnapshotConflict: errConflict, HeadUncommitted: errHead}
 
 // --- store ---
 
@@ -157,6 +157,9 @@ func (testKind) ParseManifest(p string) (id, bool) {
 	seg, _, _ := strings.Cut(rest, "/")
 	return id(seg), true
 }
+
+// NotExpired is always true: the core has no retention of its own.
+func (testKind) NotExpired(context.Context, id) (bool, error) { return true, nil }
 
 func (testKind) Decode(r io.Reader) (*manifest, error) {
 	var m manifest
@@ -410,20 +413,26 @@ func TestLatest(t *testing.T) {
 			t.Fatalf("pointer = %q, memory = %q/%q", s.objects[pointer], h.head, h.pointer)
 		}
 	})
-	t.Run("stale pointer heals against its own content", func(t *testing.T) {
+	// A pointer naming a snapshot with no manifest may be a commit in
+	// flight; rewriting it would roll the head back over that commit.
+	t.Run("stale pointer is left for the next commit", func(t *testing.T) {
 		s := newMemStore()
 		put(t, s, "1", "one")
 		s.objects[pointer] = []byte("9")
 		h := newTestHistory(casStore{s})
+		h.remember("1", "1")
 		got, err := h.Latest(t.Context())
 		if err != nil || got.ID != "1" {
 			t.Fatalf("got %+v, %v", got, err)
 		}
-		if !slices.Contains(s.ops, "cas "+pointer+" 9") || string(s.objects[pointer]) != "1" {
+		if slices.Contains(s.ops, "cas "+pointer+" 9") || string(s.objects[pointer]) != "9" {
 			t.Fatalf("ops = %v, pointer = %q", s.ops, s.objects[pointer])
 		}
+		if h.head != "" || h.pointer != "" {
+			t.Fatalf("memory = %q/%q, want it dropped", h.head, h.pointer)
+		}
 	})
-	t.Run("failed heal still returns the scan result", func(t *testing.T) {
+	t.Run("failed creation still returns the scan result", func(t *testing.T) {
 		s := newMemStore()
 		put(t, s, "1", "one")
 		s.fail = failOn("cas", "", errBoom)
@@ -431,6 +440,9 @@ func TestLatest(t *testing.T) {
 		got, err := h.Latest(t.Context())
 		if err != nil || got.ID != "1" {
 			t.Fatalf("got %+v, %v", got, err)
+		}
+		if h.head != "" || h.pointer != "" {
+			t.Fatalf("memory = %q/%q, want none for a pointer not written", h.head, h.pointer)
 		}
 	})
 	t.Run("empty history", func(t *testing.T) {
@@ -750,13 +762,4 @@ func TestCommitLoop(t *testing.T) {
 			t.Fatalf("got %v after %d calls", err, calls)
 		}
 	})
-}
-
-func TestNewID(t *testing.T) {
-	a, b := NewID(), NewID()
-	na, errA := strconv.ParseInt(a, 10, 64)
-	nb, errB := strconv.ParseInt(b, 10, 64)
-	if errA != nil || errB != nil || nb < na || na <= 0 {
-		t.Fatalf("IDs %q, %q: want increasing positive integers", a, b)
-	}
 }

@@ -2529,6 +2529,61 @@ func TestDataset_Write_Pointer(t *testing.T) {
 	})
 }
 
+func TestDataset_LatestPointer_CommitInFlight(t *testing.T) {
+	// Advance writes the pointer before the manifest, so a pointer naming
+	// a snapshot with no manifest may be a commit in flight. Latest serves
+	// the scan result but must not roll the pointer back over it, and the
+	// next commit must parent on that commit once its manifest lands.
+	store := NewMemory()
+	open := func() Dataset {
+		ds, err := NewDataset("test-ds", NewMemoryFactoryFrom(store), WithCodec(NewJSONLCodec()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ds
+	}
+	reader, other := open(), open()
+	snap1, err := reader.Write(t.Context(), R(D{"a": 1}), Metadata{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inFlight, err := other.Write(t.Context(), R(D{"b": 2}), Metadata{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestPath := "datasets/test-ds/snapshots/" + string(inFlight.ID) + "/manifest.json"
+	moveObject(t, store, manifestPath, "pending/manifest.json")
+	if err := store.Delete(t.Context(), manifestPath); err != nil {
+		t.Fatal(err)
+	}
+
+	latest, err := reader.Latest(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latest.ID != snap1.ID {
+		t.Errorf("Latest = %s, want the committed %s", latest.ID, snap1.ID)
+	}
+	rc, err := store.Get(t.Context(), "datasets/test-ds/latest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pointer, _ := io.ReadAll(rc)
+	_ = rc.Close()
+	if string(pointer) != string(inFlight.ID) {
+		t.Errorf("pointer = %q, want it left at the in-flight %q", pointer, inFlight.ID)
+	}
+
+	moveObject(t, store, "pending/manifest.json", manifestPath)
+	next, err := reader.Write(t.Context(), R(D{"c": 3}), Metadata{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next.Manifest.ParentSnapshotID != inFlight.ID {
+		t.Errorf("parent = %s, want the landed %s", next.Manifest.ParentSnapshotID, inFlight.ID)
+	}
+}
+
 func TestDataset_LatestPointer(t *testing.T) {
 	t.Run("read after write", func(t *testing.T) {
 		// After a write, the pointer file must exist in the store and

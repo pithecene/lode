@@ -673,6 +673,53 @@ Failure to delete a partial object does not create a snapshot.
 
 ---
 
+## Retention
+
+Lode never removes anything on its own. `Dataset.Expire` removes snapshots
+the caller selects; which snapshots to keep, and for how long, is the
+caller's policy (`CONTRACT_RETENTION.md`).
+
+<!-- illustrative -->
+```go
+// Preview, then remove, one run of a Hive dataset.
+req := lode.ExpireRequest{Partition: "source=s/category=c/day=2026-10-19/run_id=r1", DryRun: true}
+preview, err := ds.Expire(ctx, req)
+// preview.Expired, preview.Objects, preview.Bytes
+
+req.DryRun = false
+report, err := ds.Expire(ctx, req)
+if report.RetainedHead != "" {
+    // The newest snapshot is the head and is kept; expire it after a newer commit.
+}
+```
+
+`ExpireRequest` fields intersect; at least one of them must be set:
+
+| Field | Selects |
+|-------|---------|
+| `IDs` | These snapshots |
+| `Partition` | Snapshots in this partition or beneath it, by whole segment (`run_id=r1` never matches `run_id=r10`). Hive layouts only |
+| `Before` | Snapshots whose write began before this instant (read from the snapshot ID; no manifest is loaded to select) |
+
+- **The head is never expired.** When the selection includes it, it is kept
+  and reported in `ExpireReport.RetainedHead`; that is not an error.
+- **Mixed snapshots are kept.** A snapshot selected by `Partition` that also
+  has files outside it is reported in `Mixed`. Name it in `IDs` to expire it.
+- **Expiry is recorded.** `Snapshot` and `Read` on an expired ID return
+  `ErrSnapshotExpired`, which also matches `ErrNotFound`.
+- **Expiry is resumable.** The report is non-nil on error and lists the
+  work done. The expiry's tombstone records the snapshot's files, so
+  running the same `IDs` request again completes it from any point.
+  `Objects` and `Bytes` count what each run deleted; totals across runs
+  add up.
+- **Lode deletes only what it wrote.** Objects a caller put next to the
+  dataset through `Store.Put` (sidecar files) are never deleted by
+  `Expire`; delete them after their snapshots are expired.
+- **Readers mid-read may fail.** A `Read` that loaded a manifest before its
+  expiry began can see `ErrNotFound` on a data file. Lode has no read lease.
+
+---
+
 ## Errors
 
 Errors are returned for invalid configuration, storage failures, or
@@ -709,6 +756,8 @@ if errors.Is(err, lode.ErrNoSnapshots) {
 | `ErrPartitioningNotSupported` | StreamWriteRecords with partitioning | Dataset |
 | `ErrRangeReadNotSupported` | Store doesn't support range reads | Storage |
 | `ErrSnapshotConflict` | Another writer committed since parent was resolved (CAS) | Dataset, Volume |
+| `ErrSnapshotExpired` | Snapshot was removed by `Expire`; also matches `ErrNotFound` | Dataset |
+| `ErrHeadUncommitted` | Latest pointer names a snapshot whose manifest is not written yet, or is missing beside existing snapshots | Dataset.Expire |
 | `ErrSchemaViolation` | Record doesn't conform to Parquet schema | Parquet Codec |
 | `ErrInvalidFormat` | Malformed or corrupted Parquet file | Parquet Codec |
 
@@ -723,6 +772,7 @@ manifest). It also returns the shared sentinels above where they apply.
 - Storage I/O errors (network, timeout) — may retry
 - `ErrNotFound` during race — may retry if expecting eventual consistency
 - `ErrSnapshotConflict` — re-read `Latest()`, merge state, re-commit (or use `WithRetryCount` for automatic retry)
+- `ErrHeadUncommitted` — retry `Expire` once the in-flight commit completes; a dataset written before the pointer existed needs one commit, which creates it
 
 **Non-retry (configuration/logic error):**
 - `ErrDatasetsNotModeled` — reconfigure with different layout
