@@ -14,7 +14,7 @@ It is authoritative for any `Dataset` implementation.
 
 ---
 
-## Non-goals
+## Non-Goals
 
 - Query execution or filtering.
 - Background compaction.
@@ -24,74 +24,82 @@ It is authoritative for any `Dataset` implementation.
 
 ## Dataset.Write Semantics
 
-### Required behavior
+### Required Behavior
 
 - `Write(ctx, data, metadata)` MUST create a new snapshot on success.
-- `nil` metadata MUST be coalesced to empty (`Metadata{}`).
+- `nil` metadata MUST be converted to empty metadata (`Metadata{}`).
 - Empty metadata is valid and MUST be persisted explicitly.
-- The new snapshot MUST reference the previous snapshot as its parent (if any).
+- The new snapshot MUST reference the previous snapshot, if any, as its parent.
 - Writes MUST NOT mutate existing snapshots or manifests.
 - The manifest MUST include all required fields defined in `CONTRACT_CORE.md`
-  (including row/event count and min/max timestamp when applicable).
+  (including the row or event count and, when applicable, the minimum and
+  maximum timestamps).
 - When the codec implements `StatisticalCodec`, per-file statistics MUST be
-  collected after encoding and recorded on the FileRef.
-- When no codec is configured, each write represents a single data unit and
-  the row/event count MUST be `1`.
+  collected after encoding and recorded on the `FileRef`.
+- When no codec is configured, each write represents a single data unit, and
+  the row or event count MUST be `1`.
 
 ### StreamWrite Semantics
 
-- `StreamWrite(ctx, metadata)` MUST coalesce `nil` metadata to empty (`Metadata{}`).
+- `StreamWrite(ctx, metadata)` MUST convert `nil` metadata to empty metadata
+  (`Metadata{}`).
 - `StreamWrite` MUST return a `StreamWriter` for a single binary data unit.
 - `StreamWriter.Commit(ctx)` MUST write the manifest and return the new snapshot.
 - A snapshot MUST NOT be visible before `Commit` writes the manifest.
-- `StreamWriter.Abort(ctx)` MUST ensure no manifest is written.
-- `StreamWriter.Close()` without `Commit` MUST behave as `Abort`.
+- `StreamWriter.Abort(ctx)` MUST ensure that no manifest is written.
+- `StreamWriter.Close()` without a preceding `Commit` MUST behave as `Abort`.
 - Streamed writes MUST be single-pass writes to the final object path.
-- Streamed writes MUST NOT mutate existing objects; all writes are new paths.
-- Streamed writes MUST set row/event count to `1`.
+- Streamed writes MUST NOT mutate existing objects; every write targets a new
+  path.
+- Streamed writes MUST set the row or event count to `1`.
 - When a checksum component is configured, the checksum MUST be computed during
   streaming and recorded in the manifest for each file written.
 - When a codec is configured, `StreamWrite` MUST return an error.
-- If the store's `Put` returns before consuming the stream (for example with
-  `ErrPathExists`), `Write` calls issued after it returned and `Commit` MUST
-  fail with that error, even when a compressor would buffer the bytes; they
-  MUST NOT block.
-- After a failed `Put` the writer MUST NOT touch the data path. `Put` is
-  all-or-nothing (`CONTRACT_STORAGE.md` §Put), so a failed stream leaves no
-  object of its own, and a path whose `Put` returned `ErrPathExists` belongs
-  to another writer. Data-file cleanup applies only to objects whose `Put`
-  succeeded and whose commit then failed.
+- If the store's `Put` returns before consuming the stream (for example,
+  with `ErrPathExists`), every `Write` call issued after `Put` returned, and
+  `Commit`, MUST fail with that error, even when a compressor would buffer
+  the bytes; these calls MUST NOT block.
+- After a failed `Put`, the writer MUST NOT access the data path. `Put` is
+  atomic (`CONTRACT_STORAGE.md` §Put), so a failed stream leaves no object
+  of its own, and a path whose `Put` returned `ErrPathExists` belongs to
+  another writer. Removal of data files applies only to objects whose `Put`
+  succeeded and whose commit subsequently failed.
 
 ### StreamWriteRecords Semantics
 
-- `StreamWriteRecords(ctx, records, metadata)` MUST coalesce `nil` metadata to empty (`Metadata{}`).
-- `StreamWriteRecords` MUST return an error if records iterator is nil.
-- `StreamWriteRecords` MUST consume records via a pull-based iterator.
+- `StreamWriteRecords(ctx, records, metadata)` MUST convert `nil` metadata to
+  empty metadata (`Metadata{}`).
+- `StreamWriteRecords` MUST return an error if the records iterator is `nil`.
+- `StreamWriteRecords` MUST consume records through a pull-based iterator.
 - `StreamWriteRecords` MUST return an error if the configured codec does not support
   streaming record encoding.
-- `StreamWriteRecords` MUST return an error if partitioning is configured (non-noop
-  partitioner), since single-pass streaming cannot partition without buffering.
+- `StreamWriteRecords` MUST return an error if partitioning is configured (a
+  partitioner other than `noop`), because single-pass streaming cannot
+  partition records without buffering them.
 - Streamed record writes MUST be single-pass writes to the final object path.
-- Streamed record writes MUST NOT mutate existing objects; all writes are new paths.
+- Streamed record writes MUST NOT mutate existing objects; every write
+  targets a new path.
 - On success, the manifest is written and the new snapshot is returned.
-- On error (iterator failure, codec error, storage error), no manifest is written.
-  A failed `Put` leaves nothing behind (`CONTRACT_STORAGE.md` §Put); a data
-  object whose `Put` succeeded but whose commit failed is deleted best-effort.
+- On error (an iterator failure, a codec error, or a storage error), no
+  manifest is written. A failed `Put` leaves no object (`CONTRACT_STORAGE.md`
+  §Put); a data object whose `Put` succeeded but whose commit failed is
+  deleted on a best-effort basis.
 - If the store's `Put` returns before consuming the stream, `StreamWriteRecords`
-  MUST return that error, ahead of any iterator or finalization error reported
-  afterwards, and MUST NOT block on the store or the pipe. The `Put` result is
-  checked before and after every iterator call (`Next`, `Record`, `Err`) and
-  before accepting each record. Lode cannot interrupt the caller's own
-  iterator: a `Next` or `Err` that blocks blocks `StreamWriteRecords` for as
-  long as it blocks, and the storage error is reported when it returns. The
-  writer MUST NOT touch the path afterwards.
-- Row/event count MUST equal the total number of records consumed.
+  MUST return that error in preference to any iterator or finalization error
+  reported afterward, and MUST NOT block on the store or the pipe. The `Put`
+  result is examined before and after every iterator call (`Next`, `Record`,
+  `Err`) and before each record is accepted. Lode cannot interrupt the
+  caller's own iterator: while a call to `Next` or `Err` blocks,
+  `StreamWriteRecords` blocks as well, and the storage error is reported
+  when the call returns. The writer MUST NOT access the path afterward.
+- The row or event count MUST equal the total number of records consumed.
 - When a checksum component is configured, the checksum MUST be computed during
   streaming and recorded in the manifest for each file written.
 - When the stream encoder implements `StatisticalStreamEncoder`, per-file
-  statistics MUST be collected after stream finalization and recorded on the FileRef.
+  statistics MUST be collected after the stream is finalized and recorded on
+  the `FileRef`.
 
-### Timestamp computation
+### Timestamp Computation
 
 - When records implement the `Timestamped` interface, `Write` MUST compute
   `MinTimestamp` and `MaxTimestamp` from the data.
@@ -100,10 +108,12 @@ It is authoritative for any `Dataset` implementation.
 - Records that do not implement `Timestamped` are ignored for timestamp
   computation.
 - When no records implement `Timestamped`, both timestamp fields MUST be `nil`.
-- Timestamp computation is explicit (via interface implementation), not inferred.
-- The same timestamp rules apply to `StreamWriteRecords` as records are consumed.
+- Timestamp computation is explicit (through implementation of the
+  interface), not inferred.
+- The same timestamp rules apply to `StreamWriteRecords` as it consumes
+  records.
 
-### Empty dataset behavior
+### Empty Dataset Behavior
 
 - The first successful write creates the initial snapshot.
 - `Latest()` on an empty dataset MUST return `ErrNoSnapshots`.
@@ -112,24 +122,24 @@ It is authoritative for any `Dataset` implementation.
 
 ---
 
-## Read-after-write Visibility
+## Read-After-Write Visibility
 
 - A snapshot is visible only after its manifest is persisted.
-- Manifest presence is the commit signal.
+- The presence of the manifest signifies that the commit is complete.
 
 ---
 
 ## Concurrency
 
-Snapshot history for a Dataset is linear.
+The snapshot history of a Dataset is linear.
 
 ### Dataset Write Concurrency Matrix
 
 | Pattern | Writers | Snapshots | History | Status |
 |---------|---------|-----------|---------|--------|
 | Single writer | 1 process | 1 per Write | Linear (guaranteed) | ✅ Supported |
-| Multi-process, serialized | N processes, external coordination | N (one per writer) | Linear (caller-enforced) | ✅ Supported (caller owns coordination) |
-| Multi-process, uncoordinated | N processes, no coordination | N (one per writer) | Linear (CAS-enforced) | ✅ Safe (CAS) |
+| Multiple processes, serialized | N processes, external coordination | N (one per writer) | Linear (enforced by the caller) | ✅ Supported (the caller provides coordination) |
+| Multiple processes, uncoordinated | N processes, no coordination | N (one per writer) | Linear (enforced by CAS) | ✅ Safe (CAS) |
 | Parallel staging, single commit | 1 process, N goroutines | 1 (all shards merged) | Linear (guaranteed) | ❌ Not available |
 
 ### Optimistic Concurrency (CAS)
@@ -138,66 +148,74 @@ When the storage adapter implements `ConditionalWriter`, Lode detects
 concurrent commits and returns `ErrSnapshotConflict`.
 
 **Mechanism:**
-- At commit time, the writer captures the expected parent snapshot ID.
-- When writing the latest pointer, if the store implements `ConditionalWriter`,
-  the commit uses `CompareAndSwap` instead of Delete+Put.
-- If the pointer content differs from the expected parent (another writer
-  committed since `Latest()` was read), the commit returns `ErrSnapshotConflict`.
-- If the store does not implement `ConditionalWriter`, the current Delete+Put
-  behavior applies and single-writer semantics remain the caller's responsibility.
+- At commit time, the writer records the expected parent snapshot ID.
+- When the store implements `ConditionalWriter`, the commit writes the
+  latest pointer with `CompareAndSwap` instead of Delete+Put.
+- If the pointer content differs from the expected parent (because another
+  writer committed after `Latest()` was read), the commit returns
+  `ErrSnapshotConflict`.
+- If the store does not implement `ConditionalWriter`, the Delete+Put
+  behavior applies, and enforcing single-writer semantics remains the
+  caller's responsibility.
 
 **Manual retry pattern:**
 1. Receive `ErrSnapshotConflict`.
-2. Re-read `Latest()` to get the current head.
-3. Merge or rebuild state against the new head.
-4. Re-commit.
+2. Call `Latest()` again to obtain the current head.
+3. Merge or reconstruct state against the new head.
+4. Commit again.
 
-Data files are immutable and already persisted — retry cost is one manifest
-write plus one pointer swap.
+Data files are immutable and already persisted, so the cost of a retry is
+one manifest write plus one pointer swap.
 
-**Automatic retry (opt-in):**
+**Automatic retry (disabled by default):**
 
-`WithRetryCount(n)` enables bounded automatic retry within the commit path.
-On `ErrSnapshotConflict`, the writer:
-1. Sleeps with jittered exponential backoff.
+`WithRetryCount(n)` enables a bounded number of automatic retries within the
+commit path. On `ErrSnapshotConflict`, the writer:
+1. Waits for an exponential backoff interval with jitter.
 2. Calls `Latest()` to refresh the in-memory CAS cache.
-3. Re-resolves the parent and re-parents the manifest (same snapshot ID).
+3. Resolves the parent again and assigns it to the manifest (retaining the
+   same snapshot ID).
 4. Retries the pointer CAS.
 
-Data files are written once; only the manifest and pointer are retried.
-If all retries are exhausted, `ErrSnapshotConflict` is returned as usual.
+Data files are written once; only the manifest and the pointer are retried.
+If all retries are exhausted, `ErrSnapshotConflict` is returned as it would
+be without retries.
 
 Retry options: `WithRetryCount(n)`, `WithRetryBaseDelay(d)`,
 `WithRetryMaxDelay(d)`, `WithRetryJitter(j)`, `WithRetryObserver(fn)`.
-Defaults: 0 retries, 10ms base, 2s max, full jitter, no observer.
+Defaults: zero retries, a 10 ms base delay, a 2 s maximum delay, full
+jitter, and no observer.
 
 **Retry observer:**
 
-`WithRetryObserver(fn)` registers a callback for retry observability.
+`WithRetryObserver(fn)` registers a callback through which retries can be
+observed.
 - `fn` is called exactly once per retry attempt, after `ErrSnapshotConflict`
-  is observed and before the backoff sleep.
-- `fn` receives the 1-indexed retry attempt number.
-- `fn` is never called for the initial attempt; the number of calls equals
-  the number of retries performed.
-- `fn` is called synchronously on the committing goroutine; it must not block.
+  is observed and before the backoff interval.
+- `fn` receives the retry attempt number, counted from 1.
+- `fn` is never called for the initial attempt, so the number of calls
+  equals the number of retries performed.
+- `fn` is called synchronously on the committing goroutine and MUST NOT
+  block.
 - `fn` has no effect on retry decisions or results.
-- A nil `fn` is rejected at construction time.
+- A `nil` `fn` is rejected at construction time.
 
 **Activation:**
-- Always-on when the adapter implements `ConditionalWriter`.
-- Silent fallback to Delete+Put when it does not.
-- No configuration required.
+- CAS is always enabled when the adapter implements `ConditionalWriter`.
+- When it does not, the commit uses Delete+Put without notice.
+- No configuration is required.
 
 **Single-writer compatibility:**
 - Single-writer workflows are unaffected. CAS succeeds on every commit
   when no concurrent writer is active.
-- External coordination remains valid but is no longer required when
-  using a CAS-capable store.
+- External coordination remains valid but is no longer required with a
+  store that supports CAS.
 
 ### Concurrent Blob Write Safety
 
-Individual `Store.Put` calls to distinct paths are safe to issue concurrently.
-Data files use unique snapshot-scoped paths and are immutable once written.
+Individual `Store.Put` calls to distinct paths may safely be issued
+concurrently. Data files use unique paths scoped to their snapshot and are
+immutable once written.
 
 However, each `Write` or `StreamWrite` call creates a new snapshot, which
 updates the latest pointer. **The serialization point is the pointer update,
@@ -205,13 +223,13 @@ not the data write.**
 
 | Store capability | Concurrent snapshot creation | Guidance |
 |------------------|------------------------------|----------|
-| Implements `ConditionalWriter` | Safe — CAS detects conflicts, returns `ErrSnapshotConflict` | Caller retries with new parent |
-| Does not implement `ConditionalWriter` | Unsafe — pointer race, undefined visibility order | Serialize writes externally |
+| Implements `ConditionalWriter` | Safe: CAS detects conflicts and returns `ErrSnapshotConflict` | The caller retries with the new parent |
+| Does not implement `ConditionalWriter` | Unsafe: writers race on the pointer, and the visibility order is undefined | Serialize writes externally |
 
-Consumers who need to write multiple blob files as part of a single logical
-operation should serialize snapshot creation (one `Write` or `StreamWrite`
-per file, sequentially) or use a CAS-capable store and handle
-`ErrSnapshotConflict` with retry logic.
+Consumers that must write several blob files as part of a single logical
+operation should either serialize snapshot creation (one `Write` or
+`StreamWrite` per file, in sequence) or use a store that supports CAS and
+handle `ErrSnapshotConflict` by retrying.
 
 ### Future Direction
 
@@ -219,22 +237,27 @@ per file, sequentially) or use a CAS-capable store and handle
 - Multiple goroutines stage data files concurrently within a single
   write transaction.
 - A single atomic Commit produces one snapshot with all data files.
-- Parallelizes the internal write pipeline without changing the model.
-- Single process only; does not address multi-process concurrency.
+- Parallelizes the internal write pipeline without altering the model.
+- Applies within a single process only; it does not address concurrency
+  across processes.
 
 ### Storage-Level Concurrency for Streaming Writes
 
-Streaming writes (`StreamWrite`, `StreamWriteRecords`) that produce large payloads
-may use the storage adapter's multipart/chunked upload path.
+Streaming writes (`StreamWrite`, `StreamWriteRecords`) that produce large
+payloads may use the storage adapter's multipart (chunked) upload path.
 
-**Backends with conditional completion support (e.g., S3 with `If-None-Match`):**
-- Both atomic and multipart paths provide atomic no-overwrite guarantees.
-- No additional coordination required beyond the adapter.
+**Backends that support conditional completion (for example, S3 with
+`If-None-Match`):**
+- Both the atomic and the multipart paths guarantee atomically that no
+  object is overwritten.
+- No coordination beyond the adapter is required.
 
-**Backends without conditional completion support:**
-- The multipart path has a TOCTOU window between preflight check and completion.
-- Callers MUST ensure single-writer semantics per object path, OR
-- Callers MUST use external coordination (distributed locks, queues, etc.)
+**Backends that do not support conditional completion:**
+- The multipart path has a time-of-check-to-time-of-use (TOCTOU) interval
+  between the preliminary check and completion.
+- Callers MUST therefore either ensure single-writer semantics for each
+  object path or use external coordination (distributed locks, queues, or
+  similar mechanisms).
 
 See `CONTRACT_STORAGE.md` for adapter-specific thresholds and guarantees.
 
@@ -244,15 +267,17 @@ See `CONTRACT_STORAGE.md` for adapter-specific thresholds and guarantees.
 
 Implementations MUST use the following error sentinels where applicable:
 
-- `ErrNoSnapshots` for empty history
-- `ErrNotFound` for missing snapshot ID
-- `ErrPathExists` when attempting to write to an existing path
+- `ErrNoSnapshots` for an empty history
+- `ErrNotFound` for a missing snapshot ID
+- `ErrPathExists` for an attempt to write to an existing path
 - `ErrCodecConfigured` when `StreamWrite` is called with a configured codec
-- `ErrCodecNotStreamable` when `StreamWriteRecords` codec lacks streaming support
-- `ErrNilIterator` when `StreamWriteRecords` is called with a nil iterator
-- `ErrPartitioningNotSupported` when `StreamWriteRecords` is used with non-noop partitioning
-- `ErrSnapshotConflict` when another writer committed since parent was resolved
-  (only when store implements `ConditionalWriter`)
+- `ErrCodecNotStreamable` when the codec used by `StreamWriteRecords` does
+  not support streaming
+- `ErrNilIterator` when `StreamWriteRecords` is called with a `nil` iterator
+- `ErrPartitioningNotSupported` when `StreamWriteRecords` is used with a
+  partitioner other than `noop`
+- `ErrSnapshotConflict` when another writer committed after the parent was
+  resolved (only when the store implements `ConditionalWriter`)
 
 Streaming-specific error taxonomy and handling guidance are defined in
 `CONTRACT_ERRORS.md`.
@@ -261,16 +286,18 @@ Streaming-specific error taxonomy and handling guidance are defined in
 
 ## Complexity Bounds
 
-See [CONTRACT_COMPLEXITY.md](CONTRACT_COMPLEXITY.md) for full definitions and variable glossary.
+See [CONTRACT_COMPLEXITY.md](CONTRACT_COMPLEXITY.md) for complete definitions
+and a glossary of variables.
 
 ### Parent Resolution
 
-- In-memory cache (within process): **0 store calls**.
+- In-memory cache (within a process): **0 store calls**.
 - Persistent pointer (cold start): **1 store call** (1 Get). The snapshot
   that the pointer names is the parent even when its manifest has not been
   persisted, because it may belong to a pending commit; adopting any other
   parent would fork the history (CONTRACT_CORE §Head Pointer).
-- Scan fallback (no pointer, backward compat): **O(N) via List**. Self-heals on completion.
+- Scan fallback (absent pointer, for backward compatibility): **O(N) through
+  List**. The commit then creates the pointer.
 
 Parent resolution MUST NOT use List when a valid pointer exists.
 
@@ -283,16 +310,17 @@ Parent resolution MUST NOT use List when a valid pointer exists.
 | `StreamWrite` | 4 fixed | O(1) streaming |
 | `StreamWriteRecords` | 4 fixed | O(1) streaming |
 
-When the store implements `ConditionalWriter`, each commit adds **+1 read**
-(the `CompareAndSwap` operation reads the current pointer before conditional write).
-This is constant overhead per commit, not per record or per file.
+When the store implements `ConditionalWriter`, each commit incurs **one
+additional read** (the `CompareAndSwap` operation reads the current pointer
+before the conditional write). This overhead is constant per commit, not
+per record or per file.
 
-Hot-path writes MUST NOT trigger Store.List.
+Hot-path writes MUST NOT invoke `Store.List`.
 
 ---
 
 ## Prohibited Behaviors
 
 - In-place mutation of existing data files
-- Metadata inference or defaulting
-- Branching or multi-head snapshot history
+- Inference or defaulting of metadata
+- Branching, or a snapshot history with more than one head
