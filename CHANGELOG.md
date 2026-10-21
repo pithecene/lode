@@ -31,7 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Sweep of unreferenced objects**: `Dataset.Sweep(ctx, SweepRequest{Grace})` completes interrupted expiries and reclaims the data objects of snapshots that never committed (aborted streams) once their write began more than `Grace` ago, and `DryRun` previews the result. `Bytes` is the sum of the sizes recorded in expiry tombstones; objects without a recorded size are counted in `Unsized`. Reclamation operates per snapshot, never per `Files[]`, and objects outside the layout's data topology (sidecar files, the pointer, tombstones) are never modified. ([#174](https://github.com/pithecene-io/lode/issues/174))
 - **Retention example**: `examples/retention/` expires runs by partition after a dry-run preview, shows the retained head, and runs `Sweep`.
 - **`CONTRACT_RETENTION.md` is active**: snapshot expiry and the sweep of unreferenced objects are normative.
-- **Security policy**: `SECURITY.md` states the supported versions and the private reporting channels (GitHub private vulnerability reporting, or contact@pithecene.sh), and the README names Pithecene as the copyright holder with that contact address.
+- **Security policy**: `SECURITY.md` states the supported versions and the private reporting channels (GitHub private vulnerability reporting, or contact@pithecene.sh), and the README and `LICENSE` name Pithecene as the copyright holder, with that contact address.
 - **Guides**: `docs/guides/` explains retention, snapshot IDs, and the storage and commit model (`concepts.md`), and `examples/README.md` indexes the examples.
 
 ### Changed
