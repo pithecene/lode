@@ -32,7 +32,10 @@ services:
       - RUSTFS_ACCESS_KEY=rustfsadmin
       - RUSTFS_SECRET_KEY=rustfsadmin
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://127.0.0.1:9000/health"]
+      # /health reports liveness only; /health/ready waits for storage and
+      # IAM, so `docker compose up --wait` returns once RustFS can serve.
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:9000/health/ready"]
       interval: 5s
       timeout: 5s
       retries: 10
+      start_period: 30s
