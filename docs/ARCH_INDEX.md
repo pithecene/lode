@@ -23,6 +23,7 @@ Do not update for internal refactors.
 - `PUBLIC_API.md` — developer-facing public API spec (product contract)
 - `README.md` — project overview and goals
 - `CONTRIBUTING.md` — contribution guidelines
+- `SECURITY.md` — supported versions and vulnerability reporting
 
 ---
 

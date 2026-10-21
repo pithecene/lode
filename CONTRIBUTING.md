@@ -99,6 +99,11 @@ refactor(layout): ♻️ extract hive partition logic
 Contracts are authoritative over code. When in doubt, consult the
 contracts first.
 
+## Security
+
+Do not report vulnerabilities in public issues or pull requests; follow
+[`SECURITY.md`](SECURITY.md).
+
 ## License
 
 By contributing, you agree that your contributions will be licensed under

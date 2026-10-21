@@ -31,6 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Sweep of unreferenced objects**: `Dataset.Sweep(ctx, SweepRequest{Grace})` completes interrupted expiries and reclaims the data objects of snapshots that never committed (aborted streams) once their write began more than `Grace` ago, and `DryRun` previews the result. `Bytes` is the sum of the sizes recorded in expiry tombstones; objects without a recorded size are counted in `Unsized`. Reclamation operates per snapshot, never per `Files[]`, and objects outside the layout's data topology (sidecar files, the pointer, tombstones) are never modified. ([#174](https://github.com/pithecene-io/lode/issues/174))
 - **Retention example**: `examples/retention/` expires runs by partition after a dry-run preview, shows the retained head, and runs `Sweep`.
 - **`CONTRACT_RETENTION.md` is active**: snapshot expiry and the sweep of unreferenced objects are normative.
+- **Security policy**: `SECURITY.md` states the supported versions and the private reporting channels (GitHub private vulnerability reporting, or contact@pithecene.sh), and the README names Pithecene as the copyright holder with that contact address.
 - **Guides**: `docs/guides/` explains retention, snapshot IDs, and the storage and commit model (`concepts.md`), and `examples/README.md` indexes the examples.
 
 ### Changed
@@ -45,6 +46,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **History remains linear around a pending commit**: a commit advances the `latest` pointer before it persists its manifest, and the commit is *pending* between those two operations (CONTRACT_CORE §Head Pointer). Parent resolution formerly treated a pointer to a pending commit as stale and adopted the newest persisted manifest as parent, so the pending commit was excluded from the history. A new commit now adopts the snapshot that the pointer names as its parent, whether or not its manifest has been persisted, which preserves the linear history that CONTRACT_WRITE_API guarantees under CAS. Cold parent resolution now requires one `Get` instead of a `Get` and an `Exists`. A Volume commit, which merges its parent's blocks, returns `ErrSnapshotConflict` until the parent's manifest is persisted. If a writer terminates between advancing the pointer and persisting the manifest, the next snapshot's `ParentSnapshotID` names an ID without a manifest.
 - **`Latest` no longer reverts the head**: when the `latest` pointer names a snapshot without a manifest, `Latest` still serves the newest committed snapshot from a scan but no longer replaces the pointer. Such a pointer may belong to a pending commit, and replacing it formerly removed that commit from the history; the next commit replaces an obsolete pointer through its CAS. `Latest` still creates a missing pointer from the scan result.
+
+### Security
+
+- **Dependencies**: upgrade `github.com/klauspost/compress` from v1.18.3 to v1.18.7, which resolves the `s2` integer-overflow and out-of-bounds write advisory (GHSA-259r-337f-4rfw).
 
 ---
 
