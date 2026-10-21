@@ -3,6 +3,7 @@ package lode
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
@@ -37,7 +38,9 @@ func NewFSFactory(root string) StoreFactory {
 }
 
 // NewFS creates a filesystem-backed Store rooted at the given directory.
-// The directory must exist.
+// The directory must exist, on a filesystem that supports hard links: Put
+// publishes each object with one, and fails where links are unsupported
+// (CONTRACT_STORAGE §Put).
 //
 // Consistency: Immediate read-after-write on local filesystems.
 func NewFS(root string) (Store, error) {
@@ -66,35 +69,69 @@ func (f *fsStore) Put(_ context.Context, path string, r io.Reader) error {
 		return fmt.Errorf("lode: fs put: %w", err)
 	}
 
-	file, err := os.OpenFile(fullPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	// The object is written under a temporary name and then published with a
+	// hard link, which fails if the path exists: a concurrent reader sees the
+	// whole object or none of it (CONTRACT_STORAGE §Put), and a concurrent
+	// Put cannot overwrite it. List never reports a temporary name.
+	tmp, err := createTemp(dir)
 	if err != nil {
-		if os.IsExist(err) {
-			return ErrPathExists
-		}
 		return fmt.Errorf("lode: fs put: %w", err)
 	}
-	if _, err = io.Copy(file, r); err != nil {
-		// Close before removing: an open file cannot be removed on every platform.
-		_ = file.Close()
-		return failPut(fullPath, err)
+	if err := writeTemp(tmp, r); err != nil {
+		return discardTemp(tmp.Name(), err)
 	}
-	// A delayed write error surfaces at Close; the object is still incomplete.
-	if err := file.Close(); err != nil {
-		return failPut(fullPath, err)
+	if err := os.Link(tmp.Name(), fullPath); err != nil {
+		if os.IsExist(err) {
+			return discardTemp(tmp.Name(), ErrPathExists)
+		}
+		return discardTemp(tmp.Name(), fmt.Errorf("lode: fs put: %w", err))
+	}
+	// The object is published. The temporary name is never listed and is
+	// rejected as a key, so failing to remove it changes nothing a caller
+	// can observe.
+	_ = os.Remove(tmp.Name())
+	return nil
+}
+
+// createTemp creates a temporary file with a random name in dir. It is
+// created with mode 0644 under the process umask, as an object created at
+// its final path would be, and the hard link that publishes it keeps that
+// mode. A name already taken fails rather than being reused.
+func createTemp(dir string) (*os.File, error) {
+	return os.OpenFile(filepath.Join(dir, tempPrefix+rand.Text()), os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o644)
+}
+
+// writeTemp copies r into the temporary file and closes it. A delayed write
+// error surfaces at Close, and the object is then still incomplete.
+func writeTemp(tmp *os.File, r io.Reader) error {
+	_, err := io.Copy(tmp, r)
+	if closeErr := tmp.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return fmt.Errorf("lode: fs put: %w", err)
 	}
 	return nil
 }
 
-// failPut finishes a Put that created the object and then failed: it removes
-// the object so the path is as it was (CONTRACT_STORAGE §Put all-or-nothing)
-// and returns the cause, joined with the removal error if that fails too.
-// The caller never has to guess whether a failed Put left an object behind.
-func failPut(fullPath string, cause error) error {
-	wrapped := fmt.Errorf("lode: fs put: %w", cause)
-	if rmErr := os.Remove(fullPath); rmErr != nil {
-		return errors.Join(wrapped, fmt.Errorf("lode: fs put: remove partial object: %w", rmErr))
+// discardTemp removes the temporary file of a failed Put and returns cause,
+// joined with the removal failure if there is one (CONTRACT_STORAGE §Put).
+func discardTemp(name string, cause error) error {
+	if err := os.Remove(name); err != nil && !os.IsNotExist(err) {
+		return errors.Join(cause, fmt.Errorf("lode: fs put: remove temporary file: %w", err))
 	}
-	return wrapped
+	return cause
+}
+
+// tempPrefix starts the name of every temporary file the filesystem store
+// creates while writing an object. The shared key rules reserve it, so no
+// object key names such a file, and List omits them.
+const tempPrefix = storepath.ReservedPrefix
+
+// isTemporary reports whether a listed file is a temporary file of an
+// object still being written.
+func isTemporary(name string) bool {
+	return storepath.Reserved(filepath.ToSlash(name))
 }
 
 func (f *fsStore) Get(_ context.Context, path string) (io.ReadCloser, error) {
@@ -165,7 +202,7 @@ func (f *fsStore) List(_ context.Context, prefix string) ([]string, error) {
 			}
 			return fmt.Errorf("lode: fs list: %w", err)
 		}
-		if d.IsDir() {
+		if d.IsDir() || isTemporary(path) {
 			return nil
 		}
 		relPath, err := filepath.Rel(f.root, path)
