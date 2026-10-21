@@ -442,6 +442,8 @@ resolution.
 | Pointer names a snapshot without a manifest: `Latest` does not replace the pointer | `TestDataset_LatestPointer_PendingCommit`, `TestLatest/stale_pointer_is_left_for_the_next_commit` |
 | Pointer names a snapshot without a manifest: the next Write adopts it as parent | `TestDataset_Write_ParentsOnPendingCommit`, `TestResolve/stale_pointer_is_the_parent` |
 | Parent resolution through the pointer: 1 Get, no manifest check | `TestResolve/pointer_costs_one_Get_and_no_manifest_check` |
+| Pointer read fails with an error other than not-found: `Write` returns the error and does not scan | `TestDataset_TransientHeadReadErrors/Write_returns_a_failed_pointer_read`, `TestResolve/failed_pointer_read_is_returned,_not_scanned` |
+| Pointer or head-manifest read fails with an error other than not-found: `Latest` returns the error and does not scan | `TestDataset_TransientHeadReadErrors/Latest_returns_a_failed_head_load`, `TestLatest/failed_pointer_read_is_returned,_not_scanned`, `TestLatest/failed_head_load_is_returned,_not_scanned` |
 | Pointer paths for all layouts | `TestDataset_LatestPointer/all_layouts` |
 | Write: 0 List calls after pointer | `TestDataset_Write_Pointer/latest_pointer_skips_scan` |
 | StreamWrite: 0 List calls | `TestDataset_StreamWrite_Lineage/latest_pointer_skips_scan` |

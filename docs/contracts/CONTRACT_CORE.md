@@ -96,6 +96,12 @@ manifest as a pending commit:
   `ErrSnapshotConflict` until that manifest is persisted (CONTRACT_VOLUME).
 - Parent resolution selects the largest snapshot ID only when the pointer
   is missing or does not contain a snapshot ID.
+- "Missing" means that the store reported the object as not found. When a
+  read of the pointer, or of the manifest that the pointer names, fails with
+  any other error, `Latest`, parent resolution, and Volume commits MUST
+  return that error. They MUST NOT treat the failure as a missing pointer or
+  manifest: the largest snapshot ID may name the head's parent, so selecting
+  it would report an earlier snapshot as the head or fork the history.
 
 Instant-only IDs written before v0.11.0 were subject to the same ordering
 limit, and writes that began in the same nanosecond received identical IDs.

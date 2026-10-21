@@ -288,7 +288,7 @@ func (q *newestFirst[ID]) Pop() any {
 func (h *History[ID, M]) ReadPointer(ctx context.Context) (ID, error) {
 	rc, err := h.store.Get(ctx, h.kind.PointerPath())
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("lode: failed to read latest pointer: %w", err)
 	}
 	defer func() { _ = rc.Close() }() // read-only stream
 	data, err := io.ReadAll(rc)
@@ -396,7 +396,10 @@ func (h *History[ID, M]) Forget() {
 }
 
 // Latest returns the head snapshot: through the pointer when it names a
-// loadable snapshot, otherwise by scan. A missing pointer is then created
+// loadable snapshot, otherwise by scan. A failed read of the pointer or of
+// its manifest is returned unless the store reports the object as not found;
+// a scan in its place could return the head's parent (CONTRACT_CORE §Head
+// Pointer). A missing pointer is then created
 // from the scan result; an existing pointer is never replaced. A pointer that
 // names a snapshot without a manifest may belong to a pending commit
 // (Advance writes the pointer first), and replacing it would revert the head
@@ -406,19 +409,28 @@ func (h *History[ID, M]) Forget() {
 // commit as parent.
 func (h *History[ID, M]) Latest(ctx context.Context) (*Snapshot[ID, M], error) {
 	id, err := h.ReadPointer(ctx)
+	pointerMissing := errors.Is(err, h.errs.NotFound)
 	if err == nil {
-		if s, err := h.Snapshot(ctx, id); err == nil {
+		s, loadErr := h.Snapshot(ctx, id)
+		if loadErr == nil {
 			h.remember(id, string(id))
 			return s, nil
 		}
+		if !errors.Is(loadErr, h.errs.NotFound) {
+			err = fmt.Errorf("lode: failed to load latest snapshot: %w", loadErr)
+		}
 	}
-	pointerMissing := errors.Is(err, h.errs.NotFound)
+	// The pointer confirms no loadable head, so the remembered head may be
+	// stale; the next Resolve must consult storage.
+	h.Forget()
+	if err != nil && !pointerMissing {
+		return nil, err
+	}
 
 	s, err := h.scan(ctx)
 	if err != nil {
 		return nil, err
 	}
-	h.Forget()
 	if pointerMissing {
 		h.createPointer(ctx, s.ID)
 	}
@@ -479,18 +491,23 @@ func (h *History[ID, M]) ResolveParent(ctx context.Context) (parent *Snapshot[ID
 // loaded, nil on the memory and pointer paths, which load nothing. A
 // pointer that does not contain a snapshot ID (a manual edit) cannot name
 // a commit, so the scan determines the parent; the pointer's content remains
-// the value that CAS must expect.
+// the value that CAS must expect. A failed pointer read other than not-found
+// is returned, because the scan may select the head's parent.
 func (h *History[ID, M]) resolve(ctx context.Context) (id ID, scanned *Snapshot[ID, M], expected string, err error) {
 	if h.head != "" {
 		return h.head, nil, h.pointer, nil
 	}
 
 	var observed string
-	if id, err := h.ReadPointer(ctx); err == nil {
-		if IsGeneratedID(id) {
-			return id, nil, string(id), nil
+	pointed, err := h.ReadPointer(ctx)
+	if err != nil && !errors.Is(err, h.errs.NotFound) {
+		return "", nil, "", err
+	}
+	if err == nil {
+		if IsGeneratedID(pointed) {
+			return pointed, nil, string(pointed), nil
 		}
-		observed = string(id)
+		observed = string(pointed)
 	}
 
 	s, err := h.scan(ctx)

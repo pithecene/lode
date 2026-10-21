@@ -2621,6 +2621,58 @@ func TestDataset_Write_ParentsOnPendingCommit(t *testing.T) {
 	}
 }
 
+// writeInvertedHead persists the history shape in which lode#208 forked: the
+// head's snapshot ID is smaller than its parent's, because the head's write
+// began first and committed second, so the largest ID names the parent. It
+// returns the head.
+func writeInvertedHead(t *testing.T, store Store) DatasetSnapshotID {
+	t.Helper()
+	base := time.Now().Add(-time.Hour)
+	parent, head := idAt(base.Add(2*time.Second)), idAt(base.Add(time.Second))
+	for _, link := range []struct{ id, parent DatasetSnapshotID }{{parent, ""}, {head, parent}} {
+		m := validTestManifest()
+		m.SnapshotID, m.ParentSnapshotID = link.id, link.parent
+		writeManifest(t.Context(), t, store, m)
+	}
+	if err := store.Put(t.Context(), "datasets/test-ds/latest", strings.NewReader(string(head))); err != nil {
+		t.Fatal(err)
+	}
+	return head
+}
+
+// TestDataset_TransientHeadReadErrors verifies that a failed read of the
+// pointer or of the head's manifest is returned to the caller. Treating it
+// as an absent pointer or manifest selects the largest snapshot ID, which is
+// the head's parent in this shape (CONTRACT_CORE §Head Pointer, lode#208).
+func TestDataset_TransientHeadReadErrors(t *testing.T) {
+	open := func(t *testing.T, fs *testutil.FaultStore) Dataset {
+		t.Helper()
+		ds, err := NewDataset("test-ds", newFaultStoreFactory(fs))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ds
+	}
+	t.Run("Latest returns a failed head load", func(t *testing.T) {
+		store := NewMemory()
+		head := writeInvertedHead(t, store)
+		fs := testutil.NewFaultStore(store)
+		fs.SetGetError(errGetFailed, "/"+string(head)+"/")
+		if snap, err := open(t, fs).Latest(t.Context()); !errors.Is(err, errGetFailed) {
+			t.Fatalf("got %v, %v; want the failed read", snap, err)
+		}
+	})
+	t.Run("Write returns a failed pointer read", func(t *testing.T) {
+		store := NewMemory()
+		writeInvertedHead(t, store)
+		fs := testutil.NewFaultStore(store)
+		fs.SetGetError(errGetFailed, "/latest")
+		if snap, err := open(t, fs).Write(t.Context(), []any{[]byte("x")}, nil); !errors.Is(err, errGetFailed) {
+			t.Fatalf("got %v, %v; want the failed read", snap, err)
+		}
+	})
+}
+
 func TestDataset_LatestPointer(t *testing.T) {
 	t.Run("read after write", func(t *testing.T) {
 		// After a write, the pointer file must exist in the store and
