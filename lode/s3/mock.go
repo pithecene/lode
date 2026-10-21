@@ -178,6 +178,13 @@ func (m *MockS3Client) UploadPart(_ context.Context, params *s3.UploadPartInput,
 	uploadID := aws.ToString(params.UploadId)
 	partNum := aws.ToInt32(params.PartNumber)
 
+	// S3 rejects part numbers outside 1–maxParts. Enforcing the limit keeps
+	// a part loop that fails to advance from accumulating parts without
+	// bound in this in-memory double.
+	if partNum < 1 || partNum > maxParts {
+		return nil, &smithyAPIError{code: "InvalidArgument", message: "part number must be an integer between 1 and 10000"}
+	}
+
 	data, err := io.ReadAll(params.Body)
 	if err != nil {
 		return nil, err
