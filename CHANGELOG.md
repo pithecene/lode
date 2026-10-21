@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking
 
+- **`Store.Get` must report absence as `ErrNotFound`** (custom store adapters only): CONTRACT_STORAGE formerly accepted "an equivalent error" for a missing path. Lode now relies on `errors.Is(err, ErrNotFound)` to distinguish an absent `latest` pointer or manifest from a failed read, so an adapter that reports absence with any other error causes `Latest` and commits to fail on a dataset without a pointer. The bundled filesystem, memory, and S3 adapters already comply.
 - **Go module path**: the module path changes from `github.com/pithecene-io/lode` to `github.com/pithecene/lode`, matching the renamed GitHub organization. Every import must be updated, for example `github.com/pithecene-io/lode/lode` to `github.com/pithecene/lode/lode` and `github.com/pithecene-io/lode/lode/s3` to `github.com/pithecene/lode/lode/s3`, together with the `require` directive in `go.mod`. Releases up to v0.10.0 remain available under the former path. The package API, the on-disk format, and behavior are unchanged.
 - **Volume moved to the experimental package `lode/volume`** (`V1_API_DECISIONS.md` D9). Volume is outside the v1.0 compatibility promise until it passes its own stability gate (`V1_READINESS.md` §4); `PUBLIC_API.md` §Compatibility Scope states what the commitment covers. Names omit the prefix that the package name now supplies:
 
