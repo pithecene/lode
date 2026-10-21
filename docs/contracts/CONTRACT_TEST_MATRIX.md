@@ -548,6 +548,23 @@ listing.
 
 ---
 
+## Fuzzing
+
+Fuzz targets check properties over arbitrary input rather than listed
+cases. `go test` runs their seed inputs; `task fuzz` explores further (see
+`scripts/fuzz.sh`).
+
+| Property | Target |
+|----------|--------|
+| An accepted store key or prefix is canonical, cannot escape the root, names no reserved temporary file (keys only), and normalizes idempotently | `FuzzKey`, `FuzzPrefix` |
+| An accepted snapshot ID is path-safe and round-trips through its instant and nonce | `FuzzInstant`, `FuzzFormatID` |
+| A path that retention may delete is a canonical key under its dataset with no parent segment | `FuzzLayout_IsObjectOf` |
+| Every path a layout builds parses back to its components | `FuzzLayout_RoundTrip` |
+| An accepted partition prefix resolves beneath the dataset's partitions directory | `FuzzPartitionPrefix` |
+| Tombstone validation never panics and accepts only complete records | `FuzzValidTombstone` |
+
+---
+
 ## Open Gaps
 
 ### G3-4: Streaming Failure Semantics

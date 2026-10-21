@@ -104,6 +104,7 @@ Example usage and integration references; `README.md` indexes them.
 Build and maintenance scripts.
 
 - `verify-snippets.sh` — validates runnable code fences in documentation
+- `fuzz.sh` — runs every Go fuzz target for a fixed duration (`task fuzz`)
 
 ---
 
