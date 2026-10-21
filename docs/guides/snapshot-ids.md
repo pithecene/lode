@@ -44,11 +44,12 @@ before every new ID with the same instant.
 
 Two writes that begin in the same nanosecond order by their nonce, which is
 random and says nothing about which committed first. That matters only
-where Lode falls back to "the largest ID is the newest": `Latest` does so
-when the `latest` pointer is missing or names a snapshot with no manifest
-(after a crash or a hand edit), and parent resolution only when the pointer
-is missing. Retention never does; it refuses to run without a pointer it
-can trust.
+where Lode assumes that the largest ID is the newest. `Latest` makes that
+assumption when the `latest` pointer is missing or names a snapshot without
+a manifest (after an abandoned commit or a manual edit); parent resolution
+makes it only when the pointer is missing or does not contain a snapshot ID.
+Retention never makes it and refuses to run without a pointer it can
+trust.
 
 ## Why IDs must never repeat
 

@@ -490,8 +490,8 @@ func TestResolve(t *testing.T) {
 			t.Fatalf("got %q/%q/%v", parent, expected, err)
 		}
 	})
-	// A pointer naming a snapshot with no manifest may be a commit in
-	// flight; parenting anywhere else would fork the history around it.
+	// A pointer that names a snapshot without a manifest may belong to a
+	// pending commit; adopting any other parent would fork the history.
 	t.Run("stale pointer is the parent", func(t *testing.T) {
 		s := newMemStore()
 		put(t, s, "1", "one")
@@ -590,8 +590,8 @@ func TestResolveParent(t *testing.T) {
 		_, _, err := h.ResolveParent(t.Context())
 		wantMessage(t, err, "lode: failed to load snapshot: boom")
 	})
-	// The blocks of a commit in flight cannot be merged until its manifest
-	// lands, so the commit conflicts and retries.
+	// The blocks of a pending commit cannot be merged until its manifest is
+	// persisted, so the commit conflicts and retries.
 	t.Run("pointer's manifest missing is a conflict", func(t *testing.T) {
 		s := newMemStore()
 		put(t, s, "1", "one")

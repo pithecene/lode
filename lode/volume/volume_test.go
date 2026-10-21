@@ -1707,11 +1707,11 @@ func TestMergeBlocks(t *testing.T) {
 	}
 }
 
-// TestVolume_Commit_CommitInFlight: a pointer naming a snapshot whose
-// manifest is not written yet may be a commit in flight. Its blocks cannot
-// be merged until it lands, so a commit conflicts, and once it lands
-// parents on it.
-func TestVolume_Commit_CommitInFlight(t *testing.T) {
+// TestVolume_Commit_PendingCommit verifies that a commit returns
+// lode.ErrSnapshotConflict while the pointer names a snapshot whose manifest
+// has not been persisted, because that snapshot's blocks cannot be merged,
+// and that once the manifest is persisted the commit adopts it as parent.
+func TestVolume_Commit_PendingCommit(t *testing.T) {
 	mem := lode.NewMemory()
 	open := func() Volume {
 		vol, err := New("test-vol", memoryFactoryFrom(mem), 1024*1024)
@@ -1730,11 +1730,11 @@ func TestVolume_Commit_CommitInFlight(t *testing.T) {
 	if _, err := commit(open(), 0, "block-1"); err != nil {
 		t.Fatal(err)
 	}
-	inFlight, err := commit(open(), 100, "block-2")
+	pending, err := commit(open(), 100, "block-2")
 	if err != nil {
 		t.Fatal(err)
 	}
-	manifestPath := "volumes/test-vol/snapshots/" + string(inFlight.ID) + "/manifest.json"
+	manifestPath := "volumes/test-vol/snapshots/" + string(pending.ID) + "/manifest.json"
 	rc, err := mem.Get(t.Context(), manifestPath)
 	if err != nil {
 		t.Fatal(err)
@@ -1751,7 +1751,7 @@ func TestVolume_Commit_CommitInFlight(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := late.Commit(t.Context(), []BlockRef{block3}, lode.Metadata{}); !errors.Is(err, lode.ErrSnapshotConflict) {
-		t.Fatalf("commit during the in-flight one = %v, want lode.ErrSnapshotConflict", err)
+		t.Fatalf("commit while another is pending = %v, want lode.ErrSnapshotConflict", err)
 	}
 
 	if err := mem.Put(t.Context(), manifestPath, bytes.NewReader(manifest)); err != nil {
@@ -1761,8 +1761,8 @@ func TestVolume_Commit_CommitInFlight(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if next.Manifest.ParentSnapshotID != inFlight.ID || len(next.Manifest.Blocks) != 3 {
-		t.Errorf("parent = %s with %d blocks, want %s with all 3", next.Manifest.ParentSnapshotID, len(next.Manifest.Blocks), inFlight.ID)
+	if next.Manifest.ParentSnapshotID != pending.ID || len(next.Manifest.Blocks) != 3 {
+		t.Errorf("parent = %s with %d blocks, want %s with all 3", next.Manifest.ParentSnapshotID, len(next.Manifest.Blocks), pending.ID)
 	}
 }
 

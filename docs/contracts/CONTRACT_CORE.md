@@ -58,32 +58,46 @@ callers and MUST NOT be parsed as numbers. Compared as strings, IDs order
 by instant: the instant has a fixed 19 digits from September 2001 until
 signed 64-bit nanoseconds run out in April 2262, so only an ID from a clock
 set before 2001-09-09 01:46:40 UTC (a shorter instant) would sort out of
-time order. IDs with the same instant
-order by nonce, which is not commit order. The pointer names the head;
-`Latest` falls back to the largest ID only when the pointer is missing or
-names a snapshot with no manifest (a crash, a hand edit, or the moment of a
-non-CAS Delete+Put), and then takes it as the head. `Latest` creates a
-missing pointer from that result but never rewrites an existing one: a
-pointer naming a snapshot with no manifest may be a commit in flight (the
-pointer is written before the manifests), and rewriting it would roll the
-head back over that commit. For the same reason a new commit parents on the
-snapshot the pointer names, manifest or not, so history stays linear around
-a commit in flight. After a crash its `ParentSnapshotID` names an ID with no
-manifest, which readers resolving lineage MUST treat as the end of the
-explainable chain, as they do an expired parent (CONTRACT_RETENTION
-§Lineage). A Volume commit
-needs its parent's manifest and returns `ErrSnapshotConflict` until it is
-written (CONTRACT_VOLUME). Parent resolution falls back to the largest ID
-only when the pointer is missing or does not hold a snapshot ID.
-With a rolled-back clock, or two commits that began in the same nanosecond,
-that may not be the last commit. Instant-only IDs had the same limit, and
-same-nanosecond writes then shared one ID outright. Retention never uses
-this fallback (CONTRACT_RETENTION §Head protection).
+time order. IDs with the same instant order by nonce, which does not
+reflect commit order.
 
 IDs written before v0.11.0 are `<instant>` alone. They remain valid and
 are read, selected and retained exactly like new IDs. An ID is in the
 *generated form* when it is in either form; a legacy ID sorts before every
 new ID with the same instant.
+
+### Head Pointer
+The `latest` pointer identifies the head. A commit advances the pointer
+before it persists its manifests. Between those two operations the commit
+is *pending*: the pointer names a snapshot that has no manifest. A pending
+commit whose writer terminates before persisting the manifest is
+*abandoned*. No persisted state distinguishes a pending commit from an
+abandoned one, so Lode treats every pointer that names a snapshot without a
+manifest as a pending commit:
+
+- When the pointer is missing or names a snapshot without a manifest (a
+  pending or abandoned commit, a manual edit, or the interval of a non-CAS
+  Delete+Put), `Latest` selects the largest snapshot ID that has a
+  manifest. If the clock was set back, or two commits began in the same
+  nanosecond, that selection may not be the most recent commit. `Latest`
+  creates a missing pointer from the selection but never replaces an
+  existing pointer, because replacing it would revert the head past a
+  pending commit.
+- A new commit adopts the snapshot that the pointer names as its parent,
+  whether or not that snapshot has a manifest, so the history remains
+  linear. After an abandoned commit, the next snapshot's `ParentSnapshotID`
+  therefore names an ID without a manifest. Readers resolving lineage MUST
+  treat such a parent as the end of the explainable chain, as they treat an
+  expired parent (CONTRACT_RETENTION §Lineage).
+- A Volume commit requires its parent's manifest and therefore returns
+  `ErrSnapshotConflict` until that manifest is persisted (CONTRACT_VOLUME).
+- Parent resolution selects the largest snapshot ID only when the pointer
+  is missing or does not contain a snapshot ID.
+
+Instant-only IDs written before v0.11.0 were subject to the same ordering
+limit, and writes that began in the same nanosecond received identical IDs.
+Retention never relies on the largest-ID selection (CONTRACT_RETENTION
+§Head protection).
 
 ### Manifest
 The authoritative description of a snapshot and its data files.

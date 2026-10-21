@@ -256,11 +256,12 @@ returns `lode.ErrInvalidArgument` with the same message.
 - `Snapshot` for unknown ID MUST return `lode.ErrNotFound`.
 - Stale parent at Commit MUST return `lode.ErrSnapshotConflict` when the store
   implements `lode.ConditionalWriter`.
-- A pointer naming a snapshot whose manifest is not written yet (a commit in
-  flight, or one that crashed after moving the pointer) MUST make Commit
-  return `lode.ErrSnapshotConflict`: the parent's blocks cannot be merged
-  until its manifest exists. With retries configured the commit retries;
-  after a crash, Volume commits conflict until the pointer is repaired.
+- When the pointer names a snapshot whose manifest has not been persisted
+  (a pending or abandoned commit, CONTRACT_CORE §Head Pointer), Commit MUST
+  return `lode.ErrSnapshotConflict`, because the parent's blocks cannot be
+  merged without its manifest. If retries are configured, Commit retries.
+  After an abandoned commit, every Volume commit returns
+  `lode.ErrSnapshotConflict` until an operator repairs the pointer.
 
 ---
 

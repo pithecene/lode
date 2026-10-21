@@ -321,10 +321,10 @@ func (h *History[ID, M]) CommittedHead(ctx context.Context, known ID) (ID, error
 	return id, h.ConfirmCommitted(ctx, id)
 }
 
-// ConfirmCommitted is nil when snapshot id, read from the pointer, has a
-// manifest, and errs.HeadUncommitted when it has none: a commit in flight,
-// whose parent the pointer no longer names. A pointer that does not hold a
-// snapshot ID is corruption, never confirmed.
+// ConfirmCommitted returns nil when snapshot id, read from the pointer, has
+// a manifest, and errs.HeadUncommitted when it has none: the commit is
+// pending, and the pointer no longer names its parent. A pointer that does
+// not contain a snapshot ID is corrupt and is never confirmed.
 func (h *History[ID, M]) ConfirmCommitted(ctx context.Context, id ID) error {
 	// A corrupt pointer must not reach a path or stand for the head: Lode
 	// writes only generated IDs there, which are path-safe.
@@ -397,12 +397,13 @@ func (h *History[ID, M]) Forget() {
 
 // Latest returns the head snapshot: through the pointer when it names a
 // loadable snapshot, otherwise by scan. A missing pointer is then created
-// from the scan; a stale one is left for the next commit to replace. A
-// pointer naming a snapshot with no manifest may be a commit in flight
-// (Advance writes the pointer first), and overwriting it would roll the
-// head back over that commit. The head is remembered only while the pointer
-// is known to name it; otherwise the memory is dropped, so the next Resolve
-// consults storage and parents on that commit once it lands.
+// from the scan result; an existing pointer is never replaced. A pointer that
+// names a snapshot without a manifest may belong to a pending commit
+// (Advance writes the pointer first), and replacing it would revert the head
+// past that commit (CONTRACT_CORE §Head Pointer). The head is retained in
+// memory only while the pointer is known to name it; otherwise the memory is
+// discarded, so the next Resolve consults storage and adopts the pending
+// commit as parent.
 func (h *History[ID, M]) Latest(ctx context.Context) (*Snapshot[ID, M], error) {
 	id, err := h.ReadPointer(ctx)
 	if err == nil {
@@ -436,9 +437,10 @@ func (h *History[ID, M]) createPointer(ctx context.Context, head ID) {
 // Resolve returns the ID a new commit parents on ("" for the first) and the
 // pointer content a CAS advance must expect. Order: the in-process memory
 // (authoritative within one writer), then the pointer (one Get on cold
-// start), then scan. The pointer names the parent even before its manifest
-// exists: Advance writes the pointer first, so that snapshot may be a commit
-// in flight, and parenting anywhere else would fork the history around it.
+// start), then scan. The snapshot that the pointer names is the parent even
+// before its manifest is persisted: Advance writes the pointer first, so the
+// snapshot may belong to a pending commit, and adopting any other parent
+// would fork the history (CONTRACT_CORE §Head Pointer).
 func (h *History[ID, M]) Resolve(ctx context.Context) (parent ID, expected string, err error) {
 	id, _, expected, err := h.resolve(ctx)
 	return id, expected, err
@@ -448,9 +450,9 @@ func (h *History[ID, M]) Resolve(ctx context.Context) (parent ID, expected strin
 // manifest (a Volume merges its blocks): the parent is loaded, never
 // re-fetched, and a remembered head whose manifest is gone is forgotten so
 // storage is consulted instead. parent is nil for the first commit. A
-// pointer naming a snapshot whose manifest is not written yet is
-// errs.SnapshotConflict: its blocks cannot be merged until it lands, so the
-// commit retries like any other conflict.
+// pointer that names a snapshot without a persisted manifest yields
+// errs.SnapshotConflict, because the parent's blocks cannot be merged until
+// its manifest exists; the commit then retries as after any other conflict.
 func (h *History[ID, M]) ResolveParent(ctx context.Context) (parent *Snapshot[ID, M], expected string, err error) {
 	for {
 		fromMemory := h.head != ""
@@ -467,7 +469,7 @@ func (h *History[ID, M]) ResolveParent(ctx context.Context) (parent *Snapshot[ID
 		case !errors.Is(err, h.errs.NotFound):
 			return nil, "", fmt.Errorf("lode: failed to load snapshot: %w", err)
 		case !fromMemory:
-			return nil, "", fmt.Errorf("lode: latest pointer names %s, whose manifest is not written yet: %w", id, h.errs.SnapshotConflict)
+			return nil, "", fmt.Errorf("lode: latest pointer names %s, whose manifest has not been persisted: %w", id, h.errs.SnapshotConflict)
 		}
 		h.Forget() // the remembered head is gone; consult storage
 	}
@@ -475,9 +477,9 @@ func (h *History[ID, M]) ResolveParent(ctx context.Context) (parent *Snapshot[ID
 
 // resolve walks memory → pointer → scan. scanned is the snapshot the scan
 // loaded, nil on the memory and pointer paths, which load nothing. A
-// pointer that does not hold a snapshot ID (a hand edit) cannot name a
-// commit, so the scan decides the parent; its content is still what CAS
-// must expect.
+// pointer that does not contain a snapshot ID (a manual edit) cannot name
+// a commit, so the scan determines the parent; the pointer's content remains
+// the value that CAS must expect.
 func (h *History[ID, M]) resolve(ctx context.Context) (id ID, scanned *Snapshot[ID, M], expected string, err error) {
 	if h.head != "" {
 		return h.head, nil, h.pointer, nil
