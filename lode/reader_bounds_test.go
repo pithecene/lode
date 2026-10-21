@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pithecene-io/lode/internal/validate"
+	"github.com/pithecene/lode/internal/validate"
 )
 
 // Boundary tests for the read API: limits that equal the result size, the

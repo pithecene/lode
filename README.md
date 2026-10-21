@@ -7,7 +7,7 @@
 
 **Structured persistence for object storage.**
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/pithecene-io/lode.svg)](https://pkg.go.dev/github.com/pithecene-io/lode)
+[![Go Reference](https://pkg.go.dev/badge/github.com/pithecene/lode.svg)](https://pkg.go.dev/github.com/pithecene/lode)
 [![Release](https://img.shields.io/github/v/release/pithecene/lode?sort=semver)](https://github.com/pithecene/lode/releases/latest)
 [![CI](https://github.com/pithecene/lode/actions/workflows/ci.yml/badge.svg)](https://github.com/pithecene/lode/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/pithecene/lode)](LICENSE)
@@ -26,7 +26,7 @@ sparse, resumable storage of byte ranges.
 
 <!-- runnable -->
 ```bash
-go get github.com/pithecene-io/lode
+go get github.com/pithecene/lode
 ```
 
 ### Writing and Reading a Blob
@@ -38,7 +38,7 @@ package main
 import (
     "context"
     "fmt"
-    "github.com/pithecene-io/lode/lode"
+    "github.com/pithecene/lode/lode"
 )
 
 func main() {

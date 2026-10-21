@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pithecene-io/lode/internal/history"
-	"github.com/pithecene-io/lode/internal/testutil"
+	"github.com/pithecene/lode/internal/history"
+	"github.com/pithecene/lode/internal/testutil"
 )
 
 // -----------------------------------------------------------------------------

@@ -27,7 +27,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/pithecene-io/lode/internal/retry"
+	"github.com/pithecene/lode/internal/retry"
 )
 
 // Store is the subset of lode.Store a history uses. Any lode.Store satisfies

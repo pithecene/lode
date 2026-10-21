@@ -7,7 +7,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/pithecene-io/lode/internal/testutil"
+	"github.com/pithecene/lode/internal/testutil"
 )
 
 // List is a string-prefix match over paths on every store (CONTRACT_STORAGE

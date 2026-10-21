@@ -4,8 +4,8 @@ import (
 	"path"
 	"strings"
 
-	"github.com/pithecene-io/lode/internal/storepath"
-	"github.com/pithecene-io/lode/internal/validate"
+	"github.com/pithecene/lode/internal/storepath"
+	"github.com/pithecene/lode/internal/validate"
 )
 
 // layout is everything a dataset or reader needs from one path grammar and

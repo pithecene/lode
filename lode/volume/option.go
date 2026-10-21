@@ -3,9 +3,9 @@ package volume
 import (
 	"time"
 
-	"github.com/pithecene-io/lode/internal/retry"
-	"github.com/pithecene-io/lode/internal/validate"
-	"github.com/pithecene-io/lode/lode"
+	"github.com/pithecene/lode/internal/retry"
+	"github.com/pithecene/lode/internal/validate"
+	"github.com/pithecene/lode/lode"
 )
 
 // config holds the resolved configuration for a volume.

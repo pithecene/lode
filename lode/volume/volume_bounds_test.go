@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/pithecene-io/lode/internal/validate"
-	"github.com/pithecene-io/lode/lode"
+	"github.com/pithecene/lode/internal/validate"
+	"github.com/pithecene/lode/lode"
 )
 
 // Exact-boundary tests for Volume range arithmetic and manifest validation.
