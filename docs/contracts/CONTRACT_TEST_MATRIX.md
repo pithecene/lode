@@ -202,6 +202,19 @@ Gaps are recorded with codes that indicate category and priority:
 | Beyond EOF | `TestStore_ReadRange/beyond_EOF`, `TestStore_ReadRange/offset_beyond_EOF` |
 | Exact bounds; allocation bounded by available bytes | `TestStore_ReadRange_Bounds/exact_bounds`, `TestStore_ReadRange_Bounds/exact_bounds` |
 
+**CompareAndSwap (S3)**: All covered ✅
+
+| Requirement | Tests |
+|-------------|-------|
+| `CompareAndSwap` creates, replaces, and refuses as the semantics table requires | `TestStore_CompareAndSwap` |
+| Creating the object issues no read | `TestStore_CompareAndSwap_Requests/create_writes_without_reading` |
+| Replacing a version that the adapter last wrote by replacement issues no read | `TestStore_CompareAndSwap_Requests/replacing_its_own_version_writes_without_reading` |
+| A creation leaves no record, so objects that are created once, such as tombstones, do not accumulate records | `TestStore_CompareAndSwap_Requests/a_creation_leaves_no_record` |
+| The record holds a bounded number of versions, and `Delete` discards the record of the deleted object | `TestStore_CompareAndSwap_Requests/the_record_is_bounded_and_forgets_deleted_keys` |
+| A version that another writer replaced is read and yields `ErrSnapshotConflict` | `TestStore_CompareAndSwap_Requests/a_version_replaced_by_another_writer_is_read_and_conflicts` |
+| An existing empty object satisfies an empty `expected`; any other existing object refuses it | `TestStore_CompareAndSwap_Requests/an_existing_empty_object_satisfies_an_empty_expectation`, `TestStore_CompareAndSwap_Requests/an_existing_object_refuses_an_empty_expectation` |
+| After a lost response, the adapter reads the object instead of assuming its version | `TestStore_CompareAndSwap_Requests/a_lost_response_forgets_the_version` |
+
 **ReaderAt**: All covered ✅
 
 | Requirement | Tests |

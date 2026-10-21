@@ -52,18 +52,29 @@ is part of the release checklist.
 
 | Benchmark | Machine | ns/op | B/op | allocs/op |
 |-----------|---------|------:|-----:|----------:|
-| `BenchmarkS3_WriteRoundTrip/LocalStack` | Workstation | 11,190,000 ± 6% | 518,656 ± 2% | 4,904 |
+| `BenchmarkS3_WriteRoundTrip/LocalStack` | Workstation | 10,190,000 ± 5% | 471,757 ± 1% | 4,261 |
 | | CI (v0.10.0) | 8,247,000 ± 3% | 355,202 ± 1% | 2,965 |
-| `BenchmarkS3_WriteRoundTrip/RustFS` | Workstation | 34,460,000 ± 6% | 521,318 ± 1% | 4,758 |
+| `BenchmarkS3_WriteRoundTrip/RustFS` | Workstation | 33,280,000 ± 5% | 469,504 ± 1% | 4,157 |
 | | CI | Not yet measured | | |
 
-The workstation figures are medians of ten runs on an AMD Ryzen 9 5900XT,
-measured when RustFS replaced MinIO, which no longer publishes its server
-image. The CI figure for LocalStack is the v0.10.0 baseline, and RustFS has
-no CI figure yet. Since that baseline, a LocalStack round trip has grown
-from 2,973 to 4,904 allocations; replacing the backend does not alter the
-S3 adapter, so the growth predates this baseline and is not attributable to
-RustFS.
+The workstation figures are medians of ten runs on an AMD Ryzen 9 5900XT.
+The CI figure for LocalStack is an older baseline, and RustFS has no CI
+figure yet.
+
+Each iteration opens a new dataset, so the benchmark measures a dataset's
+first commit and one read: seven S3 requests (a pointer Get that finds no
+pointer, a List, the data and manifest writes, the pointer write, and two
+Gets for the read). Nearly all allocations occur in the AWS SDK, at about six
+hundred per request, so the allocation count follows the request count.
+It rose from 2,970 in February to 4,904 when the persistent `latest`
+pointer (#127) and CAS pointer updates (#135) added requests to this path;
+`CompareAndSwap` then read the pointer before every conditional write. The
+S3 adapter now omits that read when it creates the pointer and when it
+replaces a pointer that it last replaced itself. This change reduced the
+benchmark from eight requests to seven, which lowered its allocations by
+13 percent and, on LocalStack, its duration by 9 percent. Each commit after
+the second through the same store issues three requests instead of four;
+the benchmark does not measure such commits.
 
 > **Note:** S3 numbers reflect Docker-local round-trip latency, not production S3.
 > The `SequentialWrites` benchmarks inject 1 ms of latency on `List` and `Get`

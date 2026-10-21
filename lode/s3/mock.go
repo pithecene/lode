@@ -7,6 +7,7 @@ package s3
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"strings"
@@ -63,9 +64,11 @@ func (m *MockS3Client) ResetCounts() {
 	m.uploadPartCalls = 0
 }
 
-// objectETag returns a deterministic ETag for the given data.
+// objectETag returns a deterministic ETag for the given data. It is derived
+// from the content, as S3's ETag of a single-part upload is, so two versions
+// of an object carry different ETags and If-Match distinguishes them.
 func objectETag(data []byte) string {
-	return fmt.Sprintf("\"%x\"", len(data))
+	return fmt.Sprintf("\"%x\"", sha256.Sum256(data))
 }
 
 // PutObject implements API.PutObject for testing.
@@ -100,7 +103,7 @@ func (m *MockS3Client) PutObject(_ context.Context, params *s3.PutObjectInput, _
 	}
 
 	m.objects[key] = data
-	return &s3.PutObjectOutput{}, nil
+	return &s3.PutObjectOutput{ETag: aws.String(objectETag(data))}, nil
 }
 
 // GetObject implements API.GetObject for testing.

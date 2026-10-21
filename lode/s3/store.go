@@ -121,6 +121,7 @@ type Store struct {
 	bucket     string
 	prefix     string
 	createTemp func() (*os.File, error) // temp file factory for Put spooling
+	versions   *versions                // CompareAndSwap's record of the versions it replaced
 }
 
 // New creates a new S3 store with the given client and configuration.
@@ -157,6 +158,7 @@ func New(client API, cfg Config) (*Store, error) {
 		bucket:     cfg.Bucket,
 		prefix:     prefix,
 		createTemp: func() (*os.File, error) { return os.CreateTemp("", "lode-s3-*") },
+		versions:   newVersions(),
 	}, nil
 }
 
@@ -430,6 +432,8 @@ func (s *Store) Delete(ctx context.Context, key string) error {
 	if err != nil {
 		return err
 	}
+	// The object's recorded version, if any, no longer exists.
+	s.versions.forget(fullKey)
 
 	_, err = s.client.DeleteObject(ctx, &s3.DeleteObjectInput{
 		Bucket: aws.String(s.bucket),
@@ -446,41 +450,66 @@ func (s *Store) Delete(ctx context.Context, key string) error {
 // CompareAndSwap atomically replaces the content at path if and only if
 // the current content matches expected. See lode.ConditionalWriter for semantics.
 //
-// Uses GetObject to read current content + capture ETag, then PutObject with
-// If-Match to atomically replace. Maps PreconditionFailed/ConditionalRequestConflict
-// to ErrSnapshotConflict.
+// The conditional PutObject decides every outcome: If-None-Match: * creates
+// the object, and If-Match replaces exactly the version that was compared.
+// When the precondition is already known, CompareAndSwap writes without
+// reading the object: to create it (expected is empty), or to replace the
+// version that this store last wrote by replacement when its content is
+// expected. Otherwise, or when that write's precondition fails, it first
+// reads the object to learn its content and ETag. It maps
+// PreconditionFailed and ConditionalRequestConflict to ErrSnapshotConflict.
 func (s *Store) CompareAndSwap(ctx context.Context, key, expected, replacement string) error {
 	fullKey, err := s.validateKey(key)
 	if err != nil {
 		return err
 	}
+	if cond, ok := s.knownCondition(fullKey, expected); ok {
+		err := s.putConditional(ctx, fullKey, replacement, cond)
+		if err == nil {
+			return nil
+		}
+		if !hasErrorCode(err, preconditionCodes...) {
+			return s.mapCASError(err)
+		}
+		// The object is not the version assumed: it exists although expected
+		// is empty (it may be empty itself), or another writer replaced it.
+	}
+	return s.compareAndSwapByRead(ctx, fullKey, expected, replacement)
+}
 
-	// Read current content and capture ETag.
+// condition is the precondition of a conditional PutObject: If-Match on
+// etag, or If-None-Match: * when etag is empty.
+type condition struct {
+	etag string
+}
+
+// knownCondition returns the precondition under which replacement can be
+// written without first reading the object, if there is one: absence when
+// expected is empty, or the ETag of the version this store last wrote by
+// replacement when that version's content is expected.
+func (s *Store) knownCondition(fullKey, expected string) (condition, bool) {
+	if expected == "" {
+		return condition{}, true
+	}
+	etag, ok := s.versions.etagFor(fullKey, expected)
+	return condition{etag: etag}, ok
+}
+
+// compareAndSwapByRead reads the object to compare its content with
+// expected and to capture its ETag, then writes under that precondition.
+func (s *Store) compareAndSwapByRead(ctx context.Context, fullKey, expected, replacement string) error {
 	out, getErr := s.client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(fullKey),
 	})
-
 	if getErr != nil {
 		if !isNotFound(getErr) {
 			return fmt.Errorf("s3: get object for CAS: %w", getErr)
 		}
-		// Path does not exist.
 		if expected != "" {
 			return lode.ErrSnapshotConflict
 		}
-		// First commit: create with If-None-Match to guard against races.
-		_, putErr := s.client.PutObject(ctx, &s3.PutObjectInput{
-			Bucket:        aws.String(s.bucket),
-			Key:           aws.String(fullKey),
-			Body:          strings.NewReader(replacement),
-			ContentLength: aws.Int64(int64(len(replacement))),
-			IfNoneMatch:   aws.String("*"),
-		})
-		if putErr != nil {
-			return s.mapCASError(putErr)
-		}
-		return nil
+		return s.mapCASError(s.putConditional(ctx, fullKey, replacement, condition{}))
 	}
 	defer closer(out.Body)()
 
@@ -488,28 +517,48 @@ func (s *Store) CompareAndSwap(ctx context.Context, key, expected, replacement s
 	if err != nil {
 		return fmt.Errorf("s3: reading CAS content: %w", err)
 	}
-
 	if string(data) != expected {
 		return lode.ErrSnapshotConflict
 	}
+	return s.mapCASError(s.putConditional(ctx, fullKey, replacement, condition{etag: aws.ToString(out.ETag)}))
+}
 
-	// Content matches: replace with If-Match to guard against concurrent updates.
-	etag := aws.ToString(out.ETag)
-	_, putErr := s.client.PutObject(ctx, &s3.PutObjectInput{
+// putConditional writes replacement under cond. A replacement (If-Match)
+// records the version it wrote; a creation records nothing, because objects
+// created through CompareAndSwap and never replaced, such as tombstones,
+// would otherwise accumulate records without bound. After any failure the
+// object's version is unknown (a lost response may hide a completed write),
+// so the record is dropped.
+func (s *Store) putConditional(ctx context.Context, fullKey, replacement string, cond condition) error {
+	input := &s3.PutObjectInput{
 		Bucket:        aws.String(s.bucket),
 		Key:           aws.String(fullKey),
 		Body:          strings.NewReader(replacement),
 		ContentLength: aws.Int64(int64(len(replacement))),
-		IfMatch:       aws.String(etag),
-	})
-	if putErr != nil {
-		return s.mapCASError(putErr)
 	}
+	if cond.etag == "" {
+		input.IfNoneMatch = aws.String("*")
+	} else {
+		input.IfMatch = aws.String(cond.etag)
+	}
+	out, err := s.client.PutObject(ctx, input)
+	if err != nil {
+		s.versions.forget(fullKey)
+		return err
+	}
+	if cond.etag == "" {
+		s.versions.forget(fullKey)
+		return nil
+	}
+	s.versions.record(fullKey, replacement, aws.ToString(out.ETag))
 	return nil
 }
 
 // mapCASError maps S3 conditional-write refusals to ErrSnapshotConflict.
 func (s *Store) mapCASError(err error) error {
+	if err == nil {
+		return nil
+	}
 	if hasErrorCode(err, slices.Concat(preconditionCodes, conflictCodes)...) {
 		return lode.ErrSnapshotConflict
 	}

@@ -228,10 +228,29 @@ type ConditionalWriter interface {
 - Release the lock.
 
 **S3 adapter:**
-- Call `GetObject` to read the current content and record its ETag.
-- Call `PutObject` with `If-Match` (to update) or `If-None-Match: *` (to
-  create).
-- If the ETag has changed, return `ErrSnapshotConflict`.
+- The conditional `PutObject` decides every outcome: `If-None-Match: *`
+  creates the object, and `If-Match` replaces exactly the version that was
+  compared. No outcome is inferred from what the adapter recorded earlier.
+- When `expected` is empty, call `PutObject` with `If-None-Match: *` at
+  once.
+- When the adapter itself replaced the object (with `If-Match`) and
+  `expected` equals the content it wrote, call `PutObject` with `If-Match`
+  on the ETag that S3 returned for that write, without reading the object
+  first. The adapter records only versions that it wrote by replacement,
+  one per object, so objects that are created once and never replaced,
+  such as tombstones, leave no record. It holds a bounded number of such
+  records, evicting one when the limit is reached, and `Delete` discards
+  the record of the deleted object; neither affects any outcome.
+- Otherwise, or when either of those writes reports that its precondition
+  failed, call `GetObject` to read the current content and its ETag,
+  compare the content with `expected`, and then call `PutObject` with
+  `If-Match` on that ETag, or with `If-None-Match: *` if the object does not
+  exist. The outcome is therefore the one that reading first would give: an
+  empty existing object satisfies an empty `expected`, and an object that
+  another writer replaced yields `ErrSnapshotConflict`.
+- A refused precondition on the final write returns `ErrSnapshotConflict`.
+- After any failed write the adapter discards what it knew of the object's
+  version, because a lost response may hide a completed write.
 
 **Memory adapter:**
 - Read, compare, and write under a mutex.
