@@ -293,7 +293,8 @@ The snapshot history of a Volume is linear.
 |---------|---------|--------|---------|--------|
 | Single writer | 1 process | Non-overlapping blocks | Linear (guaranteed) | ✅ Supported |
 | Multiple processes, serialized | N processes, external coordination | Non-overlapping blocks | Linear (enforced by the caller) | ✅ Supported (the caller provides coordination) |
-| Multiple processes, uncoordinated | N processes, no coordination | Non-overlapping blocks | Linear (enforced by CAS) | ✅ Safe (CAS) |
+| Multiple processes, uncoordinated, store implements `ConditionalWriter` | N processes, no coordination | Non-overlapping blocks | Linear (enforced by CAS) | ✅ Supported; after an abandoned commit, commits return `ErrSnapshotConflict` until an operator repairs the pointer (§Error Semantics) |
+| Multiple processes, uncoordinated, store without `ConditionalWriter` | N processes, no coordination | Non-overlapping blocks | Undefined: concurrent Delete+Put commits can fork the history and omit blocks from the head | ❌ Unsafe |
 
 ### Optimistic Concurrency (CAS)
 

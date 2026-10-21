@@ -648,6 +648,12 @@ MAY write to the same dataset or volume safely without external
 coordination. A single `Dataset` or `Volume` value is NOT safe for
 concurrent use by several goroutines.
 
+A writer that terminates after advancing the `latest` pointer and before
+persisting its manifest leaves an *abandoned commit*. The history remains
+linear, but the next Dataset snapshot names a parent that has no manifest,
+and every Volume commit returns `ErrSnapshotConflict` until an operator
+repairs the pointer (CONTRACT_CORE §Head Pointer).
+
 On a conflict, with manual retries:
 1. Receive `ErrSnapshotConflict`.
 2. Read the state again through `Latest()`.

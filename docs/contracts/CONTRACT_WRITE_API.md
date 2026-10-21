@@ -144,8 +144,14 @@ The snapshot history of a Dataset is linear.
 |---------|---------|-----------|---------|--------|
 | Single writer | 1 process | 1 per Write | Linear (guaranteed) | ✅ Supported |
 | Multiple processes, serialized | N processes, external coordination | N (one per writer) | Linear (enforced by the caller) | ✅ Supported (the caller provides coordination) |
-| Multiple processes, uncoordinated | N processes, no coordination | N (one per writer) | Linear (enforced by CAS) | ✅ Safe (CAS) |
+| Multiple processes, uncoordinated, store implements `ConditionalWriter` | N processes, no coordination | N (one per writer) | Linear (enforced by CAS) | ✅ Supported |
+| Multiple processes, uncoordinated, store without `ConditionalWriter` | N processes, no coordination | N (one per writer) | Undefined: concurrent Delete+Put commits can fork the history | ❌ Unsafe |
 | Parallel staging, single commit | 1 process, N goroutines | 1 (all shards merged) | Linear (guaranteed) | ❌ Not available |
+
+Under CAS, a writer that terminates after advancing the pointer and before
+persisting its manifest leaves an *abandoned commit* (CONTRACT_CORE §Head
+Pointer). The history remains linear, but the next snapshot's
+`ParentSnapshotID` names an ID that has no manifest.
 
 ### Optimistic Concurrency (CAS)
 
