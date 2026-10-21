@@ -716,7 +716,8 @@ backend's support for `If-None-Match` on `CompleteMultipartUpload`:
 |---------|----------------------|--------|
 | Cloudflare R2 | Supported | ✅ Verified in production |
 | AWS S3 | Supported | ✅ Expected to be compatible |
-| MinIO | Unknown | ⚠️ Test backend only |
+| RustFS | Supported | ⚠️ Test backend only |
+| MinIO | Unknown | ⚠️ Not tested |
 | LocalStack | Unknown | ⚠️ Test backend only |
 
 The backends marked ⚠️ are used for integration testing only. Before

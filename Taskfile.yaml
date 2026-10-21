@@ -53,9 +53,9 @@ tasks:
       - ./scripts/verify-snippets.sh
 
   s3:up:
-    desc: Start S3-compatible test services (LocalStack + MinIO)
+    desc: Start S3-compatible test services (LocalStack + RustFS)
     cmds:
-      - docker compose -f lode/s3/docker-compose.yaml up -d
+      - docker compose -f lode/s3/docker-compose.yaml up -d --wait
 
   s3:down:
     desc: Stop S3-compatible test services

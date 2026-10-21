@@ -34,7 +34,7 @@ This command installs:
 ### Integration Tests
 
 ```bash
-task s3:up          # start LocalStack and MinIO
+task s3:up          # start LocalStack and RustFS
 task integration    # run all integration tests
 task s3:down        # stop the services
 ```

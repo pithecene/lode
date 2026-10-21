@@ -46,7 +46,7 @@ type s3Backend struct {
 
 var s3Backends = []s3Backend{
 	{"LocalStack", newLocalStackClient},
-	{"MinIO", newMinIOClient},
+	{"RustFS", newRustFSClient},
 }
 
 // newLocalStackClient creates an S3 client for LocalStack (integration tests only).
@@ -64,11 +64,11 @@ func newLocalStackClient(ctx context.Context) (*s3.Client, error) {
 	}), nil
 }
 
-// newMinIOClient creates an S3 client for MinIO (integration tests only).
-func newMinIOClient(ctx context.Context) (*s3.Client, error) {
+// newRustFSClient creates an S3 client for RustFS (integration tests only).
+func newRustFSClient(ctx context.Context) (*s3.Client, error) {
 	cfg, err := config.LoadDefaultConfig(ctx,
 		config.WithRegion("us-east-1"),
-		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider("minioadmin", "minioadmin", "")),
+		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider("rustfsadmin", "rustfsadmin", "")),
 	)
 	if err != nil {
 		return nil, err

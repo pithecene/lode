@@ -72,7 +72,7 @@ func BenchmarkS3_WriteRoundTrip(b *testing.B) {
 		newClient func(context.Context) (*s3.Client, error)
 	}{
 		{"LocalStack", newLocalStackClient},
-		{"MinIO", newMinIOClient},
+		{"RustFS", newRustFSClient},
 	}
 
 	for _, backend := range backends {
