@@ -337,7 +337,9 @@ func (h *History[ID, M]) resolve(ctx context.Context, verify func(context.Contex
 	}
 
 	var observed string
-	if id, err := h.readPointer(ctx); err == nil {
+	id, err = h.readPointer(ctx)
+	switch {
+	case err == nil:
 		s, ok, err := verify(ctx, id)
 		if err != nil {
 			return "", nil, "", err
@@ -346,6 +348,8 @@ func (h *History[ID, M]) resolve(ctx context.Context, verify func(context.Contex
 			return id, s, string(id), nil
 		}
 		observed = string(id)
+	case !errors.Is(err, h.errs.NotFound):
+		return "", nil, "", fmt.Errorf("lode: failed to read latest pointer: %w", err)
 	}
 
 	s, err := h.scan(ctx)

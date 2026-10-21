@@ -527,6 +527,21 @@ func TestResolve(t *testing.T) {
 		}
 		wantMessage(t, err, "lode: failed to check snapshot: boom")
 	})
+	t.Run("failed pointer read is an error, not a scan", func(t *testing.T) {
+		s := newMemStore()
+		put(t, s, "1", "one")
+		put(t, s, "2", "two")
+		s.objects[pointer] = []byte("1")
+		s.fail = failOn("get", pointer, errBoom)
+		h := newTestHistory(s)
+		parent, expected, err := h.Resolve(t.Context())
+		if parent != "" || expected != "" || !errors.Is(err, errBoom) {
+			t.Fatalf("got %q/%q/%v", parent, expected, err)
+		}
+		if slices.ContainsFunc(s.ops, func(op string) bool { return strings.HasPrefix(op, "list ") }) {
+			t.Fatalf("scanned after a failed pointer read: ops = %v", s.ops)
+		}
+	})
 	t.Run("empty history parents on nothing", func(t *testing.T) {
 		h := newTestHistory(newMemStore())
 		parent, expected, err := h.Resolve(t.Context())
