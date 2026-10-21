@@ -500,13 +500,14 @@ func (h *History[ID, M]) resolve(ctx context.Context) (id ID, scanned *Snapshot[
 
 	var observed string
 	pointed, err := h.ReadPointer(ctx)
-	switch {
-	case err == nil && IsGeneratedID(pointed):
-		return pointed, nil, string(pointed), nil
-	case err == nil:
-		observed = string(pointed)
-	case !errors.Is(err, h.errs.NotFound):
+	if err != nil && !errors.Is(err, h.errs.NotFound) {
 		return "", nil, "", err
+	}
+	if err == nil {
+		if IsGeneratedID(pointed) {
+			return pointed, nil, string(pointed), nil
+		}
+		observed = string(pointed)
 	}
 
 	s, err := h.scan(ctx)
