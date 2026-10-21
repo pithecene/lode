@@ -281,7 +281,10 @@ value returns `lode.ErrInvalidArgument` with the same message.
   After an abandoned commit, every Volume commit returns
   `lode.ErrSnapshotConflict` until the pointer names a snapshot whose
   manifest exists: either the missing manifest is persisted, or an operator
-  sets the pointer to an earlier snapshot.
+  sets the pointer to an earlier snapshot. A `Volume` value that remembers
+  an earlier head continues to expect that head's pointer content, so after
+  the repair the caller MUST call `Latest` or open the volume again, unless
+  retries are configured (each retry refreshes the head).
 
 ---
 
