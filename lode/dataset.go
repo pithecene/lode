@@ -293,7 +293,7 @@ func (k datasetKind) ParseManifest(p string) (DatasetSnapshotID, bool) {
 }
 
 // NotExpired is false only for an expired snapshot: one with a tombstone
-// and no canonical manifest (CONTRACT_RETENTION §Expired snapshot). An
+// and no canonical manifest (CONTRACT_RETENTION §Expired Snapshot). An
 // expiring snapshot, its canonical manifest still present, is readable.
 func (k datasetKind) NotExpired(ctx context.Context, id DatasetSnapshotID) (bool, error) {
 	absent, err := k.expired.absent(ctx, id)

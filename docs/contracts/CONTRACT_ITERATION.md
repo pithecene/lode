@@ -6,8 +6,8 @@ This document defines the lifecycle semantics for object iteration.
 
 ## Goals
 
-1. Predictable iterator lifecycle behavior.
-2. Resource safety and idempotent closure.
+1. Predictable behavior over the iterator's lifecycle.
+2. Safe handling of resources and idempotent closing.
 
 ---
 
@@ -26,16 +26,17 @@ type ObjectIterator interface {
 
 ## Required Semantics
 
-- Ordering is unspecified.
+- The order of results is unspecified.
 - Pagination is unspecified.
-- `Next()` MUST return false after exhaustion or after `Close()` is called.
+- `Next()` MUST return false once the iterator is exhausted or after
+  `Close()` is called.
 - `Close()` MUST be idempotent.
-- `Err()` MAY be called after exhaustion or close.
-- Implementations MUST release resources on `Close()` or exhaustion.
+- `Err()` MAY be called after the iterator is exhausted or closed.
+- Implementations MUST release resources on `Close()` or on exhaustion.
 
 ---
 
 ## Prohibited Behaviors
 
-- Implicit ordering guarantees
-- Hidden buffering that changes visibility semantics
+- Implicit guarantees of order
+- Concealed buffering that alters visibility semantics

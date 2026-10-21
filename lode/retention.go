@@ -129,7 +129,7 @@ func (s selection) listPrefix(l layout, dataset DatasetID) string {
 }
 
 // spansOutside reports whether a snapshot selected by partition also has
-// data files outside it (CONTRACT_RETENTION §Mixed snapshots). Callers pass
+// data files outside it (CONTRACT_RETENTION §Mixed Snapshots). Callers pass
 // only the snapshot's own data files: a foreign path is never deleted, so
 // it never decides.
 func (s selection) spansOutside(l layout, owned []FileRef) bool {
@@ -253,7 +253,7 @@ type headGuard struct {
 
 // refuseHeadless is for a dataset with neither a pointer nor a manifest: a
 // tombstone there means snapshots existed, so the head is unknown, not
-// absent (CONTRACT_RETENTION §Head protection).
+// absent (CONTRACT_RETENTION §Head Protection).
 func (d *dataset) refuseHeadless(ctx context.Context) error {
 	keys, err := d.tombstones().list(ctx)
 	if err != nil || len(keys) == 0 {

@@ -111,7 +111,7 @@ func (r *reader) ListPartitions(ctx context.Context, dataset DatasetID, opts Par
 	}
 
 	// Partition-first layouts put every segment under its partition, so a
-	// partition prefix is a storage prefix (CONTRACT_LAYOUT §Hive-style).
+	// partition prefix is a storage prefix (CONTRACT_LAYOUT §Layout-Specific Requirements).
 	prefix := r.layout.snapshotsPrefixForPartition(dataset, "")
 	if opts.Prefix != "" {
 		prefix = r.layout.partitionsPrefix(dataset, opts.Prefix)
