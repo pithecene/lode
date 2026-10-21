@@ -266,7 +266,10 @@ See [CONTRACT_COMPLEXITY.md](CONTRACT_COMPLEXITY.md) for full definitions and va
 ### Parent Resolution
 
 - In-memory cache (within process): **0 store calls**.
-- Persistent pointer (cold start): **2 store calls** (1 Get + 1 Exists).
+- Persistent pointer (cold start): **1 store call** (1 Get). The snapshot
+  that the pointer names is the parent even when its manifest has not been
+  persisted, because it may belong to a pending commit; adopting any other
+  parent would fork the history (CONTRACT_CORE §Head Pointer).
 - Scan fallback (no pointer, backward compat): **O(N) via List**. Self-heals on completion.
 
 Parent resolution MUST NOT use List when a valid pointer exists.

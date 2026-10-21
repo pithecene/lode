@@ -281,7 +281,7 @@ manifests existed, no partition manifest either — `Expire` returns
 expires nothing (at preflight) or stops before step 1 (at the per-snapshot
 recheck). Callers retry once the in-flight commit completes; a pointer left
 behind by a crashed commit is replaced by the next commit (`Latest` never
-rewrites an existing pointer, CONTRACT_CORE §Snapshot ID).
+rewrites an existing pointer, CONTRACT_CORE §Head Pointer).
 
 ### Order of operations (per snapshot)
 

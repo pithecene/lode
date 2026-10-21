@@ -67,8 +67,8 @@ Hot-path operations MUST NOT scale with dataset/volume history size.
 
 Parent resolution:
 - In-memory cache: 0 calls
-- Pointer + Exists: 2 calls
-- Scan fallback (degraded): O(N) via List, plus for a Dataset 1 tombstone Get per snapshot scanned (+1 canonical-manifest Exists per scanned snapshot that has a tombstone), newest first until one is not expired. Creates a missing pointer; never rewrites a stale one (CONTRACT_CORE §Snapshot ID).
+- Pointer: 1 call (2 calls for a Volume, which also loads the parent's manifest)
+- Scan fallback (degraded): O(N) via List, plus for a Dataset 1 tombstone Get per snapshot scanned (+1 canonical-manifest Exists per scanned snapshot that has a tombstone), newest first until one is not expired. Creates a missing pointer; never replaces an existing one (CONTRACT_CORE §Head Pointer).
 
 Parent resolution MUST NOT use List when a valid pointer exists.
 

@@ -490,25 +490,38 @@ func TestResolve(t *testing.T) {
 			t.Fatalf("got %q/%q/%v", parent, expected, err)
 		}
 	})
-	t.Run("stale pointer: parent from scan, expected is the pointer", func(t *testing.T) {
+	// A pointer that names a snapshot without a manifest may belong to a
+	// pending commit; adopting any other parent would fork the history.
+	t.Run("stale pointer is the parent", func(t *testing.T) {
 		s := newMemStore()
 		put(t, s, "1", "one")
 		s.objects[pointer] = []byte("9")
 		h := newTestHistory(s)
 		parent, expected, err := h.Resolve(t.Context())
-		if parent != "1" || expected != "9" || err != nil {
+		if parent != "9" || expected != "9" || err != nil {
 			t.Fatalf("got %q/%q/%v", parent, expected, err)
 		}
 	})
-	t.Run("failed existence check counts as stale", func(t *testing.T) {
+	t.Run("pointer costs one Get and no manifest check", func(t *testing.T) {
 		s := newMemStore()
 		put(t, s, "1", "one")
-		put(t, s, "2", "two")
 		s.objects[pointer] = []byte("1")
-		s.fail = failOn("exists", "", errBoom)
+		h := newTestHistory(s)
+		s.ops = nil
+		if _, _, err := h.Resolve(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		if len(s.ops) != 1 {
+			t.Fatalf("ops = %v, want only the pointer Get", s.ops)
+		}
+	})
+	t.Run("pointer holding no snapshot ID: parent from scan, expected is the pointer", func(t *testing.T) {
+		s := newMemStore()
+		put(t, s, "1", "one")
+		s.objects[pointer] = []byte("not-an-id")
 		h := newTestHistory(s)
 		parent, expected, err := h.Resolve(t.Context())
-		if parent != "2" || expected != "1" || err != nil {
+		if parent != "1" || expected != "not-an-id" || err != nil {
 			t.Fatalf("got %q/%q/%v", parent, expected, err)
 		}
 	})
@@ -577,14 +590,16 @@ func TestResolveParent(t *testing.T) {
 		_, _, err := h.ResolveParent(t.Context())
 		wantMessage(t, err, "lode: failed to load snapshot: boom")
 	})
-	t.Run("pointer's manifest missing is stale", func(t *testing.T) {
+	// The blocks of a pending commit cannot be merged until its manifest is
+	// persisted, so the commit conflicts and retries.
+	t.Run("pointer's manifest missing is a conflict", func(t *testing.T) {
 		s := newMemStore()
 		put(t, s, "1", "one")
 		s.objects[pointer] = []byte("9")
 		h := newTestHistory(s)
 		parent, expected, err := h.ResolveParent(t.Context())
-		if err != nil || parent.ID != "1" || expected != "9" {
-			t.Fatalf("got %+v/%q/%v", parent, expected, err)
+		if !errors.Is(err, errConflict) || parent != nil || expected != "" {
+			t.Fatalf("got %+v/%q/%v, want a conflict", parent, expected, err)
 		}
 	})
 	t.Run("first commit has no parent", func(t *testing.T) {

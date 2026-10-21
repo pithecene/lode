@@ -2529,11 +2529,12 @@ func TestDataset_Write_Pointer(t *testing.T) {
 	})
 }
 
-func TestDataset_LatestPointer_CommitInFlight(t *testing.T) {
-	// Advance writes the pointer before the manifest, so a pointer naming
-	// a snapshot with no manifest may be a commit in flight. Latest serves
-	// the scan result but must not roll the pointer back over it, and the
-	// next commit must parent on that commit once its manifest lands.
+func TestDataset_LatestPointer_PendingCommit(t *testing.T) {
+	// Advance writes the pointer before the manifest, so a pointer that
+	// names a snapshot without a manifest may belong to a pending commit.
+	// Latest serves the scan result but must not replace the pointer, and the
+	// next commit must adopt the pending commit as parent once its manifest
+	// is persisted.
 	store := NewMemory()
 	open := func() Dataset {
 		ds, err := NewDataset("test-ds", NewMemoryFactoryFrom(store), WithCodec(NewJSONLCodec()))
@@ -2547,11 +2548,11 @@ func TestDataset_LatestPointer_CommitInFlight(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	inFlight, err := other.Write(t.Context(), R(D{"b": 2}), Metadata{})
+	pending, err := other.Write(t.Context(), R(D{"b": 2}), Metadata{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	manifestPath := "datasets/test-ds/snapshots/" + string(inFlight.ID) + "/manifest.json"
+	manifestPath := "datasets/test-ds/snapshots/" + string(pending.ID) + "/manifest.json"
 	moveObject(t, store, manifestPath, "pending/manifest.json")
 	if err := store.Delete(t.Context(), manifestPath); err != nil {
 		t.Fatal(err)
@@ -2570,8 +2571,8 @@ func TestDataset_LatestPointer_CommitInFlight(t *testing.T) {
 	}
 	pointer, _ := io.ReadAll(rc)
 	_ = rc.Close()
-	if string(pointer) != string(inFlight.ID) {
-		t.Errorf("pointer = %q, want it left at the in-flight %q", pointer, inFlight.ID)
+	if string(pointer) != string(pending.ID) {
+		t.Errorf("pointer = %q, want it to remain at the pending %q", pointer, pending.ID)
 	}
 
 	moveObject(t, store, "pending/manifest.json", manifestPath)
@@ -2579,8 +2580,44 @@ func TestDataset_LatestPointer_CommitInFlight(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if next.Manifest.ParentSnapshotID != inFlight.ID {
-		t.Errorf("parent = %s, want the landed %s", next.Manifest.ParentSnapshotID, inFlight.ID)
+	if next.Manifest.ParentSnapshotID != pending.ID {
+		t.Errorf("parent = %s, want the landed %s", next.Manifest.ParentSnapshotID, pending.ID)
+	}
+}
+
+// TestDataset_Write_ParentsOnPendingCommit verifies that a commit beginning
+// after another commit has advanced the pointer, but before that commit has
+// persisted its manifest, adopts the pending commit as its parent. Any other
+// parent would fork the history (CONTRACT_CORE §Head Pointer).
+func TestDataset_Write_ParentsOnPendingCommit(t *testing.T) {
+	store := NewMemory()
+	open := func() Dataset {
+		ds, err := NewDataset("test-ds", NewMemoryFactoryFrom(store), WithCodec(NewJSONLCodec()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ds
+	}
+	first, other := open(), open()
+	if _, err := first.Write(t.Context(), R(D{"a": 1}), Metadata{}); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := other.Write(t.Context(), R(D{"b": 2}), Metadata{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestPath := "datasets/test-ds/snapshots/" + string(pending.ID) + "/manifest.json"
+	moveObject(t, store, manifestPath, "pending/manifest.json")
+	if err := store.Delete(t.Context(), manifestPath); err != nil {
+		t.Fatal(err)
+	}
+
+	next, err := open().Write(t.Context(), R(D{"c": 3}), Metadata{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next.Manifest.ParentSnapshotID != pending.ID {
+		t.Errorf("parent = %s, want the pending %s", next.Manifest.ParentSnapshotID, pending.ID)
 	}
 }
 
