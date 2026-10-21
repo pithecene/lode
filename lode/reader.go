@@ -85,9 +85,9 @@ func (r *reader) ListDatasets(ctx context.Context, opts DatasetListOptions) ([]D
 	seen := make(map[DatasetID]bool)
 	var datasets []DatasetID
 	for _, p := range paths {
-		if id := r.layout.parseDatasetID(p); id != "" && !seen[id] {
-			seen[id] = true
-			datasets = append(datasets, id)
+		if sp, ok := r.layout.manifest(p); ok && sp.dataset != "" && !seen[sp.dataset] {
+			seen[sp.dataset] = true
+			datasets = append(datasets, sp.dataset)
 		}
 	}
 
@@ -217,16 +217,15 @@ func (r *reader) listManifests(ctx context.Context, prefix string) (manifestList
 	var listing manifestListing
 	var all []listedManifest
 	for _, p := range paths {
-		if !r.layout.isManifest(p) {
+		sp, ok := r.layout.manifest(p)
+		if !ok {
 			continue
 		}
 		listing.any = true
-		id := r.layout.parseSnapshotID(p)
-		partition := r.layout.parsePartitionFromManifest(p)
-		if id == "" || (r.layout.supportsPartitions() && partition == "") {
+		if sp.snapshot == "" || (r.layout.supportsPartitions() && sp.partition == "") {
 			continue
 		}
-		all = append(all, listedManifest{id: id, partition: partition, path: p})
+		all = append(all, listedManifest{id: sp.snapshot, partition: sp.partition, path: p})
 	}
 	sort.Slice(all, func(i, j int) bool {
 		if all[i].partition != all[j].partition {

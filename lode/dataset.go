@@ -271,30 +271,32 @@ type dataset struct {
 // datasetKind is the dataset's snapshot grammar for history: paths come from
 // the layout, manifests are read without validation (the reader validates).
 type datasetKind struct {
-	id     DatasetID
-	layout layout
-	store  Store // read for tombstones: retention's expiries hide snapshots from the scan
+	id      DatasetID
+	paths   snapshotPaths
+	store   Store      // checks canonical manifests of tombstoned snapshots
+	expired tombstones // retention's expiries hide snapshots from the scan
 }
 
-func (k datasetKind) SnapshotsPrefix() string { return k.layout.snapshotsPrefix(k.id) }
-func (k datasetKind) PointerPath() string     { return k.layout.latestPointerPath(k.id) }
+func newDatasetKind(id DatasetID, l layout, store Store) datasetKind {
+	return datasetKind{id: id, paths: l, store: store, expired: tombstones{store: store, paths: l, dataset: id}}
+}
+
+func (k datasetKind) SnapshotsPrefix() string { return k.paths.snapshotsPrefix(k.id) }
+func (k datasetKind) PointerPath() string     { return k.paths.latestPointerPath(k.id) }
 func (k datasetKind) ManifestPath(id DatasetSnapshotID) string {
-	return k.layout.manifestPath(k.id, id)
+	return k.paths.manifestPath(k.id, id)
 }
 
 func (k datasetKind) ParseManifest(p string) (DatasetSnapshotID, bool) {
-	if !k.layout.isManifest(p) {
-		return "", false
-	}
-	id := k.layout.parseSnapshotID(p)
-	return id, id != ""
+	sp, ok := k.paths.manifest(p)
+	return sp.snapshot, ok && sp.snapshot != ""
 }
 
 // NotExpired is false only for an expired snapshot: one with a tombstone
 // and no canonical manifest (CONTRACT_RETENTION §Expired snapshot). An
 // expiring snapshot, its canonical manifest still present, is readable.
 func (k datasetKind) NotExpired(ctx context.Context, id DatasetSnapshotID) (bool, error) {
-	absent, err := tombstones{store: k.store, layout: k.layout, dataset: k.id}.absent(ctx, id)
+	absent, err := k.expired.absent(ctx, id)
 	if err != nil || absent {
 		return absent, err
 	}
@@ -378,7 +380,7 @@ func NewDataset(id DatasetID, factory StoreFactory, opts ...Option) (Dataset, er
 		codec:      cfg.codec,
 		checksum:   cfg.checksum,
 		retry:      cfg.retry,
-		history:    history.New(store, datasetKind{id: id, layout: cfg.layout, store: store}, "manifest", historyErrors),
+		history:    history.New(store, newDatasetKind(id, cfg.layout, store), "manifest", historyErrors),
 	}, nil
 }
 

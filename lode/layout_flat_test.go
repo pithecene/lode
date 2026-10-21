@@ -139,20 +139,20 @@ func TestFlatLayout(t *testing.T) {
 			})
 		}
 
-		// Verify isManifest and parse methods
+		// Verify manifest parsing
 		manifestP := "myds/snap-abc/manifest.json"
-		if !fl.isManifest(manifestP) {
-			t.Errorf("expected isManifest(%q)=true", manifestP)
+		if !isManifestPath(fl, manifestP) {
+			t.Errorf("expected manifest(%q) to parse", manifestP)
 		}
-		if got := fl.parseDatasetID(manifestP); got != dataset {
-			t.Errorf("parseDatasetID: got %q, want %q", got, dataset)
+		if got := manifestFields(fl, manifestP).dataset; got != dataset {
+			t.Errorf("manifest dataset: got %q, want %q", got, dataset)
 		}
-		if got := fl.parseSnapshotID(manifestP); got != segment {
-			t.Errorf("parseSnapshotID: got %q, want %q", got, segment)
+		if got := manifestFields(fl, manifestP).snapshot; got != segment {
+			t.Errorf("manifest snapshot: got %q, want %q", got, segment)
 		}
 
 		// Verify non-manifest path
-		if fl.isManifest("myds/snap-abc/data/file.jsonl") {
+		if isManifestPath(fl, "myds/snap-abc/data/file.jsonl") {
 			t.Error("data file should not be recognized as manifest")
 		}
 
