@@ -42,7 +42,7 @@ It is authoritative for any implementation of the `Store` interface.
   Put returned an error. A path whose Put returned `ErrPathExists` belongs to
   another writer. The one exception is retention's tombstone create, which
   reads the existing tombstone back to check it records the same expiry and
-  never writes or deletes it (`CONTRACT_RETENTION.md` §Order of operations).
+  never writes or deletes it (`CONTRACT_RETENTION.md` §Order of Operations).
 
 #### Put Upload Paths
 

@@ -132,7 +132,7 @@ func (g headGuardian) holdsObjects(id DatasetSnapshotID) bool {
 	return !g.inFlight && g.named != "" && id == g.named
 }
 
-// sweepGuard reads the pointer once (CONTRACT_RETENTION §Head protection):
+// sweepGuard reads the pointer once (CONTRACT_RETENTION §Head Protection):
 //   - a pointer naming a committed snapshot guards that one;
 //   - a pointer naming a snapshot with no manifest means a commit is in
 //     flight and the head is unknown, so no tombstoned snapshot is settled
@@ -174,7 +174,7 @@ type sweepRun struct {
 }
 
 // settle removes the remaining manifests of every tombstoned snapshot,
-// canonical first (§Order of operations, steps 2–3). A snapshot is settled
+// canonical first (§Order of Operations, steps 2–3). A snapshot is settled
 // only once all of them are gone; a dry run settles virtually.
 func (r sweepRun) settle(ctx context.Context, report *SweepReport) error {
 	for _, t := range r.inv.tombstones {

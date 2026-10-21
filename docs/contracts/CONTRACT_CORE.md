@@ -97,7 +97,7 @@ manifest as a pending commit:
 Instant-only IDs written before v0.11.0 were subject to the same ordering
 limit, and writes that began in the same nanosecond received identical IDs.
 Retention never relies on the largest-ID selection (CONTRACT_RETENTION
-§Head protection).
+§Head Protection).
 
 ### Manifest
 The authoritative description of a snapshot and its data files.
