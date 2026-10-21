@@ -392,6 +392,15 @@ func assertNoScan(t *testing.T, s *memStore) {
 	}
 }
 
+// assertForgotten fails if the history still remembers a head, which a
+// later Resolve would adopt without consulting storage.
+func assertForgotten(t *testing.T, h History[id, manifest]) {
+	t.Helper()
+	if h.head != "" || h.pointer != "" {
+		t.Fatalf("memory = %q/%q, want it discarded", h.head, h.pointer)
+	}
+}
+
 func TestLatest(t *testing.T) {
 	t.Run("pointer wins over a larger ID", func(t *testing.T) {
 		s := newMemStore()
@@ -448,9 +457,11 @@ func TestLatest(t *testing.T) {
 		s.objects[pointer] = []byte("1")
 		s.fail = failOn("get", pointer, errBoom)
 		h := newTestHistory(casStore{s})
+		h.remember("1", "1")
 		_, err := h.Latest(t.Context())
 		wantMessage(t, err, "lode: failed to read latest pointer: boom")
 		assertNoScan(t, s)
+		assertForgotten(t, h)
 	})
 	t.Run("failed head load is returned, not scanned", func(t *testing.T) {
 		s := newMemStore()
@@ -459,9 +470,11 @@ func TestLatest(t *testing.T) {
 		s.objects[pointer] = []byte("1")
 		s.fail = failOn("get", testKind{}.ManifestPath("1"), errBoom)
 		h := newTestHistory(casStore{s})
+		h.remember("2", "2")
 		_, err := h.Latest(t.Context())
 		wantMessage(t, err, "lode: failed to load latest snapshot: boom")
 		assertNoScan(t, s)
+		assertForgotten(t, h)
 	})
 	t.Run("failed creation still returns the scan result", func(t *testing.T) {
 		s := newMemStore()

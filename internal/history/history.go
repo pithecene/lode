@@ -409,26 +409,28 @@ func (h *History[ID, M]) Forget() {
 // commit as parent.
 func (h *History[ID, M]) Latest(ctx context.Context) (*Snapshot[ID, M], error) {
 	id, err := h.ReadPointer(ctx)
-	switch {
-	case err == nil:
+	pointerMissing := errors.Is(err, h.errs.NotFound)
+	if err == nil {
 		s, loadErr := h.Snapshot(ctx, id)
 		if loadErr == nil {
 			h.remember(id, string(id))
 			return s, nil
 		}
 		if !errors.Is(loadErr, h.errs.NotFound) {
-			return nil, fmt.Errorf("lode: failed to load latest snapshot: %w", loadErr)
+			err = fmt.Errorf("lode: failed to load latest snapshot: %w", loadErr)
 		}
-	case !errors.Is(err, h.errs.NotFound):
+	}
+	// The pointer confirms no loadable head, so the remembered head may be
+	// stale; the next Resolve must consult storage.
+	h.Forget()
+	if err != nil && !pointerMissing {
 		return nil, err
 	}
-	pointerMissing := err != nil
 
 	s, err := h.scan(ctx)
 	if err != nil {
 		return nil, err
 	}
-	h.Forget()
 	if pointerMissing {
 		h.createPointer(ctx, s.ID)
 	}
