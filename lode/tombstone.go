@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/pithecene-io/lode/internal/history"
+	"github.com/pithecene-io/lode/internal/storepath"
 )
 
 // tombstone is the persisted record of an expiry (CONTRACT_RETENTION
@@ -132,6 +133,38 @@ func errUntombstonable(id DatasetSnapshotID) error {
 // filesystem store's CAS .lock companions) is not a tombstone at all.
 func isTombstoneName(key, prefix string) bool {
 	return history.IsGeneratedID(strings.TrimPrefix(key, prefix))
+}
+
+// errInvalidTombstone marks a listed tombstone Lode cannot trust: a key
+// that is not canonical, or content that fails validation. It settles
+// nothing (CONTRACT_RETENTION §Definition).
+var errInvalidTombstone = errors.New("lode: invalid tombstone")
+
+// recorded reads the tombstone at a listed key. errInvalidTombstone reports
+// one whose key is not canonical or that does not record the snapshot its
+// own path names with a valid inventory.
+func (ts tombstones) recorded(ctx context.Context, key string) (tombstone, error) {
+	id := DatasetSnapshotID(strings.TrimPrefix(key, ts.layout.tombstonesPrefix(ts.dataset)))
+	if !ts.isCanonicalPath(key, id) {
+		return tombstone{}, fmt.Errorf("%w: %s is not a canonical tombstone path", errInvalidTombstone, key)
+	}
+	data, err := ts.readRaw(ctx, key)
+	if err != nil {
+		return tombstone{}, err
+	}
+	t, err := validTombstone(key, data, id)
+	if err != nil {
+		return tombstone{}, fmt.Errorf("%w: %w", errInvalidTombstone, err)
+	}
+	return t, nil
+}
+
+// isCanonicalPath reports whether key is a canonical store key and exactly
+// the path of snapshot id's tombstone.
+func (ts tombstones) isCanonicalPath(key string, id DatasetSnapshotID) bool {
+	canonical, ok := storepath.Key(key)
+	p, named := ts.path(id)
+	return ok && named && canonical == key && key == p
 }
 
 // create writes p only if it is absent: atomically when the store is a

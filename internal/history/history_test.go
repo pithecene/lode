@@ -332,7 +332,7 @@ func TestReadPointer(t *testing.T) {
 			s := newMemStore()
 			s.objects[pointer] = []byte(c.content)
 			h := newTestHistory(s)
-			got, err := h.readPointer(t.Context())
+			got, err := h.ReadPointer(t.Context())
 			if got != c.want || !errors.Is(err, c.wantErr) {
 				t.Fatalf("got %q, %v; want %q, %v", got, err, c.want, c.wantErr)
 			}
@@ -340,12 +340,12 @@ func TestReadPointer(t *testing.T) {
 	}
 	t.Run("read error is wrapped", func(t *testing.T) {
 		h := newTestHistory(errReaderStore{newMemStore()})
-		_, err := h.readPointer(t.Context())
+		_, err := h.ReadPointer(t.Context())
 		wantMessage(t, err, "lode: failed to read latest pointer: boom")
 	})
 }
 
-// errReaderStore returns a reader that fails, for readPointer's read error.
+// errReaderStore returns a reader that fails, for ReadPointer's read error.
 type errReaderStore struct{ *memStore }
 
 func (errReaderStore) Get(context.Context, string) (io.ReadCloser, error) {

@@ -283,9 +283,9 @@ func (q *newestFirst[ID]) Pop() any {
 // The head pointer
 // -----------------------------------------------------------------------------
 
-// readPointer returns the ID the persisted pointer names, or errs.NotFound when
+// ReadPointer returns the ID the persisted pointer names, or errs.NotFound when
 // the pointer is absent or empty.
-func (h *History[ID, M]) readPointer(ctx context.Context) (ID, error) {
+func (h *History[ID, M]) ReadPointer(ctx context.Context) (ID, error) {
 	rc, err := h.store.Get(ctx, h.kind.PointerPath())
 	if err != nil {
 		return "", err
@@ -308,7 +308,7 @@ func (h *History[ID, M]) readPointer(ctx context.Context) (ID, error) {
 // further call. A pointer naming a snapshot with no manifest is a commit in
 // flight, whose parent the pointer no longer names: errs.HeadUncommitted.
 func (h *History[ID, M]) CommittedHead(ctx context.Context, known ID) (ID, error) {
-	id, err := h.readPointer(ctx)
+	id, err := h.ReadPointer(ctx)
 	if errors.Is(err, h.errs.NotFound) {
 		return "", h.pointerless(ctx)
 	}
@@ -318,14 +318,14 @@ func (h *History[ID, M]) CommittedHead(ctx context.Context, known ID) (ID, error
 	if id == known {
 		return id, nil
 	}
-	return id, h.confirmCommitted(ctx, id)
+	return id, h.ConfirmCommitted(ctx, id)
 }
 
-// confirmCommitted is nil when snapshot id, read from the pointer, has a
+// ConfirmCommitted is nil when snapshot id, read from the pointer, has a
 // manifest, and errs.HeadUncommitted when it has none: a commit in flight,
 // whose parent the pointer no longer names. A pointer that does not hold a
 // snapshot ID is corruption, never confirmed.
-func (h *History[ID, M]) confirmCommitted(ctx context.Context, id ID) error {
+func (h *History[ID, M]) ConfirmCommitted(ctx context.Context, id ID) error {
 	// A corrupt pointer must not reach a path or stand for the head: Lode
 	// writes only generated IDs there, which are path-safe.
 	if !IsGeneratedID(id) {
@@ -404,7 +404,7 @@ func (h *History[ID, M]) Forget() {
 // is known to name it; otherwise the memory is dropped, so the next Resolve
 // consults storage and parents on that commit once it lands.
 func (h *History[ID, M]) Latest(ctx context.Context) (*Snapshot[ID, M], error) {
-	id, err := h.readPointer(ctx)
+	id, err := h.ReadPointer(ctx)
 	if err == nil {
 		if s, err := h.Snapshot(ctx, id); err == nil {
 			h.remember(id, string(id))
@@ -475,7 +475,7 @@ func (h *History[ID, M]) resolve(ctx context.Context, verify func(context.Contex
 	}
 
 	var observed string
-	if id, err := h.readPointer(ctx); err == nil {
+	if id, err := h.ReadPointer(ctx); err == nil {
 		s, ok, err := verify(ctx, id)
 		if err != nil {
 			return "", nil, "", err

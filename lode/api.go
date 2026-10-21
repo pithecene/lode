@@ -384,6 +384,13 @@ type Dataset interface {
 	// report is non-nil, also on error, and describes the work done before
 	// the error. See CONTRACT_RETENTION.md.
 	Expire(ctx context.Context, req ExpireRequest) (*ExpireReport, error)
+
+	// Sweep completes interrupted expiries and reclaims data objects of
+	// snapshots that were never committed, once they are older than
+	// req.Grace. It never deletes an object a manifest still describes, nor
+	// any object outside the layout's data topology. The report is non-nil,
+	// also on error. See CONTRACT_RETENTION.md.
+	Sweep(ctx context.Context, req SweepRequest) (*SweepReport, error)
 }
 
 // -----------------------------------------------------------------------------
@@ -410,6 +417,47 @@ type ExpireRequest struct {
 	// DryRun resolves the selection and reports what would be removed,
 	// without writing or deleting anything.
 	DryRun bool
+}
+
+// SweepRequest configures Dataset.Sweep.
+type SweepRequest struct {
+	// Grace is how old an unreferenced object must be before it is deleted,
+	// measured from when its write began. It must exceed the longest write
+	// in flight plus the largest clock difference between a writing host
+	// and the sweeping one, and must be positive; there is no default.
+	Grace time.Duration
+
+	// DryRun reports what would be reclaimed, without deleting anything.
+	DryRun bool
+}
+
+// SweepReport describes what Dataset.Sweep reclaimed, or would reclaim on a
+// dry run.
+type SweepReport struct {
+	// Settled lists expired snapshots whose remaining manifests this run
+	// removed, oldest first.
+	Settled []DatasetSnapshotID
+
+	// Objects counts the data objects this run deleted.
+	Objects int
+
+	// Bytes sums the sizes recorded for those objects in a tombstone's
+	// inventory.
+	Bytes int64
+
+	// Unsized counts, of Objects, those with no recorded size: orphans and
+	// objects a settled snapshot's inventory does not list. Lode never
+	// recorded their size, so they are counted, never estimated.
+	Unsized int
+
+	// Orphans counts, of Unsized, those of snapshots never committed.
+	Orphans int
+
+	// Unparseable lists invalid tombstones, tombstones that do not describe
+	// a manifest still present (another commit instant or inventory), and
+	// unreferenced data objects whose snapshot ID carries no instant.
+	// Nothing listed is deleted.
+	Unparseable []string
 }
 
 // ExpireReport describes what Dataset.Expire removed, or would remove on a
