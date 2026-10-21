@@ -20,108 +20,6 @@ sparse, resumable storage of byte ranges.
 
 ---
 
-## What Lode Is and Is Not
-
-**Lode is:**
-- an embeddable Go library;
-- a persistence framework for structured data and sparse byte ranges;
-- a provider of snapshots, atomic commits, and metadata guarantees that
-  would otherwise have to be implemented by hand on raw storage APIs; and
-- explicit and predictable by design.
-
-**Lode is not:**
-- a database or storage engine;
-- a query planner or execution runtime; or
-- a distributed system or background service.
-
-Lode governs *structure and lifecycle*, not execution.
-
----
-
-## Why Lode Exists
-
-Many systems already use object storage as their primary persistence layer:
-
-- events written to S3;
-- Parquet files on a filesystem; and
-- analytics data deposited according to informal convention.
-
-What such systems usually lack is discipline:
-- no clear snapshots or versions;
-- no guarantees about metadata;
-- accidental overwrites;
-- improvised directory layouts; and
-- uncertain safety of reads and writes.
-
-Lode formalizes what should be formalized and declines to do anything
-else.
-
----
-
-## Core Ideas
-
-Lode is built around a small set of invariants:
-
-**Dataset** (structured collections):
-- **Datasets are immutable**: each write produces a snapshot.
-- **Snapshots reference manifests**, which describe data files and
-  metadata.
-- **Storage, format, compression, and partitioning are independent of one
-  another.**
-
-**Volume** (sparse byte ranges; the experimental package `lode/volume`,
-excluded from the v1.0 compatibility commitment):
-- **Volumes are sparse, resumable byte address spaces.**
-- **Volume commits record which byte ranges exist**: gaps are explicit and
-  are never filled with zeros.
-- **Each commit produces a cumulative manifest** that covers all committed
-  blocks.
-
-**Shared invariants:**
-- **The presence of a manifest signifies a commit**: a snapshot is visible
-  only after its manifest is persisted.
-- **Metadata is explicit, persisted, and self-describing** (never
-  inferred).
-- **Concurrent writes are safe**: stores that support CAS detect conflicts
-  automatically; other stores require a single writer.
-
-A snapshot ID identifies exactly the data that is being read.
-
-The arrangement of a dataset in storage (default layout):
-
-```mermaid
-flowchart LR
-    P["latest<br/>(pointer)"] -->|names the head| S3
-    subgraph snapshots
-        S1["snapshot 1<br/>manifest.json"] --> D1[data files]
-        S2["snapshot 2<br/>manifest.json"] --> D2[data files]
-        S3["snapshot 3<br/>manifest.json"] --> D3[data files]
-    end
-    S3 -.->|parent| S2 -.->|parent| S1
-```
-
-Each write adds a snapshot, and nothing written earlier changes. A commit
-becomes visible in a fixed sequence:
-
-```mermaid
-sequenceDiagram
-    participant W as writer
-    participant S as store
-    W->>S: write data files under the new snapshot ID
-    W->>S: advance the latest pointer (CAS from the parent it read)
-    W->>S: write the manifest
-    Note over W,S: readers see the snapshot once its manifest exists
-```
-
-If another writer advanced the pointer first, the CAS fails with
-`ErrSnapshotConflict`. With `WithRetryCount`, Lode reads the head again and
-retries with the same staged data, which may still publish the snapshot. If
-the commit fails permanently, the data files that a buffered write staged
-remain as orphaned objects until `Dataset.Sweep` reclaims them; a stream
-write deletes its object on a best-effort basis.
-
----
-
 ## Quick Start
 
 ### Install
@@ -204,6 +102,101 @@ result, _ := vol.ReadAt(ctx, snap.ID, 0, len(data))
 ```
 
 See [`examples/`](#examples) for complete runnable code.
+
+---
+
+## Core Ideas
+
+**Dataset** (structured collections):
+- Each write produces a new, immutable snapshot.
+- Each snapshot references a manifest that describes its data files and
+  metadata.
+- Storage, format, compression, and partitioning are independent.
+
+**Volume** (sparse byte ranges; experimental package `lode/volume`):
+- A volume is a sparse, resumable byte address space.
+- Commits record which ranges exist; gaps are never filled with zeros.
+- Each commit produces a cumulative manifest.
+
+**Both:**
+- A snapshot is visible only once its manifest is persisted.
+- Metadata is explicit and persisted, never inferred.
+- Stores that support CAS detect concurrent writers.
+
+---
+
+## How Storage and Commits Work
+
+A dataset in storage, in the default layout:
+
+```mermaid
+flowchart LR
+    P["latest<br/>(pointer)"] -->|names the head| S3
+    subgraph snapshots
+        S1["snapshot 1<br/>manifest.json"] --> D1[data files]
+        S2["snapshot 2<br/>manifest.json"] --> D2[data files]
+        S3["snapshot 3<br/>manifest.json"] --> D3[data files]
+    end
+    S3 -.->|parent| S2 -.->|parent| S1
+```
+
+Each write adds a snapshot, and nothing written earlier changes. A commit
+becomes visible in a fixed sequence:
+
+```mermaid
+sequenceDiagram
+    participant W as writer
+    participant S as store
+    W->>S: write data files under the new snapshot ID
+    W->>S: advance the latest pointer (CAS from the parent it read)
+    W->>S: write the manifest
+    Note over W,S: readers see the snapshot once its manifest exists
+```
+
+If another writer advanced the pointer first, the CAS fails with
+`ErrSnapshotConflict`. With `WithRetryCount`, Lode reads the head again and
+retries with the same staged data, which may still publish the snapshot. If
+the commit fails permanently, the data files that a buffered write staged
+remain as orphaned objects until `Dataset.Sweep` reclaims them; a stream
+write deletes its object on a best-effort basis.
+
+---
+
+## What Lode Is and Is Not
+
+**Lode is:**
+- an embeddable Go library;
+- a persistence framework for structured data and sparse byte ranges;
+- a provider of snapshots, atomic commits, and metadata guarantees that
+  would otherwise have to be implemented by hand on raw storage APIs; and
+- explicit and predictable by design.
+
+**Lode is not:**
+- a database or storage engine;
+- a query planner or execution runtime; or
+- a distributed system or background service.
+
+Lode governs *structure and lifecycle*, not execution.
+
+---
+
+## Why Lode Exists
+
+Many systems already use object storage as their primary persistence layer:
+
+- events written to S3;
+- Parquet files on a filesystem; and
+- analytics data deposited according to informal convention.
+
+What such systems usually lack is discipline:
+- no clear snapshots or versions;
+- no guarantees about metadata;
+- accidental overwrites;
+- improvised directory layouts; and
+- uncertain safety of reads and writes.
+
+Lode formalizes what should be formalized and declines to do anything
+else.
 
 ---
 
