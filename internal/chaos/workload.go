@@ -42,9 +42,14 @@ func writeStream(ctx context.Context, ds lode.Dataset, rows []any) (*lode.Datase
 	return ds.StreamWriteRecords(ctx, &sliceIterator{rows: rows}, lode.Metadata{"op": "stream"})
 }
 
-// openDataset opens a handle on the run's dataset over store. Every
-// goroutine opens its own, as a separate process would, with its own
-// in-memory head.
+// openHandle opens one handle on the run's dataset for a goroutine, as a
+// separate process would, with its own in-memory head and, when faults are
+// enabled, its own faulty store.
+func openHandle(cfg Config, base lode.Store, rng *rand.Rand) (lode.Dataset, error) {
+	return openDataset(cfg, cfg.storeFor(base, rng))
+}
+
+// openDataset opens a handle on the run's dataset over store.
 func openDataset(cfg Config, store lode.Store) (lode.Dataset, error) {
 	if err := requireKnown("layout", cfg.Layout, LayoutNames()); err != nil {
 		return nil, err
@@ -68,12 +73,15 @@ func openDataset(cfg Config, store lode.Store) (lode.Dataset, error) {
 func writer(ctx context.Context, cfg Config, store lode.Store, index int, until time.Time, ledger *Ledger) {
 	rng := rand.New(rand.NewPCG(cfg.Seed, uint64(index)+1)) //nolint:gosec // reproducible test randomness, not security
 	writes := layouts[cfg.Layout].writes
-	ds, err := openDataset(cfg, store)
-	if err != nil {
-		ledger.violate("open", "writer %d: %v", index, err)
-		return
-	}
+	var ds lode.Dataset
 	for seq := 0; ctx.Err() == nil && time.Now().Before(until); seq++ {
+		if ds == nil {
+			var err error
+			if ds, err = openHandle(cfg, store, rng); err != nil {
+				ledger.violate("open", "writer %d: %v", index, err)
+				return
+			}
+		}
 		c := newCommit(rng, index, seq)
 		snap, err := writes[rng.IntN(len(writes))](ctx, ds, c.records())
 		switch {
@@ -82,6 +90,11 @@ func writer(ctx context.Context, cfg Config, store lode.Store, index int, until 
 			ledger.commit(c)
 		case errors.Is(err, lode.ErrSnapshotConflict):
 			ledger.conflict()
+		case injected(err):
+			ledger.fault()
+			if errors.Is(err, errKilled) {
+				ds = nil // the process died; the next iteration restarts it
+			}
 		default:
 			ledger.violate("write", "writer %d seq %d: %v", index, seq, err)
 		}
@@ -93,38 +106,70 @@ func writer(ctx context.Context, cfg Config, store lode.Store, index int, until 
 // must hold exactly the rows its writer committed.
 func reader(ctx context.Context, cfg Config, store lode.Store, index int, ledger *Ledger) {
 	rng := rand.New(rand.NewPCG(cfg.Seed, uint64(1000+index))) //nolint:gosec // reproducible test randomness, not security
-	ds, err := openDataset(cfg, store)
-	if err != nil {
-		ledger.violate("open", "reader %d: %v", index, err)
-		return
-	}
-	r := read{ctx: ctx, ds: ds, ledger: ledger}
+	var ds lode.Dataset
 	for ctx.Err() == nil {
-		if r.head() != nil {
-			continue
+		if ds == nil {
+			var err error
+			if ds, err = openHandle(cfg, store, rng); err != nil {
+				ledger.violate("open", "reader %d: %v", index, err)
+				return
+			}
 		}
-		if commits := ledger.Commits(); len(commits) > 0 {
-			r.commit(commits[rng.IntN(len(commits))])
+		r := read{ctx: ctx, ds: ds, retention: cfg.Retention, ledger: ledger}
+		err := r.head()
+		if commits := ledger.Commits(); err == nil && len(commits) > 0 {
+			err = r.commit(commits[rng.IntN(len(commits))])
+		}
+		if errors.Is(err, errKilled) {
+			ds = nil
 		}
 	}
 }
 
 // read is one reader's pass over a handle.
 type read struct {
-	ctx    context.Context
-	ds     lode.Dataset
-	ledger *Ledger
+	ctx       context.Context
+	ds        lode.Dataset
+	retention bool
+	ledger    *Ledger
 }
 
-// ended reports whether the run ended, so that a failure says nothing about
-// the library.
-func (r read) ended() bool { return r.ctx.Err() != nil }
+// skip reports whether a failure says nothing about the library: the run
+// ended, or the harness injected the failure.
+func (r read) skip(err error) bool {
+	switch {
+	case r.ctx.Err() != nil:
+		return true
+	case injected(err):
+		r.ledger.fault()
+		return true
+	}
+	return false
+}
 
-// head reads the head in full. It returns the error, so that the caller
-// moves on to an acknowledged snapshot only after the head read.
+// expired reports whether a read of id failed because retention expired
+// the snapshot meanwhile, which a reader holding its ID may observe
+// (CONTRACT_RETENTION §Order of Operations); the end of the run confirms
+// the expiry.
+func (r read) expired(id lode.DatasetSnapshotID, err error) bool {
+	if !r.retention || !expiredRead(err) {
+		return false
+	}
+	r.ledger.failedRead(id)
+	return true
+}
+
+// uninformative reports whether a read of id failed for a reason that says
+// nothing about the library.
+func (r read) uninformative(id lode.DatasetSnapshotID, err error) bool {
+	return r.skip(err) || r.expired(id, err)
+}
+
+// head reads the head in full. It returns the error so the caller can
+// restart a killed process.
 func (r read) head() error {
 	head, err := r.ds.Latest(r.ctx)
-	if errors.Is(err, lode.ErrNoSnapshots) || r.ended() {
+	if errors.Is(err, lode.ErrNoSnapshots) || r.skip(err) {
 		return err
 	}
 	if err != nil {
@@ -132,7 +177,7 @@ func (r read) head() error {
 		return err
 	}
 	rows, err := r.ds.Read(r.ctx, head.ID)
-	if r.ended() {
+	if r.uninformative(head.ID, err) {
 		return err
 	}
 	r.ledger.read()
@@ -144,15 +189,16 @@ func (r read) head() error {
 
 // commit reads an acknowledged snapshot, which must hold exactly its
 // writer's records.
-func (r read) commit(c Commit) {
+func (r read) commit(c Commit) error {
 	rows, err := r.ds.Read(r.ctx, c.ID)
-	if r.ended() {
-		return
+	if r.uninformative(c.ID, err) {
+		return err
 	}
 	r.ledger.read()
 	if err != nil || !c.matches(rows) {
 		r.ledger.violate("read-commit", "acknowledged %s (writer %d seq %d): %d rows, not the %d its writer committed (%v)", c.ID, c.Writer, c.Seq, len(rows), c.Rows, err)
 	}
+	return err
 }
 
 // sliceIterator feeds rows to StreamWriteRecords; the slice backs the

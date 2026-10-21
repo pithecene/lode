@@ -23,12 +23,22 @@ type Config struct {
 	Layout string
 	// Retries is the WithRetryCount each handle is opened with.
 	Retries int
+	// Faults are injected into every writer's and reader's store calls.
+	Faults Faults
+	// Retention runs Expire and Sweep concurrently with the writers.
+	Retention bool
+	// Volume runs Volume writers instead of the Dataset workload; Layout and
+	// Retention do not apply.
+	Volume bool
 }
 
 // Run drives the workload against store for cfg.Duration, then verifies
 // the history it left. The report lists every violation observed during
 // the run and by the final checks.
 func Run(ctx context.Context, cfg Config, store lode.Store) Report {
+	if cfg.Volume {
+		return runVolume(ctx, cfg, store)
+	}
 	ledger := &Ledger{}
 	until := time.Now().Add(cfg.Duration)
 	readCtx, stop := context.WithDeadline(ctx, until)
@@ -41,9 +51,26 @@ func Run(ctx context.Context, cfg Config, store lode.Store) Report {
 	for i := range cfg.Readers {
 		wg.Go(func() { reader(readCtx, cfg, store, i, ledger) })
 	}
+	if cfg.Retention {
+		wg.Go(func() { janitor(ctx, cfg, store, until, ledger) })
+	}
 	wg.Wait()
 
 	snapshots := verify(ctx, cfg, store, ledger)
+	return ledger.report(cfg.Seed, snapshots)
+}
+
+// runVolume drives concurrent Volume writers for cfg.Duration and then
+// verifies the volume's history and contents.
+func runVolume(ctx context.Context, cfg Config, store lode.Store) Report {
+	ledger := &Ledger{}
+	until := time.Now().Add(cfg.Duration)
+	var wg sync.WaitGroup
+	for i := range cfg.Writers {
+		wg.Go(func() { volumeWriter(ctx, cfg, store, i, until, ledger) })
+	}
+	wg.Wait()
+	snapshots := verifyVolume(ctx, cfg, store, ledger)
 	return ledger.report(cfg.Seed, snapshots)
 }
 

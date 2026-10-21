@@ -8,7 +8,7 @@ import (
 
 // chain is the parent relation of a history: every snapshot that has a
 // manifest, with its parent and its children. It answers the structural
-// questions the checks ask.
+// questions the checks ask, for Datasets and Volumes alike.
 type chain[ID ~string] struct {
 	parent   map[ID]ID
 	children map[ID][]ID
@@ -82,8 +82,9 @@ func (c *chain[ID]) reach(id ID) int {
 // shape reports the structural violations of a history whose head is head:
 // forks, more chain ends than missing parents account for, and, when no
 // parent is missing, snapshots the head does not reach. A parent without a
-// manifest may be an abandoned commit (CONTRACT_CORE §Head Pointer); the
-// caller, which knows what was acknowledged, checks that it is one.
+// manifest is an abandoned commit or an expired snapshot (CONTRACT_CORE
+// §Head Pointer, CONTRACT_RETENTION §Lineage); which of the two is checked
+// by the caller, which knows what was acknowledged and expired.
 func (c *chain[ID]) shape(head ID) []string {
 	var problems []string
 	for _, parent := range c.forks() {

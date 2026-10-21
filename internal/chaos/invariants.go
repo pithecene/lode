@@ -2,7 +2,10 @@ package chaos
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"slices"
+	"time"
 
 	"github.com/pithecene/lode/lode"
 )
@@ -11,12 +14,14 @@ import (
 // history, a clean handle to read it through, and what the workload
 // observed. Each invariant is one of its methods.
 type verifier struct {
-	ds        lode.Dataset
-	snapshots map[lode.DatasetSnapshotID]*lode.DatasetSnapshot
-	chain     *chain[lode.DatasetSnapshotID]
-	settle    lode.DatasetSnapshotID // the settling commit
-	head      lode.DatasetSnapshotID // what Latest returns
-	acked     map[lode.DatasetSnapshotID]Commit
+	ds          lode.Dataset
+	snapshots   map[lode.DatasetSnapshotID]*lode.DatasetSnapshot
+	chain       *chain[lode.DatasetSnapshotID]
+	settle      lode.DatasetSnapshotID // the settling commit
+	head        lode.DatasetSnapshotID // what Latest returns
+	acked       map[lode.DatasetSnapshotID]Commit
+	expired     []lode.DatasetSnapshotID
+	failedReads []lode.DatasetSnapshotID
 }
 
 func newVerifier(ctx context.Context, ds lode.Dataset, settle lode.DatasetSnapshotID, ledger *Ledger) (*verifier, error) {
@@ -43,6 +48,7 @@ func newVerifier(ctx context.Context, ds lode.Dataset, settle lode.DatasetSnapsh
 	for _, c := range ledger.Commits() {
 		v.acked[c.ID] = c
 	}
+	v.expired, v.failedReads = ledger.retention()
 	return v, nil
 }
 
@@ -73,6 +79,10 @@ var datasetChecks = []check[*verifier]{
 	{"contents-match-manifests", (*verifier).contentsMatch},
 }
 
+// finalGrace is the grace period of the sweep after the run: no write is in
+// progress any more, so every orphan is past any positive grace period.
+const finalGrace = time.Nanosecond
+
 // verify settles the head with one clean commit, so that the pointer names
 // a committed snapshot, and then runs every check, recording each failure.
 func verify(ctx context.Context, cfg Config, store lode.Store, ledger *Ledger) int {
@@ -86,22 +96,42 @@ func verify(ctx context.Context, cfg Config, store lode.Store, ledger *Ledger) i
 		ledger.violate("verify", "settling commit: %v", err)
 		return 0
 	}
+	if cfg.Retention {
+		if _, err := ds.Sweep(ctx, lode.SweepRequest{Grace: finalGrace}); err != nil {
+			ledger.violate("verify", "final sweep: %v", err)
+		}
+	}
 	v, err := newVerifier(ctx, ds, settle.ID, ledger)
 	if err != nil {
 		ledger.violate("verify", "%v", err)
 		return 0
 	}
-	runChecks(ctx, v, datasetChecks, ledger)
+	runChecks(ctx, v, cfg.checks(), ledger)
 	return v.chain.size()
 }
 
+// checks are the dataset invariants that apply to the run: retention adds
+// its own.
+func (c Config) checks() []check[*verifier] {
+	if !c.Retention {
+		return datasetChecks
+	}
+	return slices.Concat(datasetChecks, retentionChecks)
+}
+
+// isExpired reports whether snapshot id reads as expired.
+func (v *verifier) isExpired(ctx context.Context, id lode.DatasetSnapshotID) bool {
+	_, err := v.ds.Snapshot(ctx, id)
+	return errors.Is(err, lode.ErrSnapshotExpired)
+}
+
 // acknowledgedPersist requires every acknowledged commit to have a
-// manifest.
-func (v *verifier) acknowledgedPersist(context.Context) []string {
+// manifest, unless retention expired it.
+func (v *verifier) acknowledgedPersist(ctx context.Context) []string {
 	var lost []string
 	for id, c := range v.acked {
-		if !v.chain.has(id) {
-			lost = append(lost, fmt.Sprintf("acknowledged %s (writer %d seq %d) has no manifest", id, c.Writer, c.Seq))
+		if !v.chain.has(id) && !v.isExpired(ctx, id) {
+			lost = append(lost, fmt.Sprintf("acknowledged %s (writer %d seq %d) has no manifest and is not expired", id, c.Writer, c.Seq))
 		}
 	}
 	return lost
@@ -124,12 +154,13 @@ func settled[ID ~string](head, settle ID) []string {
 }
 
 // parentsExplained accepts a parent without a manifest only as an abandoned
-// commit, which no writer was told had committed.
-func (v *verifier) parentsExplained(context.Context) []string {
+// commit, which no writer was told had committed, or as an expired
+// snapshot.
+func (v *verifier) parentsExplained(ctx context.Context) []string {
 	var bad []string
 	for _, parent := range v.chain.missingParents() {
-		if _, acked := v.acked[parent]; acked {
-			bad = append(bad, fmt.Sprintf("acknowledged %s is a parent but has no manifest", parent))
+		if _, acked := v.acked[parent]; acked && !v.isExpired(ctx, parent) {
+			bad = append(bad, fmt.Sprintf("acknowledged %s is a parent but has no manifest and is not expired", parent))
 		}
 	}
 	return bad

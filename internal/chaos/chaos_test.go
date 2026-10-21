@@ -18,6 +18,9 @@ var (
 	flagRetries  = flag.Int("chaos.retries", 5, "WithRetryCount for every handle")
 	flagBackends = flag.String("chaos.backends", "memory,fs", "comma-separated backends: "+strings.Join(BackendNames(), ", "))
 	flagLayouts  = flag.String("chaos.layouts", "default,hive", "comma-separated layouts: "+strings.Join(LayoutNames(), ", "))
+	flagFaults   = flag.String("chaos.faults", "none", "comma-separated fault levels: "+strings.Join(FaultLevelNames(), ", "))
+	flagRetain   = flag.Bool("chaos.retention", false, "run Expire and Sweep concurrently with the writers")
+	flagVolume   = flag.Bool("chaos.volume", false, "also run the Volume workload once per backend and fault level")
 )
 
 // TestChaos runs the harness once per backend and layout. It is skipped
@@ -31,45 +34,58 @@ func TestChaos(t *testing.T) {
 	if seed == 0 {
 		seed = uint64(time.Now().UnixNano()) //nolint:gosec // a positive clock reading as a seed
 	}
-	backends, layouts := splitList(*flagBackends), splitList(*flagLayouts)
-	if err := selection(backends, layouts); err != nil {
+	backends, layouts, levels := splitList(*flagBackends), splitList(*flagLayouts), splitList(*flagFaults)
+	faults, err := selection(backends, layouts, levels)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if *flagVolume {
+		layouts = append(layouts, "volume")
 	}
 	for _, backend := range backends {
 		for _, layout := range layouts {
-			t.Run(backend+"/"+layout, func(t *testing.T) {
-				runOne(t, backend, Config{
-					Seed: seed, Duration: *flagDuration, Writers: *flagWriters, Readers: *flagReaders,
-					Layout: layout, Retries: *flagRetries,
+			for _, level := range levels {
+				t.Run(backend+"/"+layout+"/"+level, func(t *testing.T) {
+					runOne(t, backend, level, Config{
+						Seed: seed, Duration: *flagDuration, Writers: *flagWriters, Readers: *flagReaders,
+						Layout: layout, Retries: *flagRetries, Faults: faults[level], Retention: *flagRetain,
+						Volume: layout == "volume",
+					})
 				})
-			})
+			}
 		}
 	}
 }
 
-// selection validates the requested backends and layouts before anything
-// runs. An empty selection would run nothing and pass.
-func selection(backends, layouts []string) error {
+// selection validates the requested backends, layouts and fault levels
+// before anything runs, and returns the fault settings by level. An empty
+// selection would run nothing and pass.
+func selection(backends, layouts, levels []string) (map[string]Faults, error) {
 	for _, sel := range []struct {
 		kind            string
 		selected, known []string
 	}{
 		{"backend", backends, BackendNames()},
 		{"layout", layouts, LayoutNames()},
+		{"fault level", levels, FaultLevelNames()},
 	} {
 		if len(sel.selected) == 0 {
-			return fmt.Errorf("chaos: no %s selected", sel.kind)
+			return nil, fmt.Errorf("chaos: no %s selected", sel.kind)
 		}
 		for _, name := range sel.selected {
 			if err := requireKnown(sel.kind, name, sel.known); err != nil {
-				return err
+				return nil, err
 			}
 		}
 	}
-	return nil
+	faults := make(map[string]Faults, len(levels))
+	for _, level := range levels {
+		faults[level] = faultLevels[level]
+	}
+	return faults, nil
 }
 
-func runOne(t *testing.T, backendName string, cfg Config) {
+func runOne(t *testing.T, backendName, level string, cfg Config) {
 	t.Helper()
 	runID := fmt.Sprintf("%d-%s", time.Now().UnixNano(), cfg.Layout)
 	backend, err := OpenBackend(t.Context(), backendName, t.TempDir(), runID)
@@ -79,16 +95,19 @@ func runOne(t *testing.T, backendName string, cfg Config) {
 	t.Cleanup(func() { backend.Release(context.WithoutCancel(t.Context())) })
 
 	report := Run(t.Context(), cfg, backend.Store)
-	t.Logf("seed %d: %d commits, %d conflicts after retries, %d reads, %d snapshots persisted",
-		report.Seed, report.Commits, report.Conflicts, report.Reads, report.Snapshots)
+	t.Logf("seed %d: %d commits, %d conflicts after retries, %d injected failures, %d reads, %d expired, %d snapshots persisted",
+		report.Seed, report.Commits, report.Conflicts, report.Faults, report.Reads, report.Expired, report.Snapshots)
 	for _, v := range report.Violations {
 		t.Errorf("violation %s", v)
 	}
 	if len(report.Violations) > 0 {
-		t.Logf("repeat with: go test ./internal/chaos -run 'TestChaos/%s/%s' -chaos -chaos.seed=%d -chaos.backends=%s -chaos.layouts=%s -chaos.writers=%d -chaos.readers=%d -chaos.retries=%d -chaos.duration=%s",
-			backendName, cfg.Layout, cfg.Seed, backendName, cfg.Layout, cfg.Writers, cfg.Readers, cfg.Retries, cfg.Duration)
+		t.Logf("repeat with: go test ./internal/chaos -run 'TestChaos/%s/%s/%s' -chaos -chaos.seed=%d -chaos.backends=%s -chaos.layouts='%s' -chaos.faults=%s -chaos.retention=%t -chaos.volume=%t -chaos.writers=%d -chaos.readers=%d -chaos.retries=%d -chaos.duration=%s",
+			backendName, cfg.Layout, level, cfg.Seed, backendName, *flagLayouts, level, cfg.Retention, *flagVolume, cfg.Writers, cfg.Readers, cfg.Retries, cfg.Duration)
 	}
-	if report.Commits == 0 {
+	switch {
+	case report.Stalled:
+		t.Logf("an abandoned commit stalled the volume; every later commit conflicted (CONTRACT_VOLUME)")
+	case report.Commits == 0:
 		t.Errorf("no commit succeeded; the run exercised nothing")
 	}
 }
