@@ -103,8 +103,8 @@ func reader(ctx context.Context, cfg Config, store lode.Store, index int, ledger
 		if r.head() != nil {
 			continue
 		}
-		if commits := ledger.Commits(); len(commits) > 0 {
-			r.commit(commits[rng.IntN(len(commits))])
+		if c, ok := ledger.randomCommit(rng); ok {
+			r.commit(c)
 		}
 	}
 }

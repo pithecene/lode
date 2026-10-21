@@ -571,7 +571,11 @@ cases. `go test` runs their seed inputs; `task fuzz` explores further (see
 `Dataset` handle, against a shared store for a fixed duration, and then
 checks the history they left. It runs on demand (`task chaos`, or the Chaos
 workflow) against memory, the filesystem, LocalStack, RustFS, or any
-S3-compatible store configured through `CHAOS_S3_*` variables.
+S3-compatible store configured through `CHAOS_S3_*` variables. The
+invariants assume CAS (CONTRACT_WRITE_API §Concurrency), so a store that
+does not implement `ConditionalWriter`, such as the filesystem store on a
+platform other than Unix, is skipped. A run fails if the harness cannot
+remove what it created on the store.
 
 | Invariant | Check |
 |-----------|-------|
