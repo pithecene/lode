@@ -41,6 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Commits no longer fork around a commit in flight**: a commit writes the pointer before its manifest, and parent resolution used to treat such a pointer as stale, parenting on the newest manifest instead; the in-flight commit then dropped out of the history. A new commit now parents on the snapshot the pointer names, manifest or not, so history stays linear under CAS as CONTRACT_WRITE_API promises; cold parent resolution costs one `Get` instead of `Get` + `Exists`. A Volume commit, which merges its parent's blocks, returns `ErrSnapshotConflict` until the parent's manifest is written. After a crash between the pointer and the manifest, the next snapshot's `ParentSnapshotID` names an ID with no manifest.
 - **`Latest` no longer rolls the head back**: when the `latest` pointer names a snapshot with no manifest, `Latest` still serves the newest committed snapshot from a scan but no longer rewrites the pointer. Such a pointer may be a commit in flight (the pointer is written before the manifest), and rewriting it lost that commit from the head chain; the next commit replaces a stale pointer through its CAS. A missing pointer is still created from the scan.
 
 ---

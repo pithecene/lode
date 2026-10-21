@@ -437,6 +437,8 @@ proportional to dataset/volume size on remote stores (S3/R2).
 | Backward compat: scan fallback | `TestDataset_LatestPointer/backward_compat` |
 | Corrupt pointer: scan fallback | `TestDataset_LatestPointer/corrupt_pointer` |
 | Stale pointer left for the commit in flight; next commit parents on it | `TestDataset_LatestPointer_CommitInFlight`, `TestLatest/stale_pointer_is_left_for_the_next_commit` |
+| A commit during one in flight parents on it (linear under CAS) | `TestDataset_Write_ParentsOnCommitInFlight`, `TestResolve/stale_pointer_is_the_parent` |
+| Cold parent resolution through the pointer costs one Get | `TestResolve/pointer_costs_one_Get_and_no_manifest_check` |
 | Pointer paths for all layouts | `TestDataset_LatestPointer/all_layouts` |
 | Write: 0 List calls after pointer | `TestDataset_Write_Pointer/latest_pointer_skips_scan` |
 | StreamWrite: 0 List calls | `TestDataset_StreamWrite_Lineage/latest_pointer_skips_scan` |
@@ -475,6 +477,7 @@ proportional to dataset/volume size on remote stores (S3/R2).
 |-------------|------|
 | Dataset: nonexistent pointer target → scan fallback | `TestDataset_Write_Pointer/corrupt_pointer_falls_back_to_scan` |
 | Volume: nonexistent pointer target → scan fallback | `TestVolume_Commit_Pointer/stale_pointer_falls_back_to_scan` |
+| Volume: a commit in flight conflicts until its manifest lands | `TestVolume_Commit_CommitInFlight`, `TestResolveParent/pointer's_manifest_missing_is_a_conflict` |
 | Dataset: existing-but-stale pointer → in-memory cache wins | `TestDataset_Write_Pointer/stale_but_existing_pointer_uses_in_memory_cache` |
 | Volume: existing-but-stale pointer → in-memory cache wins | `TestVolume_Commit_Pointer/stale_but_existing_pointer_uses_in_memory_cache` |
 

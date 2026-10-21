@@ -1707,6 +1707,65 @@ func TestMergeBlocks(t *testing.T) {
 	}
 }
 
+// TestVolume_Commit_CommitInFlight: a pointer naming a snapshot whose
+// manifest is not written yet may be a commit in flight. Its blocks cannot
+// be merged until it lands, so a commit conflicts, and once it lands
+// parents on it.
+func TestVolume_Commit_CommitInFlight(t *testing.T) {
+	mem := lode.NewMemory()
+	open := func() Volume {
+		vol, err := New("test-vol", memoryFactoryFrom(mem), 1024*1024)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return vol
+	}
+	commit := func(vol Volume, off int64, data string) (*Snapshot, error) {
+		block, err := vol.StageWriteAt(t.Context(), off, bytes.NewReader([]byte(data)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return vol.Commit(t.Context(), []BlockRef{block}, lode.Metadata{})
+	}
+	if _, err := commit(open(), 0, "block-1"); err != nil {
+		t.Fatal(err)
+	}
+	inFlight, err := commit(open(), 100, "block-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestPath := "volumes/test-vol/snapshots/" + string(inFlight.ID) + "/manifest.json"
+	rc, err := mem.Get(t.Context(), manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, _ := io.ReadAll(rc)
+	_ = rc.Close()
+	if err := mem.Delete(t.Context(), manifestPath); err != nil {
+		t.Fatal(err)
+	}
+
+	late := open()
+	block3, err := late.StageWriteAt(t.Context(), 200, bytes.NewReader([]byte("block-3")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := late.Commit(t.Context(), []BlockRef{block3}, lode.Metadata{}); !errors.Is(err, lode.ErrSnapshotConflict) {
+		t.Fatalf("commit during the in-flight one = %v, want lode.ErrSnapshotConflict", err)
+	}
+
+	if err := mem.Put(t.Context(), manifestPath, bytes.NewReader(manifest)); err != nil {
+		t.Fatal(err)
+	}
+	next, err := late.Commit(t.Context(), []BlockRef{block3}, lode.Metadata{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next.Manifest.ParentSnapshotID != inFlight.ID || len(next.Manifest.Blocks) != 3 {
+		t.Errorf("parent = %s with %d blocks, want %s with all 3", next.Manifest.ParentSnapshotID, len(next.Manifest.Blocks), inFlight.ID)
+	}
+}
+
 func TestVolume_Commit_Pointer(t *testing.T) {
 	// TestVolume_Commit_StaleButExistingPointer_UsesInMemoryCache verifies that
 	// when the pointer is externally modified after a successful commit, CAS

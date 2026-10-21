@@ -60,14 +60,21 @@ signed 64-bit nanoseconds run out in April 2262, so only an ID from a clock
 set before 2001-09-09 01:46:40 UTC (a shorter instant) would sort out of
 time order. IDs with the same instant
 order by nonce, which is not commit order. The pointer names the head;
-`Latest` and parent resolution fall back to the largest ID only when the
-pointer is missing or names a snapshot with no manifest (a crash, a hand
-edit, or the moment of a non-CAS Delete+Put), and then take it as the head.
-`Latest` creates a missing pointer from that result but never rewrites an
-existing one: a pointer naming a snapshot with no manifest may be a commit
-in flight (the pointer is written before the manifests), and rewriting it
-would roll the head back over that commit. The next commit replaces a
-stale pointer through its CAS.
+`Latest` falls back to the largest ID only when the pointer is missing or
+names a snapshot with no manifest (a crash, a hand edit, or the moment of a
+non-CAS Delete+Put), and then takes it as the head. `Latest` creates a
+missing pointer from that result but never rewrites an existing one: a
+pointer naming a snapshot with no manifest may be a commit in flight (the
+pointer is written before the manifests), and rewriting it would roll the
+head back over that commit. For the same reason a new commit parents on the
+snapshot the pointer names, manifest or not, so history stays linear around
+a commit in flight. After a crash its `ParentSnapshotID` names an ID with no
+manifest, which readers resolving lineage MUST treat as the end of the
+explainable chain, as they do an expired parent (CONTRACT_RETENTION
+§Lineage). A Volume commit
+needs its parent's manifest and returns `ErrSnapshotConflict` until it is
+written (CONTRACT_VOLUME). Parent resolution falls back to the largest ID
+only when the pointer is missing or does not hold a snapshot ID.
 With a rolled-back clock, or two commits that began in the same nanosecond,
 that may not be the last commit. Instant-only IDs had the same limit, and
 same-nanosecond writes then shared one ID outright. Retention never uses

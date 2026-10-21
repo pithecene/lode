@@ -2584,6 +2584,42 @@ func TestDataset_LatestPointer_CommitInFlight(t *testing.T) {
 	}
 }
 
+// TestDataset_Write_ParentsOnCommitInFlight: a commit that starts while
+// another has moved the pointer but not yet written its manifest must parent
+// on that commit, or the history forks around it (CONTRACT_WRITE_API
+// §Optimistic Concurrency: linear under CAS).
+func TestDataset_Write_ParentsOnCommitInFlight(t *testing.T) {
+	store := NewMemory()
+	open := func() Dataset {
+		ds, err := NewDataset("test-ds", NewMemoryFactoryFrom(store), WithCodec(NewJSONLCodec()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ds
+	}
+	first, other := open(), open()
+	if _, err := first.Write(t.Context(), R(D{"a": 1}), Metadata{}); err != nil {
+		t.Fatal(err)
+	}
+	inFlight, err := other.Write(t.Context(), R(D{"b": 2}), Metadata{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestPath := "datasets/test-ds/snapshots/" + string(inFlight.ID) + "/manifest.json"
+	moveObject(t, store, manifestPath, "pending/manifest.json")
+	if err := store.Delete(t.Context(), manifestPath); err != nil {
+		t.Fatal(err)
+	}
+
+	next, err := open().Write(t.Context(), R(D{"c": 3}), Metadata{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next.Manifest.ParentSnapshotID != inFlight.ID {
+		t.Errorf("parent = %s, want the in-flight %s", next.Manifest.ParentSnapshotID, inFlight.ID)
+	}
+}
+
 func TestDataset_LatestPointer(t *testing.T) {
 	t.Run("read after write", func(t *testing.T) {
 		// After a write, the pointer file must exist in the store and
