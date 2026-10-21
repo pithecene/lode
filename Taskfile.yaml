@@ -23,6 +23,13 @@ tasks:
     cmds:
       - go test -race -count=1 ./...
 
+  fuzz:
+    desc: Run every fuzz target for FUZZTIME each (default 30s)
+    vars:
+      FUZZTIME: '{{.FUZZTIME | default "30s"}}'
+    cmds:
+      - ./scripts/fuzz.sh {{.FUZZTIME}}
+
   mutate:
     desc: Run mutation tests on the module (lode, internal; gremlins; config in .gremlins.yaml)
     cmds:
