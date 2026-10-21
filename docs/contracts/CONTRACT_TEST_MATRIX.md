@@ -174,6 +174,9 @@ Gaps are recorded with codes that indicate category and priority:
 |-------------|------|
 | ErrPathExists on duplicate (atomic) | `TestStore_PutAtomic/put_atomic_duplicate_returns_err_path_exists` |
 | All-or-nothing on reader failure | `TestStore_Put/all_or_nothing`, `TestStore_Put/all_or_nothing`, `TestStore_Put_AllOrNothing` |
+| A failed Put leaves nothing visible (filesystem) | `TestFSStore_Put_FailureLeavesNothingVisible` |
+| An object is visible only once complete, with the mode a direct creation under the process umask gives (filesystem) | `TestFSStore_Put_PublishesAtomically` |
+| Every adapter rejects a key whose final segment begins with the reserved temporary-name prefix | `TestStore_Put_RejectsReservedNames`, `TestKey` |
 | Multipart preflight check | `TestStore_PutMultipartFromFile/pre_existing_returns_err_path_exists` |
 | Multipart conditional completion | `TestStore_PutMultipartFromFile/conditional_completion_returns_err_path_exists` |
 | Conditional completion documented | `TestStore_PutMultipartFromFile/multipart_conditional_completion` |

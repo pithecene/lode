@@ -58,7 +58,7 @@ func (f *fsStore) CompareAndSwap(_ context.Context, path, expected, replacement 
 	}
 
 	// Atomic write: temp file in same directory, then rename.
-	tmp, err := os.CreateTemp(dir, ".lode-cas-*")
+	tmp, err := os.CreateTemp(dir, tempPrefix+"cas-*")
 	if err != nil {
 		return fmt.Errorf("lode: create temp file: %w", err)
 	}

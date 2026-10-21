@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -76,9 +77,10 @@ func assertPutAllOrNothing(t *testing.T, store Store) {
 	}
 }
 
-// When the partial object cannot be removed, Put reports both the original
-// failure and the removal failure rather than hiding either.
-func TestFSStore_Put_RemoveFailureIsReported(t *testing.T) {
+// A failed Put leaves no object at its path and nothing in a listing, even
+// when the directory turns read-only mid-write: the object is published only
+// after it is complete, and a leftover temporary file is never listed.
+func TestFSStore_Put_FailureLeavesNothingVisible(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("directory permissions do not bind root")
 	}
@@ -91,7 +93,6 @@ func TestFSStore_Put_RemoveFailureIsReported(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// Make the directory read-only once the file exists, so os.Remove fails.
 	r := &lockingReader{dir: dir, inner: newFailingReader("partial")}
 	err = store.Put(t.Context(), "locked/obj", r)
 	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
@@ -99,7 +100,100 @@ func TestFSStore_Put_RemoveFailureIsReported(t *testing.T) {
 		t.Fatalf("got %v, want the reader error in the chain", err)
 	}
 	if !errors.Is(err, os.ErrPermission) {
-		t.Fatalf("got %v, want the removal failure in the chain", err)
+		t.Fatalf("got %v, want the failure to remove the temporary file in the chain", err)
+	}
+	if _, err := store.Get(t.Context(), "locked/obj"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Get after a failed Put = %v, want ErrNotFound", err)
+	}
+	if keys, err := store.List(t.Context(), "locked/"); err != nil || len(keys) != 0 {
+		t.Fatalf("List after a failed Put = %v, %v; want nothing", keys, err)
+	}
+}
+
+// The temporary-name prefix is reserved by the shared key rules, so every
+// adapter rejects a key that uses it, not only the filesystem adapter whose
+// List would hide it (CONTRACT_STORAGE §Put).
+func TestStore_Put_RejectsReservedNames(t *testing.T) {
+	stores := map[string]func(t *testing.T) Store{
+		"fs": func(t *testing.T) Store {
+			store, err := NewFS(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			return store
+		},
+		"memory": func(*testing.T) Store { return NewMemory() },
+	}
+	for name, open := range stores {
+		t.Run(name, func(t *testing.T) {
+			store := open(t)
+			for _, key := range []string{".lode-tmp-x", "a/.lode-tmp-cas-1"} {
+				if err := store.Put(t.Context(), key, strings.NewReader("x")); !errors.Is(err, ErrInvalidPath) {
+					t.Errorf("Put(%q) = %v, want ErrInvalidPath", key, err)
+				}
+			}
+		})
+	}
+}
+
+// A reader never sees a partially written object: while a Put is still
+// streaming, Get reports ErrNotFound and List omits the object.
+func TestFSStore_Put_PublishesAtomically(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewFS(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pr, pw := io.Pipe()
+	done := make(chan error, 1)
+	go func() { done <- store.Put(t.Context(), "obj", pr) }()
+	if _, err := pw.Write([]byte("first half ")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Get(t.Context(), "obj"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Get during a Put = %v, want ErrNotFound", err)
+	}
+	if keys, err := store.List(t.Context(), ""); err != nil || len(keys) != 0 {
+		t.Fatalf("List during a Put = %v, %v; want nothing", keys, err)
+	}
+	_, _ = pw.Write([]byte("second half"))
+	_ = pw.Close()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	rc, err := store.Get(t.Context(), "obj")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closer(rc)()
+	if got, _ := io.ReadAll(rc); string(got) != "first half second half" {
+		t.Fatalf("Get after the Put = %q", got)
+	}
+	assertSameMode(t, filepath.Join(root, "obj"), filepath.Join(t.TempDir(), "reference"))
+}
+
+// assertSameMode requires the object at path to have the mode that creating
+// a file with mode 0644 gives under the process umask, as Put did before it
+// published through a temporary file: the publication must not widen it.
+func assertSameMode(t *testing.T, path, reference string) {
+	t.Helper()
+	f, err := os.OpenFile(reference, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	want, err := os.Stat(reference)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Mode().Perm() != want.Mode().Perm() {
+		t.Fatalf("published object mode = %v, want %v", got.Mode().Perm(), want.Mode().Perm())
 	}
 }
 

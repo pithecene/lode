@@ -14,16 +14,28 @@ import (
 // It rejects the empty key, ".", a backslash anywhere (keys are
 // slash-separated on every platform, so a backslash is never a spelling of a
 // parent directory that one adapter sees and another does not) and anything
-// that would escape the root.
+// that would escape the root. It also rejects a key whose final segment
+// begins with ReservedPrefix, on every adapter, so that a key behaves alike
+// on every backend.
 func Key(key string) (string, bool) {
 	if key == "" || strings.ContainsRune(key, '\\') {
 		return "", false
 	}
 	cleaned := clean(key)
-	if cleaned == "" || cleaned == "." || escapes(cleaned) {
+	if cleaned == "" || cleaned == "." || escapes(cleaned) || Reserved(cleaned) {
 		return "", false
 	}
 	return cleaned, true
+}
+
+// ReservedPrefix begins the name of every temporary file the filesystem
+// adapter creates while it writes an object (CONTRACT_STORAGE §Put).
+const ReservedPrefix = ".lode-tmp-"
+
+// Reserved reports whether the final segment of key begins with
+// ReservedPrefix.
+func Reserved(key string) bool {
+	return strings.HasPrefix(path.Base(key), ReservedPrefix)
 }
 
 // Prefix normalizes a listing prefix. The empty prefix (or one that cleans to
