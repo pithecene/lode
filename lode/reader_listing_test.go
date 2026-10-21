@@ -30,7 +30,7 @@ func writeHiveDays(t *testing.T, days ...string) DatasetReader {
 	return reader
 }
 
-func partitionPaths(refs []PartitionRef) []string {
+func refPaths(refs []PartitionRef) []string {
 	out := make([]string, 0, len(refs))
 	for _, r := range refs {
 		out = append(out, r.Path)
@@ -61,8 +61,8 @@ func TestDatasetReader_ListPartitions_Order(t *testing.T) {
 			t.Fatal(err)
 		}
 		want := []string{"day=2024-01-15", "day=2024-01-16", "day=2024-02-01"}
-		if !equalStrings(partitionPaths(got), want) {
-			t.Fatalf("partitions = %v, want %v", partitionPaths(got), want)
+		if !equalStrings(refPaths(got), want) {
+			t.Fatalf("partitions = %v, want %v", refPaths(got), want)
 		}
 	})
 
@@ -102,16 +102,16 @@ func TestDatasetReader_ListPartitions_Order(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !equalStrings(partitionPaths(got), []string{"day=2024-01-17"}) {
-			t.Fatalf("after exact cursor: %v", partitionPaths(got))
+		if !equalStrings(refPaths(got), []string{"day=2024-01-17"}) {
+			t.Fatalf("after exact cursor: %v", refPaths(got))
 		}
 
 		got, err = reader.ListPartitions(t.Context(), "test-ds", PartitionListOptions{StartAfter: "day=2024-01-16"})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !equalStrings(partitionPaths(got), []string{"day=2024-01-17"}) {
-			t.Fatalf("after between-keys cursor: %v", partitionPaths(got))
+		if !equalStrings(refPaths(got), []string{"day=2024-01-17"}) {
+			t.Fatalf("after between-keys cursor: %v", refPaths(got))
 		}
 	})
 }
@@ -127,8 +127,8 @@ func TestDatasetReader_ListPartitions_Prefix(t *testing.T) {
 			t.Fatal(err)
 		}
 		want := []string{"day=2024-01-15", "day=2024-01-16"}
-		if !equalStrings(partitionPaths(got), want) {
-			t.Fatalf("partitions = %v, want %v", partitionPaths(got), want)
+		if !equalStrings(refPaths(got), want) {
+			t.Fatalf("partitions = %v, want %v", refPaths(got), want)
 		}
 	})
 
@@ -160,8 +160,8 @@ func TestDatasetReader_ListPartitions_Prefix(t *testing.T) {
 			t.Fatal(err)
 		}
 		want := []string{"day=2024-01-15"}
-		if !equalStrings(partitionPaths(got), want) {
-			t.Fatalf("partitions = %v, want %v", partitionPaths(got), want)
+		if !equalStrings(refPaths(got), want) {
+			t.Fatalf("partitions = %v, want %v", refPaths(got), want)
 		}
 	})
 
@@ -175,7 +175,7 @@ func TestDatasetReader_ListPartitions_Prefix(t *testing.T) {
 			t.Fatalf("expected nil error for empty prefix subtree, got %v", err)
 		}
 		if len(got) != 0 {
-			t.Fatalf("expected no partitions, got %v", partitionPaths(got))
+			t.Fatalf("expected no partitions, got %v", refPaths(got))
 		}
 	})
 
@@ -224,7 +224,7 @@ func TestDatasetReader_ListPartitions_Prefix(t *testing.T) {
 		} {
 			got, err := reader.ListPartitions(t.Context(), "test-ds", PartitionListOptions{Prefix: prefix})
 			if !errors.Is(err, ErrInvalidPath) {
-				t.Errorf("Prefix %q: expected ErrInvalidPath, got err=%v result=%v", prefix, err, partitionPaths(got))
+				t.Errorf("Prefix %q: expected ErrInvalidPath, got err=%v result=%v", prefix, err, refPaths(got))
 			}
 		}
 

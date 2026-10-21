@@ -54,12 +54,12 @@ func (t tombstone) describes(m *Manifest) bool {
 // once and never rewritten or removed.
 type tombstones struct {
 	store   Store
-	layout  layout
+	paths   tombstonePaths
 	dataset DatasetID
 }
 
 func (d *dataset) tombstones() tombstones {
-	return tombstones{store: d.store, layout: d.layout, dataset: d.id}
+	return tombstones{store: d.store, paths: d.layout, dataset: d.id}
 }
 
 // path is where snapshot id's tombstone lives. ok is false unless id is in
@@ -69,7 +69,7 @@ func (ts tombstones) path(id DatasetSnapshotID) (p string, ok bool) {
 	if !history.IsGeneratedID(id) {
 		return "", false
 	}
-	return ts.layout.tombstonePath(ts.dataset, id), true
+	return ts.paths.tombstonePath(ts.dataset, id), true
 }
 
 // record creates the tombstone, or accepts the one an earlier or concurrent
@@ -113,7 +113,7 @@ func (ts tombstones) matchRecorded(ctx context.Context, p string, t tombstone) e
 // list returns the keys under the tombstone directory that name a
 // snapshot (CONTRACT_RETENTION §Definition, step 1).
 func (ts tombstones) list(ctx context.Context) ([]string, error) {
-	prefix := ts.layout.tombstonesPrefix(ts.dataset)
+	prefix := ts.paths.tombstonesPrefix(ts.dataset)
 	keys, err := ts.store.List(ctx, prefix)
 	if err != nil {
 		return nil, fmt.Errorf("lode: failed to list tombstones: %w", err)
@@ -144,7 +144,7 @@ var errInvalidTombstone = errors.New("lode: invalid tombstone")
 // one whose key is not canonical or that does not record the snapshot its
 // own path names with a valid inventory.
 func (ts tombstones) recorded(ctx context.Context, key string) (tombstone, error) {
-	id := DatasetSnapshotID(strings.TrimPrefix(key, ts.layout.tombstonesPrefix(ts.dataset)))
+	id := DatasetSnapshotID(strings.TrimPrefix(key, ts.paths.tombstonesPrefix(ts.dataset)))
 	if !ts.isCanonicalPath(key, id) {
 		return tombstone{}, fmt.Errorf("%w: %s is not a canonical tombstone path", errInvalidTombstone, key)
 	}
