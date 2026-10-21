@@ -23,9 +23,13 @@ Based on the full-history audit of the production dataset
 
 - **Holds:** no corruption detected and zero manifest decode failures across 96,478
   snapshots over 8 months on R2; `Manifest` format stable since 2026-02-06.
-- **Blocker:** one history fork under CAS + retry (2026-08-25, §10). Snapshot
-  ID order does not match commit order, which breaks an assumption in the
-  latest-by-scan fallback ([#208](https://github.com/pithecene/lode/issues/208)).
+- **Blocker, addressed in v0.11.0 and awaiting verification:** one history
+  fork under CAS + retry (2026-08-25, §10). Parent resolution fell back to the
+  largest snapshot ID while the pointer named a pending commit, and ID order
+  does not match commit order ([#208](https://github.com/pithecene/lode/issues/208)).
+  v0.11.0 adopts the pointer's snapshot as the parent and never lets `Latest`
+  replace the pointer (CONTRACT_CORE §Head Pointer); dogfooding on v0.11.0
+  must confirm that no further fork occurs.
 - **Not yet met, time-gated:** API and sentinel freeze windows reopened by
   v0.10.0 and reopened again by the next release, which moves Volume out of
   `lode` (§1); `V1_API_DECISIONS.md` D1–D8 open.
@@ -37,7 +41,8 @@ Based on the full-history audit of the production dataset
   not the v1.0 tag. The boundary has shipped: package `lode/volume`, marked
   experimental in `PUBLIC_API.md` and `CONTRACT_VOLUME.md` (D9).
 - **Accepted limitations (GC and performance are out of scope):** 2.07 GB of
-  unreferenced data objects with no sweep (lode#174); `ListManifests` and
+  unreferenced data objects, which `Dataset.Sweep` (v0.11.0, lode#174) can now
+  reclaim; `ListManifests` and
   `ListPartitions` take hours at this size. As a result the consumer reads the
   on-disk paths directly, which makes D8 a real dependency.
 
@@ -399,6 +404,7 @@ nearest candidate is pithecene/quarry#255.
 > **Evidence:** 0 duplicate IDs. 2 missing parents (2026-02-12, Lode v0.7.3). 1,113 forks, of which 1,112 predate the consumer's CAS adoption (2026-03-08) and are expected without concurrency control. **1 fork happened under Lode v0.9.0 CAS + retry (2026-08-25)** ([`dogfood_audit_2026-10.md`](dogfood_audit_2026-10.md) F3). The same fork shows a child whose ID precedes its parent's: ID order is not commit order, which breaks the assumption in the latest-by-scan fallback (`history.go` `scan`, unchanged in v0.10.0). Candidate mechanism; not reproduced.
 > Date: 2026-10-20 | Observer: @pithecene-io | Project: private-A
 > Summary: Not met. Blocker until the CAS-era fork is explained and fixed or bounded.
+> Update (v0.11.0): the mechanism is reproduced (`TestDataset_Write_ParentsOnPendingCommit`) and fixed: a commit adopts the snapshot the pointer names as its parent, and `Latest` never replaces the pointer (#225, CONTRACT_CORE §Head Pointer). The criterion remains open until dogfooding on v0.11.0 shows no further fork.
 > Issue: [#208](https://github.com/pithecene/lode/issues/208)
 
 ---

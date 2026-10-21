@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+---
+
+## [0.11.0] - 2026-10-20
+
 ### Breaking
 
 - **Volume moved to the experimental package `lode/volume`** (`V1_API_DECISIONS.md` D9). Volume is outside the v1.0 compatibility promise until it passes its own stability gate (`V1_READINESS.md` §4); `PUBLIC_API.md` §Compatibility Scope states what the commitment covers. Names omit the prefix that the package name now supplies:
@@ -575,7 +579,8 @@ Post-v0.3.0 improvements planned:
 
 ---
 
-[Unreleased]: https://github.com/pithecene/lode/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/pithecene/lode/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/pithecene/lode/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/pithecene/lode/compare/v0.9.1...v0.10.0
 [0.9.1]: https://github.com/pithecene/lode/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/pithecene/lode/compare/v0.8.0...v0.9.0
