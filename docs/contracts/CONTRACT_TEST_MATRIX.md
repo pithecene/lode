@@ -108,7 +108,9 @@ Gaps are recorded with codes that indicate category and priority:
 | Codec configured → error | `TestDataset_StreamWrite_Misuse/with_codec_returns_error` |
 | Parent ID resolved O(1) via persistent pointer | `TestDataset_StreamWrite_Lineage/latest_pointer_skips_scan` |
 | Checksum computed | `TestDataset_StreamWrite_Encoding/with_checksum_records_checksum` |
-| Manifest Put error → no manifest + cleanup | `TestStreamWrite_Cleanup/manifest_put_error_no_manifest_cleanup_attempted` |
+| Manifest Put error → data retained (the manifest may have been stored) | `TestStreamWrite_Cleanup/manifest_put_error_retains_data` |
+| Pointer error → data removed | `TestStreamWrite_CommitFailure/pointer_error_removes_data` |
+| Lost manifest response → the visible snapshot stays readable | `TestStreamWrite_CommitFailure/lost_manifest_response_keeps_the_snapshot_readable` |
 | Abort → cleanup attempted | `TestStreamWrite_Cleanup/abort_no_manifest_cleanup_attempted` |
 | Close → cleanup attempted | `TestStreamWrite_Cleanup/close_without_commit_no_manifest_cleanup_attempted` |
 | Cleanup errors ignored | `TestStreamWrite_Cleanup/cleanup_error_ignored` |
@@ -127,7 +129,7 @@ Gaps are recorded with codes that indicate category and priority:
 | RowCount = records consumed | `TestDataset_StreamWriteRecords_Commit/success` |
 | Iterator error → cleanup attempted | `TestStreamWriteRecords_Cleanup/iterator_error_no_manifest_cleanup_attempted` |
 | Parent ID resolved O(1) via persistent pointer | `TestDataset_StreamWriteRecords_Commit/latest_pointer_skips_scan` |
-| Manifest Put error → no manifest + cleanup | `TestStreamWriteRecords_Cleanup/manifest_put_error_no_manifest` |
+| Manifest Put error → data retained | `TestStreamWriteRecords_Cleanup/manifest_put_error_no_manifest` |
 | Fast Put failure → error, no block | `TestStreamWriteRecords_PutFailure/data_put_fails_fast_returns_error` |
 
 **Timestamp Computation**: All covered ✅

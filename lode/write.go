@@ -3,6 +3,7 @@ package lode
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"slices"
@@ -71,7 +72,12 @@ func (d *dataset) commit(ctx context.Context, p *pendingSnapshot) (*DatasetSnaps
 		return d.history.Advance(ctx, expected, p.id, manifest, d.manifestPaths(p.id, p.partitions))
 	})
 	if err != nil {
-		d.discard(ctx, p.streamed)
+		// Once a manifest write has been attempted, the snapshot may be
+		// visible (a Put whose response was lost still stores the object),
+		// so its data stays; if the commit did fail, Sweep reclaims it.
+		if !errors.Is(err, history.ErrManifestUncertain) {
+			d.discard(ctx, p.streamed)
+		}
 		return nil, err
 	}
 	return &DatasetSnapshot{ID: p.id, Manifest: manifest}, nil
@@ -125,7 +131,8 @@ func (d *dataset) manifestPaths(snapshotID DatasetSnapshotID, partitionKeys []st
 	return paths
 }
 
-// discard deletes a data file whose commit failed. No-op for an empty path.
+// discard deletes the data file of a commit that failed before any manifest
+// was written. No-op for an empty path.
 func (d *dataset) discard(ctx context.Context, path string) {
 	if path != "" {
 		_ = d.store.Delete(ctx, path)

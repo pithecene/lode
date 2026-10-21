@@ -706,6 +706,9 @@ func TestAdvance(t *testing.T) {
 		h := newTestHistory(s)
 		err := h.Advance(t.Context(), "", "5", &manifest{}, paths)
 		wantMessage(t, err, "lode: failed to update latest pointer: boom")
+		if errors.Is(err, ErrManifestUncertain) {
+			t.Fatal("a pointer failure matches ErrManifestUncertain; no manifest was written")
+		}
 		if _, ok := s.objects[paths[0]]; ok || h.head != "" {
 			t.Fatal("manifest written or head remembered after pointer failure")
 		}
@@ -716,6 +719,9 @@ func TestAdvance(t *testing.T) {
 		h := newTestHistory(s)
 		err := h.Advance(t.Context(), "", "5", &manifest{}, paths)
 		wantMessage(t, err, "lode: failed to write test manifest: boom")
+		if !errors.Is(err, ErrManifestUncertain) || !errors.Is(err, errBoom) {
+			t.Fatalf("manifest failure %v must match ErrManifestUncertain and its cause", err)
+		}
 		if h.head != "" {
 			t.Fatal("head remembered after manifest failure")
 		}
