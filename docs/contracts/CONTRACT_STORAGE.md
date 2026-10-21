@@ -91,7 +91,13 @@ Adapters MUST document:
 
 ### Get
 - MUST return a readable stream for an existing path.
-- If the path does not exist, MUST return `ErrNotFound` (or an equivalent error).
+- If the path does not exist, MUST return an error that matches `ErrNotFound`
+  under `errors.Is`. Lode distinguishes an absent object from a failed read
+  by this error alone: a missing `latest` pointer or manifest selects the
+  scan fallback, whereas any other error is returned to the caller
+  (CONTRACT_CORE §Head Pointer). An adapter that reports absence with a
+  different error therefore causes `Latest` and commits to fail on a dataset
+  that has no pointer.
 
 ### Exists
 - MUST accurately report existence.

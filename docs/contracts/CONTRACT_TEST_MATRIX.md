@@ -182,6 +182,7 @@ Gaps are recorded with codes that indicate category and priority:
 | Operation | Tests |
 |-----------|-------|
 | Get | `TestStore_Get/success`, `TestStore_Get/err_not_found` |
+| Get on a missing path returns an error matching `ErrNotFound` (FS, Memory, S3) | `TestStore_Get/not_found`, `TestStore_Get/err_not_found` (S3) |
 | Exists | `TestStore_Exists/true`, `TestStore_Exists/false` |
 | List | `TestStore_List/with_prefix`, `TestStore_List/empty` |
 | Delete | `TestStore_Delete/exists`, `TestStore_Delete/not_exists_idempotent` |
