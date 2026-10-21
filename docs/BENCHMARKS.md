@@ -52,10 +52,18 @@ is part of the release checklist.
 
 | Benchmark | Machine | ns/op | B/op | allocs/op |
 |-----------|---------|------:|-----:|----------:|
-| `BenchmarkS3_WriteRoundTrip/LocalStack` | Workstation | 5,621,000 ± 15% | 376,832 ± 2% | 2,973 |
-| | CI | 8,247,000 ± 3% | 355,202 ± 1% | 2,965 |
-| `BenchmarkS3_WriteRoundTrip/MinIO` | Workstation | 11,340,000 ± 1% | 380,659 ± 1% | 3,045 |
-| | CI | 6,838,000 ± 5% | 364,071 ± 1% | 3,039 |
+| `BenchmarkS3_WriteRoundTrip/LocalStack` | Workstation | 11,190,000 ± 6% | 518,656 ± 2% | 4,904 |
+| | CI (v0.10.0) | 8,247,000 ± 3% | 355,202 ± 1% | 2,965 |
+| `BenchmarkS3_WriteRoundTrip/RustFS` | Workstation | 34,460,000 ± 6% | 521,318 ± 1% | 4,758 |
+| | CI | Not yet measured | | |
+
+The workstation figures are medians of ten runs on an AMD Ryzen 9 5900XT,
+measured when RustFS replaced MinIO, which no longer publishes its server
+image. The CI figure for LocalStack is the v0.10.0 baseline, and RustFS has
+no CI figure yet. Since that baseline, a LocalStack round trip has grown
+from 2,973 to 4,904 allocations; replacing the backend does not alter the
+S3 adapter, so the growth predates this baseline and is not attributable to
+RustFS.
 
 > **Note:** S3 numbers reflect Docker-local round-trip latency, not production S3.
 > The `SequentialWrites` benchmarks inject 1 ms of latency on `List` and `Get`
@@ -64,12 +72,8 @@ is part of the release checklist.
 > These results are informational — use them for relative comparison, not absolute targets.
 >
 > Allocation counts are stable across machines. Latency varies with CPU,
-> Docker runtime, and scheduler noise — the MinIO/LocalStack ordering
-> reverses between workstation and CI, confirming that absolute S3 latency
-> depends on the container environment, not the library.
->
-> LocalStack shows higher latency variance (± 15% workstation) than MinIO
-> (± 1%) due to its Java/Python runtime. This is inherent to the emulator.
+> Docker runtime, and scheduler noise, so absolute S3 latency depends on
+> the container environment, not the library.
 
 ## Benchmark inventory
 
@@ -78,7 +82,7 @@ is part of the release checklist.
 | `BenchmarkDataset_SequentialWrites` | `lode/dataset_bench_test.go` | In-memory (latency-injected) | Done |
 | `BenchmarkDataset_SequentialWrites_StoreCallCount` | `lode/dataset_bench_test.go` | In-memory (fault store) | Done |
 | `BenchmarkS3_WriteRoundTrip/LocalStack` | `lode/s3/bench_integration_test.go` | LocalStack | Done |
-| `BenchmarkS3_WriteRoundTrip/MinIO` | `lode/s3/bench_integration_test.go` | MinIO | Done |
+| `BenchmarkS3_WriteRoundTrip/RustFS` | `lode/s3/bench_integration_test.go` | RustFS | Done |
 | `BenchmarkDataset_Read` | `lode/bench_test.go` | In-memory | Done |
 | `BenchmarkDataset_StreamWrite` | `lode/bench_test.go` | In-memory | Done |
 | `BenchmarkVolume_ReadAt` | `lode/volume/bench_test.go` | In-memory (10 committed blocks) | Done |
@@ -91,9 +95,9 @@ is part of the release checklist.
 
 | Benchmark | Backend | Notes |
 |-----------|---------|-------|
-| Streaming record write round-trip | S3 (LocalStack/MinIO) | `StreamWriteRecords` path |
-| Compressed write round-trip | S3 (LocalStack/MinIO) | gzip/zstd codec variants |
-| Volume commit round-trip | S3 (LocalStack/MinIO) | Multi-block Volume write path |
+| Streaming record write round-trip | S3 (LocalStack/RustFS) | `StreamWriteRecords` path |
+| Compressed write round-trip | S3 (LocalStack/RustFS) | gzip/zstd codec variants |
+| Volume commit round-trip | S3 (LocalStack/RustFS) | Multi-block Volume write path |
 
 ## Running benchmarks
 
