@@ -8,7 +8,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/pithecene-io/lode/internal/testutil"
+	"github.com/pithecene/lode/internal/testutil"
 )
 
 // -----------------------------------------------------------------------------

@@ -11,7 +11,7 @@ import (
 	"io"
 	"time"
 
-	"github.com/pithecene-io/lode/internal/validate"
+	"github.com/pithecene/lode/internal/validate"
 )
 
 // -----------------------------------------------------------------------------

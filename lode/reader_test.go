@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pithecene-io/lode/internal/testutil"
+	"github.com/pithecene/lode/internal/testutil"
 )
 
 // -----------------------------------------------------------------------------

@@ -21,7 +21,7 @@ import (
 	"io"
 	"time"
 
-	"github.com/pithecene-io/lode/lode"
+	"github.com/pithecene/lode/lode"
 )
 
 // ID uniquely identifies a volume.

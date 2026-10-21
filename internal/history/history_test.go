@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pithecene-io/lode/internal/retry"
+	"github.com/pithecene/lode/internal/retry"
 )
 
 // Unit tests for the history core in isolation: a map-backed store and a

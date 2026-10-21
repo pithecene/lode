@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pithecene-io/lode/internal/history"
-	"github.com/pithecene-io/lode/internal/storepath"
+	"github.com/pithecene/lode/internal/history"
+	"github.com/pithecene/lode/internal/storepath"
 )
 
 // tombstone is the persisted record of an expiry (CONTRACT_RETENTION

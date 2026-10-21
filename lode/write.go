@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pithecene-io/lode/internal/history"
-	"github.com/pithecene-io/lode/internal/validate"
+	"github.com/pithecene/lode/internal/history"
+	"github.com/pithecene/lode/internal/validate"
 )
 
 // Data file roles: a dataset without a codec stores one blob per snapshot, a

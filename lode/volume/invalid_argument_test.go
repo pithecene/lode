@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/pithecene-io/lode/lode"
+	"github.com/pithecene/lode/lode"
 )
 
 // Every caller-supplied value a Volume refuses is reported as

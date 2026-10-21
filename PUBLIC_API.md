@@ -42,7 +42,7 @@ Example:
 <!-- illustrative -->
 ```go
 import (
-    "github.com/pithecene-io/lode/lode"
+    "github.com/pithecene/lode/lode"
 )
 
 ds, _ := lode.NewDataset(
@@ -75,7 +75,7 @@ reader, _ := lode.NewDatasetReader(
 ### Volume (Experimental, Package `lode/volume`)
 
 > **Experimental.** Volume resides in the package
-> `github.com/pithecene-io/lode/lode/volume` and is excluded from the v1.0
+> `github.com/pithecene/lode/lode/volume` and is excluded from the v1.0
 > compatibility commitment until it passes its own stability gate
 > (`docs/V1_READINESS.md` §4, `docs/V1_API_DECISIONS.md` D9). Its API may
 > change in any release. Data that it has persisted remains readable,
@@ -93,8 +93,8 @@ overlap.
 <!-- illustrative -->
 ```go
 import (
-    "github.com/pithecene-io/lode/lode"
-    "github.com/pithecene-io/lode/lode/volume"
+    "github.com/pithecene/lode/lode"
+    "github.com/pithecene/lode/lode/volume"
 )
 
 vol, _ := volume.New(
@@ -916,7 +916,7 @@ import (
     "github.com/aws/aws-sdk-go-v2/config"
     awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
 
-    "github.com/pithecene-io/lode/lode/s3"
+    "github.com/pithecene/lode/lode/s3"
 )
 
 cfg, _ := config.LoadDefaultConfig(ctx)
@@ -938,7 +938,7 @@ import (
     "github.com/aws/aws-sdk-go-v2/credentials"
     awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
 
-    "github.com/pithecene-io/lode/lode/s3"
+    "github.com/pithecene/lode/lode/s3"
 )
 
 cfg, _ := config.LoadDefaultConfig(ctx,

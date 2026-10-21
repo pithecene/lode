@@ -24,7 +24,7 @@ import (
 	"math"
 	"os"
 
-	"github.com/pithecene-io/lode/lode"
+	"github.com/pithecene/lode/lode"
 )
 
 func main() {

@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/pithecene-io/lode/internal/testutil"
-	"github.com/pithecene-io/lode/lode"
+	"github.com/pithecene/lode/internal/testutil"
+	"github.com/pithecene/lode/lode"
 )
 
 // A fresh Volume instance resolves its parent from the persisted pointer

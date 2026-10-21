@@ -608,8 +608,8 @@ These gaps will be addressed when the relevant APIs are exposed.
 
 ```
 $ go test ./...
-ok  	github.com/pithecene-io/lode/lode
-ok  	github.com/pithecene-io/lode/lode/s3
+ok  	github.com/pithecene/lode/lode
+ok  	github.com/pithecene/lode/lode/s3
 ```
 
 Every contract has test coverage, apart from the deferred gaps and the

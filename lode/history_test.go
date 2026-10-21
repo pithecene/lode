@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/pithecene-io/lode/internal/history"
+	"github.com/pithecene/lode/internal/history"
 )
 
 // Unit tests for history where the Dataset/Volume surfaces do not reach a

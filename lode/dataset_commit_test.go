@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pithecene-io/lode/internal/testutil"
+	"github.com/pithecene/lode/internal/testutil"
 )
 
 // Tests for commit-path behavior that mutation testing showed unobserved:

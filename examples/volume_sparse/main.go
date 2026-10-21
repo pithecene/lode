@@ -24,8 +24,8 @@ import (
 	"log"
 	"os"
 
-	"github.com/pithecene-io/lode/lode"
-	"github.com/pithecene-io/lode/lode/volume"
+	"github.com/pithecene/lode/lode"
+	"github.com/pithecene/lode/lode/volume"
 )
 
 func main() {

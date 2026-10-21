@@ -10,9 +10,9 @@ import (
 	"sort"
 	"time"
 
-	"github.com/pithecene-io/lode/internal/history"
-	"github.com/pithecene-io/lode/internal/retry"
-	"github.com/pithecene-io/lode/internal/validate"
+	"github.com/pithecene/lode/internal/history"
+	"github.com/pithecene/lode/internal/retry"
+	"github.com/pithecene/lode/internal/validate"
 )
 
 const (

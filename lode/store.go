@@ -12,7 +12,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/pithecene-io/lode/internal/storepath"
+	"github.com/pithecene/lode/internal/storepath"
 )
 
 // maxReadRangeLength is the largest ReadRange length a store accepts

@@ -61,8 +61,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
 
-	"github.com/pithecene-io/lode/internal/storepath"
-	"github.com/pithecene-io/lode/lode"
+	"github.com/pithecene/lode/internal/storepath"
+	"github.com/pithecene/lode/lode"
 )
 
 // S3 multipart upload constraints.
