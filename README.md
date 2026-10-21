@@ -12,72 +12,82 @@
 [![CI](https://github.com/pithecene/lode/actions/workflows/ci.yml/badge.svg)](https://github.com/pithecene/lode/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/pithecene/lode)](LICENSE)
 
-Lode is an embeddable Go persistence framework that brings snapshots,
-metadata, and safe write semantics to object storage—without running a
+Lode is an embeddable Go persistence framework that provides snapshots,
+metadata, and safe write semantics on object storage, without requiring a
 database. It offers **Datasets** for structured collections of named
-objects and, as an experimental package (`lode/volume`), **Volumes** for
-sparse, resumable byte-range storage.
+objects and, in an experimental package (`lode/volume`), **Volumes** for
+sparse, resumable storage of byte ranges.
 
 ---
 
-## What Lode is (and is not)
+## What Lode Is and Is Not
 
 **Lode is:**
-- An embeddable Go library
-- A persistence framework for structured data and sparse byte ranges
-- Snapshots, atomic commits, and metadata guarantees you'd otherwise hand-roll on raw storage APIs
-- Explicit and predictable by design
+- an embeddable Go library;
+- a persistence framework for structured data and sparse byte ranges;
+- a provider of snapshots, atomic commits, and metadata guarantees that
+  would otherwise have to be implemented by hand on raw storage APIs; and
+- explicit and predictable by design.
 
 **Lode is not:**
-- A database or storage engine
-- A query planner or execution runtime
-- A distributed system or background service
+- a database or storage engine;
+- a query planner or execution runtime; or
+- a distributed system or background service.
 
-Lode owns *structure and lifecycle*, not execution.
+Lode governs *structure and lifecycle*, not execution.
 
 ---
 
-## Why Lode exists
+## Why Lode Exists
 
 Many systems already use object storage as their primary persistence layer:
 
-- Events written to S3
-- Parquet files on a filesystem
-- Analytics data dumped “by convention”
+- events written to S3;
+- Parquet files on a filesystem; and
+- analytics data deposited according to informal convention.
 
-What’s usually missing is discipline:
-- No clear snapshots or versions
-- No metadata guarantees
-- Accidental overwrites
-- Ad-hoc directory layouts
-- Unclear read/write safety
+What such systems usually lack is discipline:
+- no clear snapshots or versions;
+- no guarantees about metadata;
+- accidental overwrites;
+- improvised directory layouts; and
+- uncertain safety of reads and writes.
 
-Lode formalizes the parts that should be formalized and refuses to do the rest.
+Lode formalizes what should be formalized and declines to do anything
+else.
 
 ---
 
-## Core ideas
+## Core Ideas
 
 Lode is built around a small set of invariants:
 
 **Dataset** (structured collections):
-- **Datasets are immutable** — writes produce snapshots
-- **Snapshots reference manifests** that describe data files and metadata
-- **Storage, format, compression, and partitioning are orthogonal**
+- **Datasets are immutable**: each write produces a snapshot.
+- **Snapshots reference manifests**, which describe data files and
+  metadata.
+- **Storage, format, compression, and partitioning are independent of one
+  another.**
 
-**Volume** (sparse byte ranges; experimental package `lode/volume`, outside the v1.0 compatibility promise):
-- **Volumes are sparse, resumable byte address spaces**
-- **Volume commits track which byte ranges exist** — gaps are explicit, never zero-filled
-- **Each commit produces a cumulative manifest** covering all committed blocks
+**Volume** (sparse byte ranges; the experimental package `lode/volume`,
+excluded from the v1.0 compatibility commitment):
+- **Volumes are sparse, resumable byte address spaces.**
+- **Volume commits record which byte ranges exist**: gaps are explicit and
+  are never filled with zeros.
+- **Each commit produces a cumulative manifest** that covers all committed
+  blocks.
 
 **Shared invariants:**
-- **Manifest presence is the commit signal** — a snapshot is visible only after its manifest is persisted
-- **Metadata is explicit, persisted, and self-describing (never inferred)**
-- **Safe concurrent writes** — CAS-capable stores detect conflicts automatically; others require single-writer discipline
+- **The presence of a manifest signifies a commit**: a snapshot is visible
+  only after its manifest is persisted.
+- **Metadata is explicit, persisted, and self-describing** (never
+  inferred).
+- **Concurrent writes are safe**: stores that support CAS detect conflicts
+  automatically; other stores require a single writer.
 
-If you know the snapshot ID, you know exactly what data you are reading.
+A snapshot ID identifies exactly the data that is being read.
 
-How a dataset sits in storage (default layout):
+The arrangement of a dataset in storage (default layout):
 
 ```mermaid
 flowchart LR
@@ -90,29 +100,29 @@ flowchart LR
     S3 -.->|parent| S2 -.->|parent| S1
 ```
 
-Each write adds a snapshot; nothing earlier changes. A commit becomes visible
-in a fixed order:
+Each write adds a snapshot, and nothing written earlier changes. A commit
+becomes visible in a fixed sequence:
 
 ```mermaid
 sequenceDiagram
     participant W as writer
     participant S as store
     W->>S: write data files under the new snapshot ID
-    W->>S: move the latest pointer (CAS from the parent it read)
+    W->>S: advance the latest pointer (CAS from the parent it read)
     W->>S: write the manifest
-    Note over W,S: visible: readers see a snapshot once its manifest exists
+    Note over W,S: readers see the snapshot once its manifest exists
 ```
 
-If another writer moved the pointer first, the CAS fails with
-`ErrSnapshotConflict`. With `WithRetryCount`, Lode re-reads the head and
+If another writer advanced the pointer first, the CAS fails with
+`ErrSnapshotConflict`. With `WithRetryCount`, Lode reads the head again and
 retries with the same staged data, which may still publish the snapshot. If
-the commit fails for good, data files a buffered write staged stay behind as
-orphans until `Dataset.Sweep` reclaims them; a stream write deletes its
-object on a best-effort basis.
+the commit fails permanently, the data files that a buffered write staged
+remain as orphaned objects until `Dataset.Sweep` reclaims them; a stream
+write deletes its object on a best-effort basis.
 
 ---
 
-## Quick Start (5 minutes)
+## Quick Start
 
 ### Install
 
@@ -121,7 +131,7 @@ object on a best-effort basis.
 go get github.com/pithecene-io/lode
 ```
 
-### Write and read a blob
+### Writing and Reading a Blob
 
 <!-- illustrative: shows API pattern; see examples/ for runnable code -->
 ```go
@@ -149,7 +159,7 @@ func main() {
 }
 ```
 
-### Write structured records
+### Writing Structured Records
 
 <!-- illustrative: shows API pattern; see examples/ for runnable code -->
 ```go
@@ -166,7 +176,7 @@ records := lode.R(
 snap, _ := ds.Write(ctx, records, lode.Metadata{"batch": "1"})
 ```
 
-### Stream large files
+### Streaming Large Files
 
 <!-- illustrative: shows API pattern; see examples/ for runnable code -->
 ```go
@@ -178,7 +188,7 @@ sw.Write([]byte("... large data ..."))
 snap, _ := sw.Commit(ctx)
 ```
 
-### Write sparse byte ranges (Volume, experimental)
+### Writing Sparse Byte Ranges (Volume, Experimental)
 
 <!-- illustrative: shows API pattern; see examples/ for runnable code -->
 ```go
@@ -197,20 +207,22 @@ See [`examples/`](#examples) for complete runnable code.
 
 ---
 
-## Which Write API?
+## Choosing a Write API
 
 | Paradigm | API | Use Case | Codec | Partitioning |
 |----------|-----|----------|-------|--------------|
 | Dataset | `Write` | In-memory data, small batches | ✅ Optional | ✅ Supported |
-| Dataset | `StreamWrite` | Large binary payloads (GB+) | ❌ Raw only | ❌ Not supported |
-| Dataset | `StreamWriteRecords` | Large record streams | ✅ Required (streaming) | ❌ Not supported |
-| Volume (experimental) | `StageWriteAt` + `Commit` | Sparse byte ranges, resumable | ❌ Raw only | ❌ Not applicable |
+| Dataset | `StreamWrite` | Large binary payloads (gigabytes or more) | ❌ Raw only | ❌ Not supported |
+| Dataset | `StreamWriteRecords` | Large streams of records | ✅ Required (streaming) | ❌ Not supported |
+| Volume (experimental) | `StageWriteAt` + `Commit` | Sparse, resumable byte ranges | ❌ Raw only | ❌ Not applicable |
 
-**Decision flow:**
-1. Is the data already in memory? → Use `Write`
-2. Is it a large binary blob (no structure)? → Use `StreamWrite`
-3. Is it a large stream of records? → Use `StreamWriteRecords` with a streaming codec
-4. Is it a sparse/resumable byte address space? → Use `volume.Volume` (experimental)
+**Decision procedure:**
+1. If the data is already in memory, use `Write`.
+2. If it is a large, unstructured binary object, use `StreamWrite`.
+3. If it is a large stream of records, use `StreamWriteRecords` with a
+   streaming codec.
+4. If it is a sparse, resumable byte address space, use `volume.Volume`
+   (experimental).
 
 ```mermaid
 flowchart TD
@@ -225,75 +237,83 @@ flowchart TD
 
 ## Guarantees
 
-What Lode commits to:
+Lode guarantees the following:
 
 | Guarantee | Detail |
 |-----------|--------|
 | **Immutable snapshots** | Once written, data files and manifests never change |
-| **Atomic commits** | Manifest presence is the commit signal; no partial visibility |
-| **Explicit metadata** | Every snapshot has caller-supplied metadata (never inferred) |
-| **Safe writes** | Overwrites are prevented; atomic for standard writes on all built-in adapters. Large uploads (>5GB) are atomic when the backend supports conditional multipart completion, best-effort otherwise ([details](PUBLIC_API.md#large-upload-guarantees)). |
-| **Backend-agnostic** | Same semantics on filesystem, memory, or S3 |
+| **Atomic commits** | The presence of a manifest signifies a commit; nothing is partially visible |
+| **Explicit metadata** | Every snapshot carries metadata supplied by the caller (never inferred) |
+| **Safe writes** | Overwrites are prevented, atomically for standard writes on every built-in adapter. Large uploads (above 5 GB) are atomic when the backend supports conditional completion of multipart uploads, and best-effort otherwise ([details](PUBLIC_API.md#large-upload-guarantees)). |
+| **Independence from the backend** | The same semantics on the filesystem, in memory, or on S3 |
 
-What Lode explicitly does NOT provide:
+Lode explicitly does **not** provide the following:
 
-| Non-goal | Why |
-|----------|-----|
-| Distributed coordination | Lode detects conflicts (CAS) but does not provide locks, consensus, or leader election |
+| Non-Goal | Reason |
+|----------|--------|
+| Distributed coordination | Lode detects conflicts (CAS) but provides no locks, consensus, or leader election |
 | Query execution | Lode structures data; query engines consume it |
-| Background compaction | No implicit mutations; callers control lifecycle |
-| Automatic cleanup | Nothing is removed implicitly; `Expire` and `Sweep` remove snapshots and leftovers when the caller runs them (see [the retention guide](docs/guides/retention.md)) |
+| Background compaction | Lode performs no implicit mutation; callers control the lifecycle |
+| Automatic removal | Nothing is removed implicitly; `Expire` and `Sweep` remove snapshots and residual data when the caller invokes them (see [the retention guide](docs/guides/retention.md)) |
 
-For full contract details: [`docs/contracts/`](docs/contracts/)
-
----
-
-## Gotchas
-
-Common pitfalls when using Lode:
-
-- **Metadata defaults to empty** — `nil` metadata is coalesced to `Metadata{}`; pass `nil` or `Metadata{}` for empty metadata.
-- **Raw mode expects `[]byte`** — Without a codec, `Write` expects exactly one `[]byte` element.
-- **Concurrent writes need CAS-capable stores** — Without `ConditionalWriter`, concurrent writers may corrupt history. Built-in Memory and S3 adapters support CAS; FS supports CAS on Unix only (non-Unix FS falls back to single-writer Delete+Put).
-- **Cleanup is best-effort** — Failed streams may leave partial objects in storage until `Dataset.Sweep` reclaims them past its grace period.
-- **StreamWriteRecords requires streaming codec** — Not all codecs support streaming.
-
-See [`PUBLIC_API.md`](PUBLIC_API.md) for complete usage guidance.
+The complete contracts are in [`docs/contracts/`](docs/contracts/).
 
 ---
 
-## Example: event storage
+## Common Pitfalls
 
-A canonical Lode workflow looks like this:
+- **Metadata defaults to empty**: `nil` metadata is converted to
+  `Metadata{}`; pass either `nil` or `Metadata{}` for empty metadata.
+- **Raw mode expects `[]byte`**: without a codec, `Write` expects exactly
+  one `[]byte` element.
+- **Concurrent writes require a store that supports CAS**: without
+  `ConditionalWriter`, concurrent writers may corrupt the history. The
+  built-in memory and S3 adapters support CAS; the filesystem adapter
+  supports it on Unix only (elsewhere it uses Delete+Put and requires a
+  single writer).
+- **Removal of partial objects is best-effort**: failed streams may leave
+  partial objects in storage until `Dataset.Sweep` reclaims them after its
+  grace period.
+- **`StreamWriteRecords` requires a streaming codec**: not every codec
+  supports streaming.
+
+See [`PUBLIC_API.md`](PUBLIC_API.md) for complete guidance on usage.
+
+---
+
+## Example: Event Storage
+
+A typical Lode workflow has the following configuration:
 
 - Dataset: `events`
-- Rows: timestamped events
-- Partitioning: Hive-style by day (`dt=YYYY-MM-DD`)
+- Rows: events with timestamps
+- Partitioning: Hive style, by day (`dt=YYYY-MM-DD`)
 - Format: JSON Lines
 - Compression: gzip
-- Backend: file system or S3
+- Backend: filesystem or S3
 
-Each write produces a new snapshot.
-Reads always target a snapshot explicitly.
+Each write produces a new snapshot, and every read targets a snapshot
+explicitly.
 
 ---
 
 ## Supported Backends
 
-- **Filesystem** — Local storage via `NewFSFactory`
-- **In-memory** — Testing via `NewMemoryFactory`
-- **S3** — AWS S3, MinIO, LocalStack, R2 via `lode/s3`
+- **Filesystem**: local storage through `NewFSFactory`
+- **In memory**: testing through `NewMemoryFactory`
+- **S3**: AWS S3, MinIO, LocalStack, and R2 through `lode/s3`
 
 ---
 
 ## Storage Prerequisites
 
-**Ensure storage exists before constructing a dataset, volume, or reader.**
+**Ensure that storage exists before constructing a dataset, volume, or
+reader.**
 
-Lode does not create storage infrastructure. This is intentional:
-- No hidden side effects in constructors
-- Explicit provisioning keeps control with the caller
-- Same pattern across all backends
+Lode does not create storage infrastructure. This is deliberate:
+- Constructors have no concealed side effects.
+- Explicit provisioning leaves control with the caller.
+- The same pattern applies to every backend.
 
 ### Filesystem
 
@@ -325,7 +345,7 @@ ds, err := lode.NewDataset("events", factory)
 
 ### Bootstrap Helpers
 
-If you need provisioning helpers, implement them outside core APIs:
+Provisioning helpers, if needed, belong outside the core APIs:
 
 <!-- illustrative -->
 ```go
@@ -338,7 +358,7 @@ func EnsureFSDataset(id, root string, opts ...lode.Option) (lode.Dataset, error)
 }
 ```
 
-This keeps Lode's core APIs explicit and predictable.
+This arrangement keeps Lode's core APIs explicit and predictable.
 
 ---
 
@@ -346,44 +366,50 @@ This keeps Lode's core APIs explicit and predictable.
 
 | Example | Purpose | Run |
 |---------|---------|-----|
-| [`default_layout`](examples/default_layout) | Write → list → read with default layout | `go run ./examples/default_layout` |
-| [`hive_layout`](examples/hive_layout) | Partition-first layout with Hive partitioner | `go run ./examples/hive_layout` |
-| [`blob_upload`](examples/blob_upload) | Raw blob write/read (no codec, default bundle) | `go run ./examples/blob_upload` |
-| [`manifest_driven`](examples/manifest_driven) | Demonstrates manifest-as-commit-signal | `go run ./examples/manifest_driven` |
-| [`stream_write_records`](examples/stream_write_records) | Streaming record writes with iterator | `go run ./examples/stream_write_records` |
-| [`parquet`](examples/parquet) | Parquet codec with schema-typed fields | `go run ./examples/parquet` |
-| [`volume_sparse`](examples/volume_sparse) | Sparse Volume: stage, commit, read with gaps | `go run ./examples/volume_sparse` |
-| [`vector_artifacts`](examples/vector_artifacts) | Vector artifact pipeline: embeddings, indices, pointers | `go run ./examples/vector_artifacts` |
-| [`optimistic_concurrency`](examples/optimistic_concurrency) | CAS conflict detection and retry pattern | `go run ./examples/optimistic_concurrency` |
-| [`retention`](examples/retention) | Expire runs by partition with a preview, then sweep | `go run ./examples/retention` |
-| [`s3`](examples/s3) | S3 adapter with LocalStack/MinIO | `go run ./examples/s3` |
+| [`default_layout`](examples/default_layout) | Writing, listing, and reading with the default layout | `go run ./examples/default_layout` |
+| [`hive_layout`](examples/hive_layout) | A partition-first layout with the Hive partitioner | `go run ./examples/hive_layout` |
+| [`blob_upload`](examples/blob_upload) | Writing and reading a raw blob (no codec, default components) | `go run ./examples/blob_upload` |
+| [`manifest_driven`](examples/manifest_driven) | The manifest as the signal of a commit | `go run ./examples/manifest_driven` |
+| [`stream_write_records`](examples/stream_write_records) | Streaming record writes with an iterator | `go run ./examples/stream_write_records` |
+| [`parquet`](examples/parquet) | The Parquet codec with schema-typed fields | `go run ./examples/parquet` |
+| [`volume_sparse`](examples/volume_sparse) | A sparse Volume: staging, committing, and reading with gaps | `go run ./examples/volume_sparse` |
+| [`vector_artifacts`](examples/vector_artifacts) | A vector artifact pipeline: embeddings, indices, and pointers | `go run ./examples/vector_artifacts` |
+| [`optimistic_concurrency`](examples/optimistic_concurrency) | CAS conflict detection and the retry pattern | `go run ./examples/optimistic_concurrency` |
+| [`retention`](examples/retention) | Expiring runs by partition after a preview, then sweeping | `go run ./examples/retention` |
+| [`s3`](examples/s3) | The S3 adapter with LocalStack or MinIO | `go run ./examples/s3` |
 
-Each example is self-contained and runnable. See the example source for detailed comments.
+Each example is self-contained and runnable; its source contains detailed
+comments.
 
 ---
 
 ## Status
 
-Lode is at **v0.10.0** and under active development.
-APIs are stabilizing; the breaking changes still under consideration for v1.0 are
-listed once, with their blast radius, in [`docs/V1_API_DECISIONS.md`](docs/V1_API_DECISIONS.md).
+Lode is at **v0.10.0** and under active development. Its APIs are
+stabilizing; the breaking changes still under consideration for v1.0 are
+listed once, with the scope of their effect, in
+[`docs/V1_API_DECISIONS.md`](docs/V1_API_DECISIONS.md).
 
-v0.10.0 adds nightly mutation-testing gates and the fixes they surfaced (all-or-nothing `Put`,
-stream writes that fail fast, bounded `ReadRange`), completes the listing API with cursors
-and deterministic order, classifies every refused argument under `ErrInvalidArgument`, and
-restructures the internals around one head-pointer protocol, one path grammar and one
-write pipeline — with no change on disk and benchmarks at parity. CAS-capable stores
-(Memory, S3, FS on Unix) detect concurrent writers; others require single-writer discipline.
+v0.10.0 adds nightly mutation-testing gates and the corrections they
+prompted (an atomic `Put`, stream writes that fail early, and a bounded
+`ReadRange`). It completes the listing API with cursors and a deterministic
+order, classifies every rejected argument under `ErrInvalidArgument`, and
+reorganizes the internals around a single head-pointer protocol, a single
+path grammar, and a single write pipeline, without any change to the
+stored format and with benchmark results unchanged. Stores that support CAS
+(memory, S3, and the filesystem on Unix) detect concurrent writers; other
+stores require a single writer.
 
-If you are evaluating Lode, focus on:
-- snapshot semantics (Dataset and Volume)
-- metadata visibility
-- API clarity
+An evaluation of Lode should concentrate on:
+- snapshot semantics (Dataset and Volume);
+- the visibility of metadata; and
+- the clarity of the API.
 
-Usage overview: [`PUBLIC_API.md`](PUBLIC_API.md)
-Concrete usage: [`examples/`](examples/)
-Benchmarks: [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md)
-Implementation milestones: [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md)
+- Overview of usage: [`PUBLIC_API.md`](PUBLIC_API.md)
+- Examples of usage: [`examples/`](examples/)
+- Benchmarks: [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md)
+- Implementation milestones:
+  [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md)
 
 ---
 
