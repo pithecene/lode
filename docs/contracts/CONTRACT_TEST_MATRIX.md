@@ -565,6 +565,27 @@ cases. `go test` runs their seed inputs; `task fuzz` explores further (see
 
 ---
 
+## Chaos Harness
+
+`internal/chaos` runs concurrent writers and readers, each with its own
+`Dataset` handle, against a shared store for a fixed duration, and then
+checks the history they left. It runs on demand (`task chaos`, or the Chaos
+workflow) against memory, the filesystem, LocalStack, RustFS, or any
+S3-compatible store configured through `CHAOS_S3_*` variables.
+
+| Invariant | Check |
+|-----------|-------|
+| Every commit the library acknowledged has a manifest | `acknowledged-commits-persist` |
+| `Latest` returns the settling commit; no snapshot has two children (CONTRACT_WRITE_API §Concurrency: linear under CAS); the chain has no more ends than missing parents account for; and, with no missing parent, the chain from the head reaches every snapshot | `history-shape` |
+| A parent without a manifest is an abandoned commit, which no writer was told had committed | `parents-explained` |
+| Every snapshot reads back its manifest's row count, and an acknowledged one its writer's rows | `contents-match-manifests` |
+| During the run, the head and acknowledged snapshots read back in full | `read-head`, `read-commit` |
+
+After the workload stops, a clean handle makes one settling commit, which
+`Latest` must then return.
+
+---
+
 ## Open Gaps
 
 ### G3-4: Streaming Failure Semantics

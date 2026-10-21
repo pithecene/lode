@@ -1,0 +1,104 @@
+package chaos
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"strings"
+	"testing"
+	"time"
+)
+
+var (
+	flagChaos    = flag.Bool("chaos", false, "run the chaos harness (see `task chaos`)")
+	flagSeed     = flag.Uint64("chaos.seed", 0, "seed for the run's random choices; 0 picks one from the clock")
+	flagDuration = flag.Duration("chaos.duration", 10*time.Second, "how long each configuration runs before the checks")
+	flagWriters  = flag.Int("chaos.writers", 8, "concurrent writers, each with its own Dataset handle")
+	flagReaders  = flag.Int("chaos.readers", 2, "concurrent readers")
+	flagRetries  = flag.Int("chaos.retries", 5, "WithRetryCount for every handle")
+	flagBackends = flag.String("chaos.backends", "memory,fs", "comma-separated backends: "+strings.Join(BackendNames(), ", "))
+	flagLayouts  = flag.String("chaos.layouts", "default,hive", "comma-separated layouts: "+strings.Join(LayoutNames(), ", "))
+)
+
+// TestChaos runs the harness once per backend and layout. It is skipped
+// unless -chaos is passed. A failure logs the seed and the command that
+// repeats the run's random choices.
+func TestChaos(t *testing.T) {
+	if !*flagChaos {
+		t.Skip("skipping the chaos harness; use -chaos to enable")
+	}
+	seed := *flagSeed
+	if seed == 0 {
+		seed = uint64(time.Now().UnixNano()) //nolint:gosec // a positive clock reading as a seed
+	}
+	backends, layouts := splitList(*flagBackends), splitList(*flagLayouts)
+	if err := selection(backends, layouts); err != nil {
+		t.Fatal(err)
+	}
+	for _, backend := range backends {
+		for _, layout := range layouts {
+			t.Run(backend+"/"+layout, func(t *testing.T) {
+				runOne(t, backend, Config{
+					Seed: seed, Duration: *flagDuration, Writers: *flagWriters, Readers: *flagReaders,
+					Layout: layout, Retries: *flagRetries,
+				})
+			})
+		}
+	}
+}
+
+// selection validates the requested backends and layouts before anything
+// runs. An empty selection would run nothing and pass.
+func selection(backends, layouts []string) error {
+	for _, sel := range []struct {
+		kind            string
+		selected, known []string
+	}{
+		{"backend", backends, BackendNames()},
+		{"layout", layouts, LayoutNames()},
+	} {
+		if len(sel.selected) == 0 {
+			return fmt.Errorf("chaos: no %s selected", sel.kind)
+		}
+		for _, name := range sel.selected {
+			if err := requireKnown(sel.kind, name, sel.known); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func runOne(t *testing.T, backendName string, cfg Config) {
+	t.Helper()
+	runID := fmt.Sprintf("%d-%s", time.Now().UnixNano(), cfg.Layout)
+	backend, err := OpenBackend(t.Context(), backendName, t.TempDir(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { backend.Release(context.WithoutCancel(t.Context())) })
+
+	report := Run(t.Context(), cfg, backend.Store)
+	t.Logf("seed %d: %d commits, %d conflicts after retries, %d reads, %d snapshots persisted",
+		report.Seed, report.Commits, report.Conflicts, report.Reads, report.Snapshots)
+	for _, v := range report.Violations {
+		t.Errorf("violation %s", v)
+	}
+	if len(report.Violations) > 0 {
+		t.Logf("repeat with: go test ./internal/chaos -run 'TestChaos/%s/%s' -chaos -chaos.seed=%d -chaos.backends=%s -chaos.layouts=%s -chaos.writers=%d -chaos.readers=%d -chaos.retries=%d -chaos.duration=%s",
+			backendName, cfg.Layout, cfg.Seed, backendName, cfg.Layout, cfg.Writers, cfg.Readers, cfg.Retries, cfg.Duration)
+	}
+	if report.Commits == 0 {
+		t.Errorf("no commit succeeded; the run exercised nothing")
+	}
+}
+
+func splitList(s string) []string {
+	var out []string
+	for item := range strings.SplitSeq(s, ",") {
+		if item = strings.TrimSpace(item); item != "" {
+			out = append(out, item)
+		}
+	}
+	return out
+}
