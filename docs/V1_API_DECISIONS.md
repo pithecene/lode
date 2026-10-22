@@ -19,7 +19,7 @@ here with the rest. D10 comes from the investigation of the history fork
 observed in production; most of its parts change contracts rather than
 signatures, but they define what v1.0 promises about commits and listing.
 D11 comes from a review of the constructors against the call sites of
-Quarry and the examples; it would resolve D1 and D3 if accepted.
+Quarry and the examples; it bears on D1, D2, and D3.
 
 ---
 
@@ -647,7 +647,10 @@ read under it.
    ```
 
    The first commit of a dataset persists a dataset descriptor that records
-   its layout, codec, and compressor, created with `CompareAndSwap` at a
+   its complete configuration, not only component names: the layout's
+   grammar and partition keys, and the codec and compressor with their
+   settings (a Parquet codec's schema, for example). The descriptor is
+   created with `CompareAndSwap` at a
    path that no layout uses (for example, `_lode/datasets/<id>.json`; the
    dataset ID grammar must then exclude the prefix). A later handle reads
    the descriptor: a reader needs no layout option, and a handle whose
@@ -656,14 +659,19 @@ read under it.
    Datasets under one root may therefore retain different layouts, as they
    may today, and every layout, the flat layout included, can enumerate
    datasets through the descriptors. `OpenReadOnly` takes an
-   `ObjectStore`. This resolves costs 3, 4, and 5. It resolves cost 1 in
-   part: the layout is stated once, but each handle still states its codec,
-   which the descriptor checks, and its retry settings. Two error checks
-   remain.
+   `ObjectStore`. This resolves costs 3 and 4. It resolves cost 1 in part:
+   the layout is stated once, but each handle still states its codec, which
+   the descriptor checks, and its retry settings. Cost 5 is resolved only
+   if writer options are also separated from reader options (D3). Two
+   error checks remain.
 
 3. **A root handle with generic methods.** As option 2, with the dataset
-   obtained through a generic method of a concrete `Repo` (Go 1.27). `Open`
-   records its error and returns it from every method of the handle, so a
+   obtained through a generic method of a concrete `Repo`; since Go 1.27, a
+   method declaration may declare its own type parameters
+   ([release notes](https://go.dev/doc/go1.27)). `Open` returns only the
+   handle, `func Open[S Store](ctx context.Context, f Factory[S], opts
+   ...Option) *Repo`; it records any error of the factory or of its
+   options and returns that error from every method of the handle, so a
    chained construction checks one error, as a factory does today:
 
    ```go
@@ -686,12 +694,13 @@ not decide.
 
 **Proposed.** Option 3, provided that the Go 1.27.3 minimum (#261) is
 accepted; otherwise, option 2. Options 2 and 3 persist each dataset's
-layout, codec, and compressor, as `AGENTS.md` requires of metadata, and
-give each option one target. Option 3
-also retains the single error check of the current factory. If option 2
-or 3 is accepted, it decides D1 (the payload type is the dataset's type
-parameter) and D3 (options divide by level); D2 remains, because the layout
-option still takes a layout value.
+configuration, as `AGENTS.md` requires of metadata. Option 3 also retains
+the single error check of the current factory. Options 2 and 3 type the
+records of a dataset with a codec but do not separate blob datasets from
+record datasets: D1 remains open, narrowed to that separation (for example,
+a distinct blob handle). D3 is resolved only if the options are also
+divided by target, which this entry does not yet specify. D2 remains,
+because the layout option still takes a layout value.
 
 **Breaks.**
 - Every constructor call: the examples, the README, `PUBLIC_API.md`, and
