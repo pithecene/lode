@@ -259,9 +259,10 @@ Volume written before the boundary moves must stay readable after it.
 
 **Breaks.** Nothing; it forbids a class of future changes.
 
-**Status.** Open. D11 would supersede it: the names become the caller's
-`Paths`, and only the values of `DefaultPaths()` and `FlatPaths()` and the
-manifest's field names remain obligations of Lode's.
+**Status.** Open. D11 would supersede it for datasets: the names become
+the caller's `Paths`, and only the values of `DefaultPaths()` and
+`FlatPaths()` and the manifest's field names remain obligations of Lode's.
+The rule for the Volume grammar stands.
 
 ---
 
@@ -669,9 +670,9 @@ root := lode.Open(lode.FS("/data"), lode.WithPaths(paths))
 | Paths | `lode.Paths`, a struct of the names within a path: `Datasets` (the prefix of every dataset, empty for the store root), `Snapshots` (the snapshot directory of an unpartitioned dataset, empty for none), `Partitions`, `Segments` (the snapshot directory within a partition), `Manifest`, `Data`, `Latest`, and `Expired`. `lode.DefaultPaths()` returns today's names, and `lode.FlatPaths()` returns those of today's flat layout (`Datasets` and `Snapshots` empty). `WithPaths` is a `RootOption`, so a writer and a reader of one store state the convention once. Each name must be one path segment without `=`, and the names must be distinct, so that every path parses to one meaning; an invalid set is reported by `Records` or `Blobs`. Paths are code, not persisted configuration: a root with other names finds no datasets, as a root over another prefix does. | Cost 2; D8 |
 | Record datasets | A generic method, `func (r *Root) Records[T any](ctx context.Context, id DatasetID, codec Codec[T], opts ...DatasetOption) (Records[T], error)`. `Records[T]` embeds the read-only `RecordView[T]`, which is what `ReadRoot.Records` returns. Codec constructors return the interface type, so that `T` is inferred from the codec. | Cost 3; D1 |
 | Blob datasets | `func (r *Root) Blobs(ctx context.Context, id DatasetID, opts ...DatasetOption) (Blobs, error)`, whose `Write` takes one `[]byte` and whose `Read` returns one, with streaming writes. `Blobs` embeds the read-only `BlobView`, which `ReadRoot.Blobs(ctx, id, opts ...ViewOption)` returns. | D1 |
-| Settings | Constructing a dataset handle reads the `latest` pointer and the manifest it names, under `ctx`. The pointer names a snapshot but not whether the dataset is partitioned, so the handle reads the manifest under `Snapshots` and, if it is absent, under `Segments`; because the names are distinct, at most one exists. The manifest gains a `partition_keys` field, so that with the codec, compressor, checksum algorithm, and partitioner it already records, it states every setting a reader needs. A view takes these settings from the manifest. A writer whose options conflict with them is rejected; a writer of an empty dataset uses its options, and its first commit records them. A manifest written before `partition_keys` existed names a Hive partitioner without keys; for such a dataset the caller supplies the layout, and Lode does not infer the keys from partition paths. Two first commits with conflicting settings are serialized by the pointer's `CompareAndSwap`: the losing writer reads the winner's manifest and is rejected rather than retried. | Cost 1 |
+| Settings | Constructing a dataset handle resolves the head under `ctx` as the current reader does (CONTRACT_CORE §Head Pointer), including its fallback scan when the pointer is absent and its reading of manifests stored only under a partition. The manifest gains a `partition_keys` field, so that with the codec, compressor, checksum algorithm, and partitioner it already records, it states every setting a writer needs. A view reads each snapshot with the components that snapshot's manifest names, so a history written with different compressors or checksums remains readable without migration; a view needs no partition keys, because each manifest lists its files' paths. A writer whose options conflict with them is rejected; a writer of an empty dataset uses its options, and its first commit records them. A manifest written before `partition_keys` existed names a Hive partitioner without keys; for such a dataset a writer supplies the layout, and Lode does not infer the keys from partition paths. A writer's settings are checked against the head's manifest. Two first commits with conflicting settings are serialized by the pointer's `CompareAndSwap`: the losing writer reads the winner's manifest and is rejected rather than retried. | Cost 1 |
 | Layout | An exported `Layout` type that chooses partitioning only: `lode.Unpartitioned()` and `lode.Hive(keys...)`; the names within a path come from the root's `Paths`. A Hive layout reads partition values from `map[string]any` records by name; for typed records, it takes a function that returns the values by key name (`lode.Hive("source", "day").By(func(e Event) lode.Partition { return lode.Partition{"source": e.Source, "day": e.Day} })`), so that partitioning uses no reflection and a value cannot be assigned to the wrong key. A write whose partition names other keys than the layout's fails. The function is code, not configuration, and is not persisted; a function that derives values differently writes different data, as a map record with other values does. `By` is a generic method of the concrete Hive layout, and `Records` reports a function written for another record type. | D2 |
-| Options | Writer handles take `DatasetOption`. A view takes no layout, codec settings, or retry, which come from the manifest. Lode reconstructs the bundled compressors and checksums from the names the manifest records; a custom compressor or checksum is passed to the view explicitly, through `ReadRoot.Records(ctx, id, codec, opts ...ViewOption)`, and its `Name` must match the manifest's. `ViewOption` holds only `WithCompressor` and `WithChecksum`. No global registry is introduced. The `ErrOptionNotValidFor...` sentinels are removed. | Cost 5; D3 |
+| Options | Writer handles take `DatasetOption`. A view takes no layout or retry. The codec is always the caller's: it fixes the record type, and its configuration (a Parquet schema, for example) is not persisted; its `Name` must match the name each manifest records. Lode reconstructs the bundled compressors and checksums from the names the manifest records; a custom compressor or checksum is passed to the view explicitly, through `ReadRoot.Records(ctx, id, codec, opts ...ViewOption)`, and its `Name` must match the manifest's. `ViewOption` holds only `WithCompressor` and `WithChecksum`. No global registry is introduced. The `ErrOptionNotValidFor...` sentinels are removed. | Cost 5; D3 |
 | Metadata | `Write` takes any value that encodes as a JSON object, a struct or a map; nil persists as `{}`, as CONTRACT_CORE §Metadata Rules requires. `Snapshot.Metadata` retains the persisted JSON and decodes it on request (`Decode(&v)`), so a struct target receives its declared field types; a map target receives JSON's types, with numbers as `float64`. | Cost 3 (metadata) |
 
 The surface requires Go 1.27 for generic methods, which is the minimum
@@ -685,8 +686,8 @@ them, not what they do. No object is added to the persisted format: the
 manifest gains one field, and the paths a root with `DefaultPaths()` or
 `FlatPaths()` produces are byte-identical to today's default, Hive, and
 flat layouts, so existing datasets need no migration. Constructing a
-dataset handle costs one `Get` of the pointer and at most two `Get`
-calls for the manifest, and writes nothing; commits, reads, and listings keep their
+dataset handle costs what resolving the head costs today, and writes
+nothing; commits, reads, and listings keep their
 bounds. Generic records add no per-record cost beyond the codec's own
 encoding.
 
@@ -713,8 +714,9 @@ encoding.
 
 **Supersedes.** If accepted, D11 decides D1 (separate record and blob
 handles), D2 (an exported `Layout` with one spelling per layout), D3 (one
-option type with one target), and D8 (path names chosen by the caller,
-with `DefaultPaths()` and `FlatPaths()` fixed as part of the API).
+option type with one target), and D8 for datasets (path names chosen by
+the caller, with `DefaultPaths()` and `FlatPaths()` fixed as part of the
+API); D8's rule for the Volume grammar is unchanged.
 
 **Breaks.** Every caller, once: the examples, the README, `PUBLIC_API.md`,
 and Quarry, whose three constructions become one root and one `Records`
