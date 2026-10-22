@@ -78,6 +78,16 @@ type Kind[ID ~string, M any] interface {
 	NotExpired(ctx context.Context, id ID) (bool, error)
 }
 
+// Stager is implemented by a Kind whose commit merges its parent's manifest
+// (a Volume merges its blocks). Advance persists a staged copy of the
+// manifest at StagedPath before it advances the pointer, so the next commit
+// can load the parent even when its writer terminated before persisting the
+// canonical manifest (CONTRACT_CORE §Head Pointer). StagedPath MUST lie
+// outside SnapshotsPrefix: a staged copy is never listed as a snapshot.
+type Stager[ID ~string] interface {
+	StagedPath(id ID) string
+}
+
 // Snapshot pairs a snapshot ID with its decoded manifest.
 type Snapshot[ID ~string, M any] struct {
 	ID       ID
@@ -90,6 +100,8 @@ type History[ID ~string, M any] struct {
 	store Store
 	kind  Kind[ID, M]
 	errs  Errors
+	// stager is the kind's Stager, nil when its commits stage nothing.
+	stager Stager[ID]
 	// pointerPath is kind.PointerPath(), computed once: it is read on every
 	// commit and never changes.
 	pointerPath string
@@ -106,7 +118,11 @@ type History[ID ~string, M any] struct {
 // calls its manifest in error messages, so a Volume failure still reads
 // "volume manifest" after the protocol was shared.
 func New[ID ~string, M any](store Store, kind Kind[ID, M], noun string, errs Errors) History[ID, M] {
-	return History[ID, M]{noun: noun, store: store, kind: kind, errs: errs, pointerPath: kind.PointerPath()}
+	stager, _ := kind.(Stager[ID])
+	return History[ID, M]{
+		noun: noun, store: store, kind: kind, errs: errs,
+		stager: stager, pointerPath: kind.PointerPath(),
+	}
 }
 
 // -----------------------------------------------------------------------------
@@ -466,9 +482,8 @@ func (h *History[ID, M]) Resolve(ctx context.Context) (parent ID, expected strin
 // manifest (a Volume merges its blocks): the parent is loaded, never
 // re-fetched, and a remembered head whose manifest is gone is forgotten so
 // storage is consulted instead. parent is nil for the first commit. A
-// pointer that names a snapshot without a persisted manifest yields
-// errs.SnapshotConflict, because the parent's blocks cannot be merged until
-// its manifest exists; the commit then retries as after any other conflict.
+// pointer that names a snapshot without a persisted manifest yields its
+// staged copy (stagedParent).
 func (h *History[ID, M]) ResolveParent(ctx context.Context) (parent *Snapshot[ID, M], expected string, err error) {
 	for {
 		fromMemory := h.head != ""
@@ -485,10 +500,44 @@ func (h *History[ID, M]) ResolveParent(ctx context.Context) (parent *Snapshot[ID
 		case !errors.Is(err, h.errs.NotFound):
 			return nil, "", fmt.Errorf("lode: failed to load snapshot: %w", err)
 		case !fromMemory:
-			return nil, "", fmt.Errorf("lode: latest pointer names %s, whose manifest has not been persisted: %w", id, h.errs.SnapshotConflict)
+			return h.stagedParent(ctx, id, expected)
 		}
 		h.Forget() // the remembered head is gone; consult storage
 	}
+}
+
+// stagedParent loads snapshot id, which the pointer names but whose
+// canonical manifest is absent, from the staged copy its commit persisted
+// before advancing the pointer: the commit is pending, or abandoned by a
+// writer that terminated. A staged copy that is absent too was removed after
+// the canonical manifest was persisted, which is read again; without either
+// (a commit staged nothing, or the pointer was edited by hand) the parent's
+// blocks cannot be merged, so the commit conflicts and retries as after any
+// other conflict.
+func (h *History[ID, M]) stagedParent(ctx context.Context, id ID, expected string) (*Snapshot[ID, M], string, error) {
+	if h.stager == nil {
+		return nil, "", h.unmerged(id)
+	}
+	staged, err := h.LoadAt(ctx, id, h.stager.StagedPath(id))
+	if err == nil {
+		return staged, expected, nil
+	}
+	if !errors.Is(err, h.errs.NotFound) {
+		return nil, "", fmt.Errorf("lode: failed to load staged snapshot: %w", err)
+	}
+	canonical, err := h.Snapshot(ctx, id)
+	if errors.Is(err, h.errs.NotFound) {
+		return nil, "", h.unmerged(id)
+	}
+	if err != nil {
+		return nil, "", fmt.Errorf("lode: failed to load snapshot: %w", err)
+	}
+	return canonical, expected, nil
+}
+
+// unmerged is the conflict for a parent whose manifest no copy holds.
+func (h *History[ID, M]) unmerged(id ID) error {
+	return fmt.Errorf("lode: latest pointer names %s, whose manifest has not been persisted: %w", id, h.errs.SnapshotConflict)
 }
 
 // resolve walks memory → pointer → scan. scanned is the snapshot the scan
@@ -539,18 +588,25 @@ func (e manifestUncertain) Error() string        { return e.err.Error() }
 func (e manifestUncertain) Unwrap() error        { return e.err }
 func (e manifestUncertain) Is(target error) bool { return target == ErrManifestUncertain }
 
-// Advance commits a snapshot: the pointer first (CAS against expected), then
-// every manifest path. The pointer goes first so a crash between the two
-// leaves a pending commit that the next commit adopts as its parent
+// Advance commits a snapshot: the staged copy when the kind stages, the
+// pointer (CAS against expected), then every manifest path, then the removal
+// of the staged copy. The pointer precedes the manifests so a crash between
+// them leaves a pending commit that the next commit adopts as its parent
 // (CONTRACT_CORE §Head Pointer), never a committed manifest the pointer
-// skips. A failure after the pointer advanced matches ErrManifestUncertain.
-// On success the new head is remembered.
+// skips; the staged copy precedes the pointer so that parent can be loaded
+// (stagedParent). A failure after the pointer advanced matches
+// ErrManifestUncertain. On success the new head is remembered.
 func (h *History[ID, M]) Advance(ctx context.Context, expected string, id ID, manifest *M, paths []string) error {
 	data, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
 		return fmt.Errorf("lode: failed to marshal %s: %w", h.noun, err)
 	}
+	staged := h.stagedPath(id)
+	if err := h.stage(ctx, staged, data); err != nil {
+		return fmt.Errorf("lode: failed to stage %s: %w", h.noun, err)
+	}
 	if err := h.writePointer(ctx, expected, id); err != nil {
+		h.discardStaged(ctx, id, staged)
 		return fmt.Errorf("lode: failed to update latest pointer: %w", err)
 	}
 	for _, p := range paths {
@@ -558,8 +614,51 @@ func (h *History[ID, M]) Advance(ctx context.Context, expected string, id ID, ma
 			return manifestUncertain{fmt.Errorf("lode: failed to write %s: %w", h.noun, err)}
 		}
 	}
+	h.unstage(ctx, staged)
 	h.remember(id, string(id))
 	return nil
+}
+
+// stagedPath is the staged copy of snapshot id's manifest, "" when the kind
+// stages nothing.
+func (h *History[ID, M]) stagedPath(id ID) string {
+	if h.stager == nil {
+		return ""
+	}
+	return h.stager.StagedPath(id)
+}
+
+// stage persists the staged copy at staged, when the kind stages.
+func (h *History[ID, M]) stage(ctx context.Context, staged string, data []byte) error {
+	if staged == "" {
+		return nil
+	}
+	return h.store.Put(ctx, staged, bytes.NewReader(data))
+}
+
+// unstage removes the staged copy once the canonical manifest is persisted.
+// Best-effort: a copy that remains is never listed, and it duplicates a
+// persisted manifest.
+func (h *History[ID, M]) unstage(ctx context.Context, staged string) {
+	if staged != "" {
+		_ = h.store.Delete(ctx, staged)
+	}
+}
+
+// discardStaged removes the staged copy (at staged) of a commit whose pointer update
+// failed, but only when the pointer names another snapshot. A failed update
+// may still have been applied (a store that retried a CAS whose response was
+// lost reports a conflict), and the staged copy is then the only manifest of
+// a committed snapshot. Once the pointer names another snapshot, every
+// commit that adopted id as parent has loaded the copy already. Best-effort:
+// a copy that remains is never listed.
+func (h *History[ID, M]) discardStaged(ctx context.Context, id ID, staged string) {
+	if staged == "" {
+		return
+	}
+	if pointed, err := h.ReadPointer(ctx); err == nil && pointed != id {
+		_ = h.store.Delete(ctx, staged)
+	}
 }
 
 // Refresh re-reads the head from storage between commit attempts so a retry
