@@ -15,7 +15,9 @@ Additive fixes from the same pass (`ErrInvalidArgument`,
 
 D9 comes from dogfooding rather than the hygiene pass: it changes where a
 part of the surface lives and what v1.0 promises about it, so it is decided
-here with the rest.
+here with the rest. D10 comes from the investigation of the history fork
+observed in production; most of its parts change contracts rather than
+signatures, but they define what v1.0 promises about commits and listing.
 
 ---
 
@@ -364,3 +366,212 @@ unprefixed names (`volume.New`, `volume.ID`, `volume.SnapshotID`,
 
 Volume dogfooding evidence (§4) no longer blocks v1.0; D9 itself is
 settled.
+
+---
+
+## D10 — Commit semantics left open by the head-pointer protocol
+
+**Current.** CONTRACT_CORE §Head Pointer (#225) defines how a commit
+advances the `latest` pointer and how readers and writers treat a pointer
+that names a snapshot without a manifest. The investigation of
+[#208](https://github.com/pithecene/lode/issues/208)
+(`dogfood_audit_2026-10.md` F3) identified six further questions that the
+contracts either leave open or answer inconsistently. Each is decided
+separately below. D10d changes the commit protocol: it removes the
+implicit pointer replacement by `Delete` and `Put`, which remains only in
+`lode.SingleProcess`, a wrapper the caller selects explicitly. The
+resolution of D10e (#260) changes the Volume commit, which now persists a
+staged manifest before it advances the pointer.
+
+### D10a — A listing cursor is not a commit-order cursor
+
+**Current.** `ListManifests` orders snapshots by `(Partition, ID)`, and
+`StartAfter` resumes after a given reference (CONTRACT_READ_API §Listing
+Order and Cursors). A snapshot ID records when its write *began*
+(CONTRACT_CORE §Snapshot ID), and writes commit in a different order: in
+the production fork, a child's ID preceded its parent's.
+
+**Problem.** A consumer that reads new snapshots by passing its last
+reference as `StartAfter` permanently skips a snapshot that commits after a
+snapshot with a larger ID. Nothing in the contracts warns against this
+pattern.
+
+**Options.**
+1. Document the limit. CONTRACT_READ_API states that `StartAfter` is a
+   position in `(Partition, ID)` order, which within one partition is ID
+   order, not commit order, and that v1.0 offers no cursor over commits. A
+   consumer that must observe every commit reconciles against a full
+   listing, which on a Hive layout omits a canonical-only snapshot until
+   D10b is resolved.
+2. Assign each snapshot an ID at commit time that exceeds its parent's ID,
+   so that ID order equals commit order along the history. This changes the
+   meaning of the ID, which retention reads as the write's start instant
+   (CONTRACT_RETENTION §Grace Period).
+
+A cursor over commits is a feature, not a correction of the listing
+contract, and can be added after v1.0 without breaking callers. It is
+therefore not designed here.
+
+**Proposed.** Option 1.
+
+**Breaks.** Nothing; it documents an existing limit.
+
+**Status.** Open.
+
+### D10b — On a Hive layout, listing cannot see a canonical-only snapshot
+
+**Current.** A commit persists the canonical manifest first and the
+partition manifests after it. `Latest` and `Snapshot(id)` use the canonical
+manifest; `ListManifests`, `ListPartitions`, and expiry by `Partition` find
+snapshots only through partition manifests. CONTRACT_LAYOUT requires Hive
+layouts to place manifests under partition prefixes so that a
+partition-filtered listing cannot miss a committed snapshot.
+
+**Problem.** A writer that terminates after the canonical manifest leaves
+the partition index incomplete, which contradicts CONTRACT_LAYOUT. If it
+terminates before the first partition manifest, the snapshot is
+*canonical-only*: `Latest` and `Dataset.Snapshots` return it, but
+`DatasetReader.ListManifests`, `ListPartitions`, and expiry by `Partition`
+do not. If it terminates later, the snapshot is missing only from the
+partition-filtered results of the partitions whose manifests were not
+persisted. The audit's open question
+F6 (six production snapshots that `ListManifests` does not return) is
+consistent with the canonical-only case, though not yet confirmed.
+
+**Options.**
+1. Define the canonical manifest as the commit and partition manifests as
+   an index. An unfiltered listing, which already enumerates canonical
+   manifests and currently discards them, reports a canonical-only snapshot
+   under the empty partition. A snapshot that has any partition manifest is
+   reported through its partition manifests as before, so the references
+   and `StartAfter` positions of existing snapshots do not change. A repair, for example as part of `Sweep`,
+   persists any missing partition manifest from the canonical manifest,
+   whose `Files` name every partition; this creates objects and modifies
+   none. Until the repair runs, a partition-filtered listing documents that
+   it reflects the index.
+2. Persist the partition manifests before the pointer and the canonical
+   manifest, so that the index is complete whenever the commit is. Listing
+   would then report partition manifests of uncommitted snapshots unless it
+   confirmed each canonical manifest (one more `Exists` per snapshot).
+
+**Proposed.** Option 1, after the read-only check that the six F6
+snapshots are canonical-only.
+
+**Breaks.** Nothing for callers; unfiltered listings may report snapshots
+they previously omitted.
+
+**Status.** Open.
+
+### D10c — Dataset and Volume retries differ in snapshot ID
+
+**Current.** A Dataset retry keeps its snapshot ID (CONTRACT_WRITE_API
+§Optimistic Concurrency (CAS)); a Volume retry draws a new one (CONTRACT_VOLUME
+§Optimistic Concurrency (CAS)). Both are documented, but CONTRACT_VOLUME also
+describes its mechanism as identical to the Dataset's.
+
+**Problem.** Neither contract states why the retries differ, so the
+asymmetry reads as an accident beside the claim that the mechanisms are
+identical.
+
+**Proposed.** Retain both behaviors and state the reason in the contracts:
+a Dataset's data paths contain the snapshot ID, so the ID is fixed once
+data is written, whereas a Volume's block paths do not
+(`volumes/<id>/data/<offset>-<length>.bin`).
+
+**Breaks.** Nothing.
+
+**Status.** Open.
+
+### D10d — Commits on a store without CAS fall back to Delete+Put without notice
+
+**Current.** When the store does not implement `ConditionalWriter`, a
+commit replaces the pointer with Delete+Put, and concurrent writers can
+fork the history (CONTRACT_WRITE_API §Concurrency). Among the bundled
+adapters, only the filesystem adapter on platforms without a file lock,
+such as Plan 9, lacks CAS; it supports CAS on Unix and on Windows.
+
+**Problem.** AGENTS.md prohibits silent fallbacks, and the fallback is the
+only remaining path by which Lode itself can fork a history.
+
+**Options.**
+1. Implement `CompareAndSwap` for the filesystem adapter on the remaining
+   platforms, so that every bundled adapter supports CAS, and keep the
+   documented fallback for custom adapters.
+2. Require a construction option that acknowledges single-writer use on a
+   store without CAS, and fail construction without it. This adds a
+   configuration option and breaks callers of custom adapters.
+3. Require `CompareAndSwap` of every `Store`, and remove the fallback. A
+   backend without a conditional write is wrapped explicitly with
+   `lode.SingleProcess`, which serializes the commits of one process and
+   states that it does not coordinate other processes.
+
+**Decided.** Option 3. Option 1 leaves the fallback, and with it the fork,
+for every custom adapter. Option 2 accepts the fork once the caller
+acknowledges it. Under option 3 a store that cannot coordinate writers does
+not compile as a `Store`, and the single-process scope is chosen in the
+code rather than in an option.
+
+**Breaks.**
+- Every custom adapter that lacks `CompareAndSwap`: it implements the
+  method, or its caller wraps it with `lode.SingleProcess`.
+- Callers that type-assert `ConditionalWriter` on a `Store`: the assertion
+  always succeeds.
+
+**Status.** Accepted and shipped (owner decision, 2026-10-22). The
+filesystem adapter implements CAS on Unix and Windows; on platforms without
+a file lock, such as Plan 9, its `CompareAndSwap` returns an error that
+matches `errors.ErrUnsupported`.
+
+### D10e — Volume has no repair operation for an abandoned commit
+
+**Current.** After an abandoned commit, every Volume commit returns
+`ErrSnapshotConflict` until the missing manifest is persisted or an
+operator sets the pointer to an earlier snapshot (CONTRACT_VOLUME §Error
+Semantics). No API performs the repair.
+
+**Options.**
+1. Document the manual procedure in `PUBLIC_API.md`, to be performed while
+   no writer is active. Afterward, a `Volume` value that remembers a head
+   other than the restored one refreshes it as CONTRACT_VOLUME §Error
+   Semantics requires; after the repair of a first commit, that `Latest`
+   call returns `lode.ErrNoSnapshots`. The procedure:
+   - If the Volume has an earlier snapshot, replace the pointer content,
+     the abandoned ID, with the ID of the previous head through
+     `CompareAndSwap(ctx, "volumes/<id>/latest", <abandoned ID>, <previous
+     head>)`; `Put` cannot replace an existing object. The previous head is
+     the snapshot with a manifest that no other snapshot names as its
+     parent; in a linear history exactly one exists. The newest ID is not a
+     safe choice, because IDs record when a write began, not commit order.
+   - If the abandoned commit was the Volume's first, no previous head
+     exists: `Delete` the pointer, after which the next commit creates it.
+2. Add a repair operation to `lode/volume`, which is experimental (D9) and
+   can therefore change without a compatibility cost.
+
+**Proposed.** Option 1 now; reconsider option 2 when Volume passes its
+stability gate (`V1_READINESS.md` §4).
+
+**Breaks.** Nothing.
+
+**Status.** Superseded by #260 (2026-10-22). A Volume commit now persists
+a staged copy of its manifest before it advances the pointer, so the next
+commit adopts an abandoned commit and merges its blocks (CONTRACT_VOLUME
+§Error Semantics). The manual repair of option 1 remains necessary only
+for a pointer that names a commit persisted by a release earlier than
+v0.11.0, or a pointer edited by hand.
+
+### D10f — Commit rules are stated in several contracts
+
+**Current.** CONTRACT_CORE, CONTRACT_WRITE_API, CONTRACT_STORAGE,
+CONTRACT_READ_API, CONTRACT_RETENTION, and CONTRACT_VOLUME each restate part
+of the commit protocol.
+
+**Problem.** The restatements drifted before #225 (`dogfood_audit_2026-10.md`
+F3) and can drift again.
+
+**Proposed.** Make CONTRACT_CORE §Head Pointer the only normative statement
+of the commit protocol; the other contracts state their own obligations and
+refer to it instead of restating it.
+
+**Breaks.** Nothing.
+
+**Status.** Open.
