@@ -2,6 +2,7 @@ package lode
 
 import (
 	"errors"
+	"slices"
 	"testing"
 )
 
@@ -38,18 +39,6 @@ func refPaths(refs []PartitionRef) []string {
 	return out
 }
 
-func equalStrings(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
-
 func TestDatasetReader_ListPartitions_Order(t *testing.T) {
 	// TestDatasetReader_ListPartitions_Sorted verifies results are lexicographic
 	// by Path regardless of write or store order (the memory store is map-ordered).
@@ -61,7 +50,7 @@ func TestDatasetReader_ListPartitions_Order(t *testing.T) {
 			t.Fatal(err)
 		}
 		want := []string{"day=2024-01-15", "day=2024-01-16", "day=2024-02-01"}
-		if !equalStrings(refPaths(got), want) {
+		if !slices.Equal(refPaths(got), want) {
 			t.Fatalf("partitions = %v, want %v", refPaths(got), want)
 		}
 	})
@@ -88,7 +77,7 @@ func TestDatasetReader_ListPartitions_Order(t *testing.T) {
 			cursor = page[0].Path
 		}
 		want := []string{"day=2024-01-15", "day=2024-01-16", "day=2024-01-17"}
-		if !equalStrings(seen, want) {
+		if !slices.Equal(seen, want) {
 			t.Fatalf("paged partitions = %v, want %v", seen, want)
 		}
 	})
@@ -102,7 +91,7 @@ func TestDatasetReader_ListPartitions_Order(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !equalStrings(refPaths(got), []string{"day=2024-01-17"}) {
+		if !slices.Equal(refPaths(got), []string{"day=2024-01-17"}) {
 			t.Fatalf("after exact cursor: %v", refPaths(got))
 		}
 
@@ -110,7 +99,7 @@ func TestDatasetReader_ListPartitions_Order(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !equalStrings(refPaths(got), []string{"day=2024-01-17"}) {
+		if !slices.Equal(refPaths(got), []string{"day=2024-01-17"}) {
 			t.Fatalf("after between-keys cursor: %v", refPaths(got))
 		}
 	})
@@ -127,7 +116,7 @@ func TestDatasetReader_ListPartitions_Prefix(t *testing.T) {
 			t.Fatal(err)
 		}
 		want := []string{"day=2024-01-15", "day=2024-01-16"}
-		if !equalStrings(refPaths(got), want) {
+		if !slices.Equal(refPaths(got), want) {
 			t.Fatalf("partitions = %v, want %v", refPaths(got), want)
 		}
 	})
@@ -160,7 +149,7 @@ func TestDatasetReader_ListPartitions_Prefix(t *testing.T) {
 			t.Fatal(err)
 		}
 		want := []string{"day=2024-01-15"}
-		if !equalStrings(refPaths(got), want) {
+		if !slices.Equal(refPaths(got), want) {
 			t.Fatalf("partitions = %v, want %v", refPaths(got), want)
 		}
 	})
