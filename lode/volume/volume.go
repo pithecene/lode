@@ -13,10 +13,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pithecene-io/lode/internal/history"
-	"github.com/pithecene-io/lode/internal/retry"
-	"github.com/pithecene-io/lode/internal/validate"
-	"github.com/pithecene-io/lode/lode"
+	"github.com/pithecene/lode/internal/history"
+	"github.com/pithecene/lode/internal/retry"
+	"github.com/pithecene/lode/internal/validate"
+	"github.com/pithecene/lode/lode"
 )
 
 const (
@@ -44,8 +44,12 @@ type volumeKind struct {
 }
 
 func (k volumeKind) SnapshotsPrefix() string           { return volumeSnapshotsPrefix(k.id) }
-func (k volumeKind) PointerPath() string               { return volumeLatestPointerPath(k.id) }
 func (k volumeKind) ManifestPath(id SnapshotID) string { return volumeManifestPath(k.id, id) }
+
+// StagedPath makes a volume a history.Stager: a commit merges its parent's
+// blocks, so the parent's manifest must be loadable even when the parent's
+// writer terminated before persisting it (CONTRACT_VOLUME §Error Semantics).
+func (k volumeKind) StagedPath(id SnapshotID) string { return volumeStagedManifestPath(k.id, id) }
 
 func (k volumeKind) ParseManifest(p string) (SnapshotID, bool) {
 	if !strings.HasSuffix(p, "manifest.json") {
@@ -77,7 +81,10 @@ func (k volumeKind) Decode(r io.Reader) (*Manifest, error) {
 	return &m, nil
 }
 
-var _ history.Kind[SnapshotID, Manifest] = volumeKind{}
+var (
+	_ history.Kind[SnapshotID, Manifest] = volumeKind{}
+	_ history.Stager[SnapshotID]         = volumeKind{}
+)
 
 func toVolumeSnapshot(s *history.Snapshot[SnapshotID, Manifest]) *Snapshot {
 	return &Snapshot{ID: s.ID, Manifest: s.Manifest}
@@ -127,7 +134,7 @@ func New(id ID, storeFactory lode.StoreFactory, totalLength int64, opts ...Optio
 		totalLength: totalLength,
 		checksum:    cfg.checksum,
 		retry:       cfg.retry,
-		history:     history.New(store, volumeKind{id: id, totalLength: totalLength}, "volume manifest", historyErrors),
+		history:     history.New(store, volumeKind{id: id, totalLength: totalLength}, volumeLatestPointerPath(id), "volume manifest", historyErrors),
 	}, nil
 }
 
@@ -144,6 +151,10 @@ func volumeSnapshotsPrefix(id ID) string {
 
 func volumeManifestPath(id ID, snapID SnapshotID) string {
 	return path.Join("volumes", string(id), "snapshots", string(snapID), "manifest.json")
+}
+
+func volumeStagedManifestPath(id ID, snapID SnapshotID) string {
+	return path.Join("volumes", string(id), "staged", string(snapID)+".json")
 }
 
 func volumeBlockPath(id ID, offset, length int64) string {

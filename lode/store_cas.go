@@ -1,5 +1,3 @@
-//go:build unix
-
 package lode
 
 import (
@@ -7,14 +5,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"syscall"
 )
 
 // CompareAndSwap atomically replaces the content at path if and only if
 // the current content matches expected. See ConditionalWriter for semantics.
 //
-// Uses flock advisory locking with a companion .lock file and temp-file+rename
-// for atomic writes under the lock. Unix-only (syscall.Flock).
+// It holds an exclusive lock on a companion .lock file (lockExclusive: flock
+// on Unix, LockFileEx on Windows) and writes through a temporary file and a
+// rename under the lock.
 func (f *fsStore) CompareAndSwap(_ context.Context, path, expected, replacement string) error {
 	fullPath, err := f.safePathForFile(path)
 	if err != nil {
@@ -34,10 +32,11 @@ func (f *fsStore) CompareAndSwap(_ context.Context, path, expected, replacement 
 	}
 	defer closer(lockFile)()
 
-	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
-		return fmt.Errorf("lode: flock: %w", err)
+	unlock, err := lockExclusive(lockFile)
+	if err != nil {
+		return fmt.Errorf("lode: lock: %w", err)
 	}
-	defer func() { _ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN) }()
+	defer unlock()
 
 	// Under lock: read current content and compare.
 	current, err := os.ReadFile(fullPath)
@@ -58,7 +57,7 @@ func (f *fsStore) CompareAndSwap(_ context.Context, path, expected, replacement 
 	}
 
 	// Atomic write: temp file in same directory, then rename.
-	tmp, err := os.CreateTemp(dir, ".lode-cas-*")
+	tmp, err := os.CreateTemp(dir, tempPrefix+"cas-*")
 	if err != nil {
 		return fmt.Errorf("lode: create temp file: %w", err)
 	}
@@ -74,7 +73,9 @@ func (f *fsStore) CompareAndSwap(_ context.Context, path, expected, replacement 
 		return fmt.Errorf("lode: cas close temp: %w", err)
 	}
 
-	if err := os.Rename(tmpName, fullPath); err != nil {
+	// replaceFile replaces the pointer even while a reader holds it open,
+	// which os.Rename cannot do on Windows.
+	if err := replaceFile(tmpName, fullPath); err != nil {
 		_ = os.Remove(tmpName)
 		return fmt.Errorf("lode: cas rename: %w", err)
 	}

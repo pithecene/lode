@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pithecene-io/lode/internal/testutil"
-	"github.com/pithecene-io/lode/lode"
+	"github.com/pithecene/lode/internal/testutil"
+	"github.com/pithecene/lode/lode"
 )
 
 // -----------------------------------------------------------------------------
@@ -1708,9 +1708,11 @@ func TestMergeBlocks(t *testing.T) {
 }
 
 // TestVolume_Commit_PendingCommit verifies that a commit returns
-// lode.ErrSnapshotConflict while the pointer names a snapshot whose manifest
-// has not been persisted, because that snapshot's blocks cannot be merged,
-// and that once the manifest is persisted the commit adopts it as parent.
+// lode.ErrSnapshotConflict while the pointer names a snapshot that has
+// neither a canonical nor a staged manifest (a commit persisted before
+// manifests were staged, or a hand edit), because that snapshot's blocks
+// cannot be merged, and that once the manifest is persisted the commit
+// adopts it as parent.
 func TestVolume_Commit_PendingCommit(t *testing.T) {
 	mem := lode.NewMemory()
 	open := func() Volume {
@@ -1764,6 +1766,55 @@ func TestVolume_Commit_PendingCommit(t *testing.T) {
 	if next.Manifest.ParentSnapshotID != pending.ID || len(next.Manifest.Blocks) != 3 {
 		t.Errorf("parent = %s with %d blocks, want %s with all 3", next.Manifest.ParentSnapshotID, len(next.Manifest.Blocks), pending.ID)
 	}
+}
+
+// TestVolume_Commit_AbandonedCommit verifies that a commit whose writer
+// advanced the pointer but failed to persist the canonical manifest does not
+// stall the volume: the next commit, from another handle, loads the staged
+// copy, adopts the abandoned snapshot as parent, and merges its blocks.
+func TestVolume_Commit_AbandonedCommit(t *testing.T) {
+	mem := lode.NewMemory()
+	fs := testutil.NewFaultStore(mem)
+	abandoning := newTestVolume(t, "test-vol", newFaultStoreFactory(fs), 100)
+	commitBlocks(t, abandoning, []BlockRef{stageBlock(t, abandoning, 0, []byte("first"))}, lode.Metadata{})
+
+	fs.SetPutError(testutil.ErrInjectedPut, "manifest.json")
+	abandoned, err := abandoning.Commit(t.Context(), []BlockRef{stageBlock(t, abandoning, 10, []byte("second"))}, lode.Metadata{})
+	if err == nil {
+		t.Fatalf("commit with a failing manifest write = %+v, want an error", abandoned)
+	}
+	fs.SetPutError(nil)
+	pointed, err := lodeGet(t, mem, "volumes/test-vol/latest")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	next := newTestVolume(t, "test-vol", memoryFactoryFrom(mem), 100)
+	snap, err := next.Commit(t.Context(), []BlockRef{stageBlock(t, next, 20, []byte("third"))}, lode.Metadata{})
+	if err != nil {
+		t.Fatalf("commit after an abandoned commit: %v", err)
+	}
+	if string(snap.Manifest.ParentSnapshotID) != pointed || len(snap.Manifest.Blocks) != 3 {
+		t.Errorf("parent = %s with %d blocks, want the abandoned %s with all 3", snap.Manifest.ParentSnapshotID, len(snap.Manifest.Blocks), pointed)
+	}
+	if got, err := next.ReadAt(t.Context(), snap.ID, 10, 6); err != nil || string(got) != "second" {
+		t.Errorf("abandoned commit's block = %q, %v; want %q", got, err, "second")
+	}
+	if _, err := mem.Get(t.Context(), "volumes/test-vol/staged/"+string(snap.ID)+".json"); !errors.Is(err, lode.ErrNotFound) {
+		t.Errorf("staged copy of a completed commit: %v, want lode.ErrNotFound", err)
+	}
+}
+
+// lodeGet reads an object as a string.
+func lodeGet(t *testing.T, store lode.Store, path string) (string, error) {
+	t.Helper()
+	rc, err := store.Get(t.Context(), path)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = rc.Close() }()
+	b, err := io.ReadAll(rc)
+	return string(b), err
 }
 
 func TestVolume_Commit_Pointer(t *testing.T) {
@@ -1935,10 +1986,12 @@ func TestVolume_Commit_ColdStart(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, err = volA.Commit(t.Context(), []BlockRef{block1}, lode.Metadata{})
+		snap1, err := volA.Commit(t.Context(), []BlockRef{block1}, lode.Metadata{})
 		if err != nil {
 			t.Fatal(err)
 		}
+		// The scan below must find snap2 as the largest ID.
+		testutil.AwaitClockPast(t, string(snap1.ID))
 
 		block2, err := volA.StageWriteAt(t.Context(), 100, bytes.NewReader([]byte("block-2")))
 		if err != nil {

@@ -84,7 +84,7 @@ package main
 import (
     "context"
     "fmt"
-    _ "github.com/pithecene-io/lode/lode"
+    _ "github.com/pithecene/lode/lode"
 )
 
 var _ = context.Background
@@ -100,7 +100,7 @@ GOEOF
     (
         cd "$tmpdir"
         go mod init snippet 2>/dev/null
-        go mod edit -replace github.com/pithecene-io/lode="$REPO_ROOT" 2>/dev/null
+        go mod edit -replace github.com/pithecene/lode="$REPO_ROOT" 2>/dev/null
     ) || true
 
     if (cd "$tmpdir" && go build -o /dev/null ./... 2>/dev/null); then

@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pithecene-io/lode/internal/testutil"
+	"github.com/pithecene/lode/internal/testutil"
 )
 
 func putObject(t *testing.T, store Store, p string) {
@@ -198,7 +198,7 @@ func TestSweep_Request(t *testing.T) {
 	t.Run("a delete failure reports completed work", func(t *testing.T) {
 		mem := NewMemory()
 		hs := &hookStore{Store: mem}
-		ds := newDefaultRetention(t, casHookStore{hs})
+		ds := newDefaultRetention(t, hs)
 		writeRecord(t, ds, 1)
 		old := time.Now().Add(-48 * time.Hour)
 		first := "datasets/events/snapshots/" + string(idAt(old)) + "/data/a"
@@ -293,7 +293,7 @@ func TestSweep_Settle(t *testing.T) {
 	t.Run("an interrupted expiry", func(t *testing.T) {
 		mem := NewMemory()
 		hs := &hookStore{Store: mem}
-		ds := newHiveRetention(t, casHookStore{hs})
+		ds := newHiveRetention(t, hs)
 		run := writeRun(t, ds, "a", "x", "y")
 		writeRun(t, ds, "b", "x")
 		stray := "datasets/events/partitions/run_id=a/event_type=x/segments/" + string(run.ID) + "/data/partial.bin"
@@ -328,7 +328,7 @@ func TestSweep_Settle(t *testing.T) {
 	t.Run("an expiry with no manifest left", func(t *testing.T) {
 		mem := NewMemory()
 		hs := &hookStore{Store: mem}
-		ds := newDefaultRetention(t, casHookStore{hs})
+		ds := newDefaultRetention(t, hs)
 		first := writeRecord(t, ds, 1)
 		writeRecord(t, ds, 2)
 		hs.onDelete = func(p string) error {

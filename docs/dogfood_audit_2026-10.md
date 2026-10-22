@@ -143,6 +143,38 @@ CAS expectation still matches the pointer. This is a **candidate** mechanism
 consistent with the data. It is not reproduced. Tracked in
 [lode#208](https://github.com/pithecene/lode/issues/208).
 
+**Root cause (2026-10-20).** The interval between advancing the pointer and
+persisting the manifest lasts milliseconds, whereas the second child was
+committed five minutes after the first; that interval therefore does not
+explain this fork. A non-atomic CAS is excluded for the same reason, because
+it requires the two commits to overlap.
+
+A read-only replay of all 34,642 snapshots committed since the consumer
+adopted CAS identified 290 commits by a writer with no in-memory head that
+occurred while the head's ID was smaller than an older snapshot's ID. In 289
+of them the writer adopted the head through the pointer; only the forking
+commit adopted the snapshot with the largest ID, which was the head's parent.
+Lode v0.9.0 therefore did not fall back to the scan systematically, and a
+read-only probe confirms that the pointer path succeeds against R2.
+
+*Established:* the forking commit adopted the result of the scan while its
+CAS matched the pointer. In v0.9.0 this occurs only when a read of a valid
+head fails and the failure is treated as a stale pointer, by one of two
+paths:
+
+1. The forking writer's existence check on the head failed, so the writer
+   scanned while its CAS still expected the pointer's content.
+2. Another writer's retry refresh (`Latest`) failed to read the head,
+   scanned, and replaced the pointer with the head's parent; the forking
+   writer then adopted that parent correctly. Because the parent has no
+   third child, the other writer's commit must subsequently have failed.
+
+*Inferred:* which of the two paths occurred. The store error was not
+recorded, because the consumer does not classify write failures (F7).
+Unreleased removes both paths: parent resolution no longer checks the
+manifest's existence, `Latest` never replaces an existing pointer, and any
+failed read other than not-found is returned to the caller.
+
 ### F4 — Two snapshots reference a parent that does not exist · LIMITATION (historical)
 
 Both are from 2026-02-12, when the consumer ran Lode v0.7.3. The missing parent
@@ -226,6 +258,7 @@ policy) a real dependency, not a hypothetical one.
 1. F3 ([#208](https://github.com/pithecene/lode/issues/208)): reproduce the scan-fallback fork (two writers, one landing in the
    pointer-before-manifest window) and decide whether `scan` must order by
    commit (e.g. `CreatedAt` or the parent chain) instead of ID.
+   *Resolved 2026-10-20:* see the root cause under F3.
 2. F6: confirm whether the six snapshots `ListManifests` does not return are
    canonical-only.
 3. F5: which March runs left 1.98 GB unreferenced (join orphans to run

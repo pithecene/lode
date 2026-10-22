@@ -9,7 +9,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 
-	"github.com/pithecene-io/lode/lode"
+	"github.com/pithecene/lode/lode"
 )
 
 // skipBenchIfNoS3 skips benchmark execution when S3 test services are unavailable.
@@ -72,7 +72,7 @@ func BenchmarkS3_WriteRoundTrip(b *testing.B) {
 		newClient func(context.Context) (*s3.Client, error)
 	}{
 		{"LocalStack", newLocalStackClient},
-		{"MinIO", newMinIOClient},
+		{"RustFS", newRustFSClient},
 	}
 
 	for _, backend := range backends {

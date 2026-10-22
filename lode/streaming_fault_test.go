@@ -4,11 +4,12 @@ import (
 	"context"
 	"errors"
 	"io"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/pithecene-io/lode/internal/testutil"
+	"github.com/pithecene/lode/internal/testutil"
 )
 
 // -----------------------------------------------------------------------------
@@ -30,10 +31,66 @@ import (
 // StreamWrite Fault Tests
 // -----------------------------------------------------------------------------
 
+// TestStreamWrite_CommitFailure covers which failures remove a stream's data
+// object: only those that leave no manifest behind.
+func TestStreamWrite_CommitFailure(t *testing.T) {
+	// A pointer CAS that fails leaves no manifest, so the data object of the
+	// failed commit is removed.
+	t.Run("pointer error removes data", func(t *testing.T) {
+		fs := testutil.NewFaultStore(NewMemory())
+		ds, err := NewDataset("test-ds", newFaultStoreFactory(fs))
+		if err != nil {
+			t.Fatal(err)
+		}
+		sw, err := ds.StreamWrite(t.Context(), Metadata{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := sw.Write([]byte("data")); err != nil {
+			t.Fatal(err)
+		}
+		fs.SetCASError(testutil.ErrInjectedPut)
+		if _, err := sw.Commit(t.Context()); err == nil {
+			t.Fatal("expected Commit to fail on the pointer")
+		}
+		if !slices.ContainsFunc(fs.DeleteCalls(), func(p string) bool { return strings.Contains(p, "/data/") }) {
+			t.Errorf("data object was not removed after the pointer failed: %v", fs.DeleteCalls())
+		}
+	})
+
+	// A manifest Put whose response is lost stores the manifest, so the
+	// snapshot is visible; its data must still be readable.
+	t.Run("lost manifest response keeps the snapshot readable", func(t *testing.T) {
+		store := lostManifestResponse{Store: NewMemory()}
+		ds, err := NewDataset("test-ds", NewMemoryFactoryFrom(store))
+		if err != nil {
+			t.Fatal(err)
+		}
+		sw, err := ds.StreamWrite(t.Context(), Metadata{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := sw.Write([]byte("payload")); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := sw.Commit(t.Context()); err == nil {
+			t.Fatal("expected Commit to report the lost manifest response")
+		}
+		head, err := ds.Latest(t.Context())
+		if err != nil {
+			t.Fatalf("the snapshot whose manifest was stored is not visible: %v", err)
+		}
+		if _, err := ds.Read(t.Context(), head.ID); err != nil {
+			t.Fatalf("visible snapshot %s is not readable: %v", head.ID, err)
+		}
+	})
+}
+
 func TestStreamWrite_Cleanup(t *testing.T) {
-	// TestStreamWrite_ManifestPutError_NoManifest_CleanupAttempted verifies that when
-	// manifest Put fails during Commit, no manifest is written and cleanup is attempted.
-	t.Run("manifest put error no manifest cleanup attempted", func(t *testing.T) {
+	// A manifest Put that reports an error may still have stored the
+	// manifest, so the commit keeps its data object; Sweep reclaims it if the
+	// commit did fail.
+	t.Run("manifest put error retains data", func(t *testing.T) {
 		inner := NewMemory()
 		fs := testutil.NewFaultStore(inner)
 
@@ -72,18 +129,7 @@ func TestStreamWrite_Cleanup(t *testing.T) {
 			t.Errorf("expected ErrNoSnapshots after failed commit, got: %v", err)
 		}
 
-		// Verify: cleanup was attempted (Delete called for data file)
-		deleteCalls := fs.DeleteCalls()
-		dataFileDeleted := false
-		for _, path := range deleteCalls {
-			if strings.Contains(path, "data") {
-				dataFileDeleted = true
-				break
-			}
-		}
-		if !dataFileDeleted {
-			t.Error("expected data file cleanup Delete after failed commit")
-		}
+		assertDataRetained(t, fs)
 	})
 
 	// TestStreamWrite_Abort_NoManifest_CleanupAttempted verifies that Abort leaves
@@ -295,18 +341,8 @@ func TestStreamWriteRecords_Cleanup(t *testing.T) {
 			t.Errorf("expected ErrNoSnapshots after manifest Put error, got: %v", err)
 		}
 
-		// Verify cleanup was attempted (data file Delete should be called)
-		deleteCalls := fs.DeleteCalls()
-		dataFileDeleted := false
-		for _, path := range deleteCalls {
-			if strings.Contains(path, "data") {
-				dataFileDeleted = true
-				break
-			}
-		}
-		if !dataFileDeleted {
-			t.Error("expected data file cleanup Delete after manifest Put error")
-		}
+		// The manifest Put may have stored the manifest, so the data stays.
+		assertDataRetained(t, fs)
 	})
 }
 
@@ -732,6 +768,18 @@ func TestStreamWriteRecords_PutFailure(t *testing.T) {
 
 // When Put reports ErrPathExists the object belongs to another writer; the
 // failed stream must not delete it (data files are immutable).
+// assertDataRetained fails if the commit deleted its data object after a
+// manifest write failed: the manifest may have been stored, so the snapshot
+// may be visible.
+func assertDataRetained(t *testing.T, fs *testutil.FaultStore) {
+	t.Helper()
+	for _, p := range fs.DeleteCalls() {
+		if strings.Contains(p, "/data/") {
+			t.Fatalf("the data object of a possibly visible snapshot was deleted: %v", fs.DeleteCalls())
+		}
+	}
+}
+
 func assertNoDataDelete(t *testing.T, fs *testutil.FaultStore) {
 	t.Helper()
 	for _, p := range fs.DeleteCalls() {
@@ -979,3 +1027,19 @@ type writeFailCompressor struct {
 func (c *writeFailCompressor) Compress(io.Writer) (io.WriteCloser, error) { return c, nil }
 func (c *writeFailCompressor) Write([]byte) (int, error)                  { c.writes++; return 0, c.err }
 func (c *writeFailCompressor) Close() error                               { return nil }
+
+// lostManifestResponse stores every manifest and then reports a failure, as
+// a store does when the response to a successful Put is lost.
+type lostManifestResponse struct{ Store }
+
+func (s lostManifestResponse) Put(ctx context.Context, path string, r io.Reader) error {
+	if err := s.Store.Put(ctx, path, r); err != nil || !strings.HasSuffix(path, "manifest.json") {
+		return err
+	}
+	return errors.New("injected: response lost after the manifest was stored")
+}
+
+// CompareAndSwap forwards to the memory store so commits use CAS.
+func (s lostManifestResponse) CompareAndSwap(ctx context.Context, path, expected, replacement string) error {
+	return s.Store.(ConditionalWriter).CompareAndSwap(ctx, path, expected, replacement)
+}

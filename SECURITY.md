@@ -23,7 +23,7 @@ request, or discussion for a suspected vulnerability.
 
 Include the following information:
 
-1. the affected version (the `github.com/pithecene-io/lode` version in
+1. the affected version (the `github.com/pithecene/lode` version in
    `go.mod`) and package (`lode`, `lode/s3`, or `lode/volume`);
 2. a description of the issue and its impact;
 3. steps to reproduce it, or a proof of concept; and

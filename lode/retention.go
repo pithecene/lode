@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pithecene-io/lode/internal/history"
-	"github.com/pithecene-io/lode/internal/validate"
+	"github.com/pithecene/lode/internal/history"
+	"github.com/pithecene/lode/internal/validate"
 )
 
 // Retention removes snapshots without ever removing what a manifest still

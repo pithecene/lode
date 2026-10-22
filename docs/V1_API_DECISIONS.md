@@ -15,7 +15,12 @@ Additive fixes from the same pass (`ErrInvalidArgument`,
 
 D9 comes from dogfooding rather than the hygiene pass: it changes where a
 part of the surface lives and what v1.0 promises about it, so it is decided
-here with the rest.
+here with the rest. D10 comes from the investigation of the history fork
+observed in production; most of its parts change contracts rather than
+signatures, but they define what v1.0 promises about commits and listing.
+D11 proposes the v1.0 construction and record surface, judged at the call
+sites of Quarry and the examples; if accepted, it supersedes D1, D2, and
+D3.
 
 ---
 
@@ -49,7 +54,7 @@ here as the alternative, not the proposal.
 downstream dataset built without a codec. Quarry writes records through the
 JSONL codec and is unaffected. Mechanical: pass the `[]byte` directly.
 
-**Status.** Open.
+**Status.** Open. D11 would supersede it.
 
 ---
 
@@ -78,7 +83,8 @@ classified `ErrInvalidArgument` with a panic.
 removed in the same release; removing either Hive spelling breaks its users;
 `MustHiveLayout` is additive.
 
-**Status.** Open. Decide which Hive spelling survives.
+**Status.** Open. Decide which Hive spelling survives. D11 would supersede
+it.
 
 ---
 
@@ -105,7 +111,7 @@ per-target methods. Public surface: two sentinels become one.
 **Breaks.** Callers matching the two sentinels by identity. Grep shows
 only Lode's own tests do.
 
-**Status.** Open.
+**Status.** Open. D11 would supersede it.
 
 ---
 
@@ -364,3 +370,348 @@ unprefixed names (`volume.New`, `volume.ID`, `volume.SnapshotID`,
 
 Volume dogfooding evidence (§4) no longer blocks v1.0; D9 itself is
 settled.
+
+---
+
+## D10 — Commit semantics left open by the head-pointer protocol
+
+**Current.** CONTRACT_CORE §Head Pointer (#225) defines how a commit
+advances the `latest` pointer and how readers and writers treat a pointer
+that names a snapshot without a manifest. The investigation of
+[#208](https://github.com/pithecene/lode/issues/208)
+(`dogfood_audit_2026-10.md` F3) identified six further questions that the
+contracts either leave open or answer inconsistently. Each is decided
+separately below. D10d changes the commit protocol: it removes the
+implicit pointer replacement by `Delete` and `Put`, which remains only in
+`lode.SingleProcess`, a wrapper the caller selects explicitly. The
+resolution of D10e (#260) changes the Volume commit, which now persists a
+staged manifest before it advances the pointer.
+
+### D10a — A listing cursor is not a commit-order cursor
+
+**Current.** `ListManifests` orders snapshots by `(Partition, ID)`, and
+`StartAfter` resumes after a given reference (CONTRACT_READ_API §Listing
+Order and Cursors). A snapshot ID records when its write *began*
+(CONTRACT_CORE §Snapshot ID), and writes commit in a different order: in
+the production fork, a child's ID preceded its parent's.
+
+**Problem.** A consumer that reads new snapshots by passing its last
+reference as `StartAfter` permanently skips a snapshot that commits after a
+snapshot with a larger ID. Nothing in the contracts warns against this
+pattern.
+
+**Options.**
+1. Document the limit. CONTRACT_READ_API states that `StartAfter` is a
+   position in `(Partition, ID)` order, which within one partition is ID
+   order, not commit order, and that v1.0 offers no cursor over commits. A
+   consumer that must observe every commit reconciles against a full
+   listing, which on a Hive layout omits a canonical-only snapshot until
+   D10b is resolved.
+2. Assign each snapshot an ID at commit time that exceeds its parent's ID,
+   so that ID order equals commit order along the history. This changes the
+   meaning of the ID, which retention reads as the write's start instant
+   (CONTRACT_RETENTION §Grace Period).
+
+A cursor over commits is a feature, not a correction of the listing
+contract, and can be added after v1.0 without breaking callers. It is
+therefore not designed here.
+
+**Proposed.** Option 1.
+
+**Breaks.** Nothing; it documents an existing limit.
+
+**Status.** Open.
+
+### D10b — On a Hive layout, listing cannot see a canonical-only snapshot
+
+**Current.** A commit persists the canonical manifest first and the
+partition manifests after it. `Latest` and `Snapshot(id)` use the canonical
+manifest; `ListManifests`, `ListPartitions`, and expiry by `Partition` find
+snapshots only through partition manifests. CONTRACT_LAYOUT requires Hive
+layouts to place manifests under partition prefixes so that a
+partition-filtered listing cannot miss a committed snapshot.
+
+**Problem.** A writer that terminates after the canonical manifest leaves
+the partition index incomplete, which contradicts CONTRACT_LAYOUT. If it
+terminates before the first partition manifest, the snapshot is
+*canonical-only*: `Latest` and `Dataset.Snapshots` return it, but
+`DatasetReader.ListManifests`, `ListPartitions`, and expiry by `Partition`
+do not. If it terminates later, the snapshot is missing only from the
+partition-filtered results of the partitions whose manifests were not
+persisted. The audit's open question
+F6 (six production snapshots that `ListManifests` does not return) is
+consistent with the canonical-only case, though not yet confirmed.
+
+**Options.**
+1. Define the canonical manifest as the commit and partition manifests as
+   an index. An unfiltered listing, which already enumerates canonical
+   manifests and currently discards them, reports a canonical-only snapshot
+   under the empty partition. A snapshot that has any partition manifest is
+   reported through its partition manifests as before, so the references
+   and `StartAfter` positions of existing snapshots do not change. A repair, for example as part of `Sweep`,
+   persists any missing partition manifest from the canonical manifest,
+   whose `Files` name every partition; this creates objects and modifies
+   none. Until the repair runs, a partition-filtered listing documents that
+   it reflects the index.
+2. Persist the partition manifests before the pointer and the canonical
+   manifest, so that the index is complete whenever the commit is. Listing
+   would then report partition manifests of uncommitted snapshots unless it
+   confirmed each canonical manifest (one more `Exists` per snapshot).
+
+**Proposed.** Option 1, after the read-only check that the six F6
+snapshots are canonical-only.
+
+**Breaks.** Nothing for callers; unfiltered listings may report snapshots
+they previously omitted.
+
+**Status.** Open.
+
+### D10c — Dataset and Volume retries differ in snapshot ID
+
+**Current.** A Dataset retry keeps its snapshot ID (CONTRACT_WRITE_API
+§Optimistic Concurrency (CAS)); a Volume retry draws a new one (CONTRACT_VOLUME
+§Optimistic Concurrency (CAS)). Both are documented, but CONTRACT_VOLUME also
+describes its mechanism as identical to the Dataset's.
+
+**Problem.** Neither contract states why the retries differ, so the
+asymmetry reads as an accident beside the claim that the mechanisms are
+identical.
+
+**Proposed.** Retain both behaviors and state the reason in the contracts:
+a Dataset's data paths contain the snapshot ID, so the ID is fixed once
+data is written, whereas a Volume's block paths do not
+(`volumes/<id>/data/<offset>-<length>.bin`).
+
+**Breaks.** Nothing.
+
+**Status.** Open.
+
+### D10d — Commits on a store without CAS fall back to Delete+Put without notice
+
+**Current.** When the store does not implement `ConditionalWriter`, a
+commit replaces the pointer with Delete+Put, and concurrent writers can
+fork the history (CONTRACT_WRITE_API §Concurrency). Among the bundled
+adapters, only the filesystem adapter on platforms without a file lock,
+such as Plan 9, lacks CAS; it supports CAS on Unix and on Windows.
+
+**Problem.** AGENTS.md prohibits silent fallbacks, and the fallback is the
+only remaining path by which Lode itself can fork a history.
+
+**Options.**
+1. Implement `CompareAndSwap` for the filesystem adapter on the remaining
+   platforms, so that every bundled adapter supports CAS, and keep the
+   documented fallback for custom adapters.
+2. Require a construction option that acknowledges single-writer use on a
+   store without CAS, and fail construction without it. This adds a
+   configuration option and breaks callers of custom adapters.
+3. Require `CompareAndSwap` of every `Store`, and remove the fallback. A
+   backend without a conditional write is wrapped explicitly with
+   `lode.SingleProcess`, which serializes the commits of one process and
+   states that it does not coordinate other processes.
+
+**Decided.** Option 3. Option 1 leaves the fallback, and with it the fork,
+for every custom adapter. Option 2 accepts the fork once the caller
+acknowledges it. Under option 3 a store that cannot coordinate writers does
+not compile as a `Store`, and the single-process scope is chosen in the
+code rather than in an option.
+
+**Breaks.**
+- Every custom adapter that lacks `CompareAndSwap`: it implements the
+  method, or its caller wraps it with `lode.SingleProcess`.
+- Callers that type-assert `ConditionalWriter` on a `Store`: the assertion
+  always succeeds.
+
+**Status.** Accepted and shipped (owner decision, 2026-10-22). The
+filesystem adapter implements CAS on Unix and Windows; on platforms without
+a file lock, such as Plan 9, its `CompareAndSwap` returns an error that
+matches `errors.ErrUnsupported`.
+
+### D10e — Volume has no repair operation for an abandoned commit
+
+**Current.** After an abandoned commit, every Volume commit returns
+`ErrSnapshotConflict` until the missing manifest is persisted or an
+operator sets the pointer to an earlier snapshot (CONTRACT_VOLUME §Error
+Semantics). No API performs the repair.
+
+**Options.**
+1. Document the manual procedure in `PUBLIC_API.md`, to be performed while
+   no writer is active. Afterward, a `Volume` value that remembers a head
+   other than the restored one refreshes it as CONTRACT_VOLUME §Error
+   Semantics requires; after the repair of a first commit, that `Latest`
+   call returns `lode.ErrNoSnapshots`. The procedure:
+   - If the Volume has an earlier snapshot, replace the pointer content,
+     the abandoned ID, with the ID of the previous head through
+     `CompareAndSwap(ctx, "volumes/<id>/latest", <abandoned ID>, <previous
+     head>)`; `Put` cannot replace an existing object. The previous head is
+     the snapshot with a manifest that no other snapshot names as its
+     parent; in a linear history exactly one exists. The newest ID is not a
+     safe choice, because IDs record when a write began, not commit order.
+   - If the abandoned commit was the Volume's first, no previous head
+     exists: `Delete` the pointer, after which the next commit creates it.
+2. Add a repair operation to `lode/volume`, which is experimental (D9) and
+   can therefore change without a compatibility cost.
+
+**Proposed.** Option 1 now; reconsider option 2 when Volume passes its
+stability gate (`V1_READINESS.md` §4).
+
+**Breaks.** Nothing.
+
+**Status.** Superseded by #260 (2026-10-22). A Volume commit now persists
+a staged copy of its manifest before it advances the pointer, so the next
+commit adopts an abandoned commit and merges its blocks (CONTRACT_VOLUME
+§Error Semantics). The manual repair of option 1 remains necessary only
+for a pointer that names a commit persisted by a release earlier than
+v0.11.0, or a pointer edited by hand.
+
+### D10f — Commit rules are stated in several contracts
+
+**Current.** CONTRACT_CORE, CONTRACT_WRITE_API, CONTRACT_STORAGE,
+CONTRACT_READ_API, CONTRACT_RETENTION, and CONTRACT_VOLUME each restate part
+of the commit protocol.
+
+**Problem.** The restatements drifted before #225 (`dogfood_audit_2026-10.md`
+F3) and can drift again.
+
+**Proposed.** Make CONTRACT_CORE §Head Pointer the only normative statement
+of the commit protocol; the other contracts state their own obligations and
+refer to it instead of restating it.
+
+**Breaks.** Nothing.
+
+**Status.** Open.
+
+---
+
+## D11 — The v1.0 construction and record surface
+
+**Criterion.** The v1.0 surface is chosen for elegance and ergonomics at
+real call sites, with the guarantees unchanged: immutable snapshots, the
+commit protocol (CONTRACT_CORE §Head Pointer), `CompareAndSwap` on every
+pointer write, explicit and persisted metadata, and the bounds of
+CONTRACT_COMPLEXITY. Compatibility with the v0 surface is not a criterion:
+Lode is not yet at v1.0, and every caller migrates once. Volume is
+excluded (D9).
+
+**Current.** Each handle is constructed separately from a `StoreFactory`
+and a list of `Option` values: `NewDataset(id, factory, opts...)`,
+`NewDatasetReader(factory, opts...)`, and `volume.New(id, factory, length,
+opts...)`. A factory defers the store's construction error into the
+constructor's error, so a caller checks one error. Records are `[]any` on
+`Write` and on `Read`. The layout is given to each constructor and is
+persisted nowhere.
+
+**Problem.** The call sites show five costs:
+1. **Repeated configuration.** Quarry constructs the same dataset in three
+   places (its filesystem client, its S3 client, and its read path), each
+   with `WithHiveLayout("source", "category", "day", "run_id",
+   "event_type")` and `WithCodec(NewJSONLCodec())`; the two write
+   constructions also pass `WithRetryCount(3)`. The examples pass
+   `WithHiveLayout("day")` to both the writer and the reader of one
+   dataset. A reader configured with a layout of another path grammar (flat
+   rather than Hive, for example) finds no manifests, and an unfiltered
+   `ListManifests` then returns `ErrNotFound`, the error for a dataset that
+   does not exist, so the misconfiguration cannot be told from an absent
+   dataset. Two Hive layouts with different keys share one grammar, so a
+   reader with the wrong keys lists the manifests under their stored
+   partition paths and the mismatch goes undetected.
+2. **A second store value.** Quarry retains the factory and calls it again
+   to obtain a store for files outside any dataset (sidecar files), so the
+   process holds two store values for one root. Two `lode.SingleProcess`
+   values do not serialize each other (CONTRACT_STORAGE §ConditionalWriter
+   Capability). Quarry also builds the sidecar path from Lode's Hive path
+   grammar (`datasets/<id>/partitions/.../files/<name>`), which couples it
+   to the on-disk layout (D8).
+3. **Untyped records.** Quarry writes `map[string]any` records and reads
+   `[]any`, asserting each element's type; numbers in snapshot metadata
+   return as `float64` after the JSON round trip, and Quarry converts them
+   back. The examples assert `[]byte` (blob mode, D1) and `map[string]any`
+   (Parquet).
+4. **A reader that requires CAS.** `NewDatasetReader` takes a `StoreFactory`
+   and therefore requires `CompareAndSwap`, although a reader never writes
+   (D10d).
+5. **Options for two targets.** Writer-only options passed to
+   `NewDatasetReader` fail at run time with
+   `ErrOptionNotValidForDatasetReader` (D3).
+
+**Proposed.** One root handle per store, typed record datasets, a separate
+blob handle, and datasets that describe themselves. Quarry's writer and
+reader would read as follows:
+
+```go
+root := lode.Open(lode.FS("/data"))
+events, err := root.Records(ctx, "events", lode.JSONL[Event](),
+	lode.WithLayout(lode.Hive("source", "category", "day", "run_id", "event_type").By(Event.Partition)),
+	lode.WithRetry(3))
+if err != nil { ... }
+snap, err := events.Write(ctx, batch, RunInfo{RunID: runID, Files: n})
+got, err := events.Read(ctx, snap.ID) // []Event
+var info RunInfo
+err = snap.Metadata.Decode(&info)
+
+view, err := lode.OpenReadOnly(lode.FS("/data")).Records(ctx, "events", lode.JSONL[Event]())
+```
+
+| Element | Shape | Resolves |
+|---|---|---|
+| Factory | `type Factory[S ObjectStore] func() (S, error)`. `lode.FS`, `lode.Memory`, and the S3 adapter return `Factory[Store]`; constructing one performs no I/O and returns no error. | Retains the single error check |
+| Root | `func Open[S Store](f Factory[S]) *Root` and `func OpenReadOnly[S ObjectStore](f Factory[S]) *ReadRoot`. Each calls the factory once and records any error, which every method of the handle returns. Every dataset of a root shares its one store value. | Cost 4; cost 2 in part |
+| Record datasets | A generic method, `func (r *Root) Records[T any](ctx context.Context, id DatasetID, codec Codec[T], opts ...DatasetOption) (Records[T], error)`, which reads the descriptor under `ctx`. `Records[T]` embeds the read-only `RecordView[T]`, which is what `ReadRoot.Records` returns. Codec constructors return the interface type, so that `T` is inferred from the codec. | Cost 3; D1 |
+| Blob datasets | `func (r *Root) Blobs(ctx context.Context, id DatasetID, opts ...DatasetOption) (Blobs, error)`, whose `Write` takes one `[]byte` and whose `Read` returns one, with streaming writes. `Blobs` embeds the read-only `BlobView`, which `ReadRoot.Blobs(ctx, id, opts ...ViewOption)` returns. | D1 |
+| Descriptor | Before the first commit, the handle persists a dataset descriptor that records the complete configuration: the layout with its partition keys, and the codec, compressor, and checksum, each with its settings. Every component implements `Describe() Descriptor` (a name and settings). A writer whose configuration conflicts with it is rejected. The descriptor is immutable: replacing it could race with another writer's first commit and leave snapshots whose configuration disagrees with it. The descriptor records configuration only: a dataset whose `latest` pointer is absent is empty, so a failed first commit leaves an empty dataset. The descriptor of an empty dataset is removed only by an explicit operation performed while no writer is active, as the Volume repair is. | Cost 1 |
+| Layout | An exported `Layout` type with one spelling per layout: `lode.Default()`, `lode.Hive(keys...)`, and `lode.Flat()`. A Hive layout reads partition values from `map[string]any` records by name; for typed records, it takes a function that returns the values by key name (`lode.Hive("source", "day").By(func(e Event) lode.Partition { return lode.Partition{"source": e.Source, "day": e.Day} })`), so that partitioning uses no reflection and a value cannot be assigned to the wrong key. A write whose partition names other keys than the layout's fails. The function is code, not configuration, and is not persisted; a function that derives values differently writes different data, as a map record with other values does. `By` is a generic method of the concrete Hive layout, and `Records` reports a function written for another record type. An invalid key is reported by `Records` or `Blobs`, as every construction error is. | D2 |
+| Options | Writer handles take `DatasetOption`. A view takes no layout, codec settings, or retry, which come from the descriptor; Lode reconstructs the bundled compressors and checksums from their descriptions, and a custom compressor or checksum is passed to the view explicitly, through `ReadRoot.Records(ctx, id, codec, opts ...ViewOption)`, and checked against the descriptor. `ViewOption` holds only `WithCompressor` and `WithChecksum`. No global registry is introduced. The `ErrOptionNotValidFor...` sentinels are removed. | Cost 5; D3 |
+| Metadata | `Write` takes any value that encodes as a JSON object, a struct or a map; nil persists as `{}`, as CONTRACT_CORE §Metadata Rules requires. `Snapshot.Metadata` retains the persisted JSON and decodes it on request (`Decode(&v)`), so a struct target receives its declared field types; a map target receives JSON's types, with numbers as `float64`. | Cost 3 (metadata) |
+
+The surface requires Go 1.27 for generic methods, which is the minimum since #261. A prototype
+compiled with Go 1.27.3 confirms the chained construction, the inference
+of the record type from the codec, typed metadata, and a view over a store
+without `CompareAndSwap`.
+
+**Guarantees.** The commit protocol, the CAS requirement, immutability, and
+the snapshot model are unchanged; the handles change how a caller reaches
+them, not what they do. Metadata becomes more explicit: the descriptor
+persists the configuration that callers now restate at each construction.
+Constructing a dataset handle costs one `Get` of the descriptor and
+writes nothing. The first commit of a new dataset costs one
+`CompareAndSwap` to create the descriptor, in addition to the pointer's
+`CompareAndSwap`, which CONTRACT_COMPLEXITY would state as an exception
+for that commit; later commits, reads, and listings keep their bounds. Generic records add no per-record cost beyond
+the codec's own encoding.
+
+**Alternatives considered.**
+- **A typed factory with the current constructors.** It removes cost 4 and
+  nothing else.
+- **Package-level generic constructors** (`lode.RecordsOf[T](root, ...)`).
+  They are what Go before 1.27 permits; they break the chain, so a writer
+  checks two errors.
+- **A root-level layout.** One layout per root cannot represent a root that
+  holds datasets with different layouts, which Lode supports.
+
+**Open questions.**
+1. **Objects outside any dataset.** Quarry stores sidecar files beside a
+   dataset and builds their paths from Lode's path grammar. Either the root
+   exposes its store for such objects, or attachments become part of a
+   snapshot. The second keeps them within the snapshot model but is a new
+   feature; the first is an escape hatch that `AGENTS.md` discourages.
+2. **The descriptor's path.** It must lie outside every layout's grammar
+   (for example, `_lode/datasets/<id>.json`), and D8 must name it. The flat
+   layout places dataset IDs at the store root, so the dataset ID grammar
+   must exclude the reserved prefix.
+3. **Migration of existing datasets.** A dataset written before descriptors
+   has none. A commit must not create one implicitly, because a wrong
+   configuration would then become authoritative. An explicit migration
+   validates the supplied configuration against the existing manifests and
+   by decoding existing data, and fails on any setting it cannot verify or
+   on an existing object under the reserved prefix.
+
+**Supersedes.** If accepted, D11 decides D1 (separate record and blob
+handles), D2 (an exported `Layout` with one spelling per layout), and D3
+(one option type with one target).
+
+**Breaks.** Every caller, once: the examples, the README, `PUBLIC_API.md`,
+and Quarry, whose three constructions become one root and one `Records`
+call per role and whose queries lose their type assertions. Every
+implementer of a custom codec, compressor, or checksum, once: codecs
+become generic, and each component implements `Describe`.
+
+**Status.** Open.

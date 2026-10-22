@@ -1,13 +1,13 @@
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/lode-splash-dark.jpg">
-  <img alt="Lode — an illustrated geological section: folded, faulted strata under a hill, a gold vein along the crest of the fold, and a mine shaft running down to it from a headframe" src="docs/assets/lode-splash-light.jpg" width="100%">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/lode-banner-dark.png">
+  <img alt="Lode: structured persistence for object storage. An engraved section of folded, faulted strata, hand-coloured in tarnished metals, cut by a gold-bearing lode" src="docs/assets/lode-banner-light.png" width="100%">
 </picture>
 
 # Lode
 
 **Structured persistence for object storage.**
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/pithecene-io/lode.svg)](https://pkg.go.dev/github.com/pithecene-io/lode)
+[![Go Reference](https://pkg.go.dev/badge/github.com/pithecene/lode.svg)](https://pkg.go.dev/github.com/pithecene/lode)
 [![Release](https://img.shields.io/github/v/release/pithecene/lode?sort=semver)](https://github.com/pithecene/lode/releases/latest)
 [![CI](https://github.com/pithecene/lode/actions/workflows/ci.yml/badge.svg)](https://github.com/pithecene/lode/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/pithecene/lode)](LICENSE)
@@ -26,7 +26,7 @@ sparse, resumable storage of byte ranges.
 
 <!-- runnable -->
 ```bash
-go get github.com/pithecene-io/lode
+go get github.com/pithecene/lode
 ```
 
 ### Writing and Reading a Blob
@@ -38,7 +38,7 @@ package main
 import (
     "context"
     "fmt"
-    "github.com/pithecene-io/lode/lode"
+    "github.com/pithecene/lode/lode"
 )
 
 func main() {
@@ -99,7 +99,7 @@ and complete programs are listed in [`examples/`](examples/).
 **Both:**
 - A snapshot is visible only once its manifest is persisted.
 - Metadata is explicit and persisted, never inferred.
-- Stores that support CAS detect concurrent writers.
+- Every store detects concurrent writers through CAS.
 
 ---
 
@@ -110,8 +110,8 @@ and complete programs are listed in [`examples/`](examples/).
 - **Atomic commits**: a snapshot is visible only once its manifest exists.
 - **Explicit metadata**: every snapshot carries metadata supplied by the
   caller, never inferred.
-- **Safe writes**: existing objects are never overwritten, and stores that
-  support CAS detect concurrent writers.
+- **Safe writes**: existing objects are never overwritten, and every store
+  detects concurrent writers through CAS.
 
 Lode does not coordinate distributed writers, execute queries, compact
 data, or remove anything without being asked; [the concepts
@@ -144,7 +144,7 @@ release is described in [`CHANGELOG.md`](CHANGELOG.md).
 
 ## License
 
-Apache License 2.0 (see [`LICENSE`](LICENSE)). Copyright © 2026 Pithecene.
+Apache License 2.0 (see [`LICENSE`](LICENSE)). Copyright © 2026 Pithecene LLC.
 
 Contact: contact@pithecene.sh. To report a vulnerability, follow
 [`SECURITY.md`](SECURITY.md).

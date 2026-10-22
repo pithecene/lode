@@ -16,4 +16,4 @@ with the command shown.
 | [`vector_artifacts`](vector_artifacts) | A vector artifact pipeline: embeddings, indices, and pointers | `go run ./examples/vector_artifacts` |
 | [`optimistic_concurrency`](optimistic_concurrency) | CAS conflict detection and the retry pattern | `go run ./examples/optimistic_concurrency` |
 | [`retention`](retention) | Expiring runs by partition after a preview, then sweeping | `go run ./examples/retention` |
-| [`s3`](s3) | The S3 adapter with LocalStack or MinIO | `go run ./examples/s3` |
+| [`s3`](s3) | The S3 adapter with LocalStack or RustFS | `go run ./examples/s3` |

@@ -28,7 +28,10 @@ revision, which the next CI benchmark run will provide.
 | | CI (v0.8.0) | 177,600 ± 4% | 99,702 ± 0% | 680 |
 | `BenchmarkDataset_SequentialWrites_StoreCallCount` | Workstation | 187,400 ± 1% | 104,960 ± 0% | 773 |
 | | CI (v0.8.0) | 188,000 ± 3% | 101,881 ± 0% | 687 |
-| `BenchmarkDataset_Read` | Workstation | 16,170 ± 3% | 69,980 ± 0% | 70 |
+| `BenchmarkDataset_Read` | Workstation | 9,826 ± 3% | 8,573 ± 0% | 70 |
+| `BenchmarkJSONLCodec_Decode/records=3` | Workstation | 3,728 ± 3% | 6,129 ± 0% | 70 |
+| `BenchmarkJSONLCodec_Decode/records=1000` | Workstation | 1,145,000 ± 1% | 671,744 ± 0% | 23,000 |
+| `BenchmarkJSONLCodec_Decode/records=100000` | Workstation | 120,900,000 ± 3% | 72,142,438 ± 0% | 2,300,000 |
 | `BenchmarkDataset_StreamWrite` | Workstation | 13,230 ± 3% | 6,584 ± 0% | 33 |
 | `BenchmarkVolume_ReadAt` | Workstation | 19,710 ± 2% | 9,056 ± 0% | 44 |
 | `BenchmarkParquetCodec_Encode` | Workstation | 197,500 ± 6% | 530,842 ± 1% | 514 |
@@ -48,14 +51,95 @@ each revision; allocation counts are deterministic. The first cut of that restru
 found by this comparison and fixed before merge, which is why the comparison
 is part of the release checklist.
 
+The `Read` and `JSONLCodec_Decode` rows were measured after the JSON Lines
+decoder stopped allocating a 64 KiB buffer for every file it decodes
+(`-count=8`). A read of a three-record file then allocates 88 percent fewer
+bytes and takes 42 percent less time; decoding files of one thousand and one
+hundred thousand records takes the same time as before, within noise.
+
+The buffer grows by doubling from four kibibytes to the longest line, so a
+file whose lines are longer than about thirty-two kibibytes allocates the
+intermediate buffers that the former fixed buffer avoided.
+`BenchmarkJSONLCodec_DecodeLineLength` measures that cost on files of ten
+records: with lines of one kibibyte the decoder allocates 76 percent fewer
+bytes and takes 26 percent less time than before; with lines of sixteen
+kibibytes it is unchanged; with lines of forty-eight and two hundred
+fifty-six kibibytes it allocates 11 and 2 percent more bytes, in the same
+time. Avoiding both costs would require a buffer pool shared across decodes,
+which would be package-level state.
+
+## Allocation Gates
+
+`TestAllocationGates` in `lode/alloc_test.go` and `lode/volume/alloc_test.go`
+holds each hot path of the Dataset and Volume APIs to a ceiling on the
+allocations per operation and on the bytes they allocate, measured on the
+in-memory store with the head known. Both figures are deterministic for a
+given toolchain, so the gates run in every `go test` without the race
+detector, which adds allocations of its own. The byte ceiling catches a
+single oversized allocation, such as a fixed buffer, which the allocation
+count does not; each byte ceiling is the measured figure rounded up to the
+next 64 bytes, because map growth in the in-memory store varies it by a few
+bytes. The ceilings below were measured with Go 1.27.3; the benchmark
+figures in the other sections were measured with Go 1.25.
+
+| Gate | Allocations | Bytes |
+|------|------------:|------:|
+| Write of three records | 56 | 6,208 |
+| Read of three records | 59 | 8,640 |
+| StreamWrite of one kibibyte | 32 | 6,336 |
+| StreamWriteRecords of three records | 61 | 6,400 |
+| JSONL Decode of three records | 33 | 5,568 |
+| Volume ReadAt within one of ten blocks | 41 | 10,816 |
+| Volume Commit of one block onto a small volume | 136 | 252,032 |
+
+A change that exceeds a ceiling fails the test and must justify the increase
+in its pull request before the ceiling is raised. A change that reduces a
+figure lowers the ceiling to the new figure in the same pull request, so the
+gates never retain unused headroom. A toolchain or dependency upgrade that
+moves the figures resets the ceilings in the upgrade's pull request.
+`task gates` runs each gate three times and reports the ceilings that each
+run calls for, with the byte figure already rounded. A byte figure near a
+multiple of 64 can round to either side, so a ceiling is reset to the
+highest figure that a gate reports.
+
+Two gates vary between measurements. Under Go 1.27, `encoding/json` uses
+its v2 implementation, and in a few percent of measurements the Dataset
+Read and Volume ReadAt paths allocate two more objects per run (and the
+corresponding bytes). The variation occurs between repetitions within one
+test process, so `go test -count=120` observes it; with
+`GOEXPERIMENT=nojsonv2` every figure is identical across the 120
+repetitions, so the variation lies in the standard library, not in Lode.
+The ceilings of those two gates are therefore the higher figures; `task
+gates` reports the lower ones in most repetitions, and a ceiling reset uses
+the highest figure observed across `go test -count=120`.
+
 ### S3 (Docker-local)
 
 | Benchmark | Machine | ns/op | B/op | allocs/op |
 |-----------|---------|------:|-----:|----------:|
-| `BenchmarkS3_WriteRoundTrip/LocalStack` | Workstation | 5,621,000 ± 15% | 376,832 ± 2% | 2,973 |
-| | CI | 8,247,000 ± 3% | 355,202 ± 1% | 2,965 |
-| `BenchmarkS3_WriteRoundTrip/MinIO` | Workstation | 11,340,000 ± 1% | 380,659 ± 1% | 3,045 |
-| | CI | 6,838,000 ± 5% | 364,071 ± 1% | 3,039 |
+| `BenchmarkS3_WriteRoundTrip/LocalStack` | Workstation | 10,190,000 ± 5% | 471,757 ± 1% | 4,261 |
+| | CI (v0.10.0) | 8,247,000 ± 3% | 355,202 ± 1% | 2,965 |
+| `BenchmarkS3_WriteRoundTrip/RustFS` | Workstation | 33,280,000 ± 5% | 469,504 ± 1% | 4,157 |
+| | CI | Not yet measured | | |
+
+The workstation figures are medians of ten runs on an AMD Ryzen 9 5900XT.
+The CI figure for LocalStack is an older baseline, and RustFS has no CI
+figure yet.
+
+Each iteration opens a new dataset, so the benchmark measures a dataset's
+first commit and one read: seven S3 requests (a pointer Get that finds no
+pointer, a List, the data and manifest writes, the pointer write, and two
+Gets for the read). Nearly all allocations occur in the AWS SDK, at about six
+hundred per request, so the allocation count follows the request count.
+It rose from 2,970 in February to 4,904 when the persistent `latest`
+pointer (#127) and CAS pointer updates (#135) added requests to this path;
+`CompareAndSwap` then read the pointer before every conditional write. The
+S3 adapter now omits that read when it creates the pointer and when it
+replaces a pointer that it last replaced itself. This change reduced the
+benchmark from eight requests to seven, which lowered its allocations by
+13 percent and, on LocalStack, its duration by 9 percent. Each commit after
+the second through the same store issues three requests instead of four;
+the benchmark does not measure such commits.
 
 > **Note:** S3 numbers reflect Docker-local round-trip latency, not production S3.
 > The `SequentialWrites` benchmarks inject 1 ms of latency on `List` and `Get`
@@ -64,12 +148,8 @@ is part of the release checklist.
 > These results are informational — use them for relative comparison, not absolute targets.
 >
 > Allocation counts are stable across machines. Latency varies with CPU,
-> Docker runtime, and scheduler noise — the MinIO/LocalStack ordering
-> reverses between workstation and CI, confirming that absolute S3 latency
-> depends on the container environment, not the library.
->
-> LocalStack shows higher latency variance (± 15% workstation) than MinIO
-> (± 1%) due to its Java/Python runtime. This is inherent to the emulator.
+> Docker runtime, and scheduler noise, so absolute S3 latency depends on
+> the container environment, not the library.
 
 ## Benchmark inventory
 
@@ -78,12 +158,14 @@ is part of the release checklist.
 | `BenchmarkDataset_SequentialWrites` | `lode/dataset_bench_test.go` | In-memory (latency-injected) | Done |
 | `BenchmarkDataset_SequentialWrites_StoreCallCount` | `lode/dataset_bench_test.go` | In-memory (fault store) | Done |
 | `BenchmarkS3_WriteRoundTrip/LocalStack` | `lode/s3/bench_integration_test.go` | LocalStack | Done |
-| `BenchmarkS3_WriteRoundTrip/MinIO` | `lode/s3/bench_integration_test.go` | MinIO | Done |
+| `BenchmarkS3_WriteRoundTrip/RustFS` | `lode/s3/bench_integration_test.go` | RustFS | Done |
 | `BenchmarkDataset_Read` | `lode/bench_test.go` | In-memory | Done |
 | `BenchmarkDataset_StreamWrite` | `lode/bench_test.go` | In-memory | Done |
 | `BenchmarkVolume_ReadAt` | `lode/volume/bench_test.go` | In-memory (10 committed blocks) | Done |
 | `BenchmarkParquetCodec_Encode` | `lode/bench_test.go` | In-memory | Done |
 | `BenchmarkParquetCodec_Decode` | `lode/bench_test.go` | In-memory | Done |
+| `BenchmarkJSONLCodec_Decode` | `lode/bench_test.go` | In-memory (three, one thousand, and one hundred thousand records) | Done |
+| `BenchmarkJSONLCodec_DecodeLineLength` | `lode/bench_test.go` | In-memory (lines of 1, 16, 48, and 256 KiB) | Done |
 | `BenchmarkFindCoveringBlocks` | `lode/volume/volume_test.go` | In-memory | Done |
 | `BenchmarkMergeBlocks` | `lode/volume/volume_test.go` | In-memory | Done |
 
@@ -91,16 +173,16 @@ is part of the release checklist.
 
 | Benchmark | Backend | Notes |
 |-----------|---------|-------|
-| Streaming record write round-trip | S3 (LocalStack/MinIO) | `StreamWriteRecords` path |
-| Compressed write round-trip | S3 (LocalStack/MinIO) | gzip/zstd codec variants |
-| Volume commit round-trip | S3 (LocalStack/MinIO) | Multi-block Volume write path |
+| Streaming record write round-trip | S3 (LocalStack/RustFS) | `StreamWriteRecords` path |
+| Compressed write round-trip | S3 (LocalStack/RustFS) | gzip/zstd codec variants |
+| Volume commit round-trip | S3 (LocalStack/RustFS) | Multi-block Volume write path |
 
 ## Running benchmarks
 
 `task bench` runs **all** benchmarks — in-memory and S3 integration:
 
 ```bash
-task s3:up      # start LocalStack + MinIO
+task s3:up      # start LocalStack + RustFS
 task bench      # run all benchmarks
 task s3:down    # stop services
 ```
@@ -114,7 +196,7 @@ In-memory benchmarks always run. S3 benchmarks require services to be up first.
 summaries. Raw output is saved to `bench-inmemory.txt` and `bench-s3.txt`.
 
 ```bash
-task s3:up          # start LocalStack + MinIO
+task s3:up          # start LocalStack + RustFS
 task bench:stat     # -count=10, benchstat summary
 task s3:down        # stop services
 ```

@@ -1,8 +1,8 @@
 package volume
 
 import (
-	"github.com/pithecene-io/lode/internal/testutil"
-	"github.com/pithecene-io/lode/lode"
+	"github.com/pithecene/lode/internal/testutil"
+	"github.com/pithecene/lode/lode"
 )
 
 // memoryFactoryFrom returns a StoreFactory that hands out the given store, so

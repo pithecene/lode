@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pithecene-io/lode/internal/retry"
+	"github.com/pithecene/lode/internal/retry"
 )
 
 // Unit tests for the history core in isolation: a map-backed store and a
@@ -111,10 +111,9 @@ func (s *memStore) Delete(_ context.Context, path string) error {
 	return nil
 }
 
-// casStore adds CompareAndSwap: expected "" means the object must be absent.
-type casStore struct{ *memStore }
-
-func (s casStore) CompareAndSwap(_ context.Context, path, expected, replacement string) error {
+// CompareAndSwap follows the ConditionalWriter table: expected "" means the
+// object must be absent.
+func (s *memStore) CompareAndSwap(_ context.Context, path, expected, replacement string) error {
 	if err := s.injected("cas", path+" "+expected); err != nil {
 		return err
 	}
@@ -144,7 +143,6 @@ const (
 )
 
 func (testKind) SnapshotsPrefix() string { return prefix }
-func (testKind) PointerPath() string     { return pointer }
 func (testKind) ManifestPath(i id) string {
 	return prefix + string(i) + "/manifest.json"
 }
@@ -170,7 +168,7 @@ func (testKind) Decode(r io.Reader) (*manifest, error) {
 }
 
 func newTestHistory(s Store) History[id, manifest] {
-	return New(s, testKind{}, "test manifest", testErrors)
+	return New(s, testKind{}, pointer, "test manifest", testErrors)
 }
 
 // put stores a manifest with the given tag at the canonical path.
@@ -360,7 +358,7 @@ func TestWritePointer(t *testing.T) {
 	t.Run("CAS store swaps against expected", func(t *testing.T) {
 		s := newMemStore()
 		s.objects[pointer] = []byte("1")
-		h := newTestHistory(casStore{s})
+		h := newTestHistory(s)
 		if err := h.writePointer(t.Context(), "1", "2"); err != nil {
 			t.Fatal(err)
 		}
@@ -371,17 +369,23 @@ func TestWritePointer(t *testing.T) {
 			t.Fatalf("stale expected: got %v, want conflict", err)
 		}
 	})
-	t.Run("plain store deletes then puts", func(t *testing.T) {
-		s := newMemStore()
-		s.objects[pointer] = []byte("1")
-		h := newTestHistory(s)
-		if err := h.writePointer(t.Context(), "ignored", "2"); err != nil {
-			t.Fatal(err)
-		}
-		if string(s.objects[pointer]) != "2" || !slices.Equal(s.ops, []string{"delete " + pointer, "put " + pointer}) {
-			t.Fatalf("pointer = %q, ops = %v", s.objects[pointer], s.ops)
-		}
-	})
+}
+
+// assertNoScan fails if the history listed its snapshots.
+func assertNoScan(t *testing.T, s *memStore) {
+	t.Helper()
+	if slices.ContainsFunc(s.ops, func(op string) bool { return strings.HasPrefix(op, "list ") }) {
+		t.Fatalf("scanned after a failed read: ops = %v", s.ops)
+	}
+}
+
+// assertForgotten fails if the history still remembers a head, which a
+// later Resolve would adopt without consulting storage.
+func assertForgotten(t *testing.T, h History[id, manifest]) {
+	t.Helper()
+	if h.head != "" || h.pointer != "" {
+		t.Fatalf("memory = %q/%q, want it discarded", h.head, h.pointer)
+	}
 }
 
 func TestLatest(t *testing.T) {
@@ -404,7 +408,7 @@ func TestLatest(t *testing.T) {
 		put(t, s, "1", "one")
 		put(t, s, "3", "three")
 		put(t, s, "2", "two")
-		h := newTestHistory(casStore{s})
+		h := newTestHistory(s)
 		got, err := h.Latest(t.Context())
 		if err != nil || got.ID != "3" {
 			t.Fatalf("got %+v, %v; want snapshot 3", got, err)
@@ -419,7 +423,7 @@ func TestLatest(t *testing.T) {
 		s := newMemStore()
 		put(t, s, "1", "one")
 		s.objects[pointer] = []byte("9")
-		h := newTestHistory(casStore{s})
+		h := newTestHistory(s)
 		h.remember("1", "1")
 		got, err := h.Latest(t.Context())
 		if err != nil || got.ID != "1" {
@@ -432,11 +436,38 @@ func TestLatest(t *testing.T) {
 			t.Fatalf("memory = %q/%q, want it dropped", h.head, h.pointer)
 		}
 	})
+	// A failed read is not evidence that the pointer or the manifest is
+	// absent; a scan would return an older snapshot as the head (lode#208).
+	t.Run("failed pointer read is returned, not scanned", func(t *testing.T) {
+		s := newMemStore()
+		put(t, s, "1", "one")
+		s.objects[pointer] = []byte("1")
+		s.fail = failOn("get", pointer, errBoom)
+		h := newTestHistory(s)
+		h.remember("1", "1")
+		_, err := h.Latest(t.Context())
+		wantMessage(t, err, "lode: failed to read latest pointer: boom")
+		assertNoScan(t, s)
+		assertForgotten(t, h)
+	})
+	t.Run("failed head load is returned, not scanned", func(t *testing.T) {
+		s := newMemStore()
+		put(t, s, "1", "one")
+		put(t, s, "2", "two")
+		s.objects[pointer] = []byte("1")
+		s.fail = failOn("get", testKind{}.ManifestPath("1"), errBoom)
+		h := newTestHistory(s)
+		h.remember("2", "2")
+		_, err := h.Latest(t.Context())
+		wantMessage(t, err, "lode: failed to load latest snapshot: boom")
+		assertNoScan(t, s)
+		assertForgotten(t, h)
+	})
 	t.Run("failed creation still returns the scan result", func(t *testing.T) {
 		s := newMemStore()
 		put(t, s, "1", "one")
 		s.fail = failOn("cas", "", errBoom)
-		h := newTestHistory(casStore{s})
+		h := newTestHistory(s)
 		got, err := h.Latest(t.Context())
 		if err != nil || got.ID != "1" {
 			t.Fatalf("got %+v, %v", got, err)
@@ -524,6 +555,19 @@ func TestResolve(t *testing.T) {
 		if parent != "1" || expected != "not-an-id" || err != nil {
 			t.Fatalf("got %q/%q/%v", parent, expected, err)
 		}
+	})
+	t.Run("failed pointer read is returned, not scanned", func(t *testing.T) {
+		s := newMemStore()
+		put(t, s, "1", "one")
+		put(t, s, "2", "two")
+		s.objects[pointer] = []byte("1")
+		s.fail = failOn("get", pointer, errBoom)
+		h := newTestHistory(s)
+		parent, expected, err := h.Resolve(t.Context())
+		if parent != "" || expected != "" || !errors.Is(err, errBoom) {
+			t.Fatalf("got %q/%q/%v", parent, expected, err)
+		}
+		assertNoScan(t, s)
 	})
 	t.Run("empty history parents on nothing", func(t *testing.T) {
 		h := newTestHistory(newMemStore())
@@ -631,7 +675,7 @@ func TestAdvance(t *testing.T) {
 		if err := h.Advance(t.Context(), "", "5", &manifest{Tag: "five"}, paths); err != nil {
 			t.Fatal(err)
 		}
-		want := []string{"delete " + pointer, "put " + pointer, "put " + paths[0], "put " + paths[1]}
+		want := []string{"cas " + pointer + " ", "put " + paths[0], "put " + paths[1]}
 		if !slices.Equal(s.ops, want) {
 			t.Fatalf("ops = %v, want %v", s.ops, want)
 		}
@@ -645,10 +689,13 @@ func TestAdvance(t *testing.T) {
 	})
 	t.Run("pointer failure is wrapped and nothing else is written", func(t *testing.T) {
 		s := newMemStore()
-		s.fail = failOn("put", pointer, errBoom)
+		s.fail = failOn("cas", pointer, errBoom)
 		h := newTestHistory(s)
 		err := h.Advance(t.Context(), "", "5", &manifest{}, paths)
 		wantMessage(t, err, "lode: failed to update latest pointer: boom")
+		if errors.Is(err, ErrManifestUncertain) {
+			t.Fatal("a pointer failure matches ErrManifestUncertain; no manifest was written")
+		}
 		if _, ok := s.objects[paths[0]]; ok || h.head != "" {
 			t.Fatal("manifest written or head remembered after pointer failure")
 		}
@@ -659,12 +706,15 @@ func TestAdvance(t *testing.T) {
 		h := newTestHistory(s)
 		err := h.Advance(t.Context(), "", "5", &manifest{}, paths)
 		wantMessage(t, err, "lode: failed to write test manifest: boom")
+		if !errors.Is(err, ErrManifestUncertain) || !errors.Is(err, errBoom) {
+			t.Fatalf("manifest failure %v must match ErrManifestUncertain and its cause", err)
+		}
 		if h.head != "" {
 			t.Fatal("head remembered after manifest failure")
 		}
 	})
 	t.Run("marshal failure names the kind", func(t *testing.T) {
-		h := New[id, unmarshalable](newMemStore(), unmarshalableKind{}, "test manifest", testErrors)
+		h := New[id, unmarshalable](newMemStore(), unmarshalableKind{}, pointer, "test manifest", testErrors)
 		err := h.Advance(t.Context(), "", "5", &unmarshalable{F: func() {}}, paths)
 		if err == nil || !strings.HasPrefix(err.Error(), "lode: failed to marshal test manifest: ") {
 			t.Fatalf("got %v", err)
@@ -776,5 +826,155 @@ func TestCommitLoop(t *testing.T) {
 		if !errors.Is(err, errBoom) || calls != 1 {
 			t.Fatalf("got %v after %d calls", err, calls)
 		}
+	})
+}
+
+// --- staging ---
+
+// stagingKind is testKind with staged manifests at c/staged/<id>.json,
+// outside the snapshots prefix.
+type stagingKind struct{ testKind }
+
+func (stagingKind) StagedPath(i id) string { return "c/staged/" + string(i) + ".json" }
+
+func newStagingHistory(s Store) History[id, manifest] {
+	return New(s, stagingKind{}, pointer, "test manifest", testErrors)
+}
+
+func TestAdvance_Staged(t *testing.T) {
+	paths := []string{prefix + "5/manifest.json"}
+	staged := stagingKind{}.StagedPath("5")
+
+	t.Run("staged copy precedes the pointer and is removed after the manifests", func(t *testing.T) {
+		s := newMemStore()
+		h := newStagingHistory(s)
+		if err := h.Advance(t.Context(), "", "5", &manifest{Tag: "five"}, paths); err != nil {
+			t.Fatal(err)
+		}
+		want := []string{"put " + staged, "cas " + pointer + " ", "put " + paths[0], "delete " + staged}
+		if !slices.Equal(s.ops, want) {
+			t.Fatalf("ops = %v, want %v", s.ops, want)
+		}
+		if _, ok := s.objects[staged]; ok {
+			t.Fatal("staged copy remains after the manifests were persisted")
+		}
+	})
+	t.Run("staging failure is wrapped and nothing else is written", func(t *testing.T) {
+		s := newMemStore()
+		s.fail = failOn("put", staged, errBoom)
+		h := newStagingHistory(s)
+		err := h.Advance(t.Context(), "", "5", &manifest{}, paths)
+		wantMessage(t, err, "lode: failed to stage test manifest: boom")
+		if len(s.ops) != 1 || h.head != "" {
+			t.Fatalf("ops = %v, head = %q; want only the staging attempt", s.ops, h.head)
+		}
+	})
+	t.Run("manifest failure retains the staged copy", func(t *testing.T) {
+		s := newMemStore()
+		s.fail = failOn("put", "manifest.json", errBoom)
+		h := newStagingHistory(s)
+		if err := h.Advance(t.Context(), "", "5", &manifest{Tag: "five"}, paths); !errors.Is(err, ErrManifestUncertain) {
+			t.Fatalf("got %v, want ErrManifestUncertain", err)
+		}
+		if _, ok := s.objects[staged]; !ok {
+			t.Fatal("staged copy removed although the canonical manifest is absent")
+		}
+	})
+	t.Run("lost race discards the staged copy", func(t *testing.T) {
+		s := newMemStore()
+		s.objects[pointer] = []byte("4")
+		h := newStagingHistory(s)
+		if err := h.Advance(t.Context(), "", "5", &manifest{}, paths); !errors.Is(err, errConflict) {
+			t.Fatalf("got %v, want a conflict", err)
+		}
+		if _, ok := s.objects[staged]; ok {
+			t.Fatal("staged copy of a commit the pointer does not name remains")
+		}
+	})
+	// A store may report a failure for a CAS it applied (a retry after a lost
+	// response); the staged copy is then the only manifest of a committed
+	// snapshot.
+	t.Run("pointer failure the store applied retains the staged copy", func(t *testing.T) {
+		s := newMemStore()
+		s.fail = func(op, _ string) error {
+			if op == "cas" {
+				s.objects[pointer] = []byte("5")
+				return errBoom
+			}
+			return nil
+		}
+		h := newStagingHistory(s)
+		if err := h.Advance(t.Context(), "", "5", &manifest{}, paths); !errors.Is(err, errBoom) {
+			t.Fatalf("got %v, want boom", err)
+		}
+		if _, ok := s.objects[staged]; !ok {
+			t.Fatal("staged copy of the snapshot the pointer names was removed")
+		}
+	})
+}
+
+func TestResolveParent_Staged(t *testing.T) {
+	staged := stagingKind{}.StagedPath("9")
+	pending := func(t *testing.T) *memStore {
+		t.Helper()
+		s := newMemStore()
+		put(t, s, "1", "one")
+		s.objects[pointer] = []byte("9")
+		return s
+	}
+	t.Run("an abandoned commit's staged copy is the parent", func(t *testing.T) {
+		s := pending(t)
+		putAt(t, s, staged, "nine")
+		h := newStagingHistory(s)
+		parent, expected, err := h.ResolveParent(t.Context())
+		if err != nil || parent.ID != "9" || parent.Manifest.Tag != "nine" || expected != "9" {
+			t.Fatalf("got %+v/%q/%v, want 9 from its staged copy", parent, expected, err)
+		}
+	})
+	// The writer persisted the canonical manifest and removed the staged copy
+	// between the two reads.
+	t.Run("a staged copy removed meanwhile falls back to the canonical manifest", func(t *testing.T) {
+		s := pending(t)
+		s.fail = func(op, path string) error {
+			if op == "get" && path == staged {
+				putAt(t, s, testKind{}.ManifestPath("9"), "nine")
+			}
+			return nil
+		}
+		h := newStagingHistory(s)
+		parent, _, err := h.ResolveParent(t.Context())
+		if err != nil || parent.Manifest.Tag != "nine" {
+			t.Fatalf("got %+v/%v, want 9 from its canonical manifest", parent, err)
+		}
+	})
+	t.Run("neither copy is a conflict", func(t *testing.T) {
+		h := newStagingHistory(pending(t))
+		parent, expected, err := h.ResolveParent(t.Context())
+		if !errors.Is(err, errConflict) || parent != nil || expected != "" {
+			t.Fatalf("got %+v/%q/%v, want a conflict", parent, expected, err)
+		}
+	})
+	t.Run("an unreadable staged copy is returned", func(t *testing.T) {
+		s := pending(t)
+		s.fail = failOn("get", staged, errBoom)
+		h := newStagingHistory(s)
+		_, _, err := h.ResolveParent(t.Context())
+		wantMessage(t, err, "lode: failed to load staged snapshot: boom")
+	})
+	t.Run("an unreadable canonical manifest after a removed staged copy is returned", func(t *testing.T) {
+		s := pending(t)
+		canonical := testKind{}.ManifestPath("9")
+		gets := 0
+		s.fail = func(op, path string) error {
+			if op == "get" && path == canonical {
+				if gets++; gets > 1 {
+					return errBoom
+				}
+			}
+			return nil
+		}
+		h := newStagingHistory(s)
+		_, _, err := h.ResolveParent(t.Context())
+		wantMessage(t, err, "lode: failed to load snapshot: boom")
 	})
 }

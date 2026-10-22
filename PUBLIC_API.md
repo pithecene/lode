@@ -42,7 +42,7 @@ Example:
 <!-- illustrative -->
 ```go
 import (
-    "github.com/pithecene-io/lode/lode"
+    "github.com/pithecene/lode/lode"
 )
 
 ds, _ := lode.NewDataset(
@@ -75,7 +75,7 @@ reader, _ := lode.NewDatasetReader(
 ### Volume (Experimental, Package `lode/volume`)
 
 > **Experimental.** Volume resides in the package
-> `github.com/pithecene-io/lode/lode/volume` and is excluded from the v1.0
+> `github.com/pithecene/lode/lode/volume` and is excluded from the v1.0
 > compatibility commitment until it passes its own stability gate
 > (`docs/V1_READINESS.md` §4, `docs/V1_API_DECISIONS.md` D9). Its API may
 > change in any release. Data that it has persisted remains readable,
@@ -93,8 +93,8 @@ overlap.
 <!-- illustrative -->
 ```go
 import (
-    "github.com/pithecene-io/lode/lode"
-    "github.com/pithecene-io/lode/lode/volume"
+    "github.com/pithecene/lode/lode"
+    "github.com/pithecene/lode/lode/volume"
 )
 
 vol, _ := volume.New(
@@ -460,10 +460,11 @@ Common errors from the streaming APIs:
 - `ReaderAt` may return an `io.ReaderAt` that also implements `io.Closer`;
   close it after use.
 - Checksums are computed and recorded in manifests only when configured.
-- Concurrent `Write` and `StreamWrite` calls on the same dataset are safe
-  only with a store that supports CAS (`ConditionalWriter`). Without CAS,
-  serialize writes externally. See `CONTRACT_WRITE_API.md` §Concurrent Blob
-  Write Safety.
+- Concurrent `Write` and `StreamWrite` calls on the same dataset, through
+  separate `Dataset` values, are safe: every store implements
+  `ConditionalWriter`, so commits detect one another and return
+  `ErrSnapshotConflict`. See `CONTRACT_WRITE_API.md` §Concurrent Blob Write
+  Safety.
 - `StreamWrite` is valid only when no codec is configured; otherwise it
   returns an error.
 - `StreamWriteRecords` requires a codec that supports streaming; otherwise
@@ -634,19 +635,30 @@ writes. Whether CAS is available depends on the storage adapter:
 |---------|-----|--------------------|--------------------------|
 | **Memory** | ✅ | Safe without coordination | `ErrSnapshotConflict`; retry after `Latest()` |
 | **S3** | ✅ | Safe without coordination | `ErrSnapshotConflict`; retry after `Latest()` |
-| **Filesystem (Unix)** | ✅ | Safe without coordination | `ErrSnapshotConflict`; retry after `Latest()` |
-| **Filesystem (other platforms)** | ❌ | A single writer only | Undefined; serialize writes externally |
-| **Custom adapter** | Depends on the adapter | Implement `ConditionalWriter` for CAS | Uses Delete+Put without it |
+| **Filesystem (Unix and Windows)** | ✅ | Safe without coordination | `ErrSnapshotConflict`; retry after `Latest()` |
+| **Filesystem (other platforms, such as Plan 9 and WebAssembly)** | ❌ | Not supported | `CompareAndSwap` returns `errors.ErrUnsupported`, so every commit fails |
+| **Custom adapter** | ✅ (required: `ConditionalWriter` is part of `Store`) | Safe without coordination | `ErrSnapshotConflict`; retry after `Latest()` |
+| **`SingleProcess` over a backend without CAS** | ✅ within one process | Safe for writers in this process that share the wrapped store | `ErrSnapshotConflict`; retry after `Latest()` |
 
-CAS is always enabled when the adapter supports it, and no configuration
-is required.
+CAS is always enabled, and no configuration is required.
 
-#### With CAS (Memory, S3, and the Filesystem on Unix)
+#### Concurrent Writers
 
 Several **separate processes** (or separate `Dataset` or `Volume` values)
 MAY write to the same dataset or volume safely without external
 coordination. A single `Dataset` or `Volume` value is NOT safe for
 concurrent use by several goroutines.
+
+A writer that terminates after advancing the `latest` pointer and before
+persisting its manifest leaves an *abandoned commit*. The history remains
+linear. The next Dataset snapshot names a parent that has no manifest; the
+next Volume commit adopts the abandoned commit from its staged manifest and
+merges its blocks (CONTRACT_CORE §Head Pointer, CONTRACT_VOLUME §Error
+Semantics). Only a pointer that names a commit persisted by a release
+earlier than v0.11.0, or a pointer edited by hand, blocks Volume commits
+until an operator repairs it; after such a repair, call `Latest` on an
+existing `Volume` value, or open the volume again, before committing,
+unless retries are configured.
 
 On a conflict, with manual retries:
 1. Receive `ErrSnapshotConflict`.
@@ -666,20 +678,34 @@ retry, before the backoff interval, with the attempt number counted from 1.
 Data files are immutable and already persisted, so the cost of a retry is
 one manifest write plus one pointer swap.
 
-#### Without CAS (the Filesystem on Other Platforms, and Custom Adapters without `ConditionalWriter`)
+#### Backends without a Conditional Write
 
-Callers MUST ensure that at most one writer is active per dataset or volume
-at any time. External coordination (locks, queues, leader election) is the
-caller's responsibility; without it, concurrent writers may corrupt the
-snapshot history.
+`Store` requires `CompareAndSwap`. A backend that offers no conditional
+write implements `lode.ObjectStore` (the object operations alone). When
+every writer runs in one process, wrap it once with `lode.SingleProcess` and
+give the result to every handle:
+
+```go
+store := lode.SingleProcess(customStore) // one value, shared by all writers
+factory := func() (lode.Store, error) { return store, nil }
+```
+
+`SingleProcess` implements `CompareAndSwap` with a lock held by the process,
+so writers in that process commit as they would with CAS. Reads through the
+returned value wait for a replacement in progress, so they never observe a
+replaced object as absent. It does not coordinate writers or readers in
+other processes, nor a second `SingleProcess` around the same backend; with
+writers in several processes, such a backend requires external coordination
+(locks, queues, leader election). A store that already implements
+`ConditionalWriter` is returned unchanged.
 
 *Contract reference: [`CONTRACT_WRITE_API.md`](docs/contracts/CONTRACT_WRITE_API.md) §Concurrency, [`CONTRACT_VOLUME.md`](docs/contracts/CONTRACT_VOLUME.md) §Concurrency, [`CONTRACT_STORAGE.md`](docs/contracts/CONTRACT_STORAGE.md) §ConditionalWriter Capability*
 
 ### Performance
 
-CAS replaces Delete+Put (two store calls) with a single `CompareAndSwap`,
-which reduces both latency and the number of allocations. Stores without
-`ConditionalWriter` retain the Delete+Put path unchanged.
+Before CAS was required, a store without `ConditionalWriter` updated the
+pointer with Delete+Put (two store calls). A single `CompareAndSwap` reduces
+both latency and the number of allocations relative to that path.
 
 Benchmarks on the in-memory adapter (twenty sequential writes per
 iteration, AMD Ryzen 9 5900XT):
@@ -716,7 +742,8 @@ backend's support for `If-None-Match` on `CompleteMultipartUpload`:
 |---------|----------------------|--------|
 | Cloudflare R2 | Supported | ✅ Verified in production |
 | AWS S3 | Supported | ✅ Expected to be compatible |
-| MinIO | Unknown | ⚠️ Test backend only |
+| RustFS | Supported | ⚠️ Test backend only |
+| MinIO | Unknown | ⚠️ Not tested |
 | LocalStack | Unknown | ⚠️ Test backend only |
 
 The backends marked ⚠️ are used for integration testing only. Before
@@ -731,11 +758,16 @@ single-writer semantics in the application.
 **The removal of partial objects is best-effort, not guaranteed.**
 
 On an abort, or on an error before commit:
-- No manifest is written, so the snapshot does not exist.
+- If the failure occurs before any manifest is written, the snapshot does
+  not exist.
 - A failed `Put` leaves no object (`CONTRACT_STORAGE.md` §Put is atomic),
   and the writer never deletes anything after a failed `Put`.
-- A data object that was fully written but whose commit failed is deleted
-  on a best-effort basis and may remain in storage.
+- A stream's data object whose commit failed before any manifest write is
+  deleted on a best-effort basis and may remain in storage.
+- If a manifest write fails, the manifest may nevertheless have been
+  stored (when only the response was lost), so the snapshot may be visible.
+  Lode therefore retains the data object; if the commit did fail,
+  `Dataset.Sweep` reclaims it.
 - Callers should not rely on the automatic removal of partial objects;
   `Dataset.Sweep` reclaims them once they are older than its grace period
   (§Retention).
@@ -916,7 +948,7 @@ import (
     "github.com/aws/aws-sdk-go-v2/config"
     awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
 
-    "github.com/pithecene-io/lode/lode/s3"
+    "github.com/pithecene/lode/lode/s3"
 )
 
 cfg, _ := config.LoadDefaultConfig(ctx)
@@ -938,7 +970,7 @@ import (
     "github.com/aws/aws-sdk-go-v2/credentials"
     awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
 
-    "github.com/pithecene-io/lode/lode/s3"
+    "github.com/pithecene/lode/lode/s3"
 )
 
 cfg, _ := config.LoadDefaultConfig(ctx,

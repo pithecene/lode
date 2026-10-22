@@ -7,6 +7,7 @@ package s3
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"strings"
@@ -63,9 +64,11 @@ func (m *MockS3Client) ResetCounts() {
 	m.uploadPartCalls = 0
 }
 
-// objectETag returns a deterministic ETag for the given data.
+// objectETag returns a deterministic ETag for the given data. It is derived
+// from the content, as S3's ETag of a single-part upload is, so two versions
+// of an object carry different ETags and If-Match distinguishes them.
 func objectETag(data []byte) string {
-	return fmt.Sprintf("\"%x\"", len(data))
+	return fmt.Sprintf("\"%x\"", sha256.Sum256(data))
 }
 
 // PutObject implements API.PutObject for testing.
@@ -92,7 +95,8 @@ func (m *MockS3Client) PutObject(_ context.Context, params *s3.PutObjectInput, _
 	if ifMatch := aws.ToString(params.IfMatch); ifMatch != "" {
 		existing, exists := m.objects[key]
 		if !exists {
-			return nil, &smithyAPIError{code: "PreconditionFailed", message: "object does not exist"}
+			// S3 answers If-Match on an absent object with 404.
+			return nil, &types.NoSuchKey{}
 		}
 		if objectETag(existing) != ifMatch {
 			return nil, &smithyAPIError{code: "PreconditionFailed", message: "etag mismatch"}
@@ -100,7 +104,7 @@ func (m *MockS3Client) PutObject(_ context.Context, params *s3.PutObjectInput, _
 	}
 
 	m.objects[key] = data
-	return &s3.PutObjectOutput{}, nil
+	return &s3.PutObjectOutput{ETag: aws.String(objectETag(data))}, nil
 }
 
 // GetObject implements API.GetObject for testing.
@@ -177,6 +181,13 @@ func (m *MockS3Client) CreateMultipartUpload(_ context.Context, params *s3.Creat
 func (m *MockS3Client) UploadPart(_ context.Context, params *s3.UploadPartInput, _ ...func(*s3.Options)) (*s3.UploadPartOutput, error) {
 	uploadID := aws.ToString(params.UploadId)
 	partNum := aws.ToInt32(params.PartNumber)
+
+	// S3 rejects part numbers outside 1–maxParts. Enforcing the limit keeps
+	// a part loop that fails to advance from accumulating parts without
+	// bound in this in-memory double.
+	if partNum < 1 || partNum > maxParts {
+		return nil, &smithyAPIError{code: "InvalidArgument", message: "part number must be an integer between 1 and 10000"}
+	}
 
 	data, err := io.ReadAll(params.Body)
 	if err != nil {

@@ -73,8 +73,10 @@ If another writer advanced the pointer first, the CAS fails with
 `ErrSnapshotConflict`. With `WithRetryCount`, Lode reads the head again and
 retries with the same staged data, which may still publish the snapshot. If
 the commit fails permanently, the data files that a buffered write staged
-remain as orphaned objects until `Dataset.Sweep` reclaims them; a stream
-write deletes its object on a best-effort basis.
+remain as orphaned objects until `Dataset.Sweep` reclaims them. A stream
+write deletes its object on a best-effort basis if the commit failed before
+any manifest write, and retains it otherwise, because a manifest whose
+write reported an error may still have been stored.
 
 ## Choosing a Write API
 

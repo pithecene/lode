@@ -24,7 +24,10 @@ without reporting it.
 - MUST write data to the given path.
 - Paths are slash-separated on every platform. A path that is empty, escapes
   the root, or contains a backslash MUST return `ErrInvalidPath`; adapters
-  MUST NOT read a backslash as a separator.
+  MUST NOT read a backslash as a separator. A path whose final segment
+  begins with the reserved prefix `.lode-tmp-` MUST also return
+  `ErrInvalidPath` on every adapter, because the filesystem adapter names
+  its temporary files with that prefix (below).
 - If it detects an existing path, it MUST return `ErrPathExists`.
 - The detection mechanism and its guarantee vary by upload path (see the
   table below).
@@ -35,6 +38,19 @@ without reporting it.
   path MUST be left as it was before the call, and a `Put` that created an
   object and then failed MUST remove it. If that removal itself fails, `Put`
   MUST return an error that reports both failures.
+- An object MUST become visible to `Get`, `Exists`, and `List` only once it
+  is complete: a concurrent reader observes the whole object or none of it.
+  A reader that observed a partial manifest would treat an incomplete commit
+  as complete (§Commit Semantics). The filesystem adapter writes the object
+  under a temporary name in the same directory and publishes it with a hard
+  link, which fails if the path exists; the adapter therefore requires a
+  filesystem that supports hard links, and on one that does not, `Put`
+  returns an error. A published object has the mode that creating it with
+  mode 0644 under the process umask gives. Temporary names begin with the
+  reserved prefix `.lode-tmp-`, and `List` omits them. The adapter
+  removes the temporary name after publishing; if that removal fails, or the
+  process ends first, an inert temporary file remains that no Lode operation
+  observes, and an operator may delete it.
 - A remote backend can accept an object and then lose the response (through
   a network or context timeout). The adapter MUST NOT attempt to resolve
   such an indeterminate outcome by deleting the key, because it cannot know
@@ -91,7 +107,14 @@ Adapters MUST document:
 
 ### Get
 - MUST return a readable stream for an existing path.
-- If the path does not exist, MUST return `ErrNotFound` (or an equivalent error).
+- If the path does not exist, MUST return an error that matches `ErrNotFound`
+  under `errors.Is`. Lode distinguishes an absent object from a failed read
+  by this error alone, and it handles each absence as CONTRACT_CORE §Head
+  Pointer specifies: for example, when the `latest` pointer is absent,
+  `Latest` and parent resolution scan the snapshots. Lode returns any other
+  error to the caller. An adapter that reports absence with a different
+  error therefore causes `Latest` and commits to fail on a dataset that has
+  no pointer.
 
 ### Exists
 - MUST accurately report existence.
@@ -172,9 +195,11 @@ For streaming writes that use the multipart path:
 
 ## ConditionalWriter Capability
 
-`ConditionalWriter` is an optional interface that storage adapters MAY
-implement to enable optimistic concurrency control (CAS) on the latest
-pointer.
+Every adapter MUST implement `ConditionalWriter`: `Store` is `ObjectStore`
+(the object operations above) together with `ConditionalWriter`. Every
+commit advances the latest pointer through `CompareAndSwap`, which provides
+optimistic concurrency control (CAS), and retention writes tombstones
+through it.
 
 ```go
 type ConditionalWriter interface {
@@ -199,28 +224,59 @@ type ConditionalWriter interface {
 ### Implementation Notes
 
 **Filesystem adapter:**
-- Acquire `flock` on a companion `.lock` file adjacent to the target path.
+- Acquire an exclusive lock on a companion `.lock` file adjacent to the
+  target path: `flock` on Unix, `LockFileEx` on Windows. On other platforms,
+  such as Plan 9, no such lock exists, and `CompareAndSwap` returns an error
+  that matches `errors.ErrUnsupported`.
 - While holding the lock, read the current content, compare it, and write
   the replacement.
 - Release the lock.
 
 **S3 adapter:**
-- Call `GetObject` to read the current content and record its ETag.
-- Call `PutObject` with `If-Match` (to update) or `If-None-Match: *` (to
-  create).
-- If the ETag has changed, return `ErrSnapshotConflict`.
+- The conditional `PutObject` decides every outcome: `If-None-Match: *`
+  creates the object, and `If-Match` replaces exactly the version that was
+  compared. No outcome is inferred from what the adapter recorded earlier.
+- When `expected` is empty, call `PutObject` with `If-None-Match: *` at
+  once.
+- When the adapter itself replaced the object (with `If-Match`) and
+  `expected` equals the content it wrote, call `PutObject` with `If-Match`
+  on the ETag that S3 returned for that write, without reading the object
+  first. The adapter records only versions that it wrote by replacement,
+  one per object and identified by a digest of the content, so objects
+  that are created once and never replaced, such as tombstones, leave no
+  record. It holds a bounded number of such records, evicting one when the
+  limit is reached, and `Delete` discards the record of the deleted
+  object; neither affects any outcome.
+- Otherwise, or when either of those writes reports that its precondition
+  failed or that the object no longer exists, call `GetObject` to read the current content and its ETag,
+  compare the content with `expected`, and then call `PutObject` with
+  `If-Match` on that ETag, or with `If-None-Match: *` if the object does not
+  exist. The outcome is therefore the one that reading first would give: an
+  empty existing object satisfies an empty `expected`, and an object that
+  another writer replaced yields `ErrSnapshotConflict`.
+- A refused precondition on the final write returns `ErrSnapshotConflict`,
+  as does an `If-Match` write that finds the object deleted since it was
+  read, which S3 reports as not found.
+- After any failed write the adapter discards what it knew of the object's
+  version, because a lost response may hide a completed write.
 
 **Memory adapter:**
 - Read, compare, and write under a mutex.
 
-### Adapter Compatibility
+### Backends without a Conditional Write
 
-Adapters that do not implement `ConditionalWriter` are valid. The commit
-path then uses Delete+Put, and callers remain responsible for ensuring
-single-writer semantics.
-
-When an adapter implements `ConditionalWriter`, the commit path uses
-`CompareAndSwap` automatically. The caller need not configure anything.
+A backend that offers no conditional write cannot implement
+`CompareAndSwap` atomically across processes. `lode.SingleProcess(store)`
+turns its `ObjectStore` into a `Store` by serializing `CompareAndSwap` calls
+under a lock held by the process; a store that already implements
+`ConditionalWriter` is returned unchanged. Its `CompareAndSwap` MUST follow
+the semantics table above. It serializes only callers that share the
+returned value within one process, and its replacement is a `Delete`
+followed by a `Put`, so a failed `Put` leaves the path absent. Reads
+through the returned value (`Get`, `Exists`, `List`, `ReadRange`, and
+`ReaderAt`) MUST wait for a replacement in progress, so that a reader in the
+process observes the old or the new content, never the absence between the
+`Delete` and the `Put`. A nil store MUST be returned as nil.
 
 ---
 

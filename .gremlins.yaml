@@ -21,10 +21,17 @@ unleash:
   # The whole module is mutated: shared internals (internal/history,
   # internal/retry) carry logic lode depends on, and gremlins measures
   # coverage per package, so they are gated by their own tests. Excluded:
-  # examples, and internal/testutil (test doubles, not product code).
+  # examples, internal/testutil (test doubles, not product code),
+  # internal/chaos (the on-demand stress harness, not product code), and
+  # files built only for Windows. gremlins mutates a file whatever its build
+  # constraints, and the nightly run is on Linux, where a Windows-only file
+  # is never compiled, so its mutants are reported NOT COVERED although the
+  # Windows job of the CI test matrix runs the tests that cover it.
   exclude-files:
     - examples/
     - internal/testutil/
+    - internal/chaos/
+    - _windows\.go$
   # Baseline (2026-10-20, gremlins v0.6.0, whole module after the history
   # core, retry config and validation errors moved to internal/, produced by
   # `task mutate` with exactly this file — workers 2, timeout-coefficient 20,
@@ -51,7 +58,7 @@ unleash:
   # Known limitation (go-gremlins/gremlins#298, open, no released fix): case
   # expressions of tagless switches are reported NOT COVERED and their mutants
   # never run. This repo uses that form for the CAS decision in
-  # lode/store.go (writeLatestPointer path) and lode/store_cas_unix.go, so those
+  # lode/store.go (writeLatestPointer path) and lode/store_cas.go, so those
   # guards are under-measured. The baseline above already includes them as
   # NOT COVERED. Revisit when a tagged release carries the fix; the repo pins
   # tagged tool versions only.

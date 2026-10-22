@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/pithecene-io/lode/internal/history"
+	"github.com/pithecene/lode/internal/history"
 )
 
 // Unit tests for history where the Dataset/Volume surfaces do not reach a
@@ -30,7 +30,7 @@ func (f failingStore) Get(context.Context, string) (io.ReadCloser, error) { retu
 func (f failingStore) List(context.Context, string) ([]string, error)     { return nil, f.err }
 
 func datasetHistory(store Store) history.History[DatasetSnapshotID, Manifest] {
-	return history.New(store, newDatasetKind("ds", NewDefaultLayout(), store), "manifest", historyErrors)
+	return history.New(store, newDatasetKind("ds", NewDefaultLayout(), store), NewDefaultLayout().latestPointerPath("ds"), "manifest", historyErrors)
 }
 
 func TestHistory_Refresh(t *testing.T) {
@@ -80,7 +80,7 @@ func TestHistory_Advance_ErrorNamesTheKind(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			store := manifestPutFailStore{Store: NewMemory(), err: boom}
-			h := history.New(store, newDatasetKind("ds", NewDefaultLayout(), store), c.noun, historyErrors)
+			h := history.New(store, newDatasetKind("ds", NewDefaultLayout(), store), NewDefaultLayout().latestPointerPath("ds"), c.noun, historyErrors)
 			err := h.Advance(t.Context(), "", "s1", &Manifest{}, []string{"datasets/ds/snapshots/s1/manifest.json"})
 			if err == nil || err.Error() != c.want {
 				t.Fatalf("got %v, want %q", err, c.want)

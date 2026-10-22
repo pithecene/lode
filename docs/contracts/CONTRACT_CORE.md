@@ -79,8 +79,8 @@ abandoned one, so Lode treats every pointer that names a snapshot without a
 manifest as a pending commit:
 
 - When the pointer is missing or names a snapshot without a manifest (a
-  pending or abandoned commit, a manual edit, or the interval of a non-CAS
-  Delete+Put), `Latest` selects the largest snapshot ID that has a
+  pending or abandoned commit, a manual edit, or a failed `Put` in the
+  replacement of `lode.SingleProcess`), `Latest` selects the largest snapshot ID that has a
   manifest. If the clock was set back, or two commits began in the same
   nanosecond, that selection may not be the most recent commit. `Latest`
   creates a missing pointer from the selection but never replaces an
@@ -92,10 +92,19 @@ manifest as a pending commit:
   therefore names an ID without a manifest. Readers resolving lineage MUST
   treat such a parent as the end of the explainable chain, as they treat an
   expired parent (CONTRACT_RETENTION §Lineage).
-- A Volume commit requires its parent's manifest and therefore returns
-  `ErrSnapshotConflict` until that manifest is persisted (CONTRACT_VOLUME).
+- A Volume commit requires its parent's manifest. It therefore persists a
+  staged copy of its own manifest before it advances the pointer, so the
+  next commit can load the parent even after an abandoned commit; only a
+  parent without either copy makes a Volume commit return
+  `ErrSnapshotConflict` (CONTRACT_VOLUME §Error Semantics).
 - Parent resolution selects the largest snapshot ID only when the pointer
   is missing or does not contain a snapshot ID.
+- "Missing" means that the store reported the object as not found. When a
+  read of the pointer, or of the manifest that the pointer names, fails with
+  any other error, `Latest`, parent resolution, and Volume commits MUST
+  return that error. They MUST NOT treat the failure as a missing pointer or
+  manifest: the largest snapshot ID may name the head's parent, so selecting
+  it would report an earlier snapshot as the head or fork the history.
 
 Instant-only IDs written before v0.11.0 were subject to the same ordering
 limit, and writes that began in the same nanosecond received identical IDs.

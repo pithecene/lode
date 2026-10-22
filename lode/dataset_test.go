@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pithecene-io/lode/internal/testutil"
+	"github.com/pithecene/lode/internal/testutil"
 )
 
 // -----------------------------------------------------------------------------
@@ -2621,6 +2621,58 @@ func TestDataset_Write_ParentsOnPendingCommit(t *testing.T) {
 	}
 }
 
+// writeInvertedHead persists the history shape in which lode#208 forked: the
+// head's snapshot ID is smaller than its parent's, because the head's write
+// began first and committed second, so the largest ID names the parent. It
+// returns the head.
+func writeInvertedHead(t *testing.T, store Store) DatasetSnapshotID {
+	t.Helper()
+	base := time.Now().Add(-time.Hour)
+	parent, head := idAt(base.Add(2*time.Second)), idAt(base.Add(time.Second))
+	for _, link := range []struct{ id, parent DatasetSnapshotID }{{parent, ""}, {head, parent}} {
+		m := validTestManifest()
+		m.SnapshotID, m.ParentSnapshotID = link.id, link.parent
+		writeManifest(t.Context(), t, store, m)
+	}
+	if err := store.Put(t.Context(), "datasets/test-ds/latest", strings.NewReader(string(head))); err != nil {
+		t.Fatal(err)
+	}
+	return head
+}
+
+// TestDataset_TransientHeadReadErrors verifies that a failed read of the
+// pointer or of the head's manifest is returned to the caller. Treating it
+// as an absent pointer or manifest selects the largest snapshot ID, which is
+// the head's parent in this shape (CONTRACT_CORE §Head Pointer, lode#208).
+func TestDataset_TransientHeadReadErrors(t *testing.T) {
+	open := func(t *testing.T, fs *testutil.FaultStore) Dataset {
+		t.Helper()
+		ds, err := NewDataset("test-ds", newFaultStoreFactory(fs))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ds
+	}
+	t.Run("Latest returns a failed head load", func(t *testing.T) {
+		store := NewMemory()
+		head := writeInvertedHead(t, store)
+		fs := testutil.NewFaultStore(store)
+		fs.SetGetError(errGetFailed, "/"+string(head)+"/")
+		if snap, err := open(t, fs).Latest(t.Context()); !errors.Is(err, errGetFailed) {
+			t.Fatalf("got %v, %v; want the failed read", snap, err)
+		}
+	})
+	t.Run("Write returns a failed pointer read", func(t *testing.T) {
+		store := NewMemory()
+		writeInvertedHead(t, store)
+		fs := testutil.NewFaultStore(store)
+		fs.SetGetError(errGetFailed, "/latest")
+		if snap, err := open(t, fs).Write(t.Context(), []any{[]byte("x")}, nil); !errors.Is(err, errGetFailed) {
+			t.Fatalf("got %v, %v; want the failed read", snap, err)
+		}
+	})
+}
+
 func TestDataset_LatestPointer(t *testing.T) {
 	t.Run("read after write", func(t *testing.T) {
 		// After a write, the pointer file must exist in the store and
@@ -2957,10 +3009,12 @@ func TestDataset_Write_ColdStart(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, err = dsA.Write(t.Context(), R(D{"i": 1}), Metadata{})
+		snap1, err := dsA.Write(t.Context(), R(D{"i": 1}), Metadata{})
 		if err != nil {
 			t.Fatal(err)
 		}
+		// The scan below must find snap2 as the largest ID.
+		testutil.AwaitClockPast(t, string(snap1.ID))
 		snap2, err := dsA.Write(t.Context(), R(D{"i": 2}), Metadata{})
 		if err != nil {
 			t.Fatal(err)
@@ -3373,4 +3427,29 @@ func TestDataset_Write_RetryOptions(t *testing.T) {
 			t.Fatalf("expected ErrOptionNotValidForDatasetReader, got: %v", err)
 		}
 	})
+}
+
+// TestDataset_Write_EmptyBatch verifies that a write of no records commits a
+// snapshot with no data file on every layout: the partitioner yields no
+// group for an empty batch.
+func TestDataset_Write_EmptyBatch(t *testing.T) {
+	hive, err := NewHiveLayout("day")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, l := range map[string]layout{"default": NewDefaultLayout(), "hive": hive, "flat": NewFlatLayout()} {
+		t.Run(name, func(t *testing.T) {
+			ds, err := NewDataset("ds", NewMemoryFactory(), WithCodec(NewJSONLCodec()), WithLayout(l))
+			if err != nil {
+				t.Fatal(err)
+			}
+			snap, err := ds.Write(t.Context(), []any{}, Metadata{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(snap.Manifest.Files) != 0 || snap.Manifest.RowCount != 0 {
+				t.Errorf("empty write: %d files and %d rows, want none", len(snap.Manifest.Files), snap.Manifest.RowCount)
+			}
+		})
+	}
 }

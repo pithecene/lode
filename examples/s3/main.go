@@ -3,7 +3,7 @@
 // This example demonstrates using the S3 storage adapter with Lode.
 //
 // Requirements:
-// - An S3-compatible service (LocalStack or MinIO)
+// - An S3-compatible service (LocalStack or RustFS)
 // - The bucket must exist (e.g., `aws --endpoint-url=http://localhost:4566 s3 mb s3://lode-example`)
 // - Environment variables (optional, defaults provided below)
 //
@@ -22,8 +22,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
 
-	"github.com/pithecene-io/lode/lode"
-	"github.com/pithecene-io/lode/lode/s3"
+	"github.com/pithecene/lode/lode"
+	"github.com/pithecene/lode/lode/s3"
 )
 
 func main() {

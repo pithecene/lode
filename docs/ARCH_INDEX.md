@@ -53,7 +53,7 @@ Plans, contracts, and research notes. Contracts define **system behavior**.
 - `DESIGN_SCOPED_CONCURRENCY.md` — scoped concurrency design for non-overlapping writers
 - `SNIPPET_POLICY.md` — markdown code fence conventions
 - `guides/` — explanatory guides (non-normative): `concepts.md` (storage model, commits, choosing a write API), `retention.md` (expiry, tombstones, sweep), `snapshot-ids.md` (ID format, ordering, uniqueness)
-- `assets/` — README splash (light and dark JPEG); `assets/source/` holds the illustrated section and `render.sh` that regenerate it
+- `assets/` — README banner (light and dark PNG); `assets/source/` holds `plate.py` (the engraved section), `banner.html`, and `render.sh` that regenerate it
 
 Contracts are authoritative over code.
 
@@ -74,6 +74,7 @@ Public API surface.
 Internal implementations.
 
 - `testutil/` — internal test helpers, including the fault-injection store
+- `chaos/` — randomized concurrency harness with invariant checks, run on demand (`task chaos`, Chaos workflow)
 - `storepath/` — key, prefix, and range rules shared by every Store adapter
 - `history/` — snapshot-history core (snapshot chain, latest pointer, CAS commit loop) shared by every container
 - `retry/` — CAS-conflict retry configuration and backoff shared by every container
@@ -104,6 +105,7 @@ Example usage and integration references; `README.md` indexes them.
 Build and maintenance scripts.
 
 - `verify-snippets.sh` — validates runnable code fences in documentation
+- `fuzz.sh` — runs every Go fuzz target for a fixed duration (`task fuzz`)
 
 ---
 
@@ -120,7 +122,8 @@ AI governance: repo-local skill definitions.
 CI/CD workflows (GitHub Actions).
 
 - `workflows/ci.yml` — continuous integration
-- `workflows/nightly.yml` — nightly checks
+- `workflows/nightly.yml` — nightly checks (run on demand)
+- `workflows/chaos.yml` — chaos harness (run on demand)
 - `workflows/release.yml` — release automation
 
 ---

@@ -78,7 +78,7 @@ ds, _ := lode.NewDataset("mydata", lode.NewFSFactory("/data"))
 
 <!-- runnable -->
 ```bash
-go get github.com/pithecene-io/lode
+go get github.com/pithecene/lode
 ```
 ```
 

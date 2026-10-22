@@ -2,10 +2,11 @@ package lode
 
 import (
 	"path"
+	"slices"
 	"strings"
 
-	"github.com/pithecene-io/lode/internal/storepath"
-	"github.com/pithecene-io/lode/internal/validate"
+	"github.com/pithecene/lode/internal/storepath"
+	"github.com/pithecene/lode/internal/validate"
 )
 
 // layout is everything a dataset or reader needs from one path grammar and
@@ -114,17 +115,39 @@ type snapshotPath struct {
 }
 
 // join is path.Join over the non-empty parts. A grammar's optional pieces
-// (root, partition, snapshotDir) are "" when absent; dropping them up front
-// means one Join per path and nothing for Clean to repair.
+// (root, partition, snapshotDir) are "" when absent and are skipped. The
+// result is built in one allocation, sized first; path.Join allocates twice
+// (its buffer and the string). Clean returns an already clean path without
+// allocating, so the result equals path.Join's.
+//
+// path.Join is the specification: join MUST return exactly what path.Join
+// returns for any number of parts. FuzzJoin enforces this on every test run
+// and in the nightly fuzz job; a change that diverges is a bug in join.
+// Reverting to path.Join preserves every path, but it adds an allocation per
+// path, so the allocation gates in alloc_test.go must be raised with it.
 func join(parts ...string) string {
-	n := 0
+	size, n := 0, 0
 	for _, part := range parts {
 		if part != "" {
-			parts[n] = part
+			size += len(part)
 			n++
 		}
 	}
-	return path.Join(parts[:n]...)
+	if n == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.Grow(size + n - 1)
+	for _, part := range parts {
+		if part == "" {
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteByte('/')
+		}
+		b.WriteString(part)
+	}
+	return path.Clean(b.String())
 }
 
 // partitionParts is the partitions directory and the partition, or two
@@ -183,7 +206,7 @@ func (g pathGrammar) parse(p string) (sp snapshotPath, ok bool) {
 
 	if g.partitioned && len(parts) > 0 && parts[0] == partitionsDir {
 		parts = parts[1:]
-		end := indexOf(parts, g.snapshotDir)
+		end := slices.Index(parts, g.snapshotDir)
 		if end <= 0 {
 			return sp, false // no partition segments, or no snapshot dir after them
 		}
@@ -210,15 +233,6 @@ func (g pathGrammar) parse(p string) (sp snapshotPath, ok bool) {
 		return sp, true
 	}
 	return sp, false
-}
-
-func indexOf(parts []string, want string) int {
-	for i, p := range parts {
-		if p == want {
-			return i
-		}
-	}
-	return -1
 }
 
 // -----------------------------------------------------------------------------

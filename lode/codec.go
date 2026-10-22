@@ -46,7 +46,10 @@ func (j *jsonlCodec) Encode(w io.Writer, records []any) error {
 func (j *jsonlCodec) Decode(r io.Reader) ([]any, error) {
 	var records []any
 	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 0, 64*1024), maxScanTokenSize)
+	// The scanner allocates its buffer on demand and grows it to the
+	// longest line, up to maxScanTokenSize, so a small file costs a small
+	// buffer rather than a fixed 64 KiB.
+	scanner.Buffer(nil, maxScanTokenSize)
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		if len(line) == 0 {

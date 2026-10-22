@@ -1,6 +1,6 @@
-module github.com/pithecene-io/lode
+module github.com/pithecene/lode
 
-go 1.25.6
+go 1.27.3
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.41.5
@@ -11,6 +11,7 @@ require (
 	github.com/json-iterator/go v1.1.12
 	github.com/klauspost/compress v1.18.7
 	github.com/parquet-go/parquet-go v0.27.0
+	golang.org/x/sys v0.38.0
 )
 
 require (
@@ -36,6 +37,5 @@ require (
 	github.com/parquet-go/jsonlite v1.0.0 // indirect
 	github.com/pierrec/lz4/v4 v4.1.21 // indirect
 	github.com/twpayne/go-geom v1.6.1 // indirect
-	golang.org/x/sys v0.38.0 // indirect
 	google.golang.org/protobuf v1.34.2 // indirect
 )

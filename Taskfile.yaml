@@ -23,6 +23,42 @@ tasks:
     cmds:
       - go test -race -count=1 ./...
 
+  gates:
+    desc: Report the allocation-gate ceilings that the current code calls for
+    set: [pipefail]
+    cmds:
+      - >-
+        go test ./lode ./lode/volume -run TestAllocationGates -count=3 -v
+        | grep -E '^=== RUN|measured ceilings|FAIL'
+
+  fuzz:
+    desc: Run every fuzz target for FUZZTIME each (default 30s)
+    vars:
+      FUZZTIME: '{{.FUZZTIME | default "30s"}}'
+    cmds:
+      - ./scripts/fuzz.sh {{.FUZZTIME}}
+
+  chaos:
+    desc: Run the chaos harness (BACKENDS, LAYOUTS, FAULTS, RETENTION, VOLUME, DURATION, WRITERS, SEED, MEMPROFILE)
+    vars:
+      BACKENDS: '{{.BACKENDS | default "memory,fs"}}'
+      LAYOUTS: '{{.LAYOUTS | default "default,hive"}}'
+      FAULTS: '{{.FAULTS | default "none,mild"}}'
+      RETENTION: '{{.RETENTION | default "false"}}'
+      VOLUME: '{{.VOLUME | default "false"}}'
+      DURATION: '{{.DURATION | default "30s"}}'
+      WRITERS: '{{.WRITERS | default "8"}}'
+      SEED: '{{.SEED | default "0"}}'
+      MEMPROFILE: '{{.MEMPROFILE | default ""}}'
+    cmds:
+      - >-
+        go test ./internal/chaos -run TestChaos -count=1 -v -timeout 0 -chaos
+        -chaos.backends={{shellQuote .BACKENDS}} -chaos.layouts={{shellQuote .LAYOUTS}}
+        -chaos.faults={{shellQuote .FAULTS}}
+        -chaos.retention={{shellQuote .RETENTION}} -chaos.volume={{shellQuote .VOLUME}}
+        -chaos.duration={{shellQuote .DURATION}} -chaos.writers={{shellQuote .WRITERS}}
+        -chaos.seed={{shellQuote .SEED}} -chaos.memprofile={{shellQuote .MEMPROFILE}}
+
   mutate:
     desc: Run mutation tests on the module (lode, internal; gremlins; config in .gremlins.yaml)
     cmds:
@@ -53,9 +89,9 @@ tasks:
       - ./scripts/verify-snippets.sh
 
   s3:up:
-    desc: Start S3-compatible test services (LocalStack + MinIO)
+    desc: Start S3-compatible test services (LocalStack + RustFS)
     cmds:
-      - docker compose -f lode/s3/docker-compose.yaml up -d
+      - docker compose -f lode/s3/docker-compose.yaml up -d --wait
 
   s3:down:
     desc: Stop S3-compatible test services

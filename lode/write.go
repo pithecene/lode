@@ -3,14 +3,15 @@ package lode
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"slices"
 	"strings"
 	"time"
 
-	"github.com/pithecene-io/lode/internal/history"
-	"github.com/pithecene-io/lode/internal/validate"
+	"github.com/pithecene/lode/internal/history"
+	"github.com/pithecene/lode/internal/validate"
 )
 
 // Data file roles: a dataset without a codec stores one blob per snapshot, a
@@ -71,7 +72,12 @@ func (d *dataset) commit(ctx context.Context, p *pendingSnapshot) (*DatasetSnaps
 		return d.history.Advance(ctx, expected, p.id, manifest, d.manifestPaths(p.id, p.partitions))
 	})
 	if err != nil {
-		d.discard(ctx, p.streamed)
+		// Once a manifest write has been attempted, the snapshot may be
+		// visible (a Put whose response was lost still stores the object),
+		// so its data stays; if the commit did fail, Sweep reclaims it.
+		if !errors.Is(err, history.ErrManifestUncertain) {
+			d.discard(ctx, p.streamed)
+		}
 		return nil, err
 	}
 	return &DatasetSnapshot{ID: p.id, Manifest: manifest}, nil
@@ -125,7 +131,8 @@ func (d *dataset) manifestPaths(snapshotID DatasetSnapshotID, partitionKeys []st
 	return paths
 }
 
-// discard deletes a data file whose commit failed. No-op for an empty path.
+// discard deletes the data file of a commit that failed before any manifest
+// was written. No-op for an empty path.
 func (d *dataset) discard(ctx context.Context, path string) {
 	if path != "" {
 		_ = d.store.Delete(ctx, path)
@@ -163,7 +170,7 @@ func (d *dataset) stageBlob(ctx context.Context, p *pendingSnapshot, data []any)
 }
 
 func (d *dataset) stageRecords(ctx context.Context, p *pendingSnapshot, data []any) error {
-	partitions, err := d.partitionRecords(data)
+	partitions, err := d.layout.partitioner().group(data)
 	if err != nil {
 		return fmt.Errorf("lode: partitioning failed: %w", err)
 	}
@@ -181,21 +188,6 @@ func (d *dataset) stageRecords(ctx context.Context, p *pendingSnapshot, data []a
 		p.timestamps.observe(record)
 	}
 	return nil
-}
-
-func (d *dataset) partitionRecords(records []any) (map[string][]any, error) {
-	partitions := make(map[string][]any)
-	part := d.layout.partitioner()
-
-	for _, record := range records {
-		key, err := part.partitionKey(record)
-		if err != nil {
-			return nil, err
-		}
-		partitions[key] = append(partitions[key], record)
-	}
-
-	return partitions, nil
 }
 
 // filePath places a data file of the given role in the snapshot's directory.

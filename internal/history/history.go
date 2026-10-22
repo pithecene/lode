@@ -27,7 +27,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/pithecene-io/lode/internal/retry"
+	"github.com/pithecene/lode/internal/retry"
 )
 
 // Store is the subset of lode.Store a history uses. Any lode.Store satisfies
@@ -38,11 +38,6 @@ type Store interface {
 	Exists(ctx context.Context, path string) (bool, error)
 	List(ctx context.Context, prefix string) ([]string, error)
 	Delete(ctx context.Context, path string) error
-}
-
-// conditionalWriter mirrors lode.ConditionalWriter: a store that implements
-// it gets CAS pointer updates.
-type conditionalWriter interface {
 	CompareAndSwap(ctx context.Context, path, expected, replacement string) error
 }
 
@@ -63,8 +58,6 @@ type Errors struct {
 type Kind[ID ~string, M any] interface {
 	// SnapshotsPrefix lists every manifest of the container.
 	SnapshotsPrefix() string
-	// PointerPath is the head pointer object.
-	PointerPath() string
 	// ManifestPath is the canonical manifest for a snapshot.
 	ManifestPath(id ID) string
 	// ParseManifest returns the snapshot ID a manifest path names, or false
@@ -75,6 +68,16 @@ type Kind[ID ~string, M any] interface {
 	// NotExpired reports whether a pointer-less scan may take snapshot id as
 	// the head: false only for one retention has expired.
 	NotExpired(ctx context.Context, id ID) (bool, error)
+}
+
+// Stager is implemented by a Kind whose commit merges its parent's manifest
+// (a Volume merges its blocks). Advance persists a staged copy of the
+// manifest at StagedPath before it advances the pointer, so the next commit
+// can load the parent even when its writer terminated before persisting the
+// canonical manifest (CONTRACT_CORE §Head Pointer). StagedPath MUST lie
+// outside SnapshotsPrefix: a staged copy is never listed as a snapshot.
+type Stager[ID ~string] interface {
+	StagedPath(id ID) string
 }
 
 // Snapshot pairs a snapshot ID with its decoded manifest.
@@ -89,6 +92,10 @@ type History[ID ~string, M any] struct {
 	store Store
 	kind  Kind[ID, M]
 	errs  Errors
+	// stager is the kind's Stager, nil when its commits stage nothing.
+	stager Stager[ID]
+	// pointerPath is the head pointer object, fixed at construction.
+	pointerPath string
 
 	// head is the snapshot this process last observed or committed as the
 	// head ("" = unknown); pointer is the pointer content that corresponds to
@@ -98,11 +105,17 @@ type History[ID ~string, M any] struct {
 	pointer string
 }
 
-// New returns an empty-memory history over store. noun is what the kind
+// New returns an empty-memory history over store whose head pointer is the
+// object at pointerPath. The path is a value, not a Kind method, so it
+// cannot change during the life of the history. noun is what the kind
 // calls its manifest in error messages, so a Volume failure still reads
 // "volume manifest" after the protocol was shared.
-func New[ID ~string, M any](store Store, kind Kind[ID, M], noun string, errs Errors) History[ID, M] {
-	return History[ID, M]{noun: noun, store: store, kind: kind, errs: errs}
+func New[ID ~string, M any](store Store, kind Kind[ID, M], pointerPath, noun string, errs Errors) History[ID, M] {
+	stager, _ := kind.(Stager[ID])
+	return History[ID, M]{
+		noun: noun, store: store, kind: kind, errs: errs,
+		stager: stager, pointerPath: pointerPath,
+	}
 }
 
 // -----------------------------------------------------------------------------
@@ -286,9 +299,9 @@ func (q *newestFirst[ID]) Pop() any {
 // ReadPointer returns the ID the persisted pointer names, or errs.NotFound when
 // the pointer is absent or empty.
 func (h *History[ID, M]) ReadPointer(ctx context.Context) (ID, error) {
-	rc, err := h.store.Get(ctx, h.kind.PointerPath())
+	rc, err := h.store.Get(ctx, h.pointerPath)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("lode: failed to read latest pointer: %w", err)
 	}
 	defer func() { _ = rc.Close() }() // read-only stream
 	data, err := io.ReadAll(rc)
@@ -343,9 +356,8 @@ func (h *History[ID, M]) ConfirmCommitted(ctx context.Context, id ID) error {
 
 // pointerless is nil for a history with no snapshot and errs.HeadUncommitted
 // otherwise. Every commit writes the pointer, so it is missing beside a
-// snapshot only for the moment of a Delete+Put commit on a store without
-// ConditionalWriter, in a history written before the pointer existed, or
-// after a hand edit. In none of these can the head be told safely: a
+// snapshot only in a history written before the pointer existed, after a
+// hand edit, or after a failed Put in lode.SingleProcess's replacement. In none of these can the head be told safely: a
 // clock that rolled back may have given the last commit a smaller ID.
 func (h *History[ID, M]) pointerless(ctx context.Context) error {
 	entries, err := h.manifests(ctx)
@@ -373,16 +385,10 @@ func (h *History[ID, M]) hasManifest(ctx context.Context, id ID) (bool, error) {
 	return slices.ContainsFunc(entries, func(e manifestEntry[ID]) bool { return e.id == id }), nil
 }
 
-// writePointer persists id as the pointer. With a ConditionalWriter the write
-// is a CAS against expected (the pointer content the writer believes is
-// current); otherwise Delete+Put under the single-writer assumption.
+// writePointer persists id as the pointer through a CAS against expected,
+// the pointer content the writer believes is current.
 func (h *History[ID, M]) writePointer(ctx context.Context, expected string, id ID) error {
-	path := h.kind.PointerPath()
-	if cw, ok := h.store.(conditionalWriter); ok {
-		return cw.CompareAndSwap(ctx, path, expected, string(id))
-	}
-	_ = h.store.Delete(ctx, path) // path may not exist
-	return h.store.Put(ctx, path, strings.NewReader(string(id)))
+	return h.store.CompareAndSwap(ctx, h.pointerPath, expected, string(id))
 }
 
 // remember records id as the observed head and what the pointer now holds.
@@ -396,7 +402,10 @@ func (h *History[ID, M]) Forget() {
 }
 
 // Latest returns the head snapshot: through the pointer when it names a
-// loadable snapshot, otherwise by scan. A missing pointer is then created
+// loadable snapshot, otherwise by scan. A failed read of the pointer or of
+// its manifest is returned unless the store reports the object as not found;
+// a scan in its place could return the head's parent (CONTRACT_CORE §Head
+// Pointer). A missing pointer is then created
 // from the scan result; an existing pointer is never replaced. A pointer that
 // names a snapshot without a manifest may belong to a pending commit
 // (Advance writes the pointer first), and replacing it would revert the head
@@ -406,19 +415,28 @@ func (h *History[ID, M]) Forget() {
 // commit as parent.
 func (h *History[ID, M]) Latest(ctx context.Context) (*Snapshot[ID, M], error) {
 	id, err := h.ReadPointer(ctx)
+	pointerMissing := errors.Is(err, h.errs.NotFound)
 	if err == nil {
-		if s, err := h.Snapshot(ctx, id); err == nil {
+		s, loadErr := h.Snapshot(ctx, id)
+		if loadErr == nil {
 			h.remember(id, string(id))
 			return s, nil
 		}
+		if !errors.Is(loadErr, h.errs.NotFound) {
+			err = fmt.Errorf("lode: failed to load latest snapshot: %w", loadErr)
+		}
 	}
-	pointerMissing := errors.Is(err, h.errs.NotFound)
+	// The pointer confirms no loadable head, so the remembered head may be
+	// stale; the next Resolve must consult storage.
+	h.Forget()
+	if err != nil && !pointerMissing {
+		return nil, err
+	}
 
 	s, err := h.scan(ctx)
 	if err != nil {
 		return nil, err
 	}
-	h.Forget()
 	if pointerMissing {
 		h.createPointer(ctx, s.ID)
 	}
@@ -450,9 +468,8 @@ func (h *History[ID, M]) Resolve(ctx context.Context) (parent ID, expected strin
 // manifest (a Volume merges its blocks): the parent is loaded, never
 // re-fetched, and a remembered head whose manifest is gone is forgotten so
 // storage is consulted instead. parent is nil for the first commit. A
-// pointer that names a snapshot without a persisted manifest yields
-// errs.SnapshotConflict, because the parent's blocks cannot be merged until
-// its manifest exists; the commit then retries as after any other conflict.
+// pointer that names a snapshot without a persisted manifest yields its
+// staged copy (stagedParent).
 func (h *History[ID, M]) ResolveParent(ctx context.Context) (parent *Snapshot[ID, M], expected string, err error) {
 	for {
 		fromMemory := h.head != ""
@@ -469,28 +486,67 @@ func (h *History[ID, M]) ResolveParent(ctx context.Context) (parent *Snapshot[ID
 		case !errors.Is(err, h.errs.NotFound):
 			return nil, "", fmt.Errorf("lode: failed to load snapshot: %w", err)
 		case !fromMemory:
-			return nil, "", fmt.Errorf("lode: latest pointer names %s, whose manifest has not been persisted: %w", id, h.errs.SnapshotConflict)
+			return h.stagedParent(ctx, id, expected)
 		}
 		h.Forget() // the remembered head is gone; consult storage
 	}
+}
+
+// stagedParent loads snapshot id, which the pointer names but whose
+// canonical manifest is absent, from the staged copy its commit persisted
+// before advancing the pointer: the commit is pending, or abandoned by a
+// writer that terminated. A staged copy that is absent too was removed after
+// the canonical manifest was persisted, which is read again; without either
+// (a commit staged nothing, or the pointer was edited by hand) the parent's
+// blocks cannot be merged, so the commit conflicts and retries as after any
+// other conflict.
+func (h *History[ID, M]) stagedParent(ctx context.Context, id ID, expected string) (*Snapshot[ID, M], string, error) {
+	if h.stager == nil {
+		return nil, "", h.unmerged(id)
+	}
+	staged, err := h.LoadAt(ctx, id, h.stager.StagedPath(id))
+	if err == nil {
+		return staged, expected, nil
+	}
+	if !errors.Is(err, h.errs.NotFound) {
+		return nil, "", fmt.Errorf("lode: failed to load staged snapshot: %w", err)
+	}
+	canonical, err := h.Snapshot(ctx, id)
+	if errors.Is(err, h.errs.NotFound) {
+		return nil, "", h.unmerged(id)
+	}
+	if err != nil {
+		return nil, "", fmt.Errorf("lode: failed to load snapshot: %w", err)
+	}
+	return canonical, expected, nil
+}
+
+// unmerged is the conflict for a parent whose manifest no copy holds.
+func (h *History[ID, M]) unmerged(id ID) error {
+	return fmt.Errorf("lode: latest pointer names %s, whose manifest has not been persisted: %w", id, h.errs.SnapshotConflict)
 }
 
 // resolve walks memory → pointer → scan. scanned is the snapshot the scan
 // loaded, nil on the memory and pointer paths, which load nothing. A
 // pointer that does not contain a snapshot ID (a manual edit) cannot name
 // a commit, so the scan determines the parent; the pointer's content remains
-// the value that CAS must expect.
+// the value that CAS must expect. A failed pointer read other than not-found
+// is returned, because the scan may select the head's parent.
 func (h *History[ID, M]) resolve(ctx context.Context) (id ID, scanned *Snapshot[ID, M], expected string, err error) {
 	if h.head != "" {
 		return h.head, nil, h.pointer, nil
 	}
 
 	var observed string
-	if id, err := h.ReadPointer(ctx); err == nil {
-		if IsGeneratedID(id) {
-			return id, nil, string(id), nil
+	pointed, err := h.ReadPointer(ctx)
+	if err != nil && !errors.Is(err, h.errs.NotFound) {
+		return "", nil, "", err
+	}
+	if err == nil {
+		if IsGeneratedID(pointed) {
+			return pointed, nil, string(pointed), nil
 		}
-		observed = string(id)
+		observed = string(pointed)
 	}
 
 	s, err := h.scan(ctx)
@@ -503,26 +559,92 @@ func (h *History[ID, M]) resolve(ctx context.Context) (id ID, scanned *Snapshot[
 	return s.ID, s, observed, nil
 }
 
-// Advance commits a snapshot: the pointer first (CAS against expected), then
-// every manifest path. The pointer goes first so a crash between the two
-// leaves a pointer to a missing snapshot — which Resolve treats as stale and
-// a cold start recovers by scan — never a committed manifest the pointer
-// skips. On success the new head is remembered.
+// ErrManifestUncertain marks a commit that failed after its pointer advanced,
+// while it was writing manifests. A failed Put does not say whether the
+// object was stored (a lost response stores it), so the snapshot may be
+// visible, and nothing it references may be deleted. Errors carrying it keep
+// the message of the underlying failure.
+var ErrManifestUncertain = errors.New("history: the commit's manifest may have been persisted")
+
+// manifestUncertain wraps a manifest write failure so that it matches
+// ErrManifestUncertain without changing its message.
+type manifestUncertain struct{ err error }
+
+func (e manifestUncertain) Error() string        { return e.err.Error() }
+func (e manifestUncertain) Unwrap() error        { return e.err }
+func (e manifestUncertain) Is(target error) bool { return target == ErrManifestUncertain }
+
+// Advance commits a snapshot: the staged copy when the kind stages, the
+// pointer (CAS against expected), then every manifest path, then the removal
+// of the staged copy. The pointer precedes the manifests so a crash between
+// them leaves a pending commit that the next commit adopts as its parent
+// (CONTRACT_CORE §Head Pointer), never a committed manifest the pointer
+// skips; the staged copy precedes the pointer so that parent can be loaded
+// (stagedParent). A failure after the pointer advanced matches
+// ErrManifestUncertain. On success the new head is remembered.
 func (h *History[ID, M]) Advance(ctx context.Context, expected string, id ID, manifest *M, paths []string) error {
 	data, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
 		return fmt.Errorf("lode: failed to marshal %s: %w", h.noun, err)
 	}
+	staged := h.stagedPath(id)
+	if err := h.stage(ctx, staged, data); err != nil {
+		return fmt.Errorf("lode: failed to stage %s: %w", h.noun, err)
+	}
 	if err := h.writePointer(ctx, expected, id); err != nil {
+		h.discardStaged(ctx, id, staged)
 		return fmt.Errorf("lode: failed to update latest pointer: %w", err)
 	}
 	for _, p := range paths {
 		if err := h.store.Put(ctx, p, bytes.NewReader(data)); err != nil {
-			return fmt.Errorf("lode: failed to write %s: %w", h.noun, err)
+			return manifestUncertain{fmt.Errorf("lode: failed to write %s: %w", h.noun, err)}
 		}
 	}
+	h.unstage(ctx, staged)
 	h.remember(id, string(id))
 	return nil
+}
+
+// stagedPath is the staged copy of snapshot id's manifest, "" when the kind
+// stages nothing.
+func (h *History[ID, M]) stagedPath(id ID) string {
+	if h.stager == nil {
+		return ""
+	}
+	return h.stager.StagedPath(id)
+}
+
+// stage persists the staged copy at staged, when the kind stages.
+func (h *History[ID, M]) stage(ctx context.Context, staged string, data []byte) error {
+	if staged == "" {
+		return nil
+	}
+	return h.store.Put(ctx, staged, bytes.NewReader(data))
+}
+
+// unstage removes the staged copy once the canonical manifest is persisted.
+// Best-effort: a copy that remains is never listed, and it duplicates a
+// persisted manifest.
+func (h *History[ID, M]) unstage(ctx context.Context, staged string) {
+	if staged != "" {
+		_ = h.store.Delete(ctx, staged)
+	}
+}
+
+// discardStaged removes the staged copy (at staged) of a commit whose pointer update
+// failed, but only when the pointer names another snapshot. A failed update
+// may still have been applied (a store that retried a CAS whose response was
+// lost reports a conflict), and the staged copy is then the only manifest of
+// a committed snapshot. Once the pointer names another snapshot, every
+// commit that adopted id as parent has loaded the copy already. Best-effort:
+// a copy that remains is never listed.
+func (h *History[ID, M]) discardStaged(ctx context.Context, id ID, staged string) {
+	if staged == "" {
+		return
+	}
+	if pointed, err := h.ReadPointer(ctx); err == nil && pointed != id {
+		_ = h.store.Delete(ctx, staged)
+	}
 }
 
 // Refresh re-reads the head from storage between commit attempts so a retry
