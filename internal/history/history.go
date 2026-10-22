@@ -58,9 +58,6 @@ type Errors struct {
 type Kind[ID ~string, M any] interface {
 	// SnapshotsPrefix lists every manifest of the container.
 	SnapshotsPrefix() string
-	// PointerPath is the head pointer object. It MUST NOT change during the
-	// life of the kind: a history computes it once.
-	PointerPath() string
 	// ManifestPath is the canonical manifest for a snapshot.
 	ManifestPath(id ID) string
 	// ParseManifest returns the snapshot ID a manifest path names, or false
@@ -97,8 +94,7 @@ type History[ID ~string, M any] struct {
 	errs  Errors
 	// stager is the kind's Stager, nil when its commits stage nothing.
 	stager Stager[ID]
-	// pointerPath is kind.PointerPath(), computed once: it is read on every
-	// commit and never changes.
+	// pointerPath is the head pointer object, fixed at construction.
 	pointerPath string
 
 	// head is the snapshot this process last observed or committed as the
@@ -109,14 +105,16 @@ type History[ID ~string, M any] struct {
 	pointer string
 }
 
-// New returns an empty-memory history over store. noun is what the kind
+// New returns an empty-memory history over store whose head pointer is the
+// object at pointerPath. The path is a value, not a Kind method, so it
+// cannot change during the life of the history. noun is what the kind
 // calls its manifest in error messages, so a Volume failure still reads
 // "volume manifest" after the protocol was shared.
-func New[ID ~string, M any](store Store, kind Kind[ID, M], noun string, errs Errors) History[ID, M] {
+func New[ID ~string, M any](store Store, kind Kind[ID, M], pointerPath, noun string, errs Errors) History[ID, M] {
 	stager, _ := kind.(Stager[ID])
 	return History[ID, M]{
 		noun: noun, store: store, kind: kind, errs: errs,
-		stager: stager, pointerPath: kind.PointerPath(),
+		stager: stager, pointerPath: pointerPath,
 	}
 }
 

@@ -143,7 +143,6 @@ const (
 )
 
 func (testKind) SnapshotsPrefix() string { return prefix }
-func (testKind) PointerPath() string     { return pointer }
 func (testKind) ManifestPath(i id) string {
 	return prefix + string(i) + "/manifest.json"
 }
@@ -169,7 +168,7 @@ func (testKind) Decode(r io.Reader) (*manifest, error) {
 }
 
 func newTestHistory(s Store) History[id, manifest] {
-	return New(s, testKind{}, "test manifest", testErrors)
+	return New(s, testKind{}, pointer, "test manifest", testErrors)
 }
 
 // put stores a manifest with the given tag at the canonical path.
@@ -715,7 +714,7 @@ func TestAdvance(t *testing.T) {
 		}
 	})
 	t.Run("marshal failure names the kind", func(t *testing.T) {
-		h := New[id, unmarshalable](newMemStore(), unmarshalableKind{}, "test manifest", testErrors)
+		h := New[id, unmarshalable](newMemStore(), unmarshalableKind{}, pointer, "test manifest", testErrors)
 		err := h.Advance(t.Context(), "", "5", &unmarshalable{F: func() {}}, paths)
 		if err == nil || !strings.HasPrefix(err.Error(), "lode: failed to marshal test manifest: ") {
 			t.Fatalf("got %v", err)
@@ -839,7 +838,7 @@ type stagingKind struct{ testKind }
 func (stagingKind) StagedPath(i id) string { return "c/staged/" + string(i) + ".json" }
 
 func newStagingHistory(s Store) History[id, manifest] {
-	return New(s, stagingKind{}, "test manifest", testErrors)
+	return New(s, stagingKind{}, pointer, "test manifest", testErrors)
 }
 
 func TestAdvance_Staged(t *testing.T) {

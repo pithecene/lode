@@ -282,7 +282,6 @@ func newDatasetKind(id DatasetID, l layout, store Store) datasetKind {
 }
 
 func (k datasetKind) SnapshotsPrefix() string { return k.paths.snapshotsPrefix(k.id) }
-func (k datasetKind) PointerPath() string     { return k.paths.latestPointerPath(k.id) }
 func (k datasetKind) ManifestPath(id DatasetSnapshotID) string {
 	return k.paths.manifestPath(k.id, id)
 }
@@ -380,7 +379,7 @@ func NewDataset(id DatasetID, factory StoreFactory, opts ...Option) (Dataset, er
 		codec:      cfg.codec,
 		checksum:   cfg.checksum,
 		retry:      cfg.retry,
-		history:    history.New(store, newDatasetKind(id, cfg.layout, store), "manifest", historyErrors),
+		history:    history.New(store, newDatasetKind(id, cfg.layout, store), cfg.layout.latestPointerPath(id), "manifest", historyErrors),
 	}, nil
 }
 

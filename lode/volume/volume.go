@@ -44,7 +44,6 @@ type volumeKind struct {
 }
 
 func (k volumeKind) SnapshotsPrefix() string           { return volumeSnapshotsPrefix(k.id) }
-func (k volumeKind) PointerPath() string               { return volumeLatestPointerPath(k.id) }
 func (k volumeKind) ManifestPath(id SnapshotID) string { return volumeManifestPath(k.id, id) }
 
 // StagedPath makes a volume a history.Stager: a commit merges its parent's
@@ -135,7 +134,7 @@ func New(id ID, storeFactory lode.StoreFactory, totalLength int64, opts ...Optio
 		totalLength: totalLength,
 		checksum:    cfg.checksum,
 		retry:       cfg.retry,
-		history:     history.New(store, volumeKind{id: id, totalLength: totalLength}, "volume manifest", historyErrors),
+		history:     history.New(store, volumeKind{id: id, totalLength: totalLength}, volumeLatestPointerPath(id), "volume manifest", historyErrors),
 	}, nil
 }
 
