@@ -17,11 +17,11 @@ import (
 // measured figure rounded up to the next 64 bytes, because map growth in the
 // in-memory store varies it by a few bytes.
 var allocGates = []testutil.AllocGate{
-	{Name: "Write of three records", Allocs: 61, Bytes: 6208, Setup: gateWrite},
-	{Name: "Read of three records", Allocs: 70, Bytes: 8512, Setup: gateRead},
-	{Name: "StreamWrite of one kibibyte", Allocs: 33, Bytes: 6784, Setup: gateStreamWrite},
-	{Name: "StreamWriteRecords of three records", Allocs: 63, Bytes: 6208, Setup: gateStreamWriteRecords},
-	{Name: "JSONL Decode of three records", Allocs: 35, Bytes: 5568, Setup: gateDecode},
+	{Name: "Write of three records", Allocs: 62, Bytes: 6528, Setup: gateWrite},
+	{Name: "Read of three records", Allocs: 58, Bytes: 8640, Setup: gateRead},
+	{Name: "StreamWrite of one kibibyte", Allocs: 35, Bytes: 6528, Setup: gateStreamWrite},
+	{Name: "StreamWriteRecords of three records", Allocs: 64, Bytes: 6528, Setup: gateStreamWriteRecords},
+	{Name: "JSONL Decode of three records", Allocs: 33, Bytes: 5568, Setup: gateDecode},
 }
 
 // TestAllocationGates holds each Dataset hot path to its allocation ceiling.

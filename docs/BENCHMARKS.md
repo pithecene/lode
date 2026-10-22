@@ -79,17 +79,18 @@ detector, which adds allocations of its own. The byte ceiling catches a
 single oversized allocation, such as a fixed buffer, which the allocation
 count does not; each byte ceiling is the measured figure rounded up to the
 next 64 bytes, because map growth in the in-memory store varies it by a few
-bytes.
+bytes. The ceilings below were measured with Go 1.27.3; the benchmark
+figures in the other sections were measured with Go 1.25.
 
 | Gate | Allocations | Bytes |
 |------|------------:|------:|
-| Write of three records | 61 | 6,208 |
-| Read of three records | 70 | 8,512 |
-| StreamWrite of one kibibyte | 33 | 6,784 |
-| StreamWriteRecords of three records | 63 | 6,208 |
-| JSONL Decode of three records | 35 | 5,568 |
-| Volume ReadAt within one of ten blocks | 44 | 8,960 |
-| Volume Commit of one block onto a small volume | 128 | 254,336 |
+| Write of three records | 62 | 6,528 |
+| Read of three records | 58 | 8,640 |
+| StreamWrite of one kibibyte | 35 | 6,528 |
+| StreamWriteRecords of three records | 64 | 6,528 |
+| JSONL Decode of three records | 33 | 5,568 |
+| Volume ReadAt within one of ten blocks | 39 | 10,752 |
+| Volume Commit of one block onto a small volume | 123 | 209,792 |
 
 A change that exceeds a ceiling fails the test and must justify the increase
 in its pull request before the ceiling is raised. A change that reduces a

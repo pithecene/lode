@@ -23,8 +23,8 @@ const (
 // measured figure rounded up to the next 64 bytes, because map growth in the
 // in-memory store varies it by a few bytes.
 var allocGates = []testutil.AllocGate{
-	{Name: "ReadAt within one of ten blocks", Allocs: 44, Bytes: 8960, Setup: gateReadAt},
-	{Name: "Commit of one block onto a small volume", Allocs: 128, Bytes: 254336, Setup: gateCommit},
+	{Name: "ReadAt within one of ten blocks", Allocs: 39, Bytes: 10752, Setup: gateReadAt},
+	{Name: "Commit of one block onto a small volume", Allocs: 123, Bytes: 209792, Setup: gateCommit},
 }
 
 // TestAllocationGates holds each Volume hot path to its allocation ceiling.
