@@ -2,6 +2,8 @@ package lode
 
 import (
 	"bytes"
+	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -33,6 +35,39 @@ func BenchmarkDataset_Read(b *testing.B) {
 			b.Fatal(err)
 		}
 	}
+}
+
+// -----------------------------------------------------------------------------
+// BenchmarkJSONLCodec_Decode measures decoding files of increasing size, so a
+// fixed cost per file and a cost per record can be told apart.
+// -----------------------------------------------------------------------------
+
+func BenchmarkJSONLCodec_Decode(b *testing.B) {
+	codec := NewJSONLCodec()
+	for _, n := range []int{3, 1_000, 100_000} {
+		var buf bytes.Buffer
+		if err := codec.Encode(&buf, benchRecords(n)); err != nil {
+			b.Fatal(err)
+		}
+		data := buf.Bytes()
+		b.Run(fmt.Sprintf("records=%d", n), func(b *testing.B) {
+			b.SetBytes(int64(len(data)))
+			for b.Loop() {
+				if _, err := codec.Decode(bytes.NewReader(data)); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+// benchRecords builds n records of a representative shape.
+func benchRecords(n int) []any {
+	records := make([]any, n)
+	for i := range records {
+		records[i] = D{"id": strconv.Itoa(i), "name": "record", "value": i, "tags": []any{"a", "b"}}
+	}
+	return records
 }
 
 // -----------------------------------------------------------------------------
