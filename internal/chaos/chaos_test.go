@@ -128,10 +128,7 @@ func runOne(t *testing.T, backendName, level string, cfg Config) {
 		t.Logf("repeat with: go test ./internal/chaos -run 'TestChaos/%s/%s/%s' -chaos -chaos.seed=%d -chaos.backends=%s -chaos.layouts='%s' -chaos.faults=%s -chaos.retention=%t -chaos.volume=%t -chaos.writers=%d -chaos.readers=%d -chaos.retries=%d -chaos.duration=%s",
 			backendName, cfg.Layout, level, cfg.Seed, backendName, *flagLayouts, level, cfg.Retention, *flagVolume, cfg.Writers, cfg.Readers, cfg.Retries, cfg.Duration)
 	}
-	switch {
-	case report.Stalled:
-		t.Logf("an abandoned commit stalled the volume; every later commit conflicted (CONTRACT_VOLUME)")
-	case report.Commits == 0:
+	if report.Commits == 0 {
 		t.Errorf("no commit succeeded; the run exercised nothing")
 	}
 }
