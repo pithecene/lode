@@ -376,15 +376,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Parquet Compression**: `WithParquetCompression()` option for Snappy/Gzip internal compression
 - **Parquet Error Sentinels**: `ErrSchemaViolation` and `ErrInvalidFormat` for precise error handling
 
-### Breaking Changes
-
-- **NewParquetCodec Signature**: Returns `(Codec, error)` instead of `Codec` to enable schema validation at construction time. All callsites must handle the error return.
-
 ### Upgrade Notes
 
 - **Parquet codec is non-streaming**: Parquet requires a footer referencing all row groups, so `StreamWriteRecords` returns `ErrCodecNotStreamable`. Use `Dataset.Write` for Parquet encoding.
 - **Compression layering**: When using Parquet codec, set Lode's compressor to `NewNoOpCompressor()`. Parquet has internal compression; double compression wastes CPU.
-- **Schema validation**: Invalid schemas (bad types, empty names, duplicates) now return errors at construction time rather than encoding time.
+- **Schema validation**: `NewParquetCodec` returns an error for an invalid schema (an unknown type, an empty name, or a duplicate name).
 
 ### References
 
@@ -401,7 +397,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **S3 Multipart Atomic No-Overwrite**: Large uploads (>5GB) now use conditional completion (`If-None-Match` on `CompleteMultipartUpload`) for atomic no-overwrite guarantee, closing the TOCTOU window that existed in v0.2.0
+- **S3 Multipart Atomic No-Overwrite**: Large uploads (>5GB) now use conditional completion (`If-None-Match` on `CompleteMultipartUpload`) for atomic no-overwrite guarantee, closing the TOCTOU window that existed since v0.3.0
 
 ### Known Limitations
 
@@ -453,6 +449,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Streaming writes**: `Dataset.StreamWrite(ctx, metadata)` returns a `StreamWriter` that streams one blob into storage, and `Dataset.StreamWriteRecords(ctx, metadata, records)` encodes the records of a `RecordIterator` as they arrive, so the Dataset holds neither payload whole in memory; the memory store still keeps each object in memory. Streaming records requires a codec that implements `StreamingRecordCodec` and a layout without partitioning; the new sentinels `ErrCodecConfigured`, `ErrCodecNotStreamable`, `ErrNilIterator`, and `ErrPartitioningNotSupported` report misuse. ([#48](https://github.com/pithecene/lode/pull/48), [#49](https://github.com/pithecene/lode/pull/49), [#50](https://github.com/pithecene/lode/pull/50))
+- **Checksums**: `WithChecksum(NewMD5Checksum())` records a checksum of each data file in the manifest; the `Checksum` and `HashWriter` interfaces support other algorithms.
+- **S3 uploads in constant memory**: `Put` spools the payload to a temporary file instead of reading it into memory, and an upload larger than 5 GB uses a multipart upload. ([#50](https://github.com/pithecene/lode/pull/50), [#51](https://github.com/pithecene/lode/pull/51))
 - **README Quick Start**: 5-minute guide with blob, records, and streaming examples
 - **Write API Decision Table**: Clear guidance for choosing Write/StreamWrite/StreamWriteRecords
 - **Guarantees Table**: Explicit commitments vs non-goals in README
@@ -479,6 +478,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Known Limitations
 
+- **Large S3 uploads**: an upload larger than 5 GB checks for an existing object before it begins, so a concurrent writer can create the object in the interval (resolved in v0.4.1).
 - **G3-4 (Residual Risk)**: Context cancellation cleanup behavior is nondeterministic due to
   timing characteristics of storage adapters. Deterministic abort paths are tested; context
   cancellation semantics documented as best-effort. See `docs/contracts/CONTRACT_TEST_MATRIX.md` for details.
@@ -495,7 +495,7 @@ Post-v0.3.0 improvements planned:
 
 ### Upgrade Notes
 
-- No API changes; documentation and test coverage improvements only
+- The streaming and checksum APIs are additions, so existing calls are unchanged. A type that implements `Dataset` must add `StreamWrite` and `StreamWriteRecords`, and a type that implements `s3.API` must add `CreateMultipartUpload`, `UploadPart`, `CompleteMultipartUpload`, and `AbortMultipartUpload`
 - Safe to upgrade from v0.2.0
 
 ### References
@@ -530,7 +530,7 @@ Post-v0.3.0 improvements planned:
 ### Known Limitations
 
 - Single-writer semantics required (no concurrent writer conflict resolution)
-- Large uploads (>5GB on S3) have TOCTOU window for no-overwrite guarantee
+- The S3 adapter reads each payload into memory, so an upload cannot exceed 5 GB, the limit of one `PutObject`
 - Cleanup of partial objects is best-effort, not guaranteed
 
 ### Upgrade Notes
@@ -580,10 +580,10 @@ Post-v0.3.0 improvements planned:
 ### Upgrade Notes
 
 **Runtime Requirements:**
-- Go 1.25 or later
+- Go 1.25.6 or later
 
 **Storage:**
-- Filesystem paths must exist before use; Lode does not create directories
+- The filesystem root must exist before use; Lode creates directories beneath it but not the root
 - S3 buckets must exist before use; Lode does not create buckets
 
 ### References
