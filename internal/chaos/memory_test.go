@@ -88,7 +88,7 @@ func TestMemoryBaseline_DetectsLeaks(t *testing.T) {
 func testServerLingering(stack string) bool {
 	return idleHTTPConnection(stack) ||
 		strings.Contains(stack, "net/http.(*conn).serve") ||
-		strings.Contains(stack, "net/http.(*http2serverConn)")
+		strings.Contains(stack, "net/http/internal/http2.(*serverConn)")
 }
 
 // assertLingeringAccepted requires the goroutines started since baseline to

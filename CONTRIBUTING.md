@@ -10,7 +10,7 @@ mise install
 ```
 
 This command installs:
-- Go 1.25.6
+- Go 1.27.3
 - [Task](https://taskfile.dev/) 3.47.0
 - [golangci-lint](https://golangci-lint.run/) 2.8.0
 - [benchstat](https://pkg.go.dev/golang.org/x/perf/cmd/benchstat)

@@ -80,7 +80,7 @@ func OpenBackend(ctx context.Context, name, dir, runID string) (Backend, error) 
 var pooledConnectionFrames = []string{
 	"net/http.(*persistConn).readLoop",
 	"net/http.(*persistConn).writeLoop",
-	"net/http.(*http2ClientConn).readLoop",
+	"net/http/internal/http2.(*ClientConn).readLoop",
 }
 
 // idleHTTPConnection reports whether a goroutine serves a connection that
