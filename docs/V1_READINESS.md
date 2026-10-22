@@ -16,24 +16,25 @@ Stability is proven by **usage and time**, not design review.
 
 ---
 
-## Current Assessment (2026-10-20)
+## Current Assessment (2026-10-22)
 
 Based on the full-history audit of the production dataset
 ([`dogfood_audit_2026-10.md`](dogfood_audit_2026-10.md)):
 
 - **Holds:** no corruption detected and zero manifest decode failures across 96,478
   snapshots over 8 months on R2; `Manifest` format stable since 2026-02-06.
-- **Blocker:** one history fork under CAS + retry (2026-08-25, §10). The
-  cause is identified: a failed read of a valid head was treated as a stale
-  pointer, and the scan fallback then selected the head's parent, because
-  snapshot ID order is not commit order. Unreleased removes every path to
-  that outcome ([#208](https://github.com/pithecene/lode/issues/208)); the
-  criterion remains unmet until a released version is observed in
-  production.
+- **Blocker, addressed in v0.11.0 and awaiting verification:** one history
+  fork under CAS + retry (2026-08-25, §10). The cause is identified: a failed
+  read of a valid head was treated as a stale pointer, and the scan fallback
+  then selected the head's parent, because snapshot ID order is not commit
+  order. v0.11.0 removes every path to that outcome
+  ([#208](https://github.com/pithecene/lode/issues/208)); the criterion
+  remains unmet until v0.11.0 is observed in production.
 - **Not yet met, time-gated:** API and sentinel freeze windows reopened by
-  v0.10.0 and reopened again by the next release, which moves Volume out of
-  `lode` (§1); `V1_API_DECISIONS.md` D1–D8, D10a–D10c, D10f, and D11
-  open.
+  v0.10.0 and again by v0.11.0, which moves Volume out of `lode`, requires
+  `CompareAndSwap` of every `Store`, and adds two sentinels (§1, §5); the
+  earliest pass of both is 2026-11-19. `V1_API_DECISIONS.md` D1–D8,
+  D10a–D10c, D10f, and D11 open.
 - **Not yet met, evidence missing:** native AWS S3 (§6), steady-state snapshot
   reads (§3), checksum-backed corruption checks (no production file carries a
   checksum, §10).
@@ -42,7 +43,8 @@ Based on the full-history audit of the production dataset
   not the v1.0 tag. The boundary has shipped: package `lode/volume`, marked
   experimental in `PUBLIC_API.md` and `CONTRACT_VOLUME.md` (D9).
 - **Accepted limitations (GC and performance are out of scope):** 2.07 GB of
-  unreferenced data objects with no sweep (lode#174); `ListManifests` and
+  unreferenced data objects, which `Dataset.Sweep` (v0.11.0, lode#174) can now
+  reclaim; `ListManifests` and
   `ListPartitions` take hours at this size. As a result the consumer reads the
   on-disk paths directly, which makes D8 a real dependency.
 
@@ -136,13 +138,19 @@ partitions, one dataset on R2.
 
 > **Evidence:** Window open. Last release change: v0.10.0 (2026-10-19) added `DatasetListOptions.StartAfter`, `PartitionListOptions.Prefix`/`StartAfter`, `ManifestListOptions.StartAfter`. Unreleased: D9 removes the Volume types, `NewVolume` and `ErrOptionNotValidForVolume` from `lode` (moved to experimental `lode/volume`), which restarts the window when it is released. Quarry took v0.10.0 with no call-site changes and uses no Volume API.
 > Date: 2026-10-20 | Observer: @pithecene | Project: lode, quarry
+>
+> **Evidence:** Window restarted by v0.11.0 (2026-10-22). `Store` is now `ObjectStore` together with `ConditionalWriter`, so every store must implement `CompareAndSwap`; `SingleProcess` is added; `Dataset` gains `Expire` and `Sweep` with `ExpireRequest`, `ExpireReport`, `SweepRequest`, and `SweepReport`; D9 removes the Volume types, `NewVolume`, and `ErrOptionNotValidForVolume` from `lode`; and the module path becomes `github.com/pithecene/lode`. Earliest pass: 2026-11-19.
+> Date: 2026-10-22 | Observer: @pithecene | Project: lode
 > Summary: Not met; window restarts on every API change.
 > Issue: lode#175
 
-- [ ] No new sentinel errors added to the v1.0-promised surface for 4+ weeks after first downstream integration (experimental Volume excluded, D9; freeze window reset: v0.10.0 added `ErrInvalidArgument`)
+- [ ] No new sentinel errors added to the v1.0-promised surface for 4+ weeks after first downstream integration (experimental Volume excluded, D9; freeze window reset: v0.11.0 added `ErrSnapshotExpired` and `ErrHeadUncommitted`)
 
 > **Evidence:** Window open. v0.10.0 (2026-10-19) added `ErrInvalidArgument` and `ErrPartitionPrefixNotSupported`. Earliest pass: 2026-11-16.
 > Date: 2026-10-20 | Observer: @pithecene | Project: lode
+>
+> **Evidence:** Window restarted by v0.11.0 (2026-10-22), which adds `ErrSnapshotExpired` and `ErrHeadUncommitted` for snapshot expiry. Earliest pass: 2026-11-19.
+> Date: 2026-10-22 | Observer: @pithecene | Project: lode
 > Summary: Not met.
 > Issue: —
 
@@ -406,9 +414,9 @@ nearest candidate is pithecene/quarry#255.
 
 > **Evidence:** 0 duplicate IDs. 2 missing parents (2026-02-12, Lode v0.7.3). 1,113 forks, of which 1,112 predate the consumer's CAS adoption (2026-03-08) and are expected without concurrency control. **1 fork happened under Lode v0.9.0 CAS + retry (2026-08-25)** ([`dogfood_audit_2026-10.md`](dogfood_audit_2026-10.md) F3). The same fork shows a child whose ID precedes its parent's: ID order is not commit order, which breaks the assumption in the latest-by-scan fallback (`history.go` `scan`, unchanged in v0.10.0).
 >
-> **Root cause (2026-10-20):** a read-only replay of the 34,642 snapshots committed since CAS adoption shows that the forking commit adopted the snapshot with the largest ID, the head's parent, while its CAS matched the pointer; 289 comparable commits adopted the head. In v0.9.0 that outcome requires a failed read of a valid head to be treated as a stale pointer, either by the forking writer or by another writer's retry refresh, which then replaced the pointer. Which of the two occurred is inferred, not observed, because the store error was not recorded (audit F3). Unreleased removes both paths and returns any failed read other than not-found to the caller.
+> **Root cause (2026-10-20):** a read-only replay of the 34,642 snapshots committed since CAS adoption shows that the forking commit adopted the snapshot with the largest ID, the head's parent, while its CAS matched the pointer; 289 comparable commits adopted the head. In v0.9.0 that outcome requires a failed read of a valid head to be treated as a stale pointer, either by the forking writer or by another writer's retry refresh, which then replaced the pointer. Which of the two occurred is inferred, not observed, because the store error was not recorded (audit F3). v0.11.0 removes both paths and returns any failed read other than not-found to the caller.
 > Date: 2026-10-20 | Observer: @pithecene | Project: private-A
-> Summary: Not met. The cause is identified and removed in Unreleased; the criterion requires a clean observation period on a released version.
+> Summary: Not met. The cause is identified and removed in v0.11.0; the criterion requires a clean observation period on v0.11.0.
 > Issue: [#208](https://github.com/pithecene/lode/issues/208)
 
 ---
