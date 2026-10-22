@@ -85,11 +85,11 @@ figures in the other sections were measured with Go 1.25.
 | Gate | Allocations | Bytes |
 |------|------------:|------:|
 | Write of three records | 56 | 6,208 |
-| Read of three records | 57 | 8,512 |
+| Read of three records | 59 | 8,640 |
 | StreamWrite of one kibibyte | 32 | 6,336 |
 | StreamWriteRecords of three records | 61 | 6,400 |
 | JSONL Decode of three records | 33 | 5,568 |
-| Volume ReadAt within one of ten blocks | 39 | 10,752 |
+| Volume ReadAt within one of ten blocks | 41 | 10,816 |
 | Volume Commit of one block onto a small volume | 136 | 252,032 |
 
 A change that exceeds a ceiling fails the test and must justify the increase
@@ -101,6 +101,16 @@ moves the figures resets the ceilings in the upgrade's pull request.
 run calls for, with the byte figure already rounded. A byte figure near a
 multiple of 64 can round to either side, so a ceiling is reset to the
 highest figure that a gate reports.
+
+Two gates vary between test processes. Under Go 1.27, `encoding/json` uses
+its v2 implementation, and in a few percent of processes the Dataset Read
+and Volume ReadAt paths allocate two more objects on every run (and the
+corresponding bytes). With `GOEXPERIMENT=nojsonv2` every figure is
+identical across processes, so the variation lies in the standard library,
+not in Lode. The ceilings of those two gates are therefore the higher
+figures; `task gates` reports the lower ones in most processes, and a
+ceiling reset uses the highest figure observed across repeated runs
+(`go test -count=120`).
 
 ### S3 (Docker-local)
 

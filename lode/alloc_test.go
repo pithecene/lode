@@ -18,7 +18,7 @@ import (
 // in-memory store varies it by a few bytes.
 var allocGates = []testutil.AllocGate{
 	{Name: "Write of three records", Allocs: 56, Bytes: 6208, Setup: gateWrite},
-	{Name: "Read of three records", Allocs: 57, Bytes: 8512, Setup: gateRead},
+	{Name: "Read of three records", Allocs: 59, Bytes: 8640, Setup: gateRead},
 	{Name: "StreamWrite of one kibibyte", Allocs: 32, Bytes: 6336, Setup: gateStreamWrite},
 	{Name: "StreamWriteRecords of three records", Allocs: 61, Bytes: 6400, Setup: gateStreamWriteRecords},
 	{Name: "JSONL Decode of three records", Allocs: 33, Bytes: 5568, Setup: gateDecode},

@@ -23,7 +23,7 @@ const (
 // measured figure rounded up to the next 64 bytes, because map growth in the
 // in-memory store varies it by a few bytes.
 var allocGates = []testutil.AllocGate{
-	{Name: "ReadAt within one of ten blocks", Allocs: 39, Bytes: 10752, Setup: gateReadAt},
+	{Name: "ReadAt within one of ten blocks", Allocs: 41, Bytes: 10816, Setup: gateReadAt},
 	{Name: "Commit of one block onto a small volume", Allocs: 136, Bytes: 252032, Setup: gateCommit},
 }
 
