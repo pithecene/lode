@@ -9,7 +9,7 @@ import (
 	"sync"
 )
 
-// SingleProcess returns store with a CompareAndSwap that serializes updates
+// SingleProcess returns a Store whose CompareAndSwap serializes updates
 // through a lock held by this process. It is the explicit escape hatch for a
 // backend that offers no conditional write.
 //
@@ -19,16 +19,16 @@ import (
 // not serialized and can fork a history.
 //
 // A store that already implements ConditionalWriter is returned unchanged.
-func SingleProcess(store Store) Store {
-	if _, ok := store.(ConditionalWriter); ok {
-		return store
+func SingleProcess(store ObjectStore) Store {
+	if s, ok := store.(Store); ok {
+		return s
 	}
-	return &singleProcessStore{Store: store}
+	return &singleProcessStore{ObjectStore: store}
 }
 
 // singleProcessStore implements CompareAndSwap over a store without one.
 type singleProcessStore struct {
-	Store
+	ObjectStore
 	mu sync.Mutex
 }
 

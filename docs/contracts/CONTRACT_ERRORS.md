@@ -297,7 +297,6 @@ optimistic concurrency control.
 | `lode.ErrSnapshotConflict` | Dataset.Write, Dataset.StreamWrite, Dataset.StreamWriteRecords, Volume.Commit | Another writer committed after the parent was resolved, or (for `Volume.Commit`) the parent's manifest has not been persisted |
 
 **ErrSnapshotConflict Behavior**:
-- Returned only when the store implements `ConditionalWriter`.
 - The commit's expected parent snapshot ID does not match the current value
   of the latest pointer, because another writer committed in the interval.
 - Data files are immutable and already persisted, so the cost of a retry is
@@ -312,10 +311,6 @@ optimistic concurrency control.
 automatically within the commit path. Data files are written once; only the
 reassignment of the manifest's parent and the pointer CAS are retried. See
 `CONTRACT_WRITE_API.md` §Optimistic Concurrency (CAS).
-
-When the store does not implement `ConditionalWriter`, this error is never
-returned, and callers remain responsible for ensuring single-writer
-semantics.
 
 ---
 

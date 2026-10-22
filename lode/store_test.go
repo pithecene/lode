@@ -464,12 +464,8 @@ func TestStore_CompareAndSwap(t *testing.T) {
 	for _, b := range casBackends {
 		t.Run(b.name, func(t *testing.T) {
 			store := b.open(t)
-			cw, ok := store.(ConditionalWriter)
-			if !ok {
-				t.Skip("the store does not implement ConditionalWriter on this platform")
-			}
 			for _, s := range steps {
-				err := cw.CompareAndSwap(t.Context(), "ptr/latest", s.expected, s.replacement)
+				err := store.CompareAndSwap(t.Context(), "ptr/latest", s.expected, s.replacement)
 				if !errors.Is(err, s.wantErr) {
 					t.Fatalf("%s: err = %v, want %v", s.name, err, s.wantErr)
 				}

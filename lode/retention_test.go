@@ -46,13 +46,6 @@ func (h *hookStore) Delete(ctx context.Context, p string) error {
 	return h.Store.Delete(ctx, p)
 }
 
-// casHookStore is a hookStore that keeps the inner store's CompareAndSwap.
-type casHookStore struct{ *hookStore }
-
-func (c casHookStore) CompareAndSwap(ctx context.Context, p, expected, replacement string) error {
-	return c.Store.(ConditionalWriter).CompareAndSwap(ctx, p, expected, replacement)
-}
-
 // racingStore records a tombstone for the same snapshot just before the
 // first tombstone CAS, as a concurrent expiry of the same ID would. With
 // rival set, the raced tombstone is rival instead of this run's own.
@@ -494,7 +487,7 @@ func TestExpire_Partition(t *testing.T) {
 	t.Run("a resumed expiry is checked against the partition", func(t *testing.T) {
 		mem := NewMemory()
 		hs := &hookStore{Store: mem}
-		ds := newHiveRetention(t, casHookStore{hs})
+		ds := newHiveRetention(t, hs)
 		both, err := ds.Write(t.Context(), R(D{"run_id": "a", "event_type": "x"}, D{"run_id": "b", "event_type": "x"}), Metadata{})
 		if err != nil {
 			t.Fatal(err)
@@ -643,7 +636,7 @@ func TestExpire_Head(t *testing.T) {
 	t.Run("superseded mid-run stays retained", func(t *testing.T) {
 		mem := NewMemory()
 		hs := &hookStore{Store: mem}
-		ds := newDefaultRetention(t, casHookStore{hs})
+		ds := newDefaultRetention(t, hs)
 		first := writeRecord(t, ds, 1)
 		head := writeRecord(t, ds, 2)
 
@@ -690,7 +683,7 @@ func TestExpire_Head(t *testing.T) {
 	t.Run("uncommitted mid-run reports completed work", func(t *testing.T) {
 		mem := NewMemory()
 		hs := &hookStore{Store: mem}
-		ds := newDefaultRetention(t, casHookStore{hs})
+		ds := newDefaultRetention(t, hs)
 		first := writeRecord(t, ds, 1)
 		second := writeRecord(t, ds, 2)
 		writeRecord(t, ds, 3)
@@ -716,7 +709,7 @@ func TestExpire_Head(t *testing.T) {
 	t.Run("uncommitted before a retained head stops the run", func(t *testing.T) {
 		mem := NewMemory()
 		hs := &hookStore{Store: mem}
-		ds := newDefaultRetention(t, casHookStore{hs})
+		ds := newDefaultRetention(t, hs)
 		first := writeRecord(t, ds, 1)
 		head := writeRecord(t, ds, 2)
 
@@ -828,8 +821,8 @@ func TestExpire_HeadResolution(t *testing.T) {
 		ds := newDefaultRetention(t, mem)
 		first := writeRecord(t, ds, 1)
 		writeRecord(t, ds, 2)
-		// Only a Delete+Put commit on a store without ConditionalWriter, or a
-		// hand, leaves a dataset written with nonce IDs pointer-less.
+		// Only a hand edit, or a failed Put in SingleProcess's replacement,
+		// leaves a dataset written with nonce IDs pointer-less.
 		if err := mem.Delete(t.Context(), "datasets/events/latest"); err != nil {
 			t.Fatal(err)
 		}
@@ -889,67 +882,51 @@ func TestExpire_Tombstone(t *testing.T) {
 		}
 	})
 
-	t.Run("existing", func(t *testing.T) {
-		stores := map[string]func(Store) Store{
-			"cas":     func(s Store) Store { return casHookStore{&hookStore{Store: s}} },
-			"non-cas": func(s Store) Store { return &hookStore{Store: s} },
-		}
-		for name, wrap := range stores {
-			t.Run(name+"/same snapshot resumes", func(t *testing.T) {
-				mem := NewMemory()
-				ds := newDefaultRetention(t, wrap(mem))
-				first := writeRecord(t, ds, 1)
-				writeRecord(t, ds, 2)
-				putTombstone(t, mem, first.ID, newTombstone(first.ID, first.Manifest))
+	t.Run("existing for the same snapshot resumes", func(t *testing.T) {
+		mem := NewMemory()
+		ds := newDefaultRetention(t, mem)
+		first := writeRecord(t, ds, 1)
+		writeRecord(t, ds, 2)
+		putTombstone(t, mem, first.ID, newTombstone(first.ID, first.Manifest))
 
-				if _, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{first.ID}}); err != nil {
-					t.Fatal(err)
-				}
-				assertGone(t, mem, ds, first)
-			})
-			t.Run(name+"/other snapshot fails", func(t *testing.T) {
-				mem := NewMemory()
-				ds := newDefaultRetention(t, wrap(mem))
-				first := writeRecord(t, ds, 1)
-				writeRecord(t, ds, 2)
-				putTombstone(t, mem, first.ID, newTombstone("123", first.Manifest))
-
-				report, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{first.ID}})
-				if err == nil {
-					t.Fatal("Expire succeeded over a tombstone recording another snapshot")
-				}
-				if len(report.Expired) != 0 {
-					t.Errorf("Expired = %v, want none", report.Expired)
-				}
-				assertPresent(t, ds, first)
-			})
+		if _, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{first.ID}}); err != nil {
+			t.Fatal(err)
 		}
+		assertGone(t, mem, ds, first)
+	})
+	t.Run("existing for another snapshot fails", func(t *testing.T) {
+		mem := NewMemory()
+		ds := newDefaultRetention(t, mem)
+		first := writeRecord(t, ds, 1)
+		writeRecord(t, ds, 2)
+		putTombstone(t, mem, first.ID, newTombstone("123", first.Manifest))
+
+		report, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{first.ID}})
+		if err == nil {
+			t.Fatal("Expire succeeded over a tombstone recording another snapshot")
+		}
+		if len(report.Expired) != 0 {
+			t.Errorf("Expired = %v, want none", report.Expired)
+		}
+		assertPresent(t, ds, first)
 	})
 
-	t.Run("zero length", func(t *testing.T) {
-		stores := map[string]struct {
-			wrap    func(Store) Store
-			succeed bool // CAS from "" replaces a zero-length object; Put does not
-		}{
-			"cas":     {func(s Store) Store { return casHookStore{&hookStore{Store: s}} }, true},
-			"non-cas": {func(s Store) Store { return &hookStore{Store: s} }, false},
-		}
-		for name, tt := range stores {
-			for _, dryRun := range []bool{true, false} {
-				t.Run(fmt.Sprintf("%s/dry=%v", name, dryRun), func(t *testing.T) {
-					mem := NewMemory()
-					ds := newDefaultRetention(t, tt.wrap(mem))
-					first := writeRecord(t, ds, 1)
-					writeRecord(t, ds, 2)
-					if err := mem.Put(t.Context(), "datasets/events/expired/"+string(first.ID), strings.NewReader("")); err != nil {
-						t.Fatal(err)
-					}
-					_, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{first.ID}, DryRun: dryRun})
-					if (err == nil) != tt.succeed {
-						t.Errorf("Expire = %v, want success %v (dry run and real run agree)", err, tt.succeed)
-					}
-				})
-			}
+	// A CAS from "" replaces a zero-length tombstone, so a run records it
+	// while the manifest remains; a dry run and a real run agree.
+	t.Run("zero length is replaced", func(t *testing.T) {
+		for _, dryRun := range []bool{true, false} {
+			t.Run(fmt.Sprintf("dry=%v", dryRun), func(t *testing.T) {
+				mem := NewMemory()
+				ds := newDefaultRetention(t, mem)
+				first := writeRecord(t, ds, 1)
+				writeRecord(t, ds, 2)
+				if err := mem.Put(t.Context(), "datasets/events/expired/"+string(first.ID), strings.NewReader("")); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{first.ID}, DryRun: dryRun}); err != nil {
+					t.Errorf("Expire = %v, want success", err)
+				}
+			})
 		}
 	})
 
@@ -1041,7 +1018,7 @@ func TestExpire_CorruptTombstone(t *testing.T) {
 	t.Run("zero length with no manifest left", func(t *testing.T) {
 		for _, dryRun := range []bool{true, false} {
 			mem := NewMemory()
-			ds := newDefaultRetention(t, casHookStore{&hookStore{Store: mem}})
+			ds := newDefaultRetention(t, &hookStore{Store: mem})
 			writeRecord(t, ds, 1)
 			// Nothing is left to record a tombstone from, so the placeholder
 			// cannot be replaced and is not an absent tombstone.
@@ -1204,7 +1181,7 @@ func TestExpire_ReusedID(t *testing.T) {
 	t.Run("copy reappearing at a derived path is checked", func(t *testing.T) {
 		mem := NewMemory()
 		hs := &hookStore{Store: mem}
-		ds := newHiveRetention(t, casHookStore{hs})
+		ds := newHiveRetention(t, hs)
 		writeRun(t, ds, "b", "x")
 		reused := idAt(time.Now().Add(-time.Hour))
 		dataDir := "datasets/events/partitions/run_id=a/event_type=x/segments/" + string(reused)
@@ -1229,7 +1206,7 @@ func TestExpire_ReusedID(t *testing.T) {
 	t.Run("manifest reappearing for a tombstone is checked", func(t *testing.T) {
 		mem := NewMemory()
 		hs := &hookStore{Store: mem}
-		ds := newDefaultRetention(t, casHookStore{hs})
+		ds := newDefaultRetention(t, hs)
 		writeRecord(t, ds, 1)
 		reused := idAt(time.Now().Add(-time.Hour))
 		putTombstone(t, mem, reused, foreignTombstone(reused, []FileRef{{Path: "datasets/events/snapshots/" + string(reused) + "/data/old", SizeBytes: 1}}))
@@ -1254,7 +1231,7 @@ func TestExpire_Resumption(t *testing.T) {
 	t.Run("from a tombstone with no manifest left", func(t *testing.T) {
 		mem := NewMemory()
 		hs := &hookStore{Store: mem}
-		ds := newHiveRetention(t, casHookStore{hs})
+		ds := newHiveRetention(t, hs)
 		run := writeRun(t, ds, "a", "x", "y")
 		writeRun(t, ds, "b", "x")
 
@@ -1302,7 +1279,7 @@ func TestExpire_Resumption(t *testing.T) {
 	t.Run("interrupted after the canonical delete is not resurrected", func(t *testing.T) {
 		mem := NewMemory()
 		hs := &hookStore{Store: mem}
-		ds := newHiveRetention(t, casHookStore{hs})
+		ds := newHiveRetention(t, hs)
 		run := writeRun(t, ds, "a", "x")
 		writeRun(t, ds, "b", "x")
 
@@ -1365,7 +1342,7 @@ func TestExpire_PathSafety(t *testing.T) {
 	t.Run("a snapshot left unexpired reports no skipped paths", func(t *testing.T) {
 		mem := NewMemory()
 		hs := &hookStore{Store: mem}
-		ds := newDefaultRetention(t, casHookStore{hs})
+		ds := newDefaultRetention(t, hs)
 		first := writeRecord(t, ds, 1)
 		second := writeRecord(t, ds, 2)
 		writeRecord(t, ds, 3)
@@ -1393,7 +1370,7 @@ func TestExpire_PathSafety(t *testing.T) {
 	t.Run("a failed expiry reports no skipped paths", func(t *testing.T) {
 		mem := NewMemory()
 		hs := &hookStore{Store: mem}
-		ds := newDefaultRetention(t, casHookStore{hs})
+		ds := newDefaultRetention(t, hs)
 		first := writeRecord(t, ds, 1)
 		writeRecord(t, ds, 2)
 		m := *first.Manifest
@@ -1498,7 +1475,7 @@ func TestEnumeration_ToleratesDeletion(t *testing.T) {
 	t.Run("listings skip a manifest deleted after listing", func(t *testing.T) {
 		mem := NewMemory()
 		hs := &hookStore{Store: mem}
-		ds := newHiveRetention(t, casHookStore{hs})
+		ds := newHiveRetention(t, hs)
 		gone := writeRun(t, ds, "a", "x")
 		kept := writeRun(t, ds, "b", "x")
 		reader, err := NewDatasetReader(NewMemoryFactoryFrom(hs), WithHiveLayout("run_id", "event_type"))
@@ -1552,7 +1529,7 @@ func TestLatestScan(t *testing.T) {
 	t.Run("falls back to another copy of a snapshot", func(t *testing.T) {
 		mem := NewMemory()
 		hs := &hookStore{Store: mem}
-		ds := newHiveRetention(t, casHookStore{hs})
+		ds := newHiveRetention(t, hs)
 		writeRun(t, ds, "a", "x")
 		newest := writeRun(t, ds, "b", "x", "y")
 		if err := mem.Delete(t.Context(), "datasets/events/latest"); err != nil {
@@ -1567,7 +1544,7 @@ func TestLatestScan(t *testing.T) {
 		slices.Sort(copies)
 		vanishOnList(t, hs, copies[0]) // the copy the scan would load first
 
-		ds = newHiveRetention(t, casHookStore{hs})
+		ds = newHiveRetention(t, hs)
 		latest, err := ds.Latest(t.Context())
 		if err != nil || latest.ID != newest.ID {
 			t.Errorf("Latest = %v, %v; want %s from a surviving copy", latest, err, newest.ID)
@@ -1599,7 +1576,7 @@ func TestLatestScan(t *testing.T) {
 	t.Run("skips a manifest deleted after listing", func(t *testing.T) {
 		mem := NewMemory()
 		hs := &hookStore{Store: mem}
-		ds := newDefaultRetention(t, casHookStore{hs})
+		ds := newDefaultRetention(t, hs)
 		older := writeRecord(t, ds, 1)
 		newest := writeRecord(t, ds, 2)
 		if err := mem.Delete(t.Context(), "datasets/events/latest"); err != nil {
@@ -1607,7 +1584,7 @@ func TestLatestScan(t *testing.T) {
 		}
 		vanishOnList(t, hs, "datasets/events/snapshots/"+string(newest.ID)+"/manifest.json")
 
-		ds = newDefaultRetention(t, casHookStore{hs})
+		ds = newDefaultRetention(t, hs)
 		latest, err := ds.Latest(t.Context())
 		if err != nil || latest.ID != older.ID {
 			t.Errorf("Latest = %v, %v; want %s (the newest vanished mid-scan)", latest, err, older.ID)
@@ -1617,7 +1594,7 @@ func TestLatestScan(t *testing.T) {
 		if err := mem.Delete(t.Context(), "datasets/events/latest"); err != nil {
 			t.Fatal(err)
 		}
-		ds = newDefaultRetention(t, casHookStore{hs})
+		ds = newDefaultRetention(t, hs)
 		if _, err := ds.Latest(t.Context()); !errors.Is(err, ErrNoSnapshots) {
 			t.Errorf("Latest = %v, want ErrNoSnapshots when every manifest vanished", err)
 		}

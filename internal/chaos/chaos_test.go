@@ -7,8 +7,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/pithecene/lode/lode"
 )
 
 var (
@@ -99,12 +97,6 @@ func runOne(t *testing.T, backendName, level string, cfg Config) {
 			t.Errorf("release the %s backend: %v", backendName, err)
 		}
 	})
-	// The invariants assume CAS (CONTRACT_WRITE_API §Concurrency): without
-	// it, concurrent writers may fork the history within the contract.
-	if _, ok := backend.Store.(lode.ConditionalWriter); !ok {
-		t.Skipf("the %s store does not implement ConditionalWriter on this platform", backendName)
-	}
-
 	report := Run(t.Context(), cfg, backend.Store)
 	t.Logf("seed %d: %d commits, %d conflicts after retries, %d injected failures, %d reads, %d expired, %d snapshots persisted",
 		report.Seed, report.Commits, report.Conflicts, report.Faults, report.Reads, report.Expired, report.Snapshots)

@@ -272,8 +272,7 @@ value returns `lode.ErrInvalidArgument` with the same message.
 - Range reads MUST NOT return partial data without an error.
 - `Latest` on an empty volume MUST return `lode.ErrNoSnapshots`.
 - `Snapshot` for an unknown ID MUST return `lode.ErrNotFound`.
-- An obsolete parent at `Commit` MUST produce `lode.ErrSnapshotConflict`
-  when the store implements `lode.ConditionalWriter`.
+- An obsolete parent at `Commit` MUST produce `lode.ErrSnapshotConflict`.
 - When the pointer names a snapshot whose manifest has not been persisted
   (a pending or abandoned commit, CONTRACT_CORE §Head Pointer), Commit MUST
   return `lode.ErrSnapshotConflict`, because the parent's blocks cannot be
@@ -298,20 +297,18 @@ The snapshot history of a Volume is linear.
 |---------|---------|--------|---------|--------|
 | Single writer | 1 process | Non-overlapping blocks | Linear (guaranteed) | ✅ Supported |
 | Multiple processes, serialized | N processes, external coordination | Non-overlapping blocks | Linear (enforced by the caller) | ✅ Supported (the caller provides coordination) |
-| Multiple processes, uncoordinated, store implements `ConditionalWriter` | N processes, no coordination | Non-overlapping blocks | Linear (enforced by CAS) | ✅ Supported; after an abandoned commit, commits return `ErrSnapshotConflict` until the pointer names a snapshot whose manifest exists (§Error Semantics) |
-| Multiple processes, uncoordinated, store without `ConditionalWriter` | N processes, no coordination | Non-overlapping blocks | Undefined: concurrent Delete+Put commits can fork the history and omit blocks from the head | ❌ Unsafe |
+| Multiple processes, uncoordinated | N processes, no coordination | Non-overlapping blocks | Linear (enforced by CAS) | ✅ Supported; after an abandoned commit, commits return `ErrSnapshotConflict` until the pointer names a snapshot whose manifest exists (§Error Semantics) |
+| Multiple writers in one process, store wrapped with `lode.SingleProcess` | N goroutines, each with its own `Volume`, sharing one wrapped store | Non-overlapping blocks | Linear (enforced by the process lock) | ✅ Supported |
 
 ### Optimistic Concurrency (CAS)
 
-When the storage adapter implements `ConditionalWriter`, Volume detects
-concurrent commits and returns `ErrSnapshotConflict`.
+Volume detects concurrent commits and returns `ErrSnapshotConflict`.
 
 The mechanism is identical to Dataset CAS (see `CONTRACT_WRITE_API.md`
 §Optimistic Concurrency (CAS)):
 - `Commit` records the expected parent when it resolves the parent.
-- The pointer is updated with `CompareAndSwap` when available.
+- The pointer is updated with `CompareAndSwap`.
 - An obsolete parent produces `ErrSnapshotConflict`.
-- When `ConditionalWriter` is not implemented, the commit uses Delete+Put.
 
 **A Volume CAS retry merges blocks without conflict:**
 - Non-overlapping blocks from concurrent writers can be merged on retry:
@@ -337,8 +334,7 @@ per retry, before step 1. If all retries are exhausted,
 
 **Single-writer compatibility:**
 - Single-writer workflows are unaffected.
-- External coordination remains valid but is no longer required with a
-  store that supports CAS.
+- External coordination remains valid but is not required.
 
 ---
 

@@ -195,9 +195,11 @@ For streaming writes that use the multipart path:
 
 ## ConditionalWriter Capability
 
-`ConditionalWriter` is an optional interface that storage adapters MAY
-implement to enable optimistic concurrency control (CAS) on the latest
-pointer.
+Every adapter MUST implement `ConditionalWriter`: `Store` is `ObjectStore`
+(the object operations above) together with `ConditionalWriter`. Every
+commit advances the latest pointer through `CompareAndSwap`, which provides
+optimistic concurrency control (CAS), and retention writes tombstones
+through it.
 
 ```go
 type ConditionalWriter interface {
@@ -221,9 +223,11 @@ type ConditionalWriter interface {
 
 ### Implementation Notes
 
-**Filesystem adapter (Unix and Windows):**
+**Filesystem adapter:**
 - Acquire an exclusive lock on a companion `.lock` file adjacent to the
-  target path: `flock` on Unix, `LockFileEx` on Windows.
+  target path: `flock` on Unix, `LockFileEx` on Windows. On other platforms,
+  such as Plan 9, no such lock exists, and `CompareAndSwap` returns an error
+  that matches `errors.ErrUnsupported`.
 - While holding the lock, read the current content, compare it, and write
   the replacement.
 - Release the lock.
@@ -259,21 +263,16 @@ type ConditionalWriter interface {
 **Memory adapter:**
 - Read, compare, and write under a mutex.
 
-### Adapter Compatibility
+### Backends without a Conditional Write
 
-Adapters that do not implement `ConditionalWriter` are valid. The commit
-path then uses Delete+Put, and callers remain responsible for ensuring
-single-writer semantics.
-
-`lode.SingleProcess(store)` adds `CompareAndSwap` to such a store by
-serializing calls under a lock held by the process; a store that already
-implements `ConditionalWriter` is returned unchanged. Its `CompareAndSwap`
-MUST follow the semantics table above. It serializes only callers that share
-the returned value within one process, and its replacement is a `Delete`
+A backend that offers no conditional write cannot implement
+`CompareAndSwap` atomically across processes. `lode.SingleProcess(store)`
+turns its `ObjectStore` into a `Store` by serializing `CompareAndSwap` calls
+under a lock held by the process; a store that already implements
+`ConditionalWriter` is returned unchanged. Its `CompareAndSwap` MUST follow
+the semantics table above. It serializes only callers that share the
+returned value within one process, and its replacement is a `Delete`
 followed by a `Put`, so a failed `Put` leaves the path absent.
-
-When an adapter implements `ConditionalWriter`, the commit path uses
-`CompareAndSwap` automatically. The caller need not configure anything.
 
 ---
 

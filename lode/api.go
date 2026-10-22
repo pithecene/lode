@@ -171,11 +171,23 @@ type DatasetSnapshot struct {
 // Store interface
 // -----------------------------------------------------------------------------
 
-// Store abstracts the underlying object storage system.
+// Store abstracts the underlying object storage system: the object
+// operations of ObjectStore and the conditional write of ConditionalWriter,
+// which every commit uses to advance the latest pointer.
 //
-// Implementations may target filesystems, S3, or other object stores.
-// The interface is intentionally minimal to avoid backend-specific leakage.
+// Implementations may target filesystems, S3, or other object stores. A
+// backend without a conditional write can still back a Store through
+// SingleProcess, within one process.
 type Store interface {
+	ObjectStore
+	ConditionalWriter
+}
+
+// ObjectStore is the object operations of a Store, without the conditional
+// write. SingleProcess turns an ObjectStore into a Store.
+//
+// The interface is intentionally minimal to avoid backend-specific leakage.
+type ObjectStore interface {
 	// Put writes data to the given path.
 	Put(ctx context.Context, path string, r io.Reader) error
 
@@ -202,12 +214,9 @@ type Store interface {
 	ReaderAt(ctx context.Context, path string) (io.ReaderAt, error)
 }
 
-// ConditionalWriter is an optional interface that storage adapters MAY
-// implement to enable optimistic concurrency (CAS) on the latest pointer.
-//
-// When a Store implements ConditionalWriter, the commit path uses
-// CompareAndSwap instead of Delete+Put for pointer updates, enabling
-// safe concurrent writes without external coordination.
+// ConditionalWriter is the conditional write every Store provides. Commits
+// advance the latest pointer with CompareAndSwap, which detects concurrent
+// writers (optimistic concurrency) without external coordination.
 type ConditionalWriter interface {
 	// CompareAndSwap atomically replaces the content at path if and only if
 	// the current content matches expected.

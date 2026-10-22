@@ -7,8 +7,8 @@
 //   - A stale writer detects the conflict via ErrSnapshotConflict
 //   - The retry path: call Latest() to refresh state, then re-write
 //
-// All built-in storage adapters (FS, Memory, S3) implement ConditionalWriter,
-// which enables CAS automatically. No configuration is needed.
+// Every Store implements ConditionalWriter (CompareAndSwap is part of Store),
+// so CAS is always enabled. No configuration is needed.
 //
 // Run with: go run ./examples/optimistic_concurrency
 package main
@@ -46,7 +46,7 @@ func run() error {
 	// -------------------------------------------------------------------------
 	fmt.Println("=== SETUP ===")
 
-	// FS implements ConditionalWriter, enabling CAS automatically.
+	// Every Store, FS included, implements ConditionalWriter, so CAS is on.
 	storeFactory := lode.NewFSFactory(tmpDir)
 
 	ds1, err := lode.NewDataset("events", storeFactory, lode.WithCodec(lode.NewJSONLCodec()))
@@ -118,11 +118,11 @@ func run() error {
 	fmt.Println("=== SUCCESS ===")
 	fmt.Println("Optimistic concurrency example complete!")
 	fmt.Println("\nKey points demonstrated:")
-	fmt.Println("  1. CAS is automatic: FS, Memory, and S3 adapters all implement ConditionalWriter")
+	fmt.Println("  1. CAS is automatic: every Store implements ConditionalWriter")
 	fmt.Println("  2. No contention: concurrent writers succeed when they don't overlap")
 	fmt.Println("  3. Conflict detection: stale writers get ErrSnapshotConflict (not corruption)")
 	fmt.Println("  4. Retry pattern: call Latest() to refresh state, then re-write")
-	fmt.Println("  5. No external locks needed for CAS-capable stores")
+	fmt.Println("  5. No external locks needed: every store provides CAS")
 
 	return nil
 }
