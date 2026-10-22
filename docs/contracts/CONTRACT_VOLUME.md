@@ -274,17 +274,32 @@ value returns `lode.ErrInvalidArgument` with the same message.
 - `Snapshot` for an unknown ID MUST return `lode.ErrNotFound`.
 - An obsolete parent at `Commit` MUST produce `lode.ErrSnapshotConflict`
   when the store implements `lode.ConditionalWriter`.
-- When the pointer names a snapshot whose manifest has not been persisted
-  (a pending or abandoned commit, CONTRACT_CORE §Head Pointer), Commit MUST
-  return `lode.ErrSnapshotConflict`, because the parent's blocks cannot be
-  merged without its manifest. If retries are configured, Commit retries.
-  After an abandoned commit, every Volume commit returns
-  `lode.ErrSnapshotConflict` until the pointer names a snapshot whose
-  manifest exists: either the missing manifest is persisted, or an operator
-  sets the pointer to an earlier snapshot. A `Volume` value that remembers
-  an earlier head continues to expect that head's pointer content, so after
+- Before it advances the pointer, Commit MUST persist a staged copy of its
+  manifest at `volumes/<volume_id>/staged/<snapshot_id>.json`. After it
+  persists the canonical manifest, Commit removes the staged copy. When the
+  pointer update fails, Commit removes the staged copy only if the pointer
+  names another snapshot, because a store may report a failure for an
+  update it applied.
+- When the pointer names a snapshot whose canonical manifest has not been
+  persisted (a pending or abandoned commit, CONTRACT_CORE §Head Pointer),
+  Commit MUST load that snapshot from its staged copy, adopt it as the
+  parent, and merge its blocks. An abandoned commit therefore does not
+  prevent later commits.
+- When the pointer names a snapshot that has neither a canonical manifest
+  nor a staged copy (a commit persisted by a release earlier than v0.11.0,
+  or a manual edit of the pointer), Commit MUST return
+  `lode.ErrSnapshotConflict`, because the parent's blocks cannot be merged.
+  If retries are configured, Commit retries. Commits return
+  `lode.ErrSnapshotConflict` until the pointer names a snapshot that has a
+  manifest: either the missing manifest is persisted, or an operator sets
+  the pointer to an earlier snapshot. A `Volume` value that remembers an
+  earlier head continues to expect that head's pointer content, so after
   the repair the caller MUST call `Latest` or open the volume again, unless
   retries are configured (each retry refreshes the head).
+- `Latest`, `Snapshot`, and `Snapshots` never read staged copies. An
+  abandoned commit has no canonical manifest, so it is never listed, and its
+  blocks become visible through the next commit, which merges them; that
+  commit's `ParentSnapshotID` names the abandoned snapshot.
 
 ---
 
@@ -361,11 +376,15 @@ Volume uses a **fixed internal layout**, which is not configurable. The
 
 ```
 volumes/<volume_id>/snapshots/<snapshot_id>/manifest.json
+volumes/<volume_id>/staged/<snapshot_id>.json
 volumes/<volume_id>/data/<offset>-<length>.bin
 ```
 
 - Manifest paths follow the same commit-visibility pattern as for a
   Dataset.
+- A staged manifest lies outside the snapshots prefix, so it is never
+  listed as a snapshot (§Error Semantics). A staged manifest that remains
+  after a failed commit is harmless, like abandoned staged data.
 - Data files are named by byte range to facilitate debugging.
 - This layout is an implementation detail, not part of the public API.
 
@@ -401,7 +420,7 @@ and a glossary of variables.
 | Operation | Store Calls (warm) | Memory | CPU |
 |-----------|-------------------|--------|-----|
 | `StageWriteAt` | 1 Put | O(block) | O(block) |
-| `Commit` | 4 fixed | O(B) manifest | O(B + K log K) |
+| `Commit` | 5 fixed | O(B) manifest | O(B + K log K) |
 
 The size of the cumulative manifest is O(B), a cost inherent in the
 cumulative design.
