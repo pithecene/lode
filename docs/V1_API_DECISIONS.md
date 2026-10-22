@@ -607,10 +607,13 @@ persisted nowhere.
    "event_type")` and `WithCodec(NewJSONLCodec())`; the two write
    constructions also pass `WithRetryCount(3)`. The examples pass
    `WithHiveLayout("day")` to both the writer and the reader of one
-   dataset. A reader configured with another layout finds no manifests, and
-   an unfiltered `ListManifests` then returns `ErrNotFound`, the error for a
-   dataset that does not exist, so the misconfiguration cannot be told from
-   an absent dataset.
+   dataset. A reader configured with a layout of another path grammar (flat
+   rather than Hive, for example) finds no manifests, and an unfiltered
+   `ListManifests` then returns `ErrNotFound`, the error for a dataset that
+   does not exist, so the misconfiguration cannot be told from an absent
+   dataset. Two Hive layouts with different keys share one grammar, and a
+   reader with the wrong keys lists the manifests but misnames their
+   partitions.
 2. **A second store value.** Quarry retains the factory and calls it again
    to obtain a store for files outside any dataset (sidecar files), so the
    process holds two store values for one root. Two `lode.SingleProcess`
@@ -635,8 +638,8 @@ blob handle, and datasets that describe themselves. Quarry's writer and
 reader would read as follows:
 
 ```go
-root := lode.Open(ctx, lode.FS("/data"))
-events, err := root.Records("events", lode.JSONL[Event](),
+root := lode.Open(lode.FS("/data"))
+events, err := root.Records(ctx, "events", lode.JSONL[Event](),
 	lode.WithLayout(lode.Hive("source", "category", "day", "run_id", "event_type").By(Event.Partition)),
 	lode.WithRetry(3))
 if err != nil { ... }
@@ -645,17 +648,17 @@ got, err := events.Read(ctx, snap.ID) // []Event
 var info RunInfo
 err = snap.Metadata.Decode(&info)
 
-view, err := lode.OpenReadOnly(ctx, lode.FS("/data")).Records("events", lode.JSONL[Event]())
+view, err := lode.OpenReadOnly(lode.FS("/data")).Records(ctx, "events", lode.JSONL[Event]())
 ```
 
 | Element | Shape | Resolves |
 |---|---|---|
 | Factory | `type Factory[S ObjectStore] func() (S, error)`. `lode.FS`, `lode.Memory`, and the S3 adapter return `Factory[Store]`; constructing one performs no I/O and returns no error. | Retains the single error check |
-| Root | `func Open[S Store](ctx context.Context, f Factory[S]) *Root` and `func OpenReadOnly[S ObjectStore](ctx context.Context, f Factory[S]) *ReadRoot`. Each calls the factory once and records any error, which every method of the handle returns. Every dataset of a root shares its one store value. | Cost 4; cost 2 in part |
-| Record datasets | A generic method, `func (r *Root) Records[T any](id DatasetID, codec Codec[T], opts ...DatasetOption) (Records[T], error)`. `Records[T]` embeds the read-only `RecordView[T]`, which is what `ReadRoot.Records` returns. Codec constructors return the interface type, so that `T` is inferred from the codec. | Cost 3; D1 |
-| Blob datasets | `func (r *Root) Blobs(id DatasetID, opts ...DatasetOption) (Blobs, error)`, whose `Write` takes one `[]byte` and whose `Read` returns one, with streaming writes. | D1 |
-| Descriptor | Before the first commit, the handle persists a dataset descriptor that records the complete configuration: the layout with its partition keys, and the codec, compressor, and checksum, each with its settings. Every component implements `Describe() Descriptor` (a name and settings). A writer whose configuration conflicts with it is rejected. The descriptor is immutable: replacing it could race with another writer's first commit and leave snapshots whose configuration disagrees with it. A descriptor that names no snapshot, left by a failed first commit, denotes an empty dataset; it is removed only by an explicit operation performed while no writer is active, as the Volume repair is. | Cost 1 |
-| Layout | An exported `Layout` type with one spelling per layout: `lode.Default()`, `lode.Hive(keys...)`, and `lode.Flat()`. A Hive layout reads partition values from `map[string]any` records by name; for typed records, it takes a function that returns the values in key order (`lode.Hive("source", "day").By(func(e Event) []string { return []string{e.Source, e.Day} })`), so that partitioning uses no reflection. `By` is a generic method of the concrete Hive layout, and `Records` reports a function written for another record type. An invalid key is reported by `Records` or `Blobs`, as every construction error is. | D2 |
+| Root | `func Open[S Store](f Factory[S]) *Root` and `func OpenReadOnly[S ObjectStore](f Factory[S]) *ReadRoot`. Each calls the factory once and records any error, which every method of the handle returns. Every dataset of a root shares its one store value. | Cost 4; cost 2 in part |
+| Record datasets | A generic method, `func (r *Root) Records[T any](ctx context.Context, id DatasetID, codec Codec[T], opts ...DatasetOption) (Records[T], error)`, which reads the descriptor under `ctx`. `Records[T]` embeds the read-only `RecordView[T]`, which is what `ReadRoot.Records` returns. Codec constructors return the interface type, so that `T` is inferred from the codec. | Cost 3; D1 |
+| Blob datasets | `func (r *Root) Blobs(ctx context.Context, id DatasetID, opts ...DatasetOption) (Blobs, error)`, whose `Write` takes one `[]byte` and whose `Read` returns one, with streaming writes. `Blobs` embeds the read-only `BlobView`, which `ReadRoot.Blobs(ctx, id, opts ...ViewOption)` returns. | D1 |
+| Descriptor | Before the first commit, the handle persists a dataset descriptor that records the complete configuration: the layout with its partition keys, and the codec, compressor, and checksum, each with its settings. Every component implements `Describe() Descriptor` (a name and settings). A writer whose configuration conflicts with it is rejected. The descriptor is immutable: replacing it could race with another writer's first commit and leave snapshots whose configuration disagrees with it. The descriptor records configuration only: a dataset whose `latest` pointer is absent is empty, so a failed first commit leaves an empty dataset. The descriptor of an empty dataset is removed only by an explicit operation performed while no writer is active, as the Volume repair is. | Cost 1 |
+| Layout | An exported `Layout` type with one spelling per layout: `lode.Default()`, `lode.Hive(keys...)`, and `lode.Flat()`. A Hive layout reads partition values from `map[string]any` records by name; for typed records, it takes a function that returns the values by key name (`lode.Hive("source", "day").By(func(e Event) lode.Partition { return lode.Partition{"source": e.Source, "day": e.Day} })`), so that partitioning uses no reflection and a value cannot be assigned to the wrong key. A write whose partition names other keys than the layout's fails. The function is code, not configuration, and is not persisted; a function that derives values differently writes different data, as a map record with other values does. `By` is a generic method of the concrete Hive layout, and `Records` reports a function written for another record type. An invalid key is reported by `Records` or `Blobs`, as every construction error is. | D2 |
 | Options | Writer handles take `DatasetOption`. A view takes no layout, codec settings, or retry, which come from the descriptor; Lode reconstructs the bundled compressors and checksums from their descriptions, and a custom compressor or checksum is passed to the view explicitly, through `ReadRoot.Records(id, codec, opts ...ViewOption)`, and checked against the descriptor. `ViewOption` holds only `WithCompressor` and `WithChecksum`. No global registry is introduced. The `ErrOptionNotValidFor...` sentinels are removed. | Cost 5; D3 |
 | Metadata | `Write` takes any value that encodes as a JSON object, a struct or a map; nil persists as `{}`, as CONTRACT_CORE §Metadata Rules requires. `Snapshot.Metadata` retains the persisted JSON and decodes it on request (`Decode(&v)`), so a struct target receives its declared field types; a map target receives JSON's types, with numbers as `float64`. | Cost 3 (metadata) |
 
@@ -668,7 +671,7 @@ without `CompareAndSwap`.
 the snapshot model are unchanged; the handles change how a caller reaches
 them, not what they do. Metadata becomes more explicit: the descriptor
 persists the configuration that callers now restate at each construction.
-Constructing a handle costs one `Get` of the descriptor, and a dataset's
+Constructing a dataset handle costs one `Get` of the descriptor, and a dataset's
 first commit costs one `CompareAndSwap` to create it, which
 CONTRACT_COMPLEXITY would state as an exception for the first commit;
 later commits, reads, and listings keep their bounds. Generic records add no per-record cost beyond
