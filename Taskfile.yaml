@@ -23,6 +23,14 @@ tasks:
     cmds:
       - go test -race -count=1 ./...
 
+  gates:
+    desc: Report the allocation-gate ceilings that the current code calls for
+    set: [pipefail]
+    cmds:
+      - >-
+        go test ./lode ./lode/volume -run TestAllocationGates -count=3 -v
+        | grep -E '^=== RUN|measured ceilings|FAIL'
+
   fuzz:
     desc: Run every fuzz target for FUZZTIME each (default 30s)
     vars:
