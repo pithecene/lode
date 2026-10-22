@@ -118,6 +118,10 @@ Gaps are recorded with codes that indicate category and priority:
 | Legacy Hive keys are verified by name and order against the first snapshot with files; the next commit records them | `TestWrite_LegacyHiveKeys/keys_are_verified_against_the_partition_paths` |
 | A legacy history without files accepts any keys | `TestWrite_LegacyHiveKeys/a_history_without_files_accepts_any_keys` |
 | A legacy chain broken before a snapshot with files is rejected as unverifiable | `TestWrite_LegacyHiveKeys/a_chain_broken_before_a_snapshot_with_files_is_rejected` |
+| A history persisted under another layout, with or without a pointer, is `ErrSettingsMismatch`, not an empty dataset or a conflict | `TestWrite_LayoutMismatch` |
+| Partition keys compare structurally (`"a,b"` differs from `"a"`, `"b"`) | `TestWrite_PartitionKeysCompareStructurally` |
+| A writer checked against a legacy manifest is checked again after a conflict | `TestWrite_LegacyCheckIsRepeatedAfterAConflict` |
+| A Hive key that is not one path segment or contains `=` is `ErrInvalidArgument` | `TestNewHiveLayout_KeysNamePartitionsUnambiguously` |
 
 **StreamWrite**: All covered ✅
 

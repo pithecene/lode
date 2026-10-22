@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+
+	"github.com/pithecene/lode/internal/storepath"
 )
 
 // datasetSettings are what every writer of a dataset must share: the
@@ -58,11 +60,13 @@ func (s datasetSettings) mismatch(m *Manifest) error {
 		{"checksum", s.checksum, m.ChecksumAlgorithm},
 		{"partitioner", s.partitioner, m.Partitioner},
 	}
+	// %q and %#v quote every string, so distinct key lists and path names
+	// never format alike ("a,b" against "a", "b").
 	if !legacy(m) {
 		comparisons = append(comparisons,
 			settingComparison{"codec description", s.codecDescription, m.CodecDescription},
-			settingComparison{"partition keys", strings.Join(s.partitionKeys, ","), strings.Join(m.PartitionKeys, ",")},
-			settingComparison{"path names", fmt.Sprintf("%+v", s.paths), fmt.Sprintf("%+v", m.Paths)},
+			settingComparison{"partition keys", fmt.Sprintf("%q", s.partitionKeys), fmt.Sprintf("%q", m.PartitionKeys)},
+			settingComparison{"path names", fmt.Sprintf("%#v", s.paths), fmt.Sprintf("%#v", m.Paths)},
 		)
 	}
 	for _, c := range comparisons {
@@ -74,14 +78,19 @@ func (s datasetSettings) mismatch(m *Manifest) error {
 }
 
 // checkSettings verifies this writer's settings against the manifest of
-// parent, the head a commit resolved, once per writer: every writer is
-// checked, so every later snapshot records the same settings. A first
-// commit (parent "") has nothing to match; its manifest records the
-// writer's settings, and a commit that loses the race to it is checked
-// against it after the refresh.
+// parent, the head a commit resolved. Every writer is checked, so every
+// later snapshot records the same settings, and a writer checks until a
+// check against a 1.1.0 manifest, or its own commit, settles it. A check
+// against a legacy manifest compares fewer settings, so a concurrent
+// commit may record a description that differs; the writer checks again
+// after a conflict. With no parent the dataset is empty, unless its
+// directory holds objects persisted under another layout.
 func (d *dataset) checkSettings(ctx context.Context, parent DatasetSnapshotID) error {
-	if d.settled || parent == "" {
+	if d.settled {
 		return nil
+	}
+	if parent == "" {
+		return d.rejectForeignHistory(ctx)
 	}
 	head, err := d.settingsManifest(ctx, parent)
 	if err != nil {
@@ -95,7 +104,29 @@ func (d *dataset) checkSettings(ctx context.Context, parent DatasetSnapshotID) e
 			return err
 		}
 	}
-	d.settled = true
+	d.settled = !legacy(head)
+	return nil
+}
+
+// rejectForeignHistory returns ErrSettingsMismatch when the dataset's
+// directory holds an object this layout does not persist: a history written
+// under another layout or other path names, whose manifests the configured
+// layout cannot find. A writer that took the dataset for empty would
+// otherwise begin a second history beside it.
+func (d *dataset) rejectForeignHistory(ctx context.Context) error {
+	keys, err := d.store.List(ctx, d.layout.datasetPrefix(d.id))
+	if err != nil {
+		return fmt.Errorf("lode: failed to list the dataset: %w", err)
+	}
+	for _, k := range keys {
+		// A key no store accepts in this form was not persisted by a layout.
+		if key, ok := storepath.Key(k); !ok || key != k {
+			continue
+		}
+		if !d.layout.ownsObject(d.id, k) {
+			return fmt.Errorf("lode: layout mismatch: dataset holds %s, which the configured layout does not persist: %w", k, ErrSettingsMismatch)
+		}
+	}
 	return nil
 }
 
@@ -120,6 +151,9 @@ func (d *dataset) settingsManifest(ctx context.Context, parent DatasetSnapshotID
 		if !errors.Is(err, ErrNotFound) && !errors.Is(err, ErrNoSnapshots) {
 			return nil, fmt.Errorf("lode: failed to load the head's settings: %w", err)
 		}
+	}
+	if err := d.rejectForeignHistory(ctx); err != nil {
+		return nil, err
 	}
 	return nil, fmt.Errorf("lode: latest pointer names %s, and no manifest records the dataset's settings: %w", parent, ErrSnapshotConflict)
 }

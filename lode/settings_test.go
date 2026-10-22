@@ -2,6 +2,7 @@ package lode
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"slices"
@@ -322,5 +323,100 @@ func TestCodec_Describe(t *testing.T) {
 	want := `{"fields":[{"name":"a","type":"int64","nullable":true},{"name":"b","type":"string","nullable":false}]}`
 	if c1.Describe() != want || c2.Describe() != want {
 		t.Errorf("descriptions %q and %q, want %q for either compression", c1.Describe(), c2.Describe(), want)
+	}
+}
+
+// beforePointerCAS runs hook once, before the first CompareAndSwap of the
+// latest pointer that passes through it.
+type beforePointerCAS struct {
+	Store
+	hook func()
+}
+
+func (b *beforePointerCAS) CompareAndSwap(ctx context.Context, p, expected, replacement string) error {
+	if hook := b.hook; hook != nil && strings.HasSuffix(p, "/latest") {
+		b.hook = nil
+		hook()
+	}
+	return b.Store.CompareAndSwap(ctx, p, expected, replacement)
+}
+
+func TestWrite_LayoutMismatch(t *testing.T) {
+	jsonl := WithCodec(NewJSONLCodec())
+	for _, tc := range []struct {
+		name          string
+		first, second []Option
+	}{
+		{"default, then Hive", []Option{jsonl}, []Option{jsonl, WithHiveLayout("a")}},
+		{"Hive, then default", []Option{jsonl, WithHiveLayout("a")}, []Option{jsonl}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := NewMemory()
+			if _, err := openOn(t, store, tc.first...).Write(t.Context(), R(D{"a": "x"}), nil); err != nil {
+				t.Fatal(err)
+			}
+			_, err := openOn(t, store, tc.second...).Write(t.Context(), R(D{"a": "x"}), nil)
+			if !errors.Is(err, ErrSettingsMismatch) || !strings.Contains(err.Error(), "layout mismatch") {
+				t.Fatalf("got %v, want a layout ErrSettingsMismatch", err)
+			}
+		})
+	}
+	t.Run("a pointerless foreign history is not an empty dataset", func(t *testing.T) {
+		store := NewMemory()
+		if _, err := openOn(t, store, jsonl, WithHiveLayout("a")).Write(t.Context(), R(D{"a": "x"}), nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Delete(t.Context(), "datasets/events/latest"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := openOn(t, store, jsonl).Write(t.Context(), R(D{"a": "x"}), nil); !errors.Is(err, ErrSettingsMismatch) {
+			t.Fatalf("got %v, want ErrSettingsMismatch", err)
+		}
+	})
+}
+
+func TestWrite_PartitionKeysCompareStructurally(t *testing.T) {
+	store := NewMemory()
+	jsonl := WithCodec(NewJSONLCodec())
+	if _, err := openOn(t, store, jsonl, WithHiveLayout("a,b")).Write(t.Context(), R(D{"a,b": "x"}), nil); err != nil {
+		t.Fatal(err)
+	}
+	_, err := openOn(t, store, jsonl, WithHiveLayout("a", "b")).Write(t.Context(), R(D{"a": "y", "b": "z"}), nil)
+	if !errors.Is(err, ErrSettingsMismatch) {
+		t.Fatalf("got %v, want keys \"a,b\" and \"a\", \"b\" told apart", err)
+	}
+}
+
+func TestNewHiveLayout_KeysNamePartitionsUnambiguously(t *testing.T) {
+	for _, key := range []string{"a=b", "a/b", "", ".."} {
+		if _, err := NewHiveLayout(key); !errors.Is(err, ErrInvalidArgument) {
+			t.Errorf("NewHiveLayout(%q) = %v, want ErrInvalidArgument", key, err)
+		}
+	}
+}
+
+func TestWrite_LegacyCheckIsRepeatedAfterAConflict(t *testing.T) {
+	parquet := func(field string) Codec {
+		c, err := NewParquetCodec(ParquetSchema{Fields: []ParquetField{{Name: field, Type: ParquetString, Nullable: true}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	store := NewMemory()
+	old, err := openOn(t, store, WithCodec(parquet("a"))).Write(t.Context(), R(D{"a": "x"}), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyHive(t, store, old) // records no description
+	racer := &beforePointerCAS{Store: store}
+	loser := openOn(t, racer, WithCodec(parquet("b")), WithRetryCount(2))
+	racer.hook = func() {
+		if _, err := openOn(t, store, WithCodec(parquet("a"))).Write(t.Context(), R(D{"a": "y"}), nil); err != nil {
+			t.Error(err)
+		}
+	}
+	if _, err := loser.Write(t.Context(), R(D{"b": "z"}), nil); !errors.Is(err, ErrSettingsMismatch) {
+		t.Fatalf("got %v, want the description the winner recorded enforced after the conflict", err)
 	}
 }

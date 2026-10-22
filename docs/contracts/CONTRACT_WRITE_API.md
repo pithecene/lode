@@ -51,7 +51,12 @@ manifest records them (CONTRACT_CORE §Manifest Requirements).
   pointer names; that snapshot's staged copy (CONTRACT_CORE §Head Pointer);
   and, when the pointer is absent or names neither, the newest manifest, as
   `Latest` selects it. With no pointer and no manifest, the dataset is
-  empty, and the commit records the writer's settings.
+  empty, and the commit records the writer's settings, unless its
+  directory holds an object that the writer's layout does not persist.
+- A dataset directory that holds such an object, when no manifest is found
+  under the writer's layout, contains a history persisted under another
+  layout or other path names. The writer MUST be rejected with
+  `ErrSettingsMismatch` rather than begin a second history beside it.
 - A writer whose settings differ MUST be rejected with
   `ErrSettingsMismatch` and MUST NOT commit. The rejection is not retried.
 - A pointer that names a snapshot with neither a manifest nor a staged copy,
@@ -62,9 +67,11 @@ manifest records them (CONTRACT_CORE §Manifest Requirements).
 - Two first commits with conflicting settings are serialized by the
   pointer's `CompareAndSwap`: the losing writer is checked against the
   winner's manifest after it refreshes the head, and is rejected.
-- A writer checks once. Every writer is checked, so every later snapshot
-  records the same settings, and a writer whose own commit succeeded needs
-  no check.
+- A writer checks until a check against a manifest of format version
+  1.1.0, or its own commit, settles it. Every writer is checked, so every
+  later snapshot records the same settings. A check against an earlier
+  manifest compares fewer settings, so a writer checks again after a
+  conflict.
 - A manifest written before format version 1.1.0 records no partition keys.
   For such a dataset with a Hive partitioner, the writer's keys MUST be
   verified, by name and in order, against the partition path of the first
@@ -348,7 +355,10 @@ The check runs once per writer, before its first commit:
 - Against the manifest that the pointer names: **1 Get**.
 - While a first commit is pending: **2 Gets** (the canonical manifest, then
   the staged copy).
-- When neither exists: the scan of `Latest`, **O(N) through List**.
+- When neither exists: the scan of `Latest`, **O(N) through List**, and
+  1 List of the dataset's directory.
+- Against an empty dataset: **1 List** of the dataset's directory, to
+  detect a history persisted under another layout.
 - Against a dataset written before format version 1.1.0 with a Hive
   partitioner: **1 Get per snapshot** followed from the head to the first
   snapshot with files, once per dataset, because the first commit after it

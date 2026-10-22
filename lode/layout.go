@@ -62,11 +62,15 @@ type datasetPaths interface {
 }
 
 // stagedPaths is where a dataset's first commit stages its manifest before
-// it advances the pointer (CONTRACT_CORE §Head Pointer), and the convention
-// a manifest records.
+// it advances the pointer (CONTRACT_CORE §Head Pointer), the convention a
+// manifest records, and which objects under a dataset's directory belong
+// to this layout, so that a writer can detect a history persisted under
+// another layout (CONTRACT_WRITE_API §Settings).
 type stagedPaths interface {
 	stagedManifestPath(dataset DatasetID, snapshot DatasetSnapshotID) string
 	convention() ManifestPaths
+	datasetPrefix(dataset DatasetID) string
+	ownsObject(dataset DatasetID, p string) bool
 }
 
 // tombstonePaths is where Dataset.Expire records an expired snapshot;
@@ -288,6 +292,11 @@ func NewHiveLayout(keys ...string) (layout, error) {
 	if len(keys) == 0 {
 		return nil, validate.Argument("NewHiveLayout requires at least one partition key; use NewDefaultLayout for unpartitioned data")
 	}
+	for _, key := range keys {
+		if !storepath.Segment(key) || strings.Contains(key, "=") {
+			return nil, validate.Argument("NewHiveLayout: partition key %q must be one path segment without \"=\", so that a partition path names its keys unambiguously", key)
+		}
+	}
 	return &pathLayout{
 		grammar: pathGrammar{root: datasetsDir, snapshotDir: segmentsDir, partitioned: true},
 		part:    newHivePartitioner(keys...),
@@ -361,6 +370,24 @@ func (l *pathLayout) latestPointerPath(dataset DatasetID) string {
 // parses a manifest, so a staged copy is never listed as a snapshot.
 func (l *pathLayout) stagedManifestPath(dataset DatasetID, snapshot DatasetSnapshotID) string {
 	return join(l.grammar.datasetDir(dataset), stagedDir, string(snapshot)+".json")
+}
+
+// datasetPrefix covers every object of the dataset.
+func (l *pathLayout) datasetPrefix(dataset DatasetID) string {
+	return l.grammar.datasetDir(dataset) + "/"
+}
+
+// ownsObject reports whether p, an object under the dataset's prefix, is
+// one this layout persists: the pointer, a manifest or data object its
+// grammar parses, a staged manifest, or a tombstone.
+func (l *pathLayout) ownsObject(dataset DatasetID, p string) bool {
+	if sp, ok := l.grammar.parse(p); ok && sp.dataset == dataset {
+		return true
+	}
+	stagedPrefix := join(l.grammar.datasetDir(dataset), stagedDir) + "/"
+	return p == l.latestPointerPath(dataset) ||
+		strings.HasPrefix(p, stagedPrefix) ||
+		strings.HasPrefix(p, l.tombstonesPrefix(dataset))
 }
 
 // convention is the names this layout's paths use. A layout without a
