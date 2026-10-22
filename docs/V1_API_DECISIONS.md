@@ -587,10 +587,13 @@ persisted nowhere.
 1. **Repeated configuration.** Quarry constructs the same dataset in three
    places (its filesystem client, its S3 client, and its read path), each
    with `WithHiveLayout("source", "category", "day", "run_id",
-   "event_type")`, `WithCodec(NewJSONLCodec())`, and `WithRetryCount(3)`.
-   The examples pass `WithHiveLayout("day")` to both the writer and the
-   reader of one dataset. A reader configured with another layout finds no
-   manifests and returns no error.
+   "event_type")` and `WithCodec(NewJSONLCodec())`; the two write
+   constructions also pass `WithRetryCount(3)`. The examples pass
+   `WithHiveLayout("day")` to both the writer and the reader of one
+   dataset. A reader configured with another layout finds no manifests, and
+   an unfiltered `ListManifests` then returns `ErrNotFound`, the error for a
+   dataset that does not exist, so the misconfiguration cannot be told from
+   an absent dataset.
 2. **A second store value.** Quarry retains the factory and calls it again
    to obtain a store for files outside any dataset (sidecar files), so the
    process holds two store values for one root. Two `lode.SingleProcess`
@@ -623,26 +626,40 @@ read under it.
    func NewDataset[S Store](id DatasetID, f Factory[S], opts ...Option) (Dataset, error)
    ```
 
-   Type inference requires no annotation at existing call sites, and a
-   read-only factory passed to `NewDataset` fails to compile. This resolves
+   `StoreFactory` becomes an alias of `Factory[Store]`, so that the
+   factories returned by `NewFSFactory` and `NewMemoryFactory` are already
+   of the generic type. Type inference then requires no annotation at
+   existing call sites, and a read-only factory passed to `NewDataset` fails
+   to compile. This resolves
    cost 4 and retains the single error check, but leaves costs 1, 2, 3,
    and 5.
 
 2. **A root handle with package-level typed datasets.** A handle is opened
-   once per store root, with the store-level options:
+   once per store root and binds one store value, which every dataset
+   obtained from it shares:
 
    ```go
-   repo, err := lode.Open(ctx, lode.FS(root), lode.WithHiveLayout("source", "category", "day", "run_id", "event_type"))
+   repo, err := lode.Open(ctx, lode.FS(root))
    if err != nil { ... }
-   events, err := lode.DatasetOf[Record](repo, "events", lode.WithCodec(lode.JSONL[Record]()), lode.WithRetryCount(3))
+   events, err := lode.DatasetOf[Record](repo, "events",
+   	lode.WithHiveLayout("source", "category", "day", "run_id", "event_type"),
+   	lode.WithCodec(lode.JSONL[Record]()), lode.WithRetryCount(3))
    ```
 
-   The first `Open` of a root persists a root descriptor that names the
-   layout, created with `CompareAndSwap`; a later `Open` reads it and
-   rejects a conflicting layout, and `OpenReadOnly` takes an `ObjectStore`
-   and needs no layout option. Options divide into store-level options on
-   `Open` and dataset-level options on the dataset. This resolves costs 1,
-   3, 4, and 5, and two error checks remain.
+   The first commit of a dataset persists a dataset descriptor that records
+   its layout, codec, and compressor, created with `CompareAndSwap` at a
+   path that no layout uses (for example, `_lode/datasets/<id>.json`; the
+   dataset ID grammar must then exclude the prefix). A later handle reads
+   the descriptor: a reader needs no layout option, and a handle whose
+   layout, codec, or compressor conflicts with it is rejected. Retry
+   settings govern a handle rather than the data and are not persisted.
+   Datasets under one root may therefore retain different layouts, as they
+   may today, and every layout, the flat layout included, can enumerate
+   datasets through the descriptors. `OpenReadOnly` takes an
+   `ObjectStore`. This resolves costs 3, 4, and 5. It resolves cost 1 in
+   part: the layout is stated once, but each handle still states its codec,
+   which the descriptor checks, and its retry settings. Two error checks
+   remain.
 
 3. **A root handle with generic methods.** As option 2, with the dataset
    obtained through a generic method of a concrete `Repo` (Go 1.27). `Open`
@@ -650,8 +667,9 @@ read under it.
    chained construction checks one error, as a factory does today:
 
    ```go
-   events, err := lode.Open(ctx, lode.FS(root), lode.WithHiveLayout("source", "category", "day", "run_id", "event_type")).
-   	Dataset("events", lode.WithCodec(lode.JSONL[Record]()), lode.WithRetryCount(3))
+   events, err := lode.Open(ctx, lode.FS(root)).Dataset("events",
+   	lode.WithHiveLayout("source", "category", "day", "run_id", "event_type"),
+   	lode.WithCodec(lode.JSONL[Record]()), lode.WithRetryCount(3))
    ```
 
    The record type is inferred from the typed codec; a dataset without a
@@ -660,14 +678,16 @@ read under it.
    type, because interface methods cannot declare type parameters; the
    returned `Dataset[T]` remains an interface.
 
-None of the options resolves cost 2. Whether the root handle exposes its
+None of the options resolves cost 2 entirely. Options 2 and 3 give the
+process one store value per root, but whether the root handle exposes that
 store for objects outside any dataset, or whether such objects become a
 part of the layout, is a separate question that this entry records but does
 not decide.
 
 **Proposed.** Option 3, provided that the Go 1.27.3 minimum (#261) is
-accepted; otherwise, option 2. Options 2 and 3 persist the layout, which
-`AGENTS.md` requires of metadata, and give each option one target. Option 3
+accepted; otherwise, option 2. Options 2 and 3 persist each dataset's
+layout, codec, and compressor, as `AGENTS.md` requires of metadata, and
+give each option one target. Option 3
 also retains the single error check of the current factory. If option 2
 or 3 is accepted, it decides D1 (the payload type is the dataset's type
 parameter) and D3 (options divide by level); D2 remains, because the layout
@@ -676,11 +696,12 @@ option still takes a layout value.
 **Breaks.**
 - Every constructor call: the examples, the README, `PUBLIC_API.md`, and
   Quarry's three constructions and two query functions.
-- Under options 2 and 3, a root written before the change has no
-  descriptor. The first `Open` with an explicit layout creates it; until
-  then, `OpenReadOnly` requires the layout option. The descriptor is a new
-  object at the root, which D8 must name; a consumer that reads objects by
-  path is otherwise unaffected.
+- Under options 2 and 3, a dataset written before the change has no
+  descriptor. Its next commit creates one; until then, a reader requires
+  the layout option. The descriptors are new objects under a reserved
+  prefix, which D8 must name, and a dataset whose ID begins with that
+  prefix must be renamed. A consumer that reads objects by path is
+  otherwise unaffected.
 - Under option 3, the minimum Go version (#261).
 
 **Status.** Open.
