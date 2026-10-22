@@ -466,6 +466,11 @@ func TestStore_CompareAndSwap(t *testing.T) {
 			store := b.open(t)
 			for _, s := range steps {
 				err := store.CompareAndSwap(t.Context(), "ptr/latest", s.expected, s.replacement)
+				if errors.Is(err, errors.ErrUnsupported) {
+					// The filesystem store has no file lock on platforms such as
+					// Plan 9 (CONTRACT_STORAGE §Implementation Notes).
+					t.Skipf("CompareAndSwap is unsupported here: %v", err)
+				}
 				if !errors.Is(err, s.wantErr) {
 					t.Fatalf("%s: err = %v, want %v", s.name, err, s.wantErr)
 				}
