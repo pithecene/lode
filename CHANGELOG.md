@@ -19,7 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`Store.Get` must return `ErrNotFound` for a missing path**: Lode now distinguishes an absent object from a failed read. The bundled adapters already comply.
 - **Go 1.27.3 is the minimum Go version**: Go 1.25 no longer receives security fixes.
 - **The module path is `github.com/pithecene/lode`**: it replaces `github.com/pithecene-io/lode`, under which releases up to v0.10.0 remain available.
-- **Volume moved to the experimental package `lode/volume`** (`V1_API_DECISIONS.md` D9): Volume is outside the v1.0 compatibility promise, and its names drop the prefix that the package name supplies.
+- **Volume moved to the experimental package `lode/volume`**: Volume is outside the v1.0 compatibility promise (`V1_API_DECISIONS.md` D9), and its names drop the prefix that the package name supplies.
 
   | Before (`lode`) | After (`volume`) |
   |---|---|
