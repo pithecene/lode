@@ -118,6 +118,11 @@ type snapshotPath struct {
 // result is built in one allocation, sized first; path.Join allocates twice
 // (its buffer and the string). Clean returns an already clean path without
 // allocating, so the result equals path.Join's.
+//
+// path.Join is the specification: join MUST return exactly what path.Join
+// returns for the same parts. FuzzJoin enforces this on every test run and
+// in the nightly fuzz job; a change that diverges is a bug in join, and
+// reverting to path.Join is always correct.
 func join(parts ...string) string {
 	size, n := 0, 0
 	for _, part := range parts {
