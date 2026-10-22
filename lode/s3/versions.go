@@ -1,11 +1,16 @@
 package s3
 
-import "sync"
+import (
+	"crypto/sha256"
+	"sync"
+)
 
-// version is the content of an object and the ETag that S3 returned when
-// this store replaced it.
+// version identifies the content of an object, by its SHA-256 digest, and
+// the ETag that S3 returned when this store replaced it. The digest keeps a
+// record small whatever the size of the content.
 type version struct {
-	content, etag string
+	digest [sha256.Size]byte
+	etag   string
 }
 
 // versions records, by full key, the version of each object that this store
@@ -38,7 +43,7 @@ func (v *versions) etagFor(key, expected string) (string, bool) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	rec, ok := v.byKey[key]
-	if !ok || rec.content != expected {
+	if !ok || rec.digest != sha256.Sum256([]byte(expected)) {
 		return "", false
 	}
 	return rec.etag, true
@@ -56,7 +61,7 @@ func (v *versions) record(key, content, etag string) {
 	if _, ok := v.byKey[key]; !ok && len(v.byKey) >= maxVersions {
 		v.evictOne()
 	}
-	v.byKey[key] = version{content: content, etag: etag}
+	v.byKey[key] = version{digest: sha256.Sum256([]byte(content)), etag: etag}
 }
 
 // evictOne drops an arbitrary record; the caller holds the lock.

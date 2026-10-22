@@ -468,13 +468,22 @@ func (s *Store) CompareAndSwap(ctx context.Context, key, expected, replacement s
 		if err == nil {
 			return nil
 		}
-		if !hasErrorCode(err, preconditionCodes...) {
+		if !stalePrecondition(err) {
 			return s.mapCASError(err)
 		}
 		// The object is not the version assumed: it exists although expected
-		// is empty (it may be empty itself), or another writer replaced it.
+		// is empty (it may be empty itself), or another writer replaced or
+		// deleted it.
 	}
 	return s.compareAndSwapByRead(ctx, fullKey, expected, replacement)
+}
+
+// stalePrecondition reports whether a conditional write failed because the
+// object is not the version assumed. S3 refuses a precondition with 412, and
+// answers If-Match on an object that no longer exists with 404 (NoSuchKey);
+// a missing bucket is not such a refusal.
+func stalePrecondition(err error) bool {
+	return hasErrorCode(err, slices.Concat(preconditionCodes, notFoundCodes)...)
 }
 
 // condition is the precondition of a conditional PutObject: If-Match on
@@ -554,12 +563,13 @@ func (s *Store) putConditional(ctx context.Context, fullKey, replacement string,
 	return nil
 }
 
-// mapCASError maps S3 conditional-write refusals to ErrSnapshotConflict.
+// mapCASError maps S3 conditional-write refusals to ErrSnapshotConflict,
+// including If-Match on an object that another writer deleted (404).
 func (s *Store) mapCASError(err error) error {
 	if err == nil {
 		return nil
 	}
-	if hasErrorCode(err, slices.Concat(preconditionCodes, conflictCodes)...) {
+	if hasErrorCode(err, slices.Concat(preconditionCodes, conflictCodes, notFoundCodes)...) {
 		return lode.ErrSnapshotConflict
 	}
 	return fmt.Errorf("s3: CAS put: %w", err)

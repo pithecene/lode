@@ -95,7 +95,8 @@ func (m *MockS3Client) PutObject(_ context.Context, params *s3.PutObjectInput, _
 	if ifMatch := aws.ToString(params.IfMatch); ifMatch != "" {
 		existing, exists := m.objects[key]
 		if !exists {
-			return nil, &smithyAPIError{code: "PreconditionFailed", message: "object does not exist"}
+			// S3 answers If-Match on an absent object with 404.
+			return nil, &types.NoSuchKey{}
 		}
 		if objectETag(existing) != ifMatch {
 			return nil, &smithyAPIError{code: "PreconditionFailed", message: "etag mismatch"}

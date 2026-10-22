@@ -211,6 +211,9 @@ Gaps are recorded with codes that indicate category and priority:
 | Replacing a version that the adapter last wrote by replacement issues no read | `TestStore_CompareAndSwap_Requests/replacing_its_own_version_writes_without_reading` |
 | A creation leaves no record, so objects that are created once, such as tombstones, do not accumulate records | `TestStore_CompareAndSwap_Requests/a_creation_leaves_no_record` |
 | The record holds a bounded number of versions, and `Delete` discards the record of the deleted object | `TestStore_CompareAndSwap_Requests/the_record_is_bounded_and_forgets_deleted_keys` |
+| A record identifies its content by digest and does not retain the content | `TestStore_CompareAndSwap_Requests/a_record_keeps_a_digest,_not_the_content` |
+| A recorded version that another writer deleted is read and yields `ErrSnapshotConflict` | `TestStore_CompareAndSwap_Requests/a_version_deleted_by_another_writer_is_read_and_conflicts` |
+| An object deleted between the read and the conditional write yields `ErrSnapshotConflict` | `TestStore_CompareAndSwap_Requests/an_object_deleted_between_the_read_and_the_write_conflicts` |
 | A version that another writer replaced is read and yields `ErrSnapshotConflict` | `TestStore_CompareAndSwap_Requests/a_version_replaced_by_another_writer_is_read_and_conflicts` |
 | An existing empty object satisfies an empty `expected`; any other existing object refuses it | `TestStore_CompareAndSwap_Requests/an_existing_empty_object_satisfies_an_empty_expectation`, `TestStore_CompareAndSwap_Requests/an_existing_object_refuses_an_empty_expectation` |
 | After a lost response, the adapter reads the object instead of assuming its version | `TestStore_CompareAndSwap_Requests/a_lost_response_forgets_the_version` |

@@ -3,6 +3,7 @@ package s3
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -1259,12 +1260,14 @@ func TestStore_CompareAndSwap(t *testing.T) {
 	})
 }
 
-// casClient counts GetObject calls and can lose the response of the next
-// PutObject after applying it, as a network timeout would.
+// casClient counts GetObject calls, can lose the response of the next
+// PutObject after applying it, as a network timeout would, and can run a
+// hook before the next PutObject, as a concurrent writer would.
 type casClient struct {
 	*MockS3Client
 	gets            int
 	losePutResponse bool
+	beforePut       func()
 }
 
 func (c *casClient) GetObject(ctx context.Context, params *s3api.GetObjectInput, opts ...func(*s3api.Options)) (*s3api.GetObjectOutput, error) {
@@ -1273,6 +1276,10 @@ func (c *casClient) GetObject(ctx context.Context, params *s3api.GetObjectInput,
 }
 
 func (c *casClient) PutObject(ctx context.Context, params *s3api.PutObjectInput, opts ...func(*s3api.Options)) (*s3api.PutObjectOutput, error) {
+	if hook := c.beforePut; hook != nil {
+		c.beforePut = nil
+		hook()
+	}
 	out, err := c.MockS3Client.PutObject(ctx, params, opts...)
 	if err == nil && c.losePutResponse {
 		c.losePutResponse = false
@@ -1392,6 +1399,30 @@ func TestStore_CompareAndSwap_Requests(t *testing.T) {
 		assertPointer(t, store, "snap-2")
 	})
 
+	t.Run("a version deleted by another writer is read and conflicts", func(t *testing.T) {
+		client, store := newPair(t)
+		swapThrough(t, store, "", "snap-0", "snap-1")
+		if err := sharing(t, client).Delete(t.Context(), "ptr/latest"); err != nil {
+			t.Fatal(err)
+		}
+		// The If-Match write on the recorded snap-1 finds no object (404),
+		// and the read that follows finds none either.
+		client.reset()
+		assertConflict(t, store, "snap-1", "snap-2")
+		client.assertCalls(t, "deleted object", 1, 1)
+	})
+
+	t.Run("an object deleted between the read and the write conflicts", func(t *testing.T) {
+		client, store := newPair(t)
+		swapThrough(t, sharing(t, client), "", "snap-0")
+		client.beforePut = func() {
+			if err := sharing(t, client).Delete(t.Context(), "ptr/latest"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		assertConflict(t, store, "snap-0", "snap-1")
+	})
+
 	t.Run("an existing empty object satisfies an empty expectation", func(t *testing.T) {
 		client, store := newPair(t)
 		if _, err := client.MockS3Client.PutObject(t.Context(), &s3api.PutObjectInput{
@@ -1408,6 +1439,21 @@ func TestStore_CompareAndSwap_Requests(t *testing.T) {
 		swapThrough(t, sharing(t, client), "", "snap-1")
 		assertConflict(t, store, "", "snap-2")
 		assertPointer(t, store, "snap-1")
+	})
+
+	t.Run("a record keeps a digest, not the content", func(t *testing.T) {
+		_, store := newPair(t)
+		large := strings.Repeat("x", 1<<20)
+		swapThrough(t, store, "", "snap-0", large)
+		rec, ok := store.versions.byKey["ptr/latest"]
+		if !ok {
+			t.Fatal("no record after a replacement")
+		}
+		if rec.digest != sha256.Sum256([]byte(large)) {
+			t.Error("the record does not identify the replacement content")
+		}
+		swapThrough(t, store, large, "snap-2")
+		assertPointer(t, store, "snap-2")
 	})
 
 	t.Run("a creation leaves no record", func(t *testing.T) {
