@@ -114,17 +114,33 @@ type snapshotPath struct {
 }
 
 // join is path.Join over the non-empty parts. A grammar's optional pieces
-// (root, partition, snapshotDir) are "" when absent; dropping them up front
-// means one Join per path and nothing for Clean to repair.
+// (root, partition, snapshotDir) are "" when absent and are skipped. The
+// result is built in one allocation, sized first; path.Join allocates twice
+// (its buffer and the string). Clean returns an already clean path without
+// allocating, so the result equals path.Join's.
 func join(parts ...string) string {
-	n := 0
+	size, n := 0, 0
 	for _, part := range parts {
 		if part != "" {
-			parts[n] = part
+			size += len(part)
 			n++
 		}
 	}
-	return path.Join(parts[:n]...)
+	if n == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.Grow(size + n - 1)
+	for _, part := range parts {
+		if part == "" {
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteByte('/')
+		}
+		b.WriteString(part)
+	}
+	return path.Clean(b.String())
 }
 
 // partitionParts is the partitions directory and the partition, or two
