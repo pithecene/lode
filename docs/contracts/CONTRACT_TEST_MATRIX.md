@@ -63,6 +63,14 @@ Gaps are recorded with codes that indicate category and priority:
 | FileRef.Stats (absent) | `TestDataset_Write_Stats/JSONL_codec_stats_nil`, `TestDataset_Write_Stats/raw_blob_stats_nil` |
 | FileRef.Stats (JSON round-trip) | `TestFileRef_Stats/JSON_round_trip`, `TestFileRef_Stats/backward_compat`, `TestFileRef_Stats/omitted_when_nil` |
 
+**Manifest Settings Fields (format 1.1.0)**: All covered ✅
+
+| Requirement | Test |
+|-------------|------|
+| A manifest records format 1.1.0, the codec description, the Hive keys, and the default path names | `TestWrite_ManifestRecordsSettings` |
+| A flat layout records `flat` and omits the datasets and snapshots directories | `TestWrite_ManifestRecordsSettings` |
+| A codec description is canonical and omits the Parquet internal compression; JSONL describes nothing | `TestCodec_Describe` |
+
 **Snapshot ID**: All covered ✅
 
 | Rule | Test |
@@ -96,6 +104,20 @@ Gaps are recorded with codes that indicate category and priority:
 | Parent ID resolved O(1) via persistent pointer | `TestDataset_Write_Pointer/latest_pointer_skips_scan` |
 | Raw blob RowCount=1 | `TestDataset_StreamWrite_Commit/success` |
 | A write of no records commits a snapshot without data files on every layout | `TestDataset_Write_EmptyBatch` |
+
+**Settings**: All covered ✅
+
+| Requirement | Test |
+|-------------|------|
+| A writer whose codec, codec description, compressor, checksum, or partition keys differ is rejected with `ErrSettingsMismatch`, which names the setting | `TestWrite_SettingsMismatch/codec`, `TestWrite_SettingsMismatch/codec_description`, `TestWrite_SettingsMismatch/compressor`, `TestWrite_SettingsMismatch/checksum`, `TestWrite_SettingsMismatch/partition_keys` |
+| A writer with matching settings commits | `TestWrite_SettingsMismatch/matching_settings_commit` |
+| The loser of two first commits is checked against the winner and rejected, not retried | `TestWrite_SettingsMismatch/the_losing_first_commit_is_rejected,_not_retried` |
+| A pending first commit's staged copy records the settings | `TestWrite_SettingsOfAPendingFirstCommit/its_staged_copy_records_the_settings` |
+| A pointer naming a snapshot with no manifest, in a dataset with none, is `ErrSnapshotConflict` | `TestWrite_SettingsOfAPendingFirstCommit/without_any_manifest_the_writer_conflicts` |
+| After an abandoned later commit, the newest manifest records the settings, and the next commit adopts the abandoned one | `TestWrite_SettingsOfAPendingFirstCommit/an_abandoned_later_commit_falls_back_to_the_newest_manifest` |
+| Legacy Hive keys are verified by name and order against the first snapshot with files; the next commit records them | `TestWrite_LegacyHiveKeys/keys_are_verified_against_the_partition_paths` |
+| A legacy history without files accepts any keys | `TestWrite_LegacyHiveKeys/a_history_without_files_accepts_any_keys` |
+| A legacy chain broken before a snapshot with files is rejected as unverifiable | `TestWrite_LegacyHiveKeys/a_chain_broken_before_a_snapshot_with_files_is_rejected` |
 
 **StreamWrite**: All covered ✅
 
@@ -298,6 +320,8 @@ All error sentinels covered ✅
 | ErrPartitionPrefixNotSupported | `TestDatasetReader_ListPartitions_Prefix/default_layout_rejected` |
 | ErrManifestInvalid | Multiple validation tests |
 | ErrInvalidArgument | `TestErrInvalidArgument_Classification` |
+| A dataset ID that is not one canonical path segment is `ErrInvalidArgument`; `=` is permitted | `TestNewDataset_DatasetID`, `TestSegment` |
+| ErrSettingsMismatch | `TestWrite_SettingsMismatch` |
 | ErrOptionNotValidFor{Dataset,DatasetReader} | `TestSentinels_Messages`, option applicability tests |
 | ErrCodecConfigured | `TestDataset_StreamWrite_Misuse/with_codec_returns_error` |
 | ErrCodecNotStreamable | `TestDataset_StreamWriteRecords_Rejects/non_streaming_codec` |
@@ -522,6 +546,8 @@ resolution.
 | Volume: the staged copy is retained after a manifest failure and after a pointer failure that the store applied, and is removed after a pointer update that another commit won | `TestAdvance_Staged/manifest_failure_retains_the_staged_copy`, `TestAdvance_Staged/pointer_failure_the_store_applied_retains_the_staged_copy`, `TestAdvance_Staged/lost_race_discards_the_staged_copy` |
 | Dataset: existing-but-stale pointer → in-memory cache wins | `TestDataset_Write_Pointer/stale_but_existing_pointer_uses_in_memory_cache` |
 | Volume: existing-but-stale pointer → in-memory cache wins | `TestVolume_Commit_Pointer/stale_but_existing_pointer_uses_in_memory_cache` |
+| Dataset: only the first commit stages its manifest, and removes the staged copy after the canonical manifest | `TestWrite_StagesOnlyTheFirstCommit`, `TestAdvance_StagesOnlyAcceptedCommits` |
+| A staged copy loads by snapshot ID; a kind that stages nothing reports not found | `TestLoadStaged` |
 
 **Cross-Process and Cold-Start Pointer**: the pointer remains correct
 across process restarts.

@@ -84,10 +84,10 @@ figures in the other sections were measured with Go 1.25.
 
 | Gate | Allocations | Bytes |
 |------|------------:|------:|
-| Write of three records | 56 | 6,208 |
-| Read of three records | 59 | 8,640 |
-| StreamWrite of one kibibyte | 32 | 6,336 |
-| StreamWriteRecords of three records | 61 | 6,400 |
+| Write of three records | 56 | 7,104 |
+| Read of three records | 62 | 10,368 |
+| StreamWrite of one kibibyte | 32 | 7,232 |
+| StreamWriteRecords of three records | 61 | 7,296 |
 | JSONL Decode of three records | 33 | 5,568 |
 | Volume ReadAt within one of ten blocks | 41 | 10,816 |
 | Volume Commit of one block onto a small volume | 136 | 252,032 |
@@ -95,7 +95,10 @@ figures in the other sections were measured with Go 1.25.
 A change that exceeds a ceiling fails the test and must justify the increase
 in its pull request before the ceiling is raised. A change that reduces a
 figure lowers the ceiling to the new figure in the same pull request, so the
-gates never retain unused headroom. A toolchain or dependency upgrade that
+gates never retain unused headroom. Manifest format 1.1.0 records the
+codec description, partition keys, and path names in every manifest, which
+raised the byte ceilings of the four Dataset gates, and one allocation of
+the Read gate, by the size of the larger manifest. A toolchain or dependency upgrade that
 moves the figures resets the ceilings in the upgrade's pull request.
 `task gates` runs each gate three times and reports the ceilings that each
 run calls for, with the byte figure already rounded. A byte figure near a

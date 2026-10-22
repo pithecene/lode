@@ -12,12 +12,15 @@ import (
 
 	"github.com/pithecene/lode/internal/history"
 	"github.com/pithecene/lode/internal/retry"
+	"github.com/pithecene/lode/internal/storepath"
 	"github.com/pithecene/lode/internal/validate"
 )
 
 const (
-	manifestSchemaName    = "lode-manifest"
-	manifestFormatVersion = "1.0.0"
+	manifestSchemaName = "lode-manifest"
+	// manifestFormatVersion 1.1.0 adds codec_description, partition_keys,
+	// and paths; a manifest without paths is 1.0.0 (legacy).
+	manifestFormatVersion = "1.1.0"
 )
 
 // -----------------------------------------------------------------------------
@@ -266,6 +269,10 @@ type dataset struct {
 
 	// history owns the snapshot sequence and its head pointer (internal/history).
 	history history.History[DatasetSnapshotID, Manifest]
+
+	// settled is true once this writer's settings were verified against
+	// the dataset's (checkSettings) or recorded by its own commit.
+	settled bool
 }
 
 // datasetKind is the dataset's snapshot grammar for history: paths come from
@@ -273,13 +280,24 @@ type dataset struct {
 type datasetKind struct {
 	id      DatasetID
 	paths   snapshotPaths
+	staged  stagedPaths
 	store   Store      // checks canonical manifests of tombstoned snapshots
 	expired tombstones // retention's expiries hide snapshots from the scan
 }
 
 func newDatasetKind(id DatasetID, l layout, store Store) datasetKind {
-	return datasetKind{id: id, paths: l, store: store, expired: tombstones{store: store, paths: l, dataset: id}}
+	return datasetKind{id: id, paths: l, staged: l, store: store, expired: tombstones{store: store, paths: l, dataset: id}}
 }
+
+// StagedPath makes a dataset a history.Stager, so that a writer can check
+// its settings against a pending first commit (CONTRACT_CORE §Head Pointer).
+func (k datasetKind) StagedPath(id DatasetSnapshotID) string {
+	return k.staged.stagedManifestPath(k.id, id)
+}
+
+// StagesCommit is true only for a commit that expects no pointer, a
+// dataset's first: every later commit has a manifest to check against.
+func (datasetKind) StagesCommit(expected string) bool { return expected == "" }
 
 func (k datasetKind) SnapshotsPrefix() string { return k.paths.snapshotsPrefix(k.id) }
 func (k datasetKind) ManifestPath(id DatasetSnapshotID) string {
@@ -314,11 +332,23 @@ func (k datasetKind) Decode(r io.Reader) (*Manifest, error) {
 	return &m, nil
 }
 
-// datasetKind is a history.Kind; stated so the methods are visibly used.
-var _ history.Kind[DatasetSnapshotID, Manifest] = datasetKind{}
+// datasetKind is a history.Kind and Stager; stated so the methods are
+// visibly used.
+var (
+	_ history.Kind[DatasetSnapshotID, Manifest] = datasetKind{}
+	_ history.Stager[DatasetSnapshotID]         = datasetKind{}
+)
 
 func toDatasetSnapshot(s *history.Snapshot[DatasetSnapshotID, Manifest]) *DatasetSnapshot {
 	return &DatasetSnapshot{ID: s.ID, Manifest: s.Manifest}
+}
+
+// fromHistory converts a history load result, passing its error through.
+func fromHistory(s *history.Snapshot[DatasetSnapshotID, Manifest], err error) (*DatasetSnapshot, error) {
+	if err != nil {
+		return nil, err
+	}
+	return toDatasetSnapshot(s), nil
 }
 
 // NewDataset creates a dataset with documented defaults.
@@ -336,6 +366,9 @@ func toDatasetSnapshot(s *history.Snapshot[DatasetSnapshotID, Manifest]) *Datase
 func NewDataset(id DatasetID, factory StoreFactory, opts ...Option) (Dataset, error) {
 	if factory == nil {
 		return nil, validate.Argument("store factory is required")
+	}
+	if err := validateDatasetID(id); err != nil {
+		return nil, err
 	}
 
 	cfg := &datasetConfig{
@@ -579,6 +612,17 @@ func (d *dataset) validateComponentsMatch(m *Manifest) error {
 	if m.Compressor != d.compressor.Name() {
 		return fmt.Errorf("lode: compressor mismatch: snapshot uses %q but dataset configured with %q",
 			m.Compressor, d.compressor.Name())
+	}
+	return nil
+}
+
+// validateDatasetID rejects an ID that is not one canonical path segment
+// (storepath.Segment): Lode cleans the paths it builds from an ID, so that
+// "a/../events" would otherwise address "events" (CONTRACT_ERRORS §Dataset
+// IDs).
+func validateDatasetID(id DatasetID) error {
+	if !storepath.Segment(string(id)) {
+		return validate.Argument("dataset ID %q must be one path segment: not empty, \".\" or \"..\", without \"/\" or a backslash, and not beginning with %q", id, storepath.ReservedPrefix)
 	}
 	return nil
 }

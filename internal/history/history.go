@@ -70,14 +70,19 @@ type Kind[ID ~string, M any] interface {
 	NotExpired(ctx context.Context, id ID) (bool, error)
 }
 
-// Stager is implemented by a Kind whose commit merges its parent's manifest
-// (a Volume merges its blocks). Advance persists a staged copy of the
-// manifest at StagedPath before it advances the pointer, so the next commit
-// can load the parent even when its writer terminated before persisting the
-// canonical manifest (CONTRACT_CORE §Head Pointer). StagedPath MUST lie
-// outside SnapshotsPrefix: a staged copy is never listed as a snapshot.
+// Stager is implemented by a Kind whose commits must be loadable while
+// pending: a Volume merges its parent's blocks, and a dataset's writer
+// checks its settings against the head's manifest. For each commit that
+// StagesCommit accepts, Advance persists a staged copy of the manifest at
+// StagedPath before it advances the pointer, so the next commit can load the
+// parent even when its writer terminated before persisting the canonical
+// manifest (CONTRACT_CORE §Head Pointer). StagedPath MUST NOT parse as a
+// manifest of the kind: a staged copy is never listed as a snapshot.
 type Stager[ID ~string] interface {
 	StagedPath(id ID) string
+	// StagesCommit reports whether a commit that expects the given pointer
+	// content stages its manifest.
+	StagesCommit(expected string) bool
 }
 
 // Snapshot pairs a snapshot ID with its decoded manifest.
@@ -587,7 +592,7 @@ func (h *History[ID, M]) Advance(ctx context.Context, expected string, id ID, ma
 	if err != nil {
 		return fmt.Errorf("lode: failed to marshal %s: %w", h.noun, err)
 	}
-	staged := h.stagedPath(id)
+	staged := h.stagedPath(id, expected)
 	if err := h.stage(ctx, staged, data); err != nil {
 		return fmt.Errorf("lode: failed to stage %s: %w", h.noun, err)
 	}
@@ -606,12 +611,28 @@ func (h *History[ID, M]) Advance(ctx context.Context, expected string, id ID, ma
 }
 
 // stagedPath is the staged copy of snapshot id's manifest, "" when the kind
-// stages nothing.
-func (h *History[ID, M]) stagedPath(id ID) string {
-	if h.stager == nil {
+// does not stage a commit that expects the given pointer content.
+func (h *History[ID, M]) stagedPath(id ID, expected string) string {
+	if h.stager == nil || !h.stager.StagesCommit(expected) {
 		return ""
 	}
 	return h.stager.StagedPath(id)
+}
+
+// LoadStaged loads snapshot id from its staged copy. errs.NotFound when the
+// kind stages nothing or no staged copy exists.
+func (h *History[ID, M]) LoadStaged(ctx context.Context, id ID) (*Snapshot[ID, M], error) {
+	if h.stager == nil {
+		return nil, h.errs.NotFound
+	}
+	return h.LoadAt(ctx, id, h.stager.StagedPath(id))
+}
+
+// Newest returns the snapshot with the largest ID that has an unexpired
+// manifest, by scan, without reading or creating the pointer. errs.NoSnapshots
+// when there is none.
+func (h *History[ID, M]) Newest(ctx context.Context) (*Snapshot[ID, M], error) {
+	return h.scan(ctx)
 }
 
 // stage persists the staged copy at staged, when the kind stages.

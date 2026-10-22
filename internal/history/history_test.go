@@ -835,7 +835,14 @@ func TestCommitLoop(t *testing.T) {
 // outside the snapshots prefix.
 type stagingKind struct{ testKind }
 
-func (stagingKind) StagedPath(i id) string { return "c/staged/" + string(i) + ".json" }
+func (stagingKind) StagedPath(i id) string   { return "c/staged/" + string(i) + ".json" }
+func (stagingKind) StagesCommit(string) bool { return true }
+
+// firstStagingKind stages only a commit that expects no pointer, as a
+// dataset's first commit does.
+type firstStagingKind struct{ stagingKind }
+
+func (firstStagingKind) StagesCommit(expected string) bool { return expected == "" }
 
 func newStagingHistory(s Store) History[id, manifest] {
 	return New(s, stagingKind{}, pointer, "test manifest", testErrors)
@@ -911,6 +918,45 @@ func TestAdvance_Staged(t *testing.T) {
 			t.Fatal("staged copy of the snapshot the pointer names was removed")
 		}
 	})
+}
+
+func TestAdvance_StagesOnlyAcceptedCommits(t *testing.T) {
+	for _, tc := range []struct {
+		name, expected string
+		staged         bool
+	}{
+		{"a commit that expects no pointer stages", "", true},
+		{"a commit that expects a pointer does not", "4", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newMemStore()
+			if tc.expected != "" {
+				s.objects[pointer] = []byte(tc.expected)
+			}
+			h := New(s, firstStagingKind{}, pointer, "test manifest", testErrors)
+			if err := h.Advance(t.Context(), tc.expected, "5", &manifest{}, []string{prefix + "5/manifest.json"}); err != nil {
+				t.Fatal(err)
+			}
+			staged := slices.Contains(s.ops, "put "+firstStagingKind{}.StagedPath("5"))
+			if staged != tc.staged {
+				t.Fatalf("staged = %v, want %v; ops = %v", staged, tc.staged, s.ops)
+			}
+		})
+	}
+}
+
+func TestLoadStaged(t *testing.T) {
+	s := newMemStore()
+	putAt(t, s, stagingKind{}.StagedPath("9"), "nine")
+	h := newStagingHistory(s)
+	got, err := h.LoadStaged(t.Context(), "9")
+	if err != nil || got.Manifest.Tag != "nine" {
+		t.Fatalf("got %+v/%v, want the staged copy", got, err)
+	}
+	plain := New(s, testKind{}, pointer, "test manifest", testErrors)
+	if _, err := plain.LoadStaged(t.Context(), "9"); !errors.Is(err, testErrors.NotFound) {
+		t.Fatalf("got %v, want NotFound for a kind that stages nothing", err)
+	}
 }
 
 func TestResolveParent_Staged(t *testing.T) {

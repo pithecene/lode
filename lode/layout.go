@@ -19,6 +19,7 @@ type layout interface {
 	partitionPaths
 	datasetPaths
 	tombstonePaths
+	stagedPaths
 	partitioner() partitioner
 }
 
@@ -60,6 +61,14 @@ type datasetPaths interface {
 	datasetsPrefix() string
 }
 
+// stagedPaths is where a dataset's first commit stages its manifest before
+// it advances the pointer (CONTRACT_CORE §Head Pointer), and the convention
+// a manifest records.
+type stagedPaths interface {
+	stagedManifestPath(dataset DatasetID, snapshot DatasetSnapshotID) string
+	convention() ManifestPaths
+}
+
 // tombstonePaths is where Dataset.Expire records an expired snapshot;
 // tombstonesPrefix lists every tombstone of a dataset.
 type tombstonePaths interface {
@@ -77,6 +86,7 @@ const (
 	segmentsDir   = "segments"
 	latestFile    = "latest"
 	tombstonesDir = "expired"
+	stagedDir     = "staged"
 )
 
 // -----------------------------------------------------------------------------
@@ -345,6 +355,26 @@ func (l *pathLayout) dataFilePath(dataset DatasetID, snapshot DatasetSnapshotID,
 
 func (l *pathLayout) latestPointerPath(dataset DatasetID) string {
 	return join(l.grammar.root, string(dataset), latestFile)
+}
+
+// stagedManifestPath lies beside the dataset's tombstones, where no grammar
+// parses a manifest, so a staged copy is never listed as a snapshot.
+func (l *pathLayout) stagedManifestPath(dataset DatasetID, snapshot DatasetSnapshotID) string {
+	return join(l.grammar.datasetDir(dataset), stagedDir, string(snapshot)+".json")
+}
+
+// convention is the names this layout's paths use. A layout without a
+// datasets directory has the flat paths.
+func (l *pathLayout) convention() ManifestPaths {
+	p := ManifestPaths{
+		Datasets: datasetsDir, Snapshots: snapshotsDir, Partitions: partitionsDir,
+		Segments: segmentsDir, Manifest: manifestFile, Data: dataDir,
+		Expired: tombstonesDir, Staged: stagedDir,
+	}
+	if l.grammar.root == "" {
+		p.Datasets, p.Snapshots, p.Flat = "", "", true
+	}
+	return p
 }
 
 func (l *pathLayout) tombstonePath(dataset DatasetID, snapshot DatasetSnapshotID) string {

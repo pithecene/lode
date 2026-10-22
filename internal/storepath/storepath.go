@@ -38,6 +38,16 @@ func Reserved(key string) bool {
 	return strings.HasPrefix(path.Base(key), ReservedPrefix)
 }
 
+// Segment reports whether s is one canonical path segment that every
+// adapter accepts as a component of a key: not empty, "." or "..", without
+// a slash or backslash, and not beginning with ReservedPrefix. A name built
+// into a key (a dataset ID, a directory name) must be one, so that cleaning
+// the key cannot move it to another name.
+func Segment(s string) bool {
+	return s != "" && s != "." && s != ".." &&
+		!strings.ContainsAny(s, `/\`) && !strings.HasPrefix(s, ReservedPrefix)
+}
+
 // Prefix normalizes a listing prefix. The empty prefix (or one that cleans to
 // the root) lists everything. A trailing slash is preserved: "a/" and "a" are
 // different string prefixes — only the former excludes "a2/x".

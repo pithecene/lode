@@ -49,6 +49,13 @@ The following rules also apply:
 - **Hive-style layouts** MUST place manifests under partition prefixes when
   partitioning is in use, so that a listing filtered by partition cannot
   omit committed segments.
+- Every layout MUST place a dataset's staged first manifest
+  (CONTRACT_CORE §Head Pointer) at `<dataset dir>/staged/<snapshot_id>.json`,
+  beside the tombstones in `<dataset dir>/expired/`, where no layout parses
+  a manifest or a data object, so that no listing reports it as a snapshot
+  and retention never treats it as data. The dataset directory is
+  `datasets/<id>` in the default and Hive layouts and `<id>` in the flat
+  layout.
 
 ---
 
@@ -58,7 +65,8 @@ The following rules also apply:
   values, normalization).
 - The layout determines whether and how those semantics are encoded in
   paths.
-- The partitioner MUST be recorded in manifests by name.
+- The partitioner MUST be recorded in manifests by name, and a Hive
+  partitioner's keys, in order, as `partition_keys`.
 - Layouts that do not support partitions MUST accept any partitioner that
   is **semantically inert** (not only one named `"noop"`), and MUST reject
   partitioners that emit non-empty partition keys.
@@ -78,7 +86,12 @@ The following rules also apply:
 
 - The codec defines the serialization format of structured data.
 - Configuring a codec is optional.
-- When a codec is configured, it MUST be recorded in manifests by name.
+- When a codec is configured, it MUST be recorded in manifests by name and
+  by description (`Codec.Describe`), a deterministic, canonical form of its
+  configuration: equal configurations MUST yield equal descriptions. A
+  description omits configuration that does not affect which records a file
+  holds or how they decode, such as the internal compression of a Parquet
+  file.
 
 ---
 

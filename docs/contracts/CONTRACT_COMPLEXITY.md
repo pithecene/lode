@@ -81,6 +81,15 @@ Parent resolution:
 
 Parent resolution MUST NOT use List when a valid pointer exists.
 
+Exceptions, each incurred once (CONTRACT_WRITE_API §Settings):
+- A dataset's first commit adds 1 Put and 1 Delete for its staged manifest.
+- A writer's settings check, before its first commit, costs 1 Get of the
+  manifest that the pointer names, 2 Gets while a first commit is pending,
+  or the scan fallback when neither manifest exists.
+- The first write to a Hive dataset whose manifests predate format version
+  1.1.0 adds 1 Get per snapshot followed from the head to the first
+  snapshot with files.
+
 ---
 
 ## Dataset — Read Operations

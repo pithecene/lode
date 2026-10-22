@@ -15,6 +15,8 @@ type partitioner interface {
 	// the backing array of records, which the caller must not modify.
 	group(records []any) (map[string][]any, error)
 	isNoop() bool
+	// keys returns the partition keys in order; nil without partitions.
+	keys() []string
 }
 
 // -----------------------------------------------------------------------------
@@ -23,11 +25,11 @@ type partitioner interface {
 
 // hivePartitioner extracts partition keys from record fields.
 type hivePartitioner struct {
-	keys []string
+	keyNames []string
 }
 
 func newHivePartitioner(keys ...string) partitioner {
-	return &hivePartitioner{keys: keys}
+	return &hivePartitioner{keyNames: keys}
 }
 
 func (h *hivePartitioner) name() string {
@@ -52,8 +54,8 @@ func (h *hivePartitioner) partitionKey(record any) (string, error) {
 		return "", fmt.Errorf("hive partitioner: record must be map[string]any, got %T", record)
 	}
 
-	parts := make([]string, 0, len(h.keys))
-	for _, key := range h.keys {
+	parts := make([]string, 0, len(h.keyNames))
+	for _, key := range h.keyNames {
 		val, exists := m[key]
 		if !exists {
 			return "", fmt.Errorf("hive partitioner: missing key %q", key)
@@ -67,6 +69,8 @@ func (h *hivePartitioner) partitionKey(record any) (string, error) {
 func (h *hivePartitioner) isNoop() bool {
 	return false
 }
+
+func (h *hivePartitioner) keys() []string { return h.keyNames }
 
 func escapeValue(v any) string {
 	var s string
@@ -109,3 +113,5 @@ func (n *noopPartitioner) group(records []any) (map[string][]any, error) {
 func (n *noopPartitioner) isNoop() bool {
 	return true
 }
+
+func (n *noopPartitioner) keys() []string { return nil }

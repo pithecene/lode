@@ -279,6 +279,7 @@ func TestSweep_Settle(t *testing.T) {
 				lister.hidden = append(lister.hidden, k)
 			}
 		}
+		lister.deleted = nil // the first commit removed its staged manifest
 
 		report, err := ds.Sweep(t.Context(), SweepRequest{Grace: sweepGrace})
 		if err != nil {
@@ -459,6 +460,7 @@ func TestSweep_Reclaim(t *testing.T) {
 		lister := &listInjector{Store: mem, extra: listed}
 		ds := newDefaultRetention(t, lister)
 		writeRecord(t, ds, 1)
+		lister.deleted = nil // the first commit removed its staged manifest
 
 		report, err := ds.Sweep(t.Context(), SweepRequest{Grace: sweepGrace})
 		if err != nil {

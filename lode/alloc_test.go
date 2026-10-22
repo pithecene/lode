@@ -17,10 +17,10 @@ import (
 // measured figure rounded up to the next 64 bytes, because map growth in the
 // in-memory store varies it by a few bytes.
 var allocGates = []testutil.AllocGate{
-	{Name: "Write of three records", Allocs: 56, Bytes: 6208, Setup: gateWrite},
-	{Name: "Read of three records", Allocs: 59, Bytes: 8640, Setup: gateRead},
-	{Name: "StreamWrite of one kibibyte", Allocs: 32, Bytes: 6336, Setup: gateStreamWrite},
-	{Name: "StreamWriteRecords of three records", Allocs: 61, Bytes: 6400, Setup: gateStreamWriteRecords},
+	{Name: "Write of three records", Allocs: 56, Bytes: 7104, Setup: gateWrite},
+	{Name: "Read of three records", Allocs: 62, Bytes: 10368, Setup: gateRead},
+	{Name: "StreamWrite of one kibibyte", Allocs: 32, Bytes: 7232, Setup: gateStreamWrite},
+	{Name: "StreamWriteRecords of three records", Allocs: 61, Bytes: 7296, Setup: gateStreamWriteRecords},
 	{Name: "JSONL Decode of three records", Allocs: 33, Bytes: 5568, Setup: gateDecode},
 }
 

@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- **Every writer must share the dataset's settings**: before its first commit, a writer compares its codec and the codec's description, compressor, checksum, partitioner and Hive keys, and path names with those the dataset's head manifest records, and a writer whose settings differ is rejected with the new `ErrSettingsMismatch`. A dataset whose manifests predate this release has its Hive keys verified against its partition paths on the first write.
+- **`Codec` gains `Describe`**: a custom codec returns its configuration in a canonical form, or `""` when it has none.
+- **A dataset ID must be one path segment**: an ID that is empty, `.` or `..`, contains `/` or a backslash, or begins with `.lode-tmp-` is rejected with `ErrInvalidArgument`. `=` remains permitted.
+
+### Added
+
+- Manifest format 1.1.0 records `codec_description`, `partition_keys`, and `paths`, so that every setting a writer must share is persisted.
+- A dataset's first commit stages its manifest at `<dataset dir>/staged/<snapshot_id>.json` before it advances the pointer and removes it afterward, so that a writer can check its settings against the commit while it is pending.
+
 ---
 
 ## [0.11.0] - 2026-10-22

@@ -68,6 +68,9 @@ func (d *dataset) commit(ctx context.Context, p *pendingSnapshot) (*DatasetSnaps
 		if err != nil {
 			return err
 		}
+		if err := d.checkSettings(ctx, parent); err != nil {
+			return err
+		}
 		manifest = d.manifest(p, parent)
 		return d.history.Advance(ctx, expected, p.id, manifest, d.manifestPaths(p.id, p.partitions))
 	})
@@ -80,6 +83,7 @@ func (d *dataset) commit(ctx context.Context, p *pendingSnapshot) (*DatasetSnaps
 		}
 		return nil, err
 	}
+	d.settled = true // the dataset's head now records this writer's settings
 	return &DatasetSnapshot{ID: p.id, Manifest: manifest}, nil
 }
 
@@ -100,9 +104,14 @@ func (d *dataset) manifest(p *pendingSnapshot, parent DatasetSnapshotID) *Manife
 		Codec:            p.codec,
 		Compressor:       d.compressor.Name(),
 		Partitioner:      d.layout.partitioner().name(),
+		PartitionKeys:    d.layout.partitioner().keys(),
 	}
+	m.Paths = d.layout.convention()
 	if d.checksum != nil {
 		m.ChecksumAlgorithm = d.checksum.Name()
+	}
+	if d.codec != nil {
+		m.CodecDescription = d.codec.Describe()
 	}
 	return m
 }
