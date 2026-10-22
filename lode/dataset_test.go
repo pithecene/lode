@@ -3428,3 +3428,28 @@ func TestDataset_Write_RetryOptions(t *testing.T) {
 		}
 	})
 }
+
+// TestDataset_Write_EmptyBatch verifies that a write of no records commits a
+// snapshot with no data file on every layout: the partitioner yields no
+// group for an empty batch.
+func TestDataset_Write_EmptyBatch(t *testing.T) {
+	hive, err := NewHiveLayout("day")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, l := range map[string]layout{"default": NewDefaultLayout(), "hive": hive, "flat": NewFlatLayout()} {
+		t.Run(name, func(t *testing.T) {
+			ds, err := NewDataset("ds", NewMemoryFactory(), WithCodec(NewJSONLCodec()), WithLayout(l))
+			if err != nil {
+				t.Fatal(err)
+			}
+			snap, err := ds.Write(t.Context(), []any{}, Metadata{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(snap.Manifest.Files) != 0 || snap.Manifest.RowCount != 0 {
+				t.Errorf("empty write: %d files and %d rows, want none", len(snap.Manifest.Files), snap.Manifest.RowCount)
+			}
+		})
+	}
+}
