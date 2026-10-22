@@ -32,21 +32,32 @@ const AllocGateCalls = 1 + (gateRuns + 1) + gateRuns
 // runs once before it is measured, so state built lazily on first use, such
 // as a known head, is not counted. The figures are deterministic for a given
 // toolchain, but the race detector adds allocations of its own, so callers
-// exclude race builds.
+// exclude race builds. Each gate logs the ceilings its measured figures
+// call for, so `task gates` reports them without an edit to the gate table.
 func RunAllocGates(t *testing.T, gates []AllocGate) {
 	t.Helper()
 	for _, g := range gates {
 		t.Run(g.Name, func(t *testing.T) {
 			op := g.Setup(t)
 			op()
-			if got := testing.AllocsPerRun(gateRuns, op); got > g.Allocs {
-				t.Errorf("%s: %.0f allocations per run, ceiling %.0f", g.Name, got, g.Allocs)
+			allocs := testing.AllocsPerRun(gateRuns, op)
+			bytes := bytesPerRun(op)
+			t.Logf("measured ceilings: Allocs: %.0f, Bytes: %d", allocs, byteCeiling(bytes))
+			if allocs > g.Allocs {
+				t.Errorf("%s: %.0f allocations per run, ceiling %.0f", g.Name, allocs, g.Allocs)
 			}
-			if got := bytesPerRun(op); got > g.Bytes {
-				t.Errorf("%s: %d bytes allocated per run, ceiling %d", g.Name, got, g.Bytes)
+			if bytes > g.Bytes {
+				t.Errorf("%s: %d bytes allocated per run, ceiling %d", g.Name, bytes, g.Bytes)
 			}
 		})
 	}
+}
+
+// byteCeiling rounds a measured byte figure up to the next 64 bytes, the
+// margin docs/BENCHMARKS.md §Allocation Gates allows for map growth in the
+// in-memory store.
+func byteCeiling(measured uint64) uint64 {
+	return (measured + 63) / 64 * 64
 }
 
 // bytesPerRun returns the bytes that op allocates per run, averaged over
