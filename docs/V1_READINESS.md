@@ -32,7 +32,7 @@ Based on the full-history audit of the production dataset
   production.
 - **Not yet met, time-gated:** API and sentinel freeze windows reopened by
   v0.10.0 and reopened again by the next release, which moves Volume out of
-  `lode` (§1); `V1_API_DECISIONS.md` D1–D8, D10 (except D10d), and D11
+  `lode` (§1); `V1_API_DECISIONS.md` D1–D8, D10a–D10c, D10f, and D11
   open.
 - **Not yet met, evidence missing:** native AWS S3 (§6), steady-state snapshot
   reads (§3), checksum-backed corruption checks (no production file carries a
@@ -151,7 +151,7 @@ partitions, one dataset on R2.
 > **Evidence:** D1–D8 all Open. D9 accepted and shipped: Volume is experimental in package `lode/volume`, and `PUBLIC_API.md` / `CONTRACT_VOLUME.md` say so. Dogfooding now bears on D8: `private-A` reads the on-disk path grammar directly (audit F8), so the path-compatibility policy has a real consumer.
 > Date: 2026-10-20 | Observer: @pithecene | Project: lode, private-A
 >
-> **Evidence:** D10a–D10c, D10e, D10f, and D11 Open. D10d accepted and shipped: every `Store` implements `CompareAndSwap`. D10 follows from the history fork investigated in #208 (audit F3); D11 follows from Quarry's call sites (three constructions of one dataset, a second store value for sidecar files, and untyped records).
+> **Evidence:** D10a–D10c, D10f, and D11 Open. D10d accepted and shipped: every `Store` implements `CompareAndSwap`. D10e superseded by #260: a Volume commit adopts an abandoned one from its staged manifest. D10 follows from the history fork investigated in #208 (audit F3); D11 follows from Quarry's call sites (three constructions of one dataset, a second store value for sidecar files, and untyped records).
 > Date: 2026-10-22 | Observer: @pithecene | Project: lode, Quarry
 > Summary: Not met; D8 should be decided with the consumer's raw-layout reads in view.
 > Issue: —
