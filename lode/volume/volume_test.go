@@ -1935,10 +1935,12 @@ func TestVolume_Commit_ColdStart(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, err = volA.Commit(t.Context(), []BlockRef{block1}, lode.Metadata{})
+		snap1, err := volA.Commit(t.Context(), []BlockRef{block1}, lode.Metadata{})
 		if err != nil {
 			t.Fatal(err)
 		}
+		// The scan below must find snap2 as the largest ID.
+		testutil.AwaitClockPast(t, string(snap1.ID))
 
 		block2, err := volA.StageWriteAt(t.Context(), 100, bytes.NewReader([]byte("block-2")))
 		if err != nil {

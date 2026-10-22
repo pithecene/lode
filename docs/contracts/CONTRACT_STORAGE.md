@@ -221,8 +221,9 @@ type ConditionalWriter interface {
 
 ### Implementation Notes
 
-**Filesystem adapter:**
-- Acquire `flock` on a companion `.lock` file adjacent to the target path.
+**Filesystem adapter (Unix and Windows):**
+- Acquire an exclusive lock on a companion `.lock` file adjacent to the
+  target path: `flock` on Unix, `LockFileEx` on Windows.
 - While holding the lock, read the current content, compare it, and write
   the replacement.
 - Release the lock.
