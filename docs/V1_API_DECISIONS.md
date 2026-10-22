@@ -378,7 +378,8 @@ that names a snapshot without a manifest. The investigation of
 (`dogfood_audit_2026-10.md` F3) identified six further questions that the
 contracts either leave open or answer inconsistently. Each is decided
 separately below. Only D10d changes the commit protocol: it removes the
-pointer replacement by `Delete` and `Put`.
+implicit pointer replacement by `Delete` and `Put`, which remains only in
+`lode.SingleProcess`, a wrapper the caller selects explicitly.
 
 ### D10a — A listing cursor is not a commit-order cursor
 
@@ -484,7 +485,8 @@ data is written, whereas a Volume's block paths do not
 **Current.** When the store does not implement `ConditionalWriter`, a
 commit replaces the pointer with Delete+Put, and concurrent writers can
 fork the history (CONTRACT_WRITE_API §Concurrency). Among the bundled
-adapters, only the filesystem adapter on non-Unix platforms lacks CAS.
+adapters, only the filesystem adapter on platforms without a file lock,
+such as Plan 9, lacks CAS; it supports CAS on Unix and on Windows.
 
 **Problem.** AGENTS.md prohibits silent fallbacks, and the fallback is the
 only remaining path by which Lode itself can fork a history.
