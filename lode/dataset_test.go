@@ -3009,10 +3009,12 @@ func TestDataset_Write_ColdStart(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, err = dsA.Write(t.Context(), R(D{"i": 1}), Metadata{})
+		snap1, err := dsA.Write(t.Context(), R(D{"i": 1}), Metadata{})
 		if err != nil {
 			t.Fatal(err)
 		}
+		// The scan below must find snap2 as the largest ID.
+		testutil.AwaitClockPast(t, string(snap1.ID))
 		snap2, err := dsA.Write(t.Context(), R(D{"i": 2}), Metadata{})
 		if err != nil {
 			t.Fatal(err)
