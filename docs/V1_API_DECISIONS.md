@@ -393,12 +393,14 @@ snapshot with a larger ID. Nothing in the contracts warns against this
 pattern.
 
 **Options.**
-1. State in CONTRACT_READ_API that `StartAfter` is a position in ID order,
-   not in commit order, and document the supported way to read new
-   snapshots: follow `ParentSnapshotID` from `Latest` back to the last
-   snapshot already read (one `Get` per new snapshot, exact, no new API).
-   An expired or abandoned parent ends the walk (CONTRACT_RETENTION
-   §Lineage, CONTRACT_CORE §Head Pointer).
+1. State in CONTRACT_READ_API that `StartAfter` is a position in
+   `(Partition, ID)` order, which within one partition is ID order, not
+   commit order. Document the supported way to read new snapshots: follow
+   `ParentSnapshotID` from `Latest` back to the last snapshot already read
+   (one `Get` per new snapshot, no new API). The traversal is exact while
+   the lineage is unbroken; an expired or abandoned parent ends it before
+   the last snapshot read (CONTRACT_RETENTION §Lineage, CONTRACT_CORE §Head
+   Pointer), and the reader must then reconcile through a full listing.
 2. Assign each snapshot an ID at commit time that exceeds its parent's ID,
    so that ID order equals commit order along the history. This changes the
    meaning of the ID, which retention reads as the write's start instant
@@ -419,18 +421,24 @@ snapshots only through partition manifests. CONTRACT_LAYOUT requires Hive
 layouts to place manifests under partition prefixes so that a
 partition-filtered listing cannot miss a committed snapshot.
 
-**Problem.** A writer that terminates between the canonical manifest and
-the last partition manifest leaves a snapshot that `Latest` returns but
-that listing never shows, which contradicts CONTRACT_LAYOUT. The audit's
-open question F6 (six production snapshots that `ListManifests` does not
-return) is consistent with this, though not yet confirmed.
+**Problem.** A writer that terminates after the canonical manifest leaves
+the partition index incomplete, which contradicts CONTRACT_LAYOUT. If it
+terminates before the first partition manifest, the snapshot is
+*canonical-only*: `Latest` returns it, but no listing shows it. If it
+terminates later, the snapshot is missing only from the listings of the
+partitions whose manifests were not persisted. The audit's open question
+F6 (six production snapshots that `ListManifests` does not return) is
+consistent with the canonical-only case, though not yet confirmed.
 
 **Options.**
 1. Define the canonical manifest as the commit and partition manifests as
    an index. An unfiltered listing, which already enumerates canonical
-   manifests and currently discards them, reports a snapshot that has no
-   partition manifest under the empty partition. A partition-filtered
-   listing documents that it reflects the index.
+   manifests and currently discards them, reports a canonical-only snapshot
+   under the empty partition. A repair, for example as part of `Sweep`,
+   persists any missing partition manifest from the canonical manifest,
+   whose `Files` name every partition; this creates objects and modifies
+   none. Until the repair runs, a partition-filtered listing documents that
+   it reflects the index.
 2. Persist the partition manifests before the pointer and the canonical
    manifest, so that the index is complete whenever the commit is. Listing
    would then report partition manifests of uncommitted snapshots unless it
@@ -446,11 +454,14 @@ they previously omitted.
 
 ### D10c — Dataset and Volume retries differ in snapshot ID
 
-**Current.** A Dataset retry keeps its snapshot ID; a Volume retry draws a
-new one. CONTRACT_VOLUME describes its CAS mechanism as identical to the
-Dataset's.
+**Current.** A Dataset retry keeps its snapshot ID (CONTRACT_WRITE_API
+§Optimistic Concurrency (CAS)); a Volume retry draws a new one (CONTRACT_VOLUME
+§Optimistic Concurrency (CAS)). Both are documented, but CONTRACT_VOLUME also
+describes its mechanism as identical to the Dataset's.
 
-**Problem.** The difference is undocumented, so it reads as an accident.
+**Problem.** Neither contract states why the retries differ, so the
+asymmetry reads as an accident beside the claim that the mechanisms are
+identical.
 
 **Proposed.** Retain both behaviors and state the reason in the contracts:
 a Dataset's data paths contain the snapshot ID, so the ID is fixed once
@@ -494,8 +505,10 @@ Semantics). No API performs the repair.
 
 **Options.**
 1. Document the manual procedure in `PUBLIC_API.md`: write the ID of the
-   newest snapshot that has a manifest to `volumes/<id>/latest`, then call
-   `Latest`.
+   previous head to `volumes/<id>/latest`, then call `Latest`. The previous
+   head is the snapshot with a manifest that no other snapshot names as its
+   parent; in a linear history exactly one exists. The newest ID is not a
+   safe choice, because IDs record when a write began, not commit order.
 2. Add a repair operation to `lode/volume`, which is experimental (D9) and
    can therefore change without a compatibility cost.
 
