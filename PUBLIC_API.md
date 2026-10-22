@@ -634,14 +634,14 @@ writes. Whether CAS is available depends on the storage adapter:
 |---------|-----|--------------------|--------------------------|
 | **Memory** | ✅ | Safe without coordination | `ErrSnapshotConflict`; retry after `Latest()` |
 | **S3** | ✅ | Safe without coordination | `ErrSnapshotConflict`; retry after `Latest()` |
-| **Filesystem (Unix)** | ✅ | Safe without coordination | `ErrSnapshotConflict`; retry after `Latest()` |
-| **Filesystem (other platforms)** | ❌ | A single writer only | Undefined; serialize writes externally |
+| **Filesystem (Unix and Windows)** | ✅ | Safe without coordination | `ErrSnapshotConflict`; retry after `Latest()` |
+| **Filesystem (other platforms, such as Plan 9 and WebAssembly)** | ❌ | A single writer only | Undefined; serialize writes externally |
 | **Custom adapter** | Depends on the adapter | Implement `ConditionalWriter` for CAS | Uses Delete+Put without it |
 
 CAS is always enabled when the adapter supports it, and no configuration
 is required.
 
-#### With CAS (Memory, S3, and the Filesystem on Unix)
+#### With CAS (Memory, S3, and the Filesystem on Unix and Windows)
 
 Several **separate processes** (or separate `Dataset` or `Volume` values)
 MAY write to the same dataset or volume safely without external

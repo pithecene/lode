@@ -28,7 +28,10 @@ revision, which the next CI benchmark run will provide.
 | | CI (v0.8.0) | 177,600 ± 4% | 99,702 ± 0% | 680 |
 | `BenchmarkDataset_SequentialWrites_StoreCallCount` | Workstation | 187,400 ± 1% | 104,960 ± 0% | 773 |
 | | CI (v0.8.0) | 188,000 ± 3% | 101,881 ± 0% | 687 |
-| `BenchmarkDataset_Read` | Workstation | 16,170 ± 3% | 69,980 ± 0% | 70 |
+| `BenchmarkDataset_Read` | Workstation | 9,826 ± 3% | 8,573 ± 0% | 70 |
+| `BenchmarkJSONLCodec_Decode/records=3` | Workstation | 3,728 ± 3% | 6,129 ± 0% | 70 |
+| `BenchmarkJSONLCodec_Decode/records=1000` | Workstation | 1,145,000 ± 1% | 671,744 ± 0% | 23,000 |
+| `BenchmarkJSONLCodec_Decode/records=100000` | Workstation | 120,900,000 ± 3% | 72,142,438 ± 0% | 2,300,000 |
 | `BenchmarkDataset_StreamWrite` | Workstation | 13,230 ± 3% | 6,584 ± 0% | 33 |
 | `BenchmarkVolume_ReadAt` | Workstation | 19,710 ± 2% | 9,056 ± 0% | 44 |
 | `BenchmarkParquetCodec_Encode` | Workstation | 197,500 ± 6% | 530,842 ± 1% | 514 |
@@ -48,22 +51,79 @@ each revision; allocation counts are deterministic. The first cut of that restru
 found by this comparison and fixed before merge, which is why the comparison
 is part of the release checklist.
 
+The `Read` and `JSONLCodec_Decode` rows were measured after the JSON Lines
+decoder stopped allocating a 64 KiB buffer for every file it decodes
+(`-count=8`). A read of a three-record file then allocates 88 percent fewer
+bytes and takes 42 percent less time; decoding files of one thousand and one
+hundred thousand records takes the same time as before, within noise.
+
+The buffer grows by doubling from four kibibytes to the longest line, so a
+file whose lines are longer than about thirty-two kibibytes allocates the
+intermediate buffers that the former fixed buffer avoided.
+`BenchmarkJSONLCodec_DecodeLineLength` measures that cost on files of ten
+records: with lines of one kibibyte the decoder allocates 76 percent fewer
+bytes and takes 26 percent less time than before; with lines of sixteen
+kibibytes it is unchanged; with lines of forty-eight and two hundred
+fifty-six kibibytes it allocates 11 and 2 percent more bytes, in the same
+time. Avoiding both costs would require a buffer pool shared across decodes,
+which would be package-level state.
+
+## Allocation Gates
+
+`TestAllocationGates` in `lode/alloc_test.go` and `lode/volume/alloc_test.go`
+holds each hot path of the Dataset and Volume APIs to a ceiling on the
+allocations per operation and on the bytes they allocate, measured on the
+in-memory store with the head known. Both figures are deterministic for a
+given toolchain, so the gates run in every `go test` without the race
+detector, which adds allocations of its own. The byte ceiling catches a
+single oversized allocation, such as a fixed buffer, which the allocation
+count does not; each byte ceiling is the measured figure rounded up to the
+next 64 bytes, because map growth in the in-memory store varies it by a few
+bytes.
+
+| Gate | Allocations | Bytes |
+|------|------------:|------:|
+| Write of three records | 61 | 6,208 |
+| Read of three records | 70 | 8,512 |
+| StreamWrite of one kibibyte | 33 | 6,784 |
+| StreamWriteRecords of three records | 63 | 6,208 |
+| JSONL Decode of three records | 35 | 5,568 |
+| Volume ReadAt within one of ten blocks | 44 | 8,960 |
+| Volume Commit of one block onto a small volume | 128 | 254,336 |
+
+A change that exceeds a ceiling fails the test and must justify the increase
+in its pull request before the ceiling is raised. A change that reduces a
+figure lowers the ceiling to the new figure in the same pull request, so the
+gates never retain unused headroom. A toolchain or dependency upgrade that
+moves the figures resets the ceilings in the upgrade's pull request.
+
 ### S3 (Docker-local)
 
 | Benchmark | Machine | ns/op | B/op | allocs/op |
 |-----------|---------|------:|-----:|----------:|
-| `BenchmarkS3_WriteRoundTrip/LocalStack` | Workstation | 11,190,000 ± 6% | 518,656 ± 2% | 4,904 |
+| `BenchmarkS3_WriteRoundTrip/LocalStack` | Workstation | 10,190,000 ± 5% | 471,757 ± 1% | 4,261 |
 | | CI (v0.10.0) | 8,247,000 ± 3% | 355,202 ± 1% | 2,965 |
-| `BenchmarkS3_WriteRoundTrip/RustFS` | Workstation | 34,460,000 ± 6% | 521,318 ± 1% | 4,758 |
+| `BenchmarkS3_WriteRoundTrip/RustFS` | Workstation | 33,280,000 ± 5% | 469,504 ± 1% | 4,157 |
 | | CI | Not yet measured | | |
 
-The workstation figures are medians of ten runs on an AMD Ryzen 9 5900XT,
-measured when RustFS replaced MinIO, which no longer publishes its server
-image. The CI figure for LocalStack is the v0.10.0 baseline, and RustFS has
-no CI figure yet. Since that baseline, a LocalStack round trip has grown
-from 2,973 to 4,904 allocations; replacing the backend does not alter the
-S3 adapter, so the growth predates this baseline and is not attributable to
-RustFS.
+The workstation figures are medians of ten runs on an AMD Ryzen 9 5900XT.
+The CI figure for LocalStack is an older baseline, and RustFS has no CI
+figure yet.
+
+Each iteration opens a new dataset, so the benchmark measures a dataset's
+first commit and one read: seven S3 requests (a pointer Get that finds no
+pointer, a List, the data and manifest writes, the pointer write, and two
+Gets for the read). Nearly all allocations occur in the AWS SDK, at about six
+hundred per request, so the allocation count follows the request count.
+It rose from 2,970 in February to 4,904 when the persistent `latest`
+pointer (#127) and CAS pointer updates (#135) added requests to this path;
+`CompareAndSwap` then read the pointer before every conditional write. The
+S3 adapter now omits that read when it creates the pointer and when it
+replaces a pointer that it last replaced itself. This change reduced the
+benchmark from eight requests to seven, which lowered its allocations by
+13 percent and, on LocalStack, its duration by 9 percent. Each commit after
+the second through the same store issues three requests instead of four;
+the benchmark does not measure such commits.
 
 > **Note:** S3 numbers reflect Docker-local round-trip latency, not production S3.
 > The `SequentialWrites` benchmarks inject 1 ms of latency on `List` and `Get`
@@ -88,6 +148,8 @@ RustFS.
 | `BenchmarkVolume_ReadAt` | `lode/volume/bench_test.go` | In-memory (10 committed blocks) | Done |
 | `BenchmarkParquetCodec_Encode` | `lode/bench_test.go` | In-memory | Done |
 | `BenchmarkParquetCodec_Decode` | `lode/bench_test.go` | In-memory | Done |
+| `BenchmarkJSONLCodec_Decode` | `lode/bench_test.go` | In-memory (three, one thousand, and one hundred thousand records) | Done |
+| `BenchmarkJSONLCodec_DecodeLineLength` | `lode/bench_test.go` | In-memory (lines of 1, 16, 48, and 256 KiB) | Done |
 | `BenchmarkFindCoveringBlocks` | `lode/volume/volume_test.go` | In-memory | Done |
 | `BenchmarkMergeBlocks` | `lode/volume/volume_test.go` | In-memory | Done |
 

@@ -202,6 +202,22 @@ Gaps are recorded with codes that indicate category and priority:
 | Beyond EOF | `TestStore_ReadRange/beyond_EOF`, `TestStore_ReadRange/offset_beyond_EOF` |
 | Exact bounds; allocation bounded by available bytes | `TestStore_ReadRange_Bounds/exact_bounds`, `TestStore_ReadRange_Bounds/exact_bounds` |
 
+**CompareAndSwap (S3)**: All covered ✅
+
+| Requirement | Tests |
+|-------------|-------|
+| `CompareAndSwap` creates, replaces, and refuses as the semantics table requires | `TestStore_CompareAndSwap` |
+| Creating the object issues no read | `TestStore_CompareAndSwap_Requests/create_writes_without_reading` |
+| Replacing a version that the adapter last wrote by replacement issues no read | `TestStore_CompareAndSwap_Requests/replacing_its_own_version_writes_without_reading` |
+| A creation leaves no record, so objects that are created once, such as tombstones, do not accumulate records | `TestStore_CompareAndSwap_Requests/a_creation_leaves_no_record` |
+| The record holds a bounded number of versions, and `Delete` discards the record of the deleted object | `TestStore_CompareAndSwap_Requests/the_record_is_bounded_and_forgets_deleted_keys` |
+| A record identifies its content by digest and does not retain the content | `TestStore_CompareAndSwap_Requests/a_record_keeps_a_digest,_not_the_content` |
+| A recorded version that another writer deleted is read and yields `ErrSnapshotConflict` | `TestStore_CompareAndSwap_Requests/a_version_deleted_by_another_writer_is_read_and_conflicts` |
+| An object deleted between the read and the conditional write yields `ErrSnapshotConflict` | `TestStore_CompareAndSwap_Requests/an_object_deleted_between_the_read_and_the_write_conflicts` |
+| A version that another writer replaced is read and yields `ErrSnapshotConflict` | `TestStore_CompareAndSwap_Requests/a_version_replaced_by_another_writer_is_read_and_conflicts` |
+| An existing empty object satisfies an empty `expected`; any other existing object refuses it | `TestStore_CompareAndSwap_Requests/an_existing_empty_object_satisfies_an_empty_expectation`, `TestStore_CompareAndSwap_Requests/an_existing_object_refuses_an_empty_expectation` |
+| After a lost response, the adapter reads the object instead of assuming its version | `TestStore_CompareAndSwap_Requests/a_lost_response_forgets_the_version` |
+
 **ReaderAt**: All covered ✅
 
 | Requirement | Tests |
@@ -532,6 +548,14 @@ listing.
 | CX-6 | `Volume.Snapshots` sort checks | Fixed: sort at load time | `TestVolume_Snapshots/load_snapshot_sorts_blocks_at_load_time` |
 | CX-7 | `fsStore.List` Walk vs WalkDir | Fixed: `filepath.WalkDir` | Existing `fsStore.List` tests |
 
+### Allocation Gates
+
+| Requirement | Test |
+|-------------|------|
+| Each Dataset hot path (`Write`, `Read`, `StreamWrite`, `StreamWriteRecords`, and JSON Lines decoding) stays within its ceilings on allocations and bytes per operation | `TestAllocationGates` (`lode`) |
+| Each Volume hot path (`ReadAt` and `Commit`) stays within its ceilings on allocations and bytes per operation | `TestAllocationGates` (`lode/volume`) |
+| The JSON Lines decoder grows its buffer to the longest line, decodes a line far longer than its initial buffer, and refuses a line beyond its limit | `TestJSONLCodec_Decode_LineLength` |
+
 ### Documented Inherent Costs (not violations)
 
 | Operation | Cost | Reason |
@@ -587,6 +611,23 @@ remove what it created on the store.
 
 After the workload stops, a clean handle makes one settling commit, which
 `Latest` must then return.
+
+Every configuration also checks that the run released its resources. The
+limits on retained heap allow a fixed one mebibyte and sixty-four bytes per
+acknowledged commit, more than ten times the figures measured when they
+were set; `TestMemoryBaseline_DetectsLeaks` confirms that both checks fail
+on a leaked goroutine, including one masked by a goroutine of the baseline
+that exits meanwhile or one beside an idle HTTP/1.1 or HTTP/2 connection,
+and on retained heap. A response body left open on an S3 backend holds a
+connection too, but it also retains memory with every request, which the
+heap check reports. With `-chaos.memprofile=<dir>`
+(`MEMPROFILE` for `task chaos`), each configuration also writes a heap
+profile to the directory after its run.
+
+| Invariant | Check |
+|-----------|-------|
+| Once the run ends and its backend is released, every goroutine started during the run has exited within five seconds, compared by goroutine identity, except, on S3 backends, those of the HTTP connections that the AWS SDK keeps open for reuse | `goroutines-released` |
+| On a store that keeps no data in memory, the heap that the finished run retains stays within the limits | `heap-retained` |
 
 With `-chaos.faults=mild` or `heavy`, every handle reaches the store
 through a faulty store that delays calls, fails them before or after they

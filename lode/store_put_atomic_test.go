@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -83,6 +84,11 @@ func assertPutAllOrNothing(t *testing.T, store Store) {
 func TestFSStore_Put_FailureLeavesNothingVisible(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("directory permissions do not bind root")
+	}
+	if runtime.GOOS == "windows" {
+		// Windows ignores a directory's read-only mode when deleting the files
+		// in it, so the removal this test needs to fail succeeds there.
+		t.Skip("a read-only directory does not prevent deletion on Windows")
 	}
 	root := t.TempDir()
 	store, err := NewFS(root)

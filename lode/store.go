@@ -139,7 +139,7 @@ func (f *fsStore) Get(_ context.Context, path string) (io.ReadCloser, error) {
 	if err != nil {
 		return nil, err
 	}
-	file, err := os.Open(fullPath)
+	file, err := openRead(fullPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, ErrNotFound
@@ -247,7 +247,7 @@ func (f *fsStore) ReadRange(_ context.Context, path string, offset, length int64
 		return nil, err
 	}
 
-	file, err := os.Open(fullPath)
+	file, err := openRead(fullPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, ErrNotFound
@@ -284,7 +284,7 @@ func (f *fsStore) ReaderAt(_ context.Context, path string) (io.ReaderAt, error) 
 		return nil, err
 	}
 
-	file, err := os.Open(fullPath)
+	file, err := openRead(fullPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, ErrNotFound
@@ -302,7 +302,7 @@ func (f *fsStore) ReaderAt(_ context.Context, path string) (io.ReaderAt, error) 
 // refused outright rather than re-rooted, and the result must lie under root.
 func (f *fsStore) safePathForFile(path string) (string, error) {
 	key, ok := storepath.Key(path)
-	if !ok || filepath.IsAbs(path) {
+	if !ok || isRooted(path) {
 		return "", ErrInvalidPath
 	}
 	return f.resolve(key, false)
@@ -312,10 +312,17 @@ func (f *fsStore) safePathForFile(path string) (string, error) {
 // root itself for an empty or root-equivalent prefix.
 func (f *fsStore) safePathForPrefix(prefix string) (string, error) {
 	rel, ok := storepath.Prefix(prefix)
-	if !ok || filepath.IsAbs(prefix) {
+	if !ok || isRooted(prefix) {
 		return "", ErrInvalidPath
 	}
 	return f.resolve(rel, true)
+}
+
+// isRooted reports whether p is absolute on any platform: a leading "/" or,
+// on Windows, a volume such as "C:/". filepath.IsAbs alone misses the first
+// on Windows, where "/etc" lacks a volume and is therefore not absolute.
+func isRooted(p string) bool {
+	return strings.HasPrefix(p, "/") || filepath.IsAbs(p)
 }
 
 // resolve joins rel beneath root and refuses anything that resolves outside
