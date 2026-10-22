@@ -88,7 +88,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Backslashes in keys**: every store rejects a key or prefix that contains `\` with `ErrInvalidPath` on every platform, and `s3.New` applies the rule to `Config.Prefix`.
 - **Filesystem listing by prefix**: the filesystem store treated a prefix as a directory, so a partial final segment such as `day=2024-01` listed nothing. It now matches a string prefix, as the other stores do.
-- **A failed `Put` leaves no object**: the filesystem store left a partial object when the reader failed during the copy; it now removes it.
+- **A failed `Put` leaves no partial object**: the filesystem store left a partial object when the reader failed during the copy; it now removes it.
 - **Stream writes no longer hang on a failed `Put`**: when a store's `Put` failed before it read the whole stream, `StreamWrite` and `StreamWriteRecords` blocked indefinitely; they now return the error.
 - **Filesystem `ReadRange` allocation**: a range that extends far beyond the end of a file no longer allocates the full requested length.
 
@@ -243,7 +243,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Volume**: a Volume persists sparse byte ranges of one object of fixed length. `NewVolume` creates one; `StageWriteAt` writes a block, `Commit` publishes staged blocks as a snapshot, and `ReadAt`, `Latest`, `Snapshots`, and `Snapshot` read them. `ReadAt` returns the new `ErrRangeMissing` for a range that no committed block covers, and `Commit` returns `ErrOverlappingBlocks` for blocks that overlap. `CONTRACT_VOLUME.md` specifies the model, and `examples/volume_sparse/` demonstrates it.
+- **Volume**: a Volume persists sparse byte ranges of one object of fixed length. `NewVolume` creates one; `StageWriteAt` writes a block, `Commit` publishes staged blocks as a snapshot, and `ReadAt`, `Latest`, `Snapshots`, and `Snapshot` read them. `ReadAt` returns the new `ErrRangeMissing` for a range that committed blocks do not fully cover, and `Commit` returns `ErrOverlappingBlocks` for blocks that overlap. `CONTRACT_VOLUME.md` specifies the model, and `examples/volume_sparse/` demonstrates it.
 
 ### Upgrade Notes
 
@@ -255,7 +255,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Parquet codec**: `NewParquetCodec(schema, opts...)` encodes records as Parquet according to a `ParquetSchema` of `ParquetField` values, and returns an error for an invalid schema. `WithParquetCompression` selects Snappy, the default, Gzip, or no compression within the file. A record that does not match the schema returns the new `ErrSchemaViolation`, and a malformed file returns `ErrInvalidFormat`. `examples/parquet/` demonstrates the codec.
+- **Parquet codec**: `NewParquetCodec(schema, opts...)` encodes records as Parquet according to a `ParquetSchema` of `ParquetField` values, and returns an error for an invalid schema. `WithParquetCompression` selects Snappy, the default, Gzip, or no compression within the file. A record that lacks a required field or holds a value of the wrong type returns the new `ErrSchemaViolation`, and a malformed file returns `ErrInvalidFormat`; fields that the schema does not name are ignored. `examples/parquet/` demonstrates the codec.
 
 ### Upgrade Notes
 
@@ -268,7 +268,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Large S3 uploads are atomic**: an upload larger than 5 GB completes with `If-None-Match`, so it can no longer replace an object that a concurrent writer created after the existence check.
+- **Large S3 uploads are atomic**: an upload larger than 5 GB completes with `If-None-Match`, so on a backend that honors it, the upload can no longer replace an object that a concurrent writer created after the existence check.
 
 ### Known Limitations
 
