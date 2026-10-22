@@ -692,10 +692,11 @@ factory := func() (lode.Store, error) { return store, nil }
 ```
 
 `SingleProcess` implements `CompareAndSwap` with a lock held by the process,
-so writers in that process commit as they would with CAS. It does not
-coordinate writers in other processes, nor a second `SingleProcess` around
-the same backend. A store that already implements `ConditionalWriter` is
-returned unchanged.
+so writers in that process commit as they would with CAS. Reads through the
+returned value wait for a replacement in progress, so they never observe a
+replaced object as absent. It does not coordinate writers or readers in
+other processes, nor a second `SingleProcess` around the same backend. A
+store that already implements `ConditionalWriter` is returned unchanged.
 
 *Contract reference: [`CONTRACT_WRITE_API.md`](docs/contracts/CONTRACT_WRITE_API.md) §Concurrency, [`CONTRACT_VOLUME.md`](docs/contracts/CONTRACT_VOLUME.md) §Concurrency, [`CONTRACT_STORAGE.md`](docs/contracts/CONTRACT_STORAGE.md) §ConditionalWriter Capability*
 

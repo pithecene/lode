@@ -209,6 +209,8 @@ Gaps are recorded with codes that indicate category and priority:
 | `CompareAndSwap` creates, replaces, and refuses as the semantics table requires | `TestStore_CompareAndSwap/fs`, `TestStore_CompareAndSwap/memory`, `TestStore_CompareAndSwap/single-process` |
 | The filesystem store replaces a pointer that a reader holds open, and one beyond MAX_PATH | `TestFSStore_CompareAndSwap_Replacement` |
 | `SingleProcess` keeps histories linear under concurrent writers in one process | `TestChaos` with `-chaos -chaos.backends single-process` (on demand) |
+| A read through `SingleProcess` waits for a replacement in progress and observes the new content, never the absent path | `TestSingleProcess_ReadsWaitForReplacement` |
+| `SingleProcess` returns a nil store as nil, so that a constructor rejects it | `TestSingleProcess_NilStore` |
 
 **CompareAndSwap (S3)**: All covered ✅
 
