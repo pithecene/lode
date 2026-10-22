@@ -686,7 +686,8 @@ metadata, and a view over a store without `CompareAndSwap`.
 are unchanged. The commit protocol changes in one respect: a dataset's
 first commit persists a staged copy of its manifest before it advances the
 pointer, so that its settings can be checked while it is pending. The
-manifest gains one field, and the paths a root produces without path options,
+manifest gains three fields (the partition keys, the path convention, and
+the codec description), and the paths a root produces without path options,
 or with `WithFlatPaths()`, are byte-identical to today's default, Hive,
 and flat layouts, so existing datasets need no migration. Constructing a
 dataset handle costs one `Get` of the pointer and at most two `Get`
