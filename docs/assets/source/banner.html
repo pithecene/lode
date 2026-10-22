@@ -1,0 +1,52 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<style>
+@font-face { font-family: "Grotesk"; src: url("fonts/SpaceGrotesk.ttf"); font-weight: 300 700; }
+@font-face { font-family: "Inter"; src: url("fonts/Inter.ttf"); font-weight: 100 900; }
+@font-face { font-family: "Garamond"; src: url("fonts/EBGaramond.ttf"); font-weight: 400 800; }
+html, body { margin: 0; background: transparent; }
+svg { display: block; }
+</style></head>
+<body><div id="root"></div>
+<script>
+// Lode README banner. #lode-light or #lode-dark.
+// The plate fades out completely before the type column, so the type always
+// sits on a solid panel.
+const theme = location.hash.endsWith("dark") ? "dark" : "light";
+const dark = theme === "dark";
+const W = 1280, H = 480, R = 28;
+const T = dark
+  ? { panel: "#0d1220", text: "#f3ecdd", sub: "#c4bcab", accent: "#e2b45a", rule: "#e9ddc2" }
+  : { panel: "#f4ecda", text: "#211a12", sub: "#574c3f", accent: "#9c6a12", rule: "#2a2219" };
+// The plate is left-aligned; it fades out between x=480 and x=700, right of which the type sits.
+const P = { img: `lode-${theme}.png`, aspect: 1760 / 1104, side: "left", fade: [700, 480],
+            eyebrow: "PITHECENE · PERSISTENCE FRAMEWORK", name: "lode", tag: ["Structured persistence", "for object storage."] };
+const iw = H * P.aspect;
+const ix = P.side === "right" ? W - iw : 0;
+const [f0, f1] = P.fade;                       // f0: fully transparent, f1: fully opaque
+const left = P.side === "right";
+const tx = left ? 72 : W - 72, anchor = left ? "start" : "end";
+const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}">
+<defs>
+  <clipPath id="card"><rect width="${W}" height="${H}" rx="${R}"/></clipPath>
+  <linearGradient id="fade" gradientUnits="userSpaceOnUse" x1="${f0}" y1="0" x2="${f1}" y2="0">
+    <stop offset="0" stop-color="#fff" stop-opacity="0"/>
+    <stop offset="0.5" stop-color="#fff" stop-opacity="0.55"/>
+    <stop offset="1" stop-color="#fff" stop-opacity="1"/>
+  </linearGradient>
+  <mask id="m" maskUnits="userSpaceOnUse"><rect width="${W}" height="${H}" fill="url(#fade)"/></mask>
+</defs>
+<g clip-path="url(#card)">
+  <rect width="${W}" height="${H}" fill="${T.panel}"/>
+  <image href="${P.img}" x="${ix}" y="0" width="${iw}" height="${H}" preserveAspectRatio="none" mask="url(#m)"/>
+  <g text-anchor="${anchor}">
+    <text x="${tx}" y="150" font-family="Garamond" font-weight="500" font-size="15" letter-spacing="4.2" fill="${T.accent}">${P.eyebrow}</text>
+    <text x="${left ? tx - 8 : tx + 10}" y="262" font-family="Grotesk" font-weight="700" font-size="124" letter-spacing="-4.5" fill="${T.text}">${P.name}</text>
+    <text x="${tx}" y="318" font-family="Inter" font-weight="500" font-size="27" letter-spacing="-0.3" fill="${T.sub}">${P.tag[0]}</text>
+    <text x="${tx}" y="354" font-family="Inter" font-weight="500" font-size="27" letter-spacing="-0.3" fill="${T.sub}">${P.tag[1]}</text>
+  </g>
+  <rect x="0.5" y="0.5" width="${W - 1}" height="${H - 1}" rx="${R}" fill="none" stroke="${T.rule}" stroke-opacity="0.22"/>
+</g>
+</svg>`;
+document.getElementById("root").innerHTML = svg;
+</script></body></html>

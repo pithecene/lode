@@ -38,11 +38,6 @@ type Store interface {
 	Exists(ctx context.Context, path string) (bool, error)
 	List(ctx context.Context, prefix string) ([]string, error)
 	Delete(ctx context.Context, path string) error
-}
-
-// conditionalWriter mirrors lode.ConditionalWriter: a store that implements
-// it gets CAS pointer updates.
-type conditionalWriter interface {
 	CompareAndSwap(ctx context.Context, path, expected, replacement string) error
 }
 
@@ -343,9 +338,8 @@ func (h *History[ID, M]) ConfirmCommitted(ctx context.Context, id ID) error {
 
 // pointerless is nil for a history with no snapshot and errs.HeadUncommitted
 // otherwise. Every commit writes the pointer, so it is missing beside a
-// snapshot only for the moment of a Delete+Put commit on a store without
-// ConditionalWriter, in a history written before the pointer existed, or
-// after a hand edit. In none of these can the head be told safely: a
+// snapshot only in a history written before the pointer existed, after a
+// hand edit, or after a failed Put in lode.SingleProcess's replacement. In none of these can the head be told safely: a
 // clock that rolled back may have given the last commit a smaller ID.
 func (h *History[ID, M]) pointerless(ctx context.Context) error {
 	entries, err := h.manifests(ctx)
@@ -373,16 +367,10 @@ func (h *History[ID, M]) hasManifest(ctx context.Context, id ID) (bool, error) {
 	return slices.ContainsFunc(entries, func(e manifestEntry[ID]) bool { return e.id == id }), nil
 }
 
-// writePointer persists id as the pointer. With a ConditionalWriter the write
-// is a CAS against expected (the pointer content the writer believes is
-// current); otherwise Delete+Put under the single-writer assumption.
+// writePointer persists id as the pointer through a CAS against expected,
+// the pointer content the writer believes is current.
 func (h *History[ID, M]) writePointer(ctx context.Context, expected string, id ID) error {
-	path := h.kind.PointerPath()
-	if cw, ok := h.store.(conditionalWriter); ok {
-		return cw.CompareAndSwap(ctx, path, expected, string(id))
-	}
-	_ = h.store.Delete(ctx, path) // path may not exist
-	return h.store.Put(ctx, path, strings.NewReader(string(id)))
+	return h.store.CompareAndSwap(ctx, h.kind.PointerPath(), expected, string(id))
 }
 
 // remember records id as the observed head and what the pointer now holds.

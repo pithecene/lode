@@ -79,14 +79,9 @@ type faultyStore struct {
 	dead bool
 }
 
-// newFaultyStore wraps inner. It implements ConditionalWriter only when
-// inner does, so a commit takes the same path through it as without faults.
+// newFaultyStore wraps inner.
 func newFaultyStore(inner lode.Store, faults Faults, rng *rand.Rand) lode.Store {
-	s := &faultyStore{inner: inner, faults: faults, rng: rng}
-	if cw, ok := inner.(lode.ConditionalWriter); ok {
-		return &faultyCASStore{faultyStore: s, cas: cw}
-	}
-	return s
+	return &faultyStore{inner: inner, faults: faults, rng: rng}
 }
 
 // chance draws a uniform number under the lock.
@@ -196,18 +191,11 @@ func (s *faultyStore) ReaderAt(ctx context.Context, path string) (io.ReaderAt, e
 	return s.inner.ReaderAt(ctx, path)
 }
 
-// faultyCASStore is a faultyStore over a store that implements
-// ConditionalWriter.
-type faultyCASStore struct {
-	*faultyStore
-	cas lode.ConditionalWriter
-}
-
-func (s *faultyCASStore) CompareAndSwap(ctx context.Context, path, expected, replacement string) error {
+func (s *faultyStore) CompareAndSwap(ctx context.Context, path, expected, replacement string) error {
 	if err := s.before(ctx); err != nil {
 		return err
 	}
-	return s.after(s.cas.CompareAndSwap(ctx, path, expected, replacement))
+	return s.after(s.inner.CompareAndSwap(ctx, path, expected, replacement))
 }
 
 // injected reports whether err comes from an injected fault, and is

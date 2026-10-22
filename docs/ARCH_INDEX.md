@@ -53,7 +53,7 @@ Plans, contracts, and research notes. Contracts define **system behavior**.
 - `DESIGN_SCOPED_CONCURRENCY.md` — scoped concurrency design for non-overlapping writers
 - `SNIPPET_POLICY.md` — markdown code fence conventions
 - `guides/` — explanatory guides (non-normative): `concepts.md` (storage model, commits, choosing a write API), `retention.md` (expiry, tombstones, sweep), `snapshot-ids.md` (ID format, ordering, uniqueness)
-- `assets/` — README splash (light and dark JPEG); `assets/source/` holds the illustrated section and `render.sh` that regenerate it
+- `assets/` — README banner (light and dark PNG); `assets/source/` holds `plate.py` (the engraved section), `banner.html`, and `render.sh` that regenerate it
 
 Contracts are authoritative over code.
 

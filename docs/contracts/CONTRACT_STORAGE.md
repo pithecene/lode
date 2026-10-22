@@ -195,9 +195,11 @@ For streaming writes that use the multipart path:
 
 ## ConditionalWriter Capability
 
-`ConditionalWriter` is an optional interface that storage adapters MAY
-implement to enable optimistic concurrency control (CAS) on the latest
-pointer.
+Every adapter MUST implement `ConditionalWriter`: `Store` is `ObjectStore`
+(the object operations above) together with `ConditionalWriter`. Every
+commit advances the latest pointer through `CompareAndSwap`, which provides
+optimistic concurrency control (CAS), and retention writes tombstones
+through it.
 
 ```go
 type ConditionalWriter interface {
@@ -222,28 +224,55 @@ type ConditionalWriter interface {
 ### Implementation Notes
 
 **Filesystem adapter:**
-- Acquire `flock` on a companion `.lock` file adjacent to the target path.
+- Acquire an exclusive lock on a companion `.lock` file adjacent to the
+  target path: `flock` on Unix, `LockFileEx` on Windows. On other platforms,
+  such as Plan 9, no such lock exists, and `CompareAndSwap` returns an error
+  that matches `errors.ErrUnsupported`.
 - While holding the lock, read the current content, compare it, and write
   the replacement.
 - Release the lock.
 
 **S3 adapter:**
-- Call `GetObject` to read the current content and record its ETag.
-- Call `PutObject` with `If-Match` (to update) or `If-None-Match: *` (to
-  create).
-- If the ETag has changed, return `ErrSnapshotConflict`.
+- The conditional `PutObject` decides every outcome: `If-None-Match: *`
+  creates the object, and `If-Match` replaces exactly the version that was
+  compared. No outcome is inferred from what the adapter recorded earlier.
+- When `expected` is empty, call `PutObject` with `If-None-Match: *` at
+  once.
+- When the adapter itself replaced the object (with `If-Match`) and
+  `expected` equals the content it wrote, call `PutObject` with `If-Match`
+  on the ETag that S3 returned for that write, without reading the object
+  first. The adapter records only versions that it wrote by replacement,
+  one per object and identified by a digest of the content, so objects
+  that are created once and never replaced, such as tombstones, leave no
+  record. It holds a bounded number of such records, evicting one when the
+  limit is reached, and `Delete` discards the record of the deleted
+  object; neither affects any outcome.
+- Otherwise, or when either of those writes reports that its precondition
+  failed or that the object no longer exists, call `GetObject` to read the current content and its ETag,
+  compare the content with `expected`, and then call `PutObject` with
+  `If-Match` on that ETag, or with `If-None-Match: *` if the object does not
+  exist. The outcome is therefore the one that reading first would give: an
+  empty existing object satisfies an empty `expected`, and an object that
+  another writer replaced yields `ErrSnapshotConflict`.
+- A refused precondition on the final write returns `ErrSnapshotConflict`,
+  as does an `If-Match` write that finds the object deleted since it was
+  read, which S3 reports as not found.
+- After any failed write the adapter discards what it knew of the object's
+  version, because a lost response may hide a completed write.
 
 **Memory adapter:**
 - Read, compare, and write under a mutex.
 
-### Adapter Compatibility
+### Backends without a Conditional Write
 
-Adapters that do not implement `ConditionalWriter` are valid. The commit
-path then uses Delete+Put, and callers remain responsible for ensuring
-single-writer semantics.
-
-When an adapter implements `ConditionalWriter`, the commit path uses
-`CompareAndSwap` automatically. The caller need not configure anything.
+A backend that offers no conditional write cannot implement
+`CompareAndSwap` atomically across processes. `lode.SingleProcess(store)`
+turns its `ObjectStore` into a `Store` by serializing `CompareAndSwap` calls
+under a lock held by the process; a store that already implements
+`ConditionalWriter` is returned unchanged. Its `CompareAndSwap` MUST follow
+the semantics table above. It serializes only callers that share the
+returned value within one process, and its replacement is a `Delete`
+followed by a `Put`, so a failed `Put` leaves the path absent.
 
 ---
 

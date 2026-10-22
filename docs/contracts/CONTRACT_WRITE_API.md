@@ -144,30 +144,26 @@ The snapshot history of a Dataset is linear.
 |---------|---------|-----------|---------|--------|
 | Single writer | 1 process | 1 per Write | Linear (guaranteed) | ✅ Supported |
 | Multiple processes, serialized | N processes, external coordination | N (one per writer) | Linear (enforced by the caller) | ✅ Supported (the caller provides coordination) |
-| Multiple processes, uncoordinated, store implements `ConditionalWriter` | N processes, no coordination | N (one per writer) | Linear (enforced by CAS) | ✅ Supported |
-| Multiple processes, uncoordinated, store without `ConditionalWriter` | N processes, no coordination | N (one per writer) | Undefined: concurrent Delete+Put commits can fork the history | ❌ Unsafe |
+| Multiple processes, uncoordinated | N processes, no coordination | N (one per writer) | Linear (enforced by CAS) | ✅ Supported |
+| Multiple writers in one process, store wrapped with `SingleProcess` | N goroutines, each with its own `Dataset`, sharing one wrapped store | N (one per writer) | Linear (enforced by the process lock) | ✅ Supported |
 | Parallel staging, single commit | 1 process, N goroutines | 1 (all shards merged) | Linear (guaranteed) | ❌ Not available |
 
-Under CAS, a writer that terminates after advancing the pointer and before
-persisting its manifest leaves an *abandoned commit* (CONTRACT_CORE §Head
-Pointer). The history remains linear, but the next snapshot's
-`ParentSnapshotID` names an ID that has no manifest.
+Every store implements `ConditionalWriter` (CONTRACT_STORAGE). A writer that
+terminates after advancing the pointer and before persisting its manifest
+leaves an *abandoned commit* (CONTRACT_CORE §Head Pointer). The history
+remains linear, but the next snapshot's `ParentSnapshotID` names an ID that
+has no manifest.
 
 ### Optimistic Concurrency (CAS)
 
-When the storage adapter implements `ConditionalWriter`, Lode detects
-concurrent commits and returns `ErrSnapshotConflict`.
+Lode detects concurrent commits and returns `ErrSnapshotConflict`.
 
 **Mechanism:**
 - At commit time, the writer records the expected parent snapshot ID.
-- When the store implements `ConditionalWriter`, the commit writes the
-  latest pointer with `CompareAndSwap` instead of Delete+Put.
+- The commit writes the latest pointer with `CompareAndSwap`.
 - If the pointer content differs from the expected parent (because another
   writer committed after `Latest()` was read), the commit returns
   `ErrSnapshotConflict`.
-- If the store does not implement `ConditionalWriter`, the Delete+Put
-  behavior applies, and enforcing single-writer semantics remains the
-  caller's responsibility.
 
 **Manual retry pattern:**
 1. Receive `ErrSnapshotConflict`.
@@ -212,15 +208,14 @@ observed.
 - A `nil` `fn` is rejected at construction time.
 
 **Activation:**
-- CAS is always enabled when the adapter implements `ConditionalWriter`.
-- When it does not, the commit uses Delete+Put without notice.
+- CAS is always enabled, because every store implements
+  `ConditionalWriter`.
 - No configuration is required.
 
 **Single-writer compatibility:**
 - Single-writer workflows are unaffected. CAS succeeds on every commit
   when no concurrent writer is active.
-- External coordination remains valid but is no longer required with a
-  store that supports CAS.
+- External coordination remains valid but is not required.
 
 ### Concurrent Blob Write Safety
 
@@ -232,15 +227,11 @@ However, each `Write` or `StreamWrite` call creates a new snapshot, which
 updates the latest pointer. **The serialization point is the pointer update,
 not the data write.**
 
-| Store capability | Concurrent snapshot creation | Guidance |
-|------------------|------------------------------|----------|
-| Implements `ConditionalWriter` | Safe: CAS detects conflicts and returns `ErrSnapshotConflict` | The caller retries with the new parent |
-| Does not implement `ConditionalWriter` | Unsafe: writers race on the pointer, and the visibility order is undefined | Serialize writes externally |
-
-Consumers that must write several blob files as part of a single logical
-operation should either serialize snapshot creation (one `Write` or
-`StreamWrite` per file, in sequence) or use a store that supports CAS and
-handle `ErrSnapshotConflict` by retrying.
+CAS detects concurrent snapshot creation and returns
+`ErrSnapshotConflict`, and the caller retries with the new parent. Consumers
+that must write several blob files as part of a single logical operation
+should either serialize snapshot creation (one `Write` or `StreamWrite` per
+file, in sequence) or handle `ErrSnapshotConflict` by retrying.
 
 ### Future Direction
 
@@ -288,7 +279,7 @@ Implementations MUST use the following error sentinels where applicable:
 - `ErrPartitioningNotSupported` when `StreamWriteRecords` is used with a
   partitioner other than `noop`
 - `ErrSnapshotConflict` when another writer committed after the parent was
-  resolved (only when the store implements `ConditionalWriter`)
+  resolved
 
 Streaming-specific error taxonomy and handling guidance are defined in
 `CONTRACT_ERRORS.md`.
@@ -321,10 +312,14 @@ Parent resolution MUST NOT use List when a valid pointer exists.
 | `StreamWrite` | 4 fixed | O(1) streaming |
 | `StreamWriteRecords` | 4 fixed | O(1) streaming |
 
-When the store implements `ConditionalWriter`, each commit incurs **one
-additional read** (the `CompareAndSwap` operation reads the current pointer
-before the conditional write). This overhead is constant per commit, not
-per record or per file.
+A commit may incur **one additional read**: `CompareAndSwap` reads the current pointer before the
+conditional write when it cannot otherwise establish the precondition. The
+S3 adapter omits that read when it creates the pointer and when it
+replaces a pointer that it last replaced itself (CONTRACT_STORAGE
+§ConditionalWriter Capability). Each commit after the second through the
+same store therefore reads the pointer only after another writer has
+advanced it. This overhead is constant per commit, not per record or per
+file.
 
 Hot-path writes MUST NOT invoke `Store.List`.
 

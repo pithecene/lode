@@ -2,13 +2,13 @@ package chaos
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/pithecene/lode/lode"
 )
 
 var (
@@ -23,6 +23,7 @@ var (
 	flagFaults   = flag.String("chaos.faults", "none", "comma-separated fault levels: "+strings.Join(FaultLevelNames(), ", "))
 	flagRetain   = flag.Bool("chaos.retention", false, "run Expire and Sweep concurrently with the writers")
 	flagVolume   = flag.Bool("chaos.volume", false, "also run the Volume workload once per backend and fault level")
+	flagMemProf  = flag.String("chaos.memprofile", "", "directory to write a heap profile of each configuration to, after its run")
 )
 
 // TestChaos runs the harness once per backend and layout. It is skipped
@@ -90,22 +91,35 @@ func selection(backends, layouts, levels []string) (map[string]Faults, error) {
 func runOne(t *testing.T, backendName, level string, cfg Config) {
 	t.Helper()
 	runID := fmt.Sprintf("%d-%s", time.Now().UnixNano(), cfg.Layout)
+	baseline := TakeMemoryBaseline()
 	backend, err := OpenBackend(t.Context(), backendName, t.TempDir(), runID)
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Cleanups run last first: the backend is released, then the heap is
+	// measured, and then the goroutines are counted.
+	t.Cleanup(func() {
+		if err := baseline.GoroutinesReleased(backend.Lingering); err != nil {
+			t.Error(err)
+		}
+	})
+	var commits int // set once the run ends
+	t.Cleanup(func() { checkMemory(t, backend, baseline, commits, backendName+"-"+cfg.Layout+"-"+level) })
 	t.Cleanup(func() {
 		if err := backend.Release(context.WithoutCancel(t.Context())); err != nil {
 			t.Errorf("release the %s backend: %v", backendName, err)
 		}
 	})
-	// The invariants assume CAS (CONTRACT_WRITE_API §Concurrency): without
-	// it, concurrent writers may fork the history within the contract.
-	if _, ok := backend.Store.(lode.ConditionalWriter); !ok {
-		t.Skipf("the %s store does not implement ConditionalWriter on this platform", backendName)
+	// The filesystem store has no file lock on platforms such as Plan 9, where
+	// every commit would fail; such a backend is skipped, not reported.
+	const probe = "chaos-probe/cas"
+	if err := backend.Store.CompareAndSwap(t.Context(), probe, "", "probe"); errors.Is(err, errors.ErrUnsupported) {
+		t.Skipf("the %s store does not support CompareAndSwap here: %v", backendName, err)
 	}
+	_ = backend.Store.Delete(t.Context(), probe) // best-effort: the probe is not part of any dataset
 
 	report := Run(t.Context(), cfg, backend.Store)
+	commits = report.Commits
 	t.Logf("seed %d: %d commits, %d conflicts after retries, %d injected failures, %d reads, %d expired, %d snapshots persisted",
 		report.Seed, report.Commits, report.Conflicts, report.Faults, report.Reads, report.Expired, report.Snapshots)
 	for _, v := range report.Violations {
@@ -120,6 +134,32 @@ func runOne(t *testing.T, backendName, level string, cfg Config) {
 		t.Logf("an abandoned commit stalled the volume; every later commit conflicted (CONTRACT_VOLUME)")
 	case report.Commits == 0:
 		t.Errorf("no commit succeeded; the run exercised nothing")
+	}
+}
+
+// checkMemory writes the configuration's heap profile when requested and,
+// for a store that keeps no data in memory, requires the finished run to
+// retain no more heap than its commits allow. It runs after the backend's
+// release; the store stays reachable through backend, so its own bounded
+// state counts. A skipped configuration ran nothing to measure.
+func checkMemory(t *testing.T, backend Backend, baseline MemoryBaseline, commits int, name string) {
+	t.Helper()
+	if t.Skipped() {
+		return
+	}
+	if dir := *flagMemProf; dir != "" {
+		if err := WriteHeapProfile(dir, name+".heap"); err != nil {
+			t.Error(err)
+		}
+	}
+	if backend.RetainsData {
+		return
+	}
+	retained, err := baseline.RetainedHeap(commits)
+	runtime.KeepAlive(backend.Store) // the store's own state must count
+	t.Logf("the run retains %d bytes of heap after %d acknowledged commits", retained, commits)
+	if err != nil {
+		t.Error(err)
 	}
 }
 
