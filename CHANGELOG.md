@@ -449,7 +449,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Streaming writes**: `Dataset.StreamWrite(ctx, metadata)` returns a `StreamWriter` that streams one blob into storage, and `Dataset.StreamWriteRecords(ctx, metadata, records)` encodes the records of a `RecordIterator` as they arrive, so neither holds the whole payload in memory. Streaming records requires a codec that implements `StreamingRecordCodec` and a layout without partitioning; the new sentinels `ErrCodecConfigured`, `ErrCodecNotStreamable`, `ErrNilIterator`, and `ErrPartitioningNotSupported` report misuse. ([#48](https://github.com/pithecene/lode/pull/48), [#49](https://github.com/pithecene/lode/pull/49), [#50](https://github.com/pithecene/lode/pull/50))
+- **Streaming writes**: `Dataset.StreamWrite(ctx, metadata)` returns a `StreamWriter` that streams one blob into storage, and `Dataset.StreamWriteRecords(ctx, metadata, records)` encodes the records of a `RecordIterator` as they arrive, so the Dataset holds neither payload whole in memory; the memory store still keeps each object in memory. Streaming records requires a codec that implements `StreamingRecordCodec` and a layout without partitioning; the new sentinels `ErrCodecConfigured`, `ErrCodecNotStreamable`, `ErrNilIterator`, and `ErrPartitioningNotSupported` report misuse. ([#48](https://github.com/pithecene/lode/pull/48), [#49](https://github.com/pithecene/lode/pull/49), [#50](https://github.com/pithecene/lode/pull/50))
 - **Checksums**: `WithChecksum(NewMD5Checksum())` records a checksum of each data file in the manifest; the `Checksum` and `HashWriter` interfaces support other algorithms.
 - **S3 uploads in constant memory**: `Put` spools the payload to a temporary file instead of reading it into memory, and an upload larger than 5 GB uses a multipart upload. ([#50](https://github.com/pithecene/lode/pull/50), [#51](https://github.com/pithecene/lode/pull/51))
 - **README Quick Start**: 5-minute guide with blob, records, and streaming examples
@@ -495,7 +495,7 @@ Post-v0.3.0 improvements planned:
 
 ### Upgrade Notes
 
-- The streaming and checksum APIs are additions; existing calls are unchanged
+- The streaming and checksum APIs are additions, so existing calls are unchanged. A type that implements `Dataset` must add `StreamWrite` and `StreamWriteRecords`, and a type that implements `s3.API` must add `CreateMultipartUpload`, `UploadPart`, `CompleteMultipartUpload`, and `AbortMultipartUpload`
 - Safe to upgrade from v0.2.0
 
 ### References
