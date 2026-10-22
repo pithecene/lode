@@ -24,14 +24,24 @@ jobs:
         run: task lint
 
   test:
-    name: 🧪 Test
-    runs-on: ubuntu-latest
+    name: 🧪 Test (${{ matrix.os }})
+    strategy:
+      # A failure on one platform must not cancel the others: each result is
+      # needed to tell a platform-specific defect from a general one.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - name: 📥 Checkout
         uses: actions/checkout@v4
 
       - name: 🧰 Setup
         uses: jdx/mise-action@v2
+        with:
+          # Only the tools the tests need, so that an unrelated tool cannot
+          # fail the setup on one platform.
+          install_args: go aqua:go-task/task
 
       - name: 🧪 Test
         run: task test
