@@ -95,6 +95,7 @@ Gaps are recorded with codes that indicate category and priority:
 | Parent snapshot linked | `TestDataset_StreamWrite_Lineage/parent_snapshot_linked` |
 | Parent ID resolved O(1) via persistent pointer | `TestDataset_Write_Pointer/latest_pointer_skips_scan` |
 | Raw blob RowCount=1 | `TestDataset_StreamWrite_Commit/success` |
+| A write of no records commits a snapshot without data files on every layout | `TestDataset_Write_EmptyBatch` |
 
 **StreamWrite**: All covered ✅
 

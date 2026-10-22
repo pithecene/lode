@@ -24,7 +24,7 @@ const (
 // in-memory store varies it by a few bytes.
 var allocGates = []testutil.AllocGate{
 	{Name: "ReadAt within one of ten blocks", Allocs: 44, Bytes: 8960, Setup: gateReadAt},
-	{Name: "Commit of one block onto a small volume", Allocs: 140, Bytes: 334784, Setup: gateCommit},
+	{Name: "Commit of one block onto a small volume", Allocs: 139, Bytes: 334720, Setup: gateCommit},
 }
 
 // TestAllocationGates holds each Volume hot path to its allocation ceiling.

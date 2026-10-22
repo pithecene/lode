@@ -63,7 +63,8 @@ type Errors struct {
 type Kind[ID ~string, M any] interface {
 	// SnapshotsPrefix lists every manifest of the container.
 	SnapshotsPrefix() string
-	// PointerPath is the head pointer object.
+	// PointerPath is the head pointer object. It MUST NOT change during the
+	// life of the kind: a history computes it once.
 	PointerPath() string
 	// ManifestPath is the canonical manifest for a snapshot.
 	ManifestPath(id ID) string
@@ -101,6 +102,9 @@ type History[ID ~string, M any] struct {
 	errs  Errors
 	// stager is the kind's Stager, nil when its commits stage nothing.
 	stager Stager[ID]
+	// pointerPath is kind.PointerPath(), computed once: it is read on every
+	// commit and never changes.
+	pointerPath string
 
 	// head is the snapshot this process last observed or committed as the
 	// head ("" = unknown); pointer is the pointer content that corresponds to
@@ -115,7 +119,10 @@ type History[ID ~string, M any] struct {
 // "volume manifest" after the protocol was shared.
 func New[ID ~string, M any](store Store, kind Kind[ID, M], noun string, errs Errors) History[ID, M] {
 	stager, _ := kind.(Stager[ID])
-	return History[ID, M]{noun: noun, store: store, kind: kind, errs: errs, stager: stager}
+	return History[ID, M]{
+		noun: noun, store: store, kind: kind, errs: errs,
+		stager: stager, pointerPath: kind.PointerPath(),
+	}
 }
 
 // -----------------------------------------------------------------------------
@@ -299,7 +306,7 @@ func (q *newestFirst[ID]) Pop() any {
 // ReadPointer returns the ID the persisted pointer names, or errs.NotFound when
 // the pointer is absent or empty.
 func (h *History[ID, M]) ReadPointer(ctx context.Context) (ID, error) {
-	rc, err := h.store.Get(ctx, h.kind.PointerPath())
+	rc, err := h.store.Get(ctx, h.pointerPath)
 	if err != nil {
 		return "", fmt.Errorf("lode: failed to read latest pointer: %w", err)
 	}
@@ -390,7 +397,7 @@ func (h *History[ID, M]) hasManifest(ctx context.Context, id ID) (bool, error) {
 // is a CAS against expected (the pointer content the writer believes is
 // current); otherwise Delete+Put under the single-writer assumption.
 func (h *History[ID, M]) writePointer(ctx context.Context, expected string, id ID) error {
-	path := h.kind.PointerPath()
+	path := h.pointerPath
 	if cw, ok := h.store.(conditionalWriter); ok {
 		return cw.CompareAndSwap(ctx, path, expected, string(id))
 	}

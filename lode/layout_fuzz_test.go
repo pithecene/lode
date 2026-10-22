@@ -134,3 +134,24 @@ func FuzzPartitionPrefix(f *testing.F) {
 		}
 	})
 }
+
+// FuzzJoin checks that join, which builds a path in one allocation, returns
+// exactly what path.Join returns for the same parts, including empty parts,
+// separators, and dot segments.
+func FuzzJoin(f *testing.F) {
+	for _, seed := range [][3]string{
+		{"", "", ""},
+		{"datasets", "ds", "latest"},
+		{"", "ds", ""},
+		{"root/", "/ds", "x//y"},
+		{".", "..", "a/./b/../c"},
+		{"/", "", "/"},
+	} {
+		f.Add(seed[0], seed[1], seed[2])
+	}
+	f.Fuzz(func(t *testing.T, a, b, c string) {
+		if got, want := join(a, b, c), path.Join(a, b, c); got != want {
+			t.Fatalf("join(%q, %q, %q) = %q, want %q", a, b, c, got, want)
+		}
+	})
+}
