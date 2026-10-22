@@ -377,7 +377,8 @@ that names a snapshot without a manifest. The investigation of
 [#208](https://github.com/pithecene/lode/issues/208)
 (`dogfood_audit_2026-10.md` F3) identified six further questions that the
 contracts either leave open or answer inconsistently. Each is decided
-separately below; none of them changes the commit protocol itself.
+separately below. Only D10d changes the commit protocol: it removes the
+pointer replacement by `Delete` and `Put`.
 
 ### D10a — A listing cursor is not a commit-order cursor
 
@@ -393,25 +394,19 @@ snapshot with a larger ID. Nothing in the contracts warns against this
 pattern.
 
 **Options.**
-1. State in CONTRACT_READ_API that `StartAfter` is a position in
-   `(Partition, ID)` order, which within one partition is ID order, not
-   commit order. Document the supported way to read new snapshots: follow
-   `ParentSnapshotID` from `Latest` back to the last snapshot already read
-   (one `Get` per new snapshot). The traversal is exact only when it starts
-   from a head that `Latest` resolved through the pointer and the lineage
-   is unbroken. When the pointer is missing or holds no snapshot ID,
-   `Latest` selects the largest ID, which may be older than the head
-   (CONTRACT_CORE §Head Pointer); an expired or abandoned parent ends the
-   traversal before the last snapshot read (CONTRACT_RETENTION §Lineage). In
-   either case the reader must reconcile through a full listing, which on a
-   Hive layout is complete only once D10b is resolved. `Latest`
-   does not currently report which path produced its result, so this
-   option also requires a way for the caller to know it, for example a
-   field of the returned snapshot.
+1. Document the limit. CONTRACT_READ_API states that `StartAfter` is a
+   position in `(Partition, ID)` order, which within one partition is ID
+   order, not commit order, and that v1.0 offers no cursor over commits. A
+   consumer that must observe every commit reconciles against a full
+   listing.
 2. Assign each snapshot an ID at commit time that exceeds its parent's ID,
    so that ID order equals commit order along the history. This changes the
    meaning of the ID, which retention reads as the write's start instant
    (CONTRACT_RETENTION §Grace Period).
+
+A cursor over commits is a feature, not a correction of the listing
+contract, and can be added after v1.0 without breaking callers. It is
+therefore not designed here.
 
 **Proposed.** Option 1.
 
@@ -498,12 +493,27 @@ only remaining path by which Lode itself can fork a history.
 2. Require a construction option that acknowledges single-writer use on a
    store without CAS, and fail construction without it. This adds a
    configuration option and breaks callers of custom adapters.
+3. Require `CompareAndSwap` of every `Store`, and remove the fallback. A
+   backend without a conditional write is wrapped explicitly with
+   `lode.SingleProcess`, which serializes the commits of one process and
+   states that it does not coordinate other processes.
 
-**Proposed.** Option 1.
+**Decided.** Option 3. Option 1 leaves the fallback, and with it the fork,
+for every custom adapter. Option 2 accepts the fork once the caller
+acknowledges it. Under option 3 a store that cannot coordinate writers does
+not compile as a `Store`, and the single-process scope is chosen in the
+code rather than in an option.
 
-**Breaks.** Nothing.
+**Breaks.**
+- Every custom adapter that lacks `CompareAndSwap`: it implements the
+  method, or its caller wraps it with `lode.SingleProcess`.
+- Callers that type-assert `ConditionalWriter` on a `Store`: the assertion
+  always succeeds.
 
-**Status.** Open.
+**Status.** Accepted and shipped (owner decision, 2026-10-22). The
+filesystem adapter implements CAS on Unix and Windows; on platforms without
+a file lock, such as Plan 9, its `CompareAndSwap` returns an error that
+matches `errors.ErrUnsupported`.
 
 ### D10e — Volume has no repair operation for an abandoned commit
 
@@ -518,10 +528,7 @@ Semantics). No API performs the repair.
    - If the Volume has an earlier snapshot, replace the pointer content,
      the abandoned ID, with the ID of the previous head through
      `CompareAndSwap(ctx, "volumes/<id>/latest", <abandoned ID>, <previous
-     head>)`; `Put` cannot replace an existing object. On a store without
-     `ConditionalWriter`, `Delete` the pointer and then `Put` the previous
-     head's ID, which is safe only because no writer is active. The
-     previous head is
+     head>)`; `Put` cannot replace an existing object. The previous head is
      the snapshot with a manifest that no other snapshot names as its
      parent; in a linear history exactly one exists. The newest ID is not a
      safe choice, because IDs record when a write began, not commit order.
