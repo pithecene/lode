@@ -131,15 +131,16 @@ func (d *dataset) rejectForeignHistory(ctx context.Context) error {
 }
 
 // settingsManifest is the manifest a writer's settings are checked
-// against: that of parent, the snapshot the pointer names; its staged copy
-// while a first commit is pending; otherwise the newest manifest, as Latest
-// selects it. A pointer that names a snapshot with no manifest in a dataset
+// against: the canonical manifest of parent, the snapshot the pointer
+// names; its staged copy while a first commit is pending; otherwise the
+// newest manifest, as Latest selects it, by scan. The first two are single
+// Gets, so a pending first commit is checked without a listing. A pointer that names a snapshot with no manifest in a dataset
 // with no other manifest belongs to a pending first commit whose settings
 // are unknown, or to one abandoned before staging existed: the writer
 // conflicts rather than commit unchecked settings.
 func (d *dataset) settingsManifest(ctx context.Context, parent DatasetSnapshotID) (*Manifest, error) {
 	loaders := []func() (*DatasetSnapshot, error){
-		func() (*DatasetSnapshot, error) { return d.Snapshot(ctx, parent) },
+		func() (*DatasetSnapshot, error) { return fromHistory(d.history.Snapshot(ctx, parent)) },
 		func() (*DatasetSnapshot, error) { return fromHistory(d.history.LoadStaged(ctx, parent)) },
 		func() (*DatasetSnapshot, error) { return fromHistory(d.history.Newest(ctx)) },
 	}

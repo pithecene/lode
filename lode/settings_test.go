@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -418,5 +420,41 @@ func TestWrite_LegacyCheckIsRepeatedAfterAConflict(t *testing.T) {
 	}
 	if _, err := loser.Write(t.Context(), R(D{"b": "z"}), nil); !errors.Is(err, ErrSettingsMismatch) {
 		t.Fatalf("got %v, want the description the winner recorded enforced after the conflict", err)
+	}
+}
+
+// unlisted fails every List, so a test can show a path performs none.
+type unlisted struct{ Store }
+
+func (unlisted) List(context.Context, string) ([]string, error) {
+	return nil, errors.New("unlisted: List called")
+}
+
+func TestWrite_PendingFirstCommitIsCheckedWithoutListing(t *testing.T) {
+	store := NewMemory()
+	first, err := openOn(t, store, WithCodec(NewJSONLCodec())).Write(t.Context(), R(D{"a": 1}), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	moveObject(t, store, "datasets/events/snapshots/"+string(first.ID)+"/manifest.json", "datasets/events/staged/"+string(first.ID)+".json")
+	if _, err := openOn(t, unlisted{store}, WithCodec(NewJSONLCodec())).Write(t.Context(), R(D{"a": 2}), nil); err != nil {
+		t.Fatalf("got %v, want the staged copy read without a listing", err)
+	}
+}
+
+func TestWrite_PointerLockIsNotAForeignObject(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "datasets", "events"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "datasets", "events", "latest.lock"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ds, err := NewDataset("events", NewFSFactory(root), WithCodec(NewJSONLCodec()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ds.Write(t.Context(), R(D{"a": 1}), nil); err != nil {
+		t.Fatalf("got %v, want the pointer's lock file left by a failed first commit ignored", err)
 	}
 }

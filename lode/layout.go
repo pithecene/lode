@@ -378,14 +378,17 @@ func (l *pathLayout) datasetPrefix(dataset DatasetID) string {
 }
 
 // ownsObject reports whether p, an object under the dataset's prefix, is
-// one this layout persists: the pointer, a manifest or data object its
-// grammar parses, a staged manifest, or a tombstone.
+// one this layout persists: the pointer or the companion lock file that the
+// filesystem store keeps beside it (CONTRACT_STORAGE §Implementation
+// Notes), a manifest or data object its grammar parses, a staged manifest,
+// or a tombstone.
 func (l *pathLayout) ownsObject(dataset DatasetID, p string) bool {
 	if sp, ok := l.grammar.parse(p); ok && sp.dataset == dataset {
 		return true
 	}
+	pointer := l.latestPointerPath(dataset)
 	stagedPrefix := join(l.grammar.datasetDir(dataset), stagedDir) + "/"
-	return p == l.latestPointerPath(dataset) ||
+	return p == pointer || p == pointer+".lock" ||
 		strings.HasPrefix(p, stagedPrefix) ||
 		strings.HasPrefix(p, l.tombstonesPrefix(dataset))
 }

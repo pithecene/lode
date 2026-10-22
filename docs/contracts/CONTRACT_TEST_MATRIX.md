@@ -122,6 +122,8 @@ Gaps are recorded with codes that indicate category and priority:
 | Partition keys compare structurally (`"a,b"` differs from `"a"`, `"b"`) | `TestWrite_PartitionKeysCompareStructurally` |
 | A writer checked against a legacy manifest is checked again after a conflict | `TestWrite_LegacyCheckIsRepeatedAfterAConflict` |
 | A Hive key that is not one path segment or contains `=` is `ErrInvalidArgument` | `TestNewHiveLayout_KeysNamePartitionsUnambiguously` |
+| A pending first commit is checked against its staged copy without a listing | `TestWrite_PendingFirstCommitIsCheckedWithoutListing` |
+| The filesystem store's pointer lock file is not a foreign object | `TestWrite_PointerLockIsNotAForeignObject` |
 
 **StreamWrite**: All covered ✅
 
