@@ -139,7 +139,7 @@ func (f *fsStore) Get(_ context.Context, path string) (io.ReadCloser, error) {
 	if err != nil {
 		return nil, err
 	}
-	file, err := os.Open(fullPath)
+	file, err := openRead(fullPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, ErrNotFound
@@ -247,7 +247,7 @@ func (f *fsStore) ReadRange(_ context.Context, path string, offset, length int64
 		return nil, err
 	}
 
-	file, err := os.Open(fullPath)
+	file, err := openRead(fullPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, ErrNotFound
@@ -284,7 +284,7 @@ func (f *fsStore) ReaderAt(_ context.Context, path string) (io.ReaderAt, error) 
 		return nil, err
 	}
 
-	file, err := os.Open(fullPath)
+	file, err := openRead(fullPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, ErrNotFound

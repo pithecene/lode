@@ -177,6 +177,29 @@ func TestStore_Delete(t *testing.T) {
 		})
 	})
 
+	// Retention deletes objects that readers may still hold open; on Windows
+	// that requires the readers to grant delete sharing.
+	t.Run("while a reader holds the object", func(t *testing.T) {
+		forEachStore(t, func(t *testing.T, store Store) {
+			ctx := t.Context()
+			if err := store.Put(ctx, "test/held.txt", bytes.NewReader([]byte("hello"))); err != nil {
+				t.Fatal(err)
+			}
+			held, err := store.Get(ctx, "test/held.txt")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer closer(held)()
+
+			if err := store.Delete(ctx, "test/held.txt"); err != nil {
+				t.Fatalf("Delete with an open reader: %v", err)
+			}
+			if exists, err := store.Exists(ctx, "test/held.txt"); err != nil || exists {
+				t.Errorf("Exists after Delete = %v, %v; want false", exists, err)
+			}
+		})
+	})
+
 	t.Run("not exist", func(t *testing.T) {
 		forEachStore(t, func(t *testing.T, store Store) {
 			ctx := t.Context()
