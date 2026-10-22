@@ -18,6 +18,8 @@ part of the surface lives and what v1.0 promises about it, so it is decided
 here with the rest. D10 comes from the investigation of the history fork
 observed in production; most of its parts change contracts rather than
 signatures, but they define what v1.0 promises about commits and listing.
+D11 comes from a review of the constructors against the call sites of
+Quarry and the examples; it would resolve D1 and D3 if accepted.
 
 ---
 
@@ -566,5 +568,119 @@ of the commit protocol; the other contracts state their own obligations and
 refer to it instead of restating it.
 
 **Breaks.** Nothing.
+
+**Status.** Open.
+
+---
+
+## D11 — Construction and record types
+
+**Current.** Each handle is constructed separately from a `StoreFactory`
+and a list of `Option` values: `NewDataset(id, factory, opts...)`,
+`NewDatasetReader(factory, opts...)`, and `volume.New(id, factory, length,
+opts...)`. A factory defers the store's construction error into the
+constructor's error, so a caller checks one error. Records are `[]any` on
+`Write` and on `Read`. The layout is given to each constructor and is
+persisted nowhere.
+
+**Problem.** The call sites show five costs:
+1. **Repeated configuration.** Quarry constructs the same dataset in three
+   places (its filesystem client, its S3 client, and its read path), each
+   with `WithHiveLayout("source", "category", "day", "run_id",
+   "event_type")`, `WithCodec(NewJSONLCodec())`, and `WithRetryCount(3)`.
+   The examples pass `WithHiveLayout("day")` to both the writer and the
+   reader of one dataset. A reader configured with another layout finds no
+   manifests and returns no error.
+2. **A second store value.** Quarry retains the factory and calls it again
+   to obtain a store for files outside any dataset (sidecar files), so the
+   process holds two store values for one root. Two `lode.SingleProcess`
+   values do not serialize each other (CONTRACT_STORAGE §ConditionalWriter
+   Capability). Quarry also builds the sidecar path from Lode's Hive path
+   grammar (`datasets/<id>/partitions/.../files/<name>`), which couples it
+   to the on-disk layout (D8).
+3. **Untyped records.** Quarry writes `map[string]any` records and reads
+   `[]any`, asserting each element's type; numbers in snapshot metadata
+   return as `float64` after the JSON round trip, and Quarry converts them
+   back. The examples assert `[]byte` (blob mode, D1) and `map[string]any`
+   (Parquet).
+4. **A reader that requires CAS.** `NewDatasetReader` takes a `StoreFactory`
+   and therefore requires `CompareAndSwap`, although a reader never writes
+   (D10d).
+5. **Options for two targets.** Writer-only options passed to
+   `NewDatasetReader` fail at run time with
+   `ErrOptionNotValidForDatasetReader` (D3).
+
+**Options.** Each option is shown as Quarry's writer construction would
+read under it.
+
+1. **Typed factory with the current constructors.** The factory carries the
+   store's type, and each constructor states what it requires:
+
+   ```go
+   type Factory[S ObjectStore] func() (S, error)
+
+   func NewDatasetReader[S ObjectStore](f Factory[S], opts ...Option) (DatasetReader, error)
+   func NewDataset[S Store](id DatasetID, f Factory[S], opts ...Option) (Dataset, error)
+   ```
+
+   Type inference requires no annotation at existing call sites, and a
+   read-only factory passed to `NewDataset` fails to compile. This resolves
+   cost 4 and retains the single error check, but leaves costs 1, 2, 3,
+   and 5.
+
+2. **A root handle with package-level typed datasets.** A handle is opened
+   once per store root, with the store-level options:
+
+   ```go
+   repo, err := lode.Open(ctx, lode.FS(root), lode.WithHiveLayout("source", "category", "day", "run_id", "event_type"))
+   if err != nil { ... }
+   events, err := lode.DatasetOf[Record](repo, "events", lode.WithCodec(lode.JSONL[Record]()), lode.WithRetryCount(3))
+   ```
+
+   The first `Open` of a root persists a root descriptor that names the
+   layout, created with `CompareAndSwap`; a later `Open` reads it and
+   rejects a conflicting layout, and `OpenReadOnly` takes an `ObjectStore`
+   and needs no layout option. Options divide into store-level options on
+   `Open` and dataset-level options on the dataset. This resolves costs 1,
+   3, 4, and 5, and two error checks remain.
+
+3. **A root handle with generic methods.** As option 2, with the dataset
+   obtained through a generic method of a concrete `Repo` (Go 1.27). `Open`
+   records its error and returns it from every method of the handle, so a
+   chained construction checks one error, as a factory does today:
+
+   ```go
+   events, err := lode.Open(ctx, lode.FS(root), lode.WithHiveLayout("source", "category", "day", "run_id", "event_type")).
+   	Dataset("events", lode.WithCodec(lode.JSONL[Record]()), lode.WithRetryCount(3))
+   ```
+
+   The record type is inferred from the typed codec; a dataset without a
+   codec states it (`Dataset[[]byte]`). A prototype compiled with Go 1.27.3
+   confirms both the chain and the inference. `Repo` must be a concrete
+   type, because interface methods cannot declare type parameters; the
+   returned `Dataset[T]` remains an interface.
+
+None of the options resolves cost 2. Whether the root handle exposes its
+store for objects outside any dataset, or whether such objects become a
+part of the layout, is a separate question that this entry records but does
+not decide.
+
+**Proposed.** Option 3, provided that the Go 1.27.3 minimum (#261) is
+accepted; otherwise, option 2. Options 2 and 3 persist the layout, which
+`AGENTS.md` requires of metadata, and give each option one target. Option 3
+also retains the single error check of the current factory. If option 2
+or 3 is accepted, it decides D1 (the payload type is the dataset's type
+parameter) and D3 (options divide by level); D2 remains, because the layout
+option still takes a layout value.
+
+**Breaks.**
+- Every constructor call: the examples, the README, `PUBLIC_API.md`, and
+  Quarry's three constructions and two query functions.
+- Under options 2 and 3, a root written before the change has no
+  descriptor. The first `Open` with an explicit layout creates it; until
+  then, `OpenReadOnly` requires the layout option. The descriptor is a new
+  object at the root, which D8 must name; a consumer that reads objects by
+  path is otherwise unaffected.
+- Under option 3, the minimum Go version (#261).
 
 **Status.** Open.
