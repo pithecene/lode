@@ -403,7 +403,8 @@ pattern.
    `Latest` selects the largest ID, which may be older than the head
    (CONTRACT_CORE §Head Pointer); an expired or abandoned parent ends the
    traversal before the last snapshot read (CONTRACT_RETENTION §Lineage). In
-   either case the reader must reconcile through a full listing. `Latest`
+   either case the reader must reconcile through a full listing, which on a
+   Hive layout is complete only once D10b is resolved. `Latest`
    does not currently report which path produced its result, so this
    option also requires a way for the caller to know it, for example a
    field of the returned snapshot.
@@ -515,7 +516,10 @@ Semantics). No API performs the repair.
    - If the Volume has an earlier snapshot, replace the pointer content,
      the abandoned ID, with the ID of the previous head through
      `CompareAndSwap(ctx, "volumes/<id>/latest", <abandoned ID>, <previous
-     head>)`; `Put` cannot replace an existing object. The previous head is
+     head>)`; `Put` cannot replace an existing object. On a store without
+     `ConditionalWriter`, `Delete` the pointer and then `Put` the previous
+     head's ID, which is safe only because no writer is active. The
+     previous head is
      the snapshot with a manifest that no other snapshot names as its
      parent; in a linear history exactly one exists. The newest ID is not a
      safe choice, because IDs record when a write began, not commit order.
