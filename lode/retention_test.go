@@ -108,7 +108,7 @@ func writeRun(t *testing.T, ds Dataset, run string, eventTypes ...string) *Datas
 	if err != nil {
 		t.Fatal(err)
 	}
-	awaitClockPast(t, snap)
+	testutil.AwaitClockPast(t, string(snap.ID))
 	return snap
 }
 
@@ -118,24 +118,8 @@ func writeRecord(t *testing.T, ds Dataset, n int) *DatasetSnapshot {
 	if err != nil {
 		t.Fatal(err)
 	}
-	awaitClockPast(t, snap)
+	testutil.AwaitClockPast(t, string(snap.ID))
 	return snap
-}
-
-// awaitClockPast waits until the wall clock has passed the instant at which
-// snap's write began. The retention tests rely on each later write, cutoff,
-// and generated ID being strictly later than the snapshot before it. On
-// Windows the wall clock advances in coarse steps, so two consecutive
-// operations can otherwise share an instant.
-func awaitClockPast(t *testing.T, snap *DatasetSnapshot) {
-	t.Helper()
-	at, ok := history.Instant(snap.ID)
-	if !ok {
-		t.Fatalf("snapshot ID %s carries no instant", snap.ID)
-	}
-	for !time.Now().After(at) {
-		time.Sleep(time.Millisecond)
-	}
 }
 
 func storeKeys(t *testing.T, store Store) []string {
