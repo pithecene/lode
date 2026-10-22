@@ -9,7 +9,7 @@ import (
 	"sync"
 )
 
-// SingleProcess returns store with a CompareAndSwap that serializes updates
+// SingleProcess returns a Store whose CompareAndSwap serializes updates
 // through a lock held by this process. It is the explicit escape hatch for a
 // backend that offers no conditional write.
 //
@@ -24,20 +24,20 @@ import (
 //
 // A store that already implements ConditionalWriter is returned unchanged,
 // and a nil store is returned as nil, so that a constructor rejects it.
-func SingleProcess(store Store) Store {
+func SingleProcess(store ObjectStore) Store {
 	if store == nil {
 		return nil
 	}
-	if _, ok := store.(ConditionalWriter); ok {
-		return store
+	if s, ok := store.(Store); ok {
+		return s
 	}
-	return &singleProcessStore{Store: store}
+	return &singleProcessStore{ObjectStore: store}
 }
 
 // singleProcessStore implements CompareAndSwap over a store without one.
 // CompareAndSwap holds mu exclusively; the reads hold it shared.
 type singleProcessStore struct {
-	Store
+	ObjectStore
 	mu sync.RWMutex
 }
 
@@ -45,35 +45,35 @@ type singleProcessStore struct {
 func (s *singleProcessStore) Get(ctx context.Context, path string) (io.ReadCloser, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.Store.Get(ctx, path)
+	return s.ObjectStore.Get(ctx, path)
 }
 
 // Exists reports whether path exists once no replacement is in progress.
 func (s *singleProcessStore) Exists(ctx context.Context, path string) (bool, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.Store.Exists(ctx, path)
+	return s.ObjectStore.Exists(ctx, path)
 }
 
 // List lists prefix once no replacement is in progress.
 func (s *singleProcessStore) List(ctx context.Context, prefix string) ([]string, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.Store.List(ctx, prefix)
+	return s.ObjectStore.List(ctx, prefix)
 }
 
 // ReadRange reads a range of path once no replacement is in progress.
 func (s *singleProcessStore) ReadRange(ctx context.Context, path string, offset, length int64) ([]byte, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.Store.ReadRange(ctx, path, offset, length)
+	return s.ObjectStore.ReadRange(ctx, path, offset, length)
 }
 
 // ReaderAt opens path once no replacement is in progress.
 func (s *singleProcessStore) ReaderAt(ctx context.Context, path string) (io.ReaderAt, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.Store.ReaderAt(ctx, path)
+	return s.ObjectStore.ReaderAt(ctx, path)
 }
 
 // CompareAndSwap applies the ConditionalWriter semantics under the process
@@ -104,7 +104,7 @@ func (s *singleProcessStore) CompareAndSwap(ctx context.Context, path, expected,
 // read returns the content at path and whether it exists. The caller holds
 // mu exclusively, so it reads through the wrapped store.
 func (s *singleProcessStore) read(ctx context.Context, path string) (string, bool, error) {
-	rc, err := s.Store.Get(ctx, path)
+	rc, err := s.ObjectStore.Get(ctx, path)
 	if errors.Is(err, ErrNotFound) {
 		return "", false, nil
 	}
