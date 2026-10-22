@@ -89,7 +89,7 @@ bytes.
 | StreamWriteRecords of three records | 63 | 6,208 |
 | JSONL Decode of three records | 35 | 5,568 |
 | Volume ReadAt within one of ten blocks | 44 | 8,960 |
-| Volume Commit of one block onto a small volume | 128 | 254,336 |
+| Volume Commit of one block onto a small volume | 140 | 334,784 |
 
 A change that exceeds a ceiling fails the test and must justify the increase
 in its pull request before the ceiling is raised. A change that reduces a

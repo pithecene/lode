@@ -35,8 +35,6 @@ type Ledger struct {
 	// and the blocks they committed.
 	volumeCommits []volume.SnapshotID
 	blocks        []Block
-	// stalled records that an abandoned commit stalled a Volume run.
-	stalled bool
 }
 
 // commit records a commit the library acknowledged.
@@ -74,14 +72,6 @@ func (l *Ledger) volumeCommit(id volume.SnapshotID, blocks []Block) {
 	defer l.mu.Unlock()
 	l.volumeCommits = append(l.volumeCommits, id)
 	l.blocks = append(l.blocks, blocks...)
-}
-
-// stall records that the settling Volume commit conflicted with no writer
-// left: an abandoned commit stalled the volume (CONTRACT_VOLUME).
-func (l *Ledger) stall() {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.stalled = true
 }
 
 // expire records snapshots an Expire report listed as expired.
@@ -140,16 +130,13 @@ func (l *Ledger) retention() (expired, failedReads []lode.DatasetSnapshotID) {
 
 // Report summarizes a finished run.
 type Report struct {
-	Seed      uint64
-	Commits   int
-	Conflicts int
-	Faults    int
-	Reads     int
-	Expired   int
-	Snapshots int
-	// Stalled reports that an abandoned commit stalled a Volume run, so
-	// that every later commit conflicted.
-	Stalled    bool
+	Seed       uint64
+	Commits    int
+	Conflicts  int
+	Faults     int
+	Reads      int
+	Expired    int
+	Snapshots  int
 	Violations []Violation
 }
 
@@ -164,7 +151,6 @@ func (l *Ledger) report(seed uint64, snapshots int) Report {
 		Reads:      l.reads,
 		Expired:    len(l.expired),
 		Snapshots:  snapshots,
-		Stalled:    l.stalled,
 		Violations: slices.Clone(l.violations),
 	}
 }
