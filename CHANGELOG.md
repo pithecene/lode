@@ -34,7 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Snapshot expiry**: `Dataset.Expire` removes the snapshots selected by ID, by partition, or by age, and `DryRun` previews the result. The head is never expired. Reading an expired snapshot returns the new `ErrSnapshotExpired`, which also matches `ErrNotFound`. The new `ErrHeadUncommitted` reports that expiry cannot proceed because the head is uncommitted or the dataset has no `latest` pointer; any commit creates the pointer. ([#174](https://github.com/pithecene/lode/issues/174))
+- **Snapshot expiry**: `Dataset.Expire` removes the snapshots selected by ID, by partition (on Hive layouts), or by age, and `DryRun` previews the result. The head is never expired. Reading an expired snapshot returns the new `ErrSnapshotExpired`, which also matches `ErrNotFound`. The new `ErrHeadUncommitted` reports that expiry cannot proceed because the head is uncommitted or because the dataset has snapshots but no `latest` pointer; any commit creates the pointer. ([#174](https://github.com/pithecene/lode/issues/174))
 - **Sweep of unreferenced objects**: `Dataset.Sweep` completes interrupted expiries and reclaims the data of snapshots that never committed once they are older than a grace period. ([#174](https://github.com/pithecene/lode/issues/174))
 - **`lode.SingleProcess`**: adds `CompareAndSwap` to a store without a conditional write, for writers that share one process.
 - **Concurrent writers on Windows**: the filesystem store implements `CompareAndSwap` on Windows, so several processes may write to one dataset or volume.
@@ -51,7 +51,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **A history no longer forks around an uncommitted head** ([#208](https://github.com/pithecene/lode/issues/208)): a commit adopts the snapshot that the `latest` pointer names as its parent even before that snapshot's manifest is persisted, `Latest` no longer replaces the pointer, and a failed read of the head is returned instead of being treated as absent. These paths produced the one fork observed in production under CAS.
-- **An abandoned Volume commit no longer stalls the volume**: a commit persists a staged copy of its manifest before it advances the pointer, so the next commit can adopt a parent whose writer terminated. A commit now makes five store calls instead of three.
+- **An abandoned Volume commit no longer stalls the volume**: a commit persists a staged copy of its manifest before it advances the pointer, so the next commit can adopt a parent whose writer terminated. Each commit makes two more store calls, to persist and then remove the staged copy.
 - **The filesystem store publishes objects atomically**: a concurrent reader can no longer open an empty object. The filesystem store now requires hard links, and every store rejects a key whose final segment begins with `.lode-tmp-`.
 - **A stream write retains the data of a snapshot that may be visible**: after a manifest write fails, the data object is deleted only if no manifest can have been stored; `Dataset.Sweep` reclaims it otherwise.
 - **S3 `CompareAndSwap` reports a concurrently deleted object as a conflict**: it returns `ErrSnapshotConflict`, so the commit retries.
