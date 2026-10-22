@@ -18,8 +18,9 @@ part of the surface lives and what v1.0 promises about it, so it is decided
 here with the rest. D10 comes from the investigation of the history fork
 observed in production; most of its parts change contracts rather than
 signatures, but they define what v1.0 promises about commits and listing.
-D11 comes from a review of the constructors against the call sites of
-Quarry and the examples; it bears on D1, D2, and D3.
+D11 proposes the v1.0 construction and record surface, judged at the call
+sites of Quarry and the examples; if accepted, it supersedes D1, D2, and
+D3.
 
 ---
 
@@ -53,7 +54,7 @@ here as the alternative, not the proposal.
 downstream dataset built without a codec. Quarry writes records through the
 JSONL codec and is unaffected. Mechanical: pass the `[]byte` directly.
 
-**Status.** Open.
+**Status.** Open. D11 would supersede it.
 
 ---
 
@@ -82,7 +83,8 @@ classified `ErrInvalidArgument` with a panic.
 removed in the same release; removing either Hive spelling breaks its users;
 `MustHiveLayout` is additive.
 
-**Status.** Open. Decide which Hive spelling survives.
+**Status.** Open. Decide which Hive spelling survives. D11 would supersede
+it.
 
 ---
 
@@ -109,7 +111,7 @@ per-target methods. Public surface: two sentinels become one.
 **Breaks.** Callers matching the two sentinels by identity. Grep shows
 only Lode's own tests do.
 
-**Status.** Open.
+**Status.** Open. D11 would supersede it.
 
 ---
 
@@ -573,7 +575,15 @@ refer to it instead of restating it.
 
 ---
 
-## D11 — Construction and record types
+## D11 — The v1.0 construction and record surface
+
+**Criterion.** The v1.0 surface is chosen for elegance and ergonomics at
+real call sites, with the guarantees unchanged: immutable snapshots, the
+commit protocol (CONTRACT_CORE §Head Pointer), `CompareAndSwap` on every
+pointer write, explicit and persisted metadata, and the bounds of
+CONTRACT_COMPLEXITY. Compatibility with the v0 surface is not a criterion:
+Lode is not yet at v1.0, and every caller migrates once. Volume is
+excluded (D9).
 
 **Current.** Each handle is constructed separately from a `StoreFactory`
 and a list of `Option` values: `NewDataset(id, factory, opts...)`,
@@ -613,137 +623,79 @@ persisted nowhere.
    `NewDatasetReader` fail at run time with
    `ErrOptionNotValidForDatasetReader` (D3).
 
-**Options.** Each option is shown as Quarry's writer construction would
-read under it.
+**Proposed.** One root handle per store, typed record datasets, a separate
+blob handle, and datasets that describe themselves. Quarry's writer and
+reader would read as follows:
 
-1. **Typed factory with the current constructors.** The factory carries the
-   store's type, and each constructor states what it requires:
+```go
+root := lode.Open(ctx, lode.FS("/data"))
+events, err := root.Records("events", lode.JSONL[Event](),
+	lode.WithLayout(lode.Hive("source", "category", "day", "run_id", "event_type")),
+	lode.WithRetry(3))
+if err != nil { ... }
+snap, err := events.Write(ctx, batch, RunInfo{RunID: runID, Files: n})
+got, err := events.Read(ctx, snap.ID) // []Event
+var info RunInfo
+err = snap.Metadata.Decode(&info)
 
-   ```go
-   type Factory[S ObjectStore] func() (S, error)
+view, err := lode.OpenReadOnly(ctx, lode.FS("/data")).Records("events", lode.JSONL[Event]())
+```
 
-   func NewDatasetReader[S ObjectStore](f Factory[S], opts ...Option) (DatasetReader, error)
-   func NewDataset[S Store](id DatasetID, f Factory[S], opts ...Option) (Dataset, error)
-   ```
+| Element | Shape | Resolves |
+|---|---|---|
+| Factory | `type Factory[S ObjectStore] func() (S, error)`. `lode.FS`, `lode.Memory`, and the S3 adapter return `Factory[Store]`; constructing one performs no I/O and returns no error. | Retains the single error check |
+| Root | `func Open[S Store](ctx context.Context, f Factory[S]) *Root` and `func OpenReadOnly[S ObjectStore](ctx context.Context, f Factory[S]) *ReadRoot`. Each calls the factory once and records any error, which every method of the handle returns. Every dataset of a root shares its one store value. | Cost 4; cost 2 in part |
+| Record datasets | A generic method, `func (r *Root) Records[T any](id DatasetID, codec Codec[T], opts ...DatasetOption) (Records[T], error)`. `Records[T]` embeds the read-only `RecordView[T]`, which is what `ReadRoot.Records` returns. Codec constructors return the interface type, so that `T` is inferred from the codec. | Cost 3; D1 |
+| Blob datasets | `func (r *Root) Blobs(id DatasetID, opts ...DatasetOption) (Blobs, error)`, whose `Write` takes one `[]byte` and whose `Read` returns one, with streaming writes. | D1 |
+| Descriptor | Before the first commit, the handle persists a dataset descriptor that records the complete configuration: the layout with its partition keys, and the codec, compressor, and checksum, each with its settings. Every component implements `Describe() Descriptor` (a name and settings). A view reads the descriptor and takes no options; a writer whose configuration conflicts with it is rejected. | Cost 1 |
+| Layout | An exported `Layout` type with one spelling per layout: `lode.Default()`, `lode.Hive(keys...)`, and `lode.Flat()`. An invalid key is reported by `Records` or `Blobs`, as every construction error is. | D2 |
+| Options | One option type, `DatasetOption`, accepted only by writer handles; a view's configuration comes from the descriptor. The `ErrOptionNotValidFor...` sentinels are removed. | Cost 5; D3 |
+| Metadata | `Write` takes any value that encodes as a JSON object, a struct or a map. `Snapshot.Metadata` retains the persisted JSON and decodes it on request (`Decode(&v)`), so a caller's numbers keep their types. | Cost 3 (metadata) |
 
-   `StoreFactory` becomes an alias of `Factory[Store]`, so that the
-   factories returned by `NewFSFactory` and `NewMemoryFactory` are already
-   of the generic type. Type inference then requires no annotation at
-   existing call sites, and a read-only factory passed to `NewDataset` fails
-   to compile. This resolves
-   cost 4 and retains the single error check, but leaves costs 1, 2, 3,
-   and 5.
+The surface requires Go 1.27 for generic methods (#261). A prototype
+compiled with Go 1.27.3 confirms the chained construction, the inference
+of the record type from the codec, typed metadata, and a view over a store
+without `CompareAndSwap`.
 
-2. **A root handle with package-level typed datasets.** A handle is opened
-   once per store root and binds one store value, which every dataset
-   obtained from it shares:
+**Guarantees.** The commit protocol, the CAS requirement, immutability, and
+the snapshot model are unchanged; the handles change how a caller reaches
+them, not what they do. Metadata becomes more explicit: the descriptor
+persists the configuration that callers now restate at each construction.
+Constructing a handle costs one `Get` of the descriptor, and a dataset's
+first commit costs one `CompareAndSwap` to create it; commits, reads, and
+listings keep their bounds. Generic records add no per-record cost beyond
+the codec's own encoding.
 
-   ```go
-   repo, err := lode.Open(ctx, lode.FS(root))
-   if err != nil { ... }
-   events, err := lode.DatasetOf[Record](repo, "events",
-   	lode.WithHiveLayout("source", "category", "day", "run_id", "event_type"),
-   	lode.WithCodec(lode.JSONL[Record]()), lode.WithRetryCount(3))
-   ```
+**Alternatives considered.**
+- **A typed factory with the current constructors.** It removes cost 4 and
+  nothing else.
+- **Package-level generic constructors** (`lode.RecordsOf[T](root, ...)`).
+  They are what Go before 1.27 permits; they break the chain, so a writer
+  checks two errors.
+- **A root-level layout.** One layout per root cannot represent a root that
+  holds datasets with different layouts, which Lode supports.
 
-   Before the first commit of a dataset, the handle persists a dataset
-   descriptor that records its complete configuration, not only component names: the layout's
-   grammar and partition keys, the codec and compressor with their settings
-   (a Parquet codec's schema, for example), and the checksum. The
-   descriptor is created with `CompareAndSwap` at a
-   path that no layout uses (for example, `_lode/datasets/<id>.json`; the
-   dataset ID grammar must then exclude the prefix). Because the descriptor
-   precedes the first commit, a reader never observes a committed dataset
-   without one; a descriptor that names no snapshot denotes an empty
-   dataset, and while no snapshot exists, a handle with a corrected
-   configuration may replace it with `CompareAndSwap`. A later handle reads
-   the descriptor: a reader needs no layout option, and a handle whose
-   layout, codec, compressor, or checksum (configured or absent) conflicts
-   with it is rejected. Retry
-   settings govern a handle rather than the data and are not persisted.
-   Datasets under one root may therefore retain different layouts, as they
-   may today, and every layout, the flat layout included, can enumerate
-   datasets through the descriptors. `OpenReadOnly` takes an
-   `ObjectStore`. The descriptor requires that every component have a
-   stable, serializable description. Today `Codec`, `Compressor`, and the
-   checksum expose only a name, and the layout exposes none, so this option
-   either adds a description method to those interfaces, which breaks
-   custom implementations, or records names alone and detects only a
-   change of component, not of its settings. This resolves cost 4, and
-   cost 3 for records; snapshot metadata remains `map[string]any`, so its
-   numbers still return as `float64`. It resolves cost 1 in part:
-   the layout is stated once, but each handle still states its codec, which
-   the descriptor checks, and its retry settings. Cost 5 is resolved only
-   if writer options are also separated from reader options (D3). Two
-   error checks remain.
+**Open questions.**
+1. **Objects outside any dataset.** Quarry stores sidecar files beside a
+   dataset and builds their paths from Lode's path grammar. Either the root
+   exposes its store for such objects, or attachments become part of a
+   snapshot. The second keeps them within the snapshot model but is a new
+   feature; the first is an escape hatch that `AGENTS.md` discourages.
+2. **The descriptor's path.** It must lie outside every layout's grammar
+   (for example, `_lode/datasets/<id>.json`), and D8 must name it.
+3. **Migration of existing datasets.** A dataset written before descriptors
+   has none. A commit must not create one implicitly, because a wrong
+   configuration would then become authoritative. An explicit migration
+   validates the supplied configuration against the existing manifests and
+   by decoding existing data, and fails on any setting it cannot verify or
+   on an existing object under the reserved prefix.
 
-3. **A root handle with generic methods.** As option 2, with the dataset
-   obtained through a generic method of a concrete `Repo`; since Go 1.27, a
-   method declaration may declare its own type parameters
-   ([release notes](https://go.dev/doc/go1.27)). `Open` returns only the
-   handle, `func Open[S Store](ctx context.Context, f Factory[S]) *Repo`,
-   which takes no options, because every option belongs to a dataset; it
-   records any error of the factory and returns that error from every
-   method of the handle, so a
-   chained construction checks one error, as a factory does today:
+**Supersedes.** If accepted, D11 decides D1 (separate record and blob
+handles), D2 (an exported `Layout` with one spelling per layout), and D3
+(one option type with one target).
 
-   ```go
-   events, err := lode.Open(ctx, lode.FS(root)).Dataset("events", lode.JSONL[Record](),
-   	lode.WithHiveLayout("source", "category", "day", "run_id", "event_type"),
-   	lode.WithRetryCount(3))
-   ```
-
-   The method's signature is `func (r *Repo) Dataset[T any](id DatasetID,
-   codec Codec[T], opts ...DatasetOption) (Dataset[T], error)`. The record
-   type is inferred from the codec, which is therefore a typed parameter of
-   its own; a type parameter cannot be inferred from an untyped variadic
-   option. A prototype compiled with Go 1.27.3 confirms both the chain and
-   the inference. The Go version this branch pins (1.25.6) rejects a
-   method with its own type parameters, so this option requires #261.
-   `Repo` must be a concrete type, because interface methods cannot declare
-   type parameters; the returned `Dataset[T]` remains an interface.
-
-None of the options resolves cost 2 entirely. Options 2 and 3 give one
-store value per `Repo`, not per process: each `Open` calls the factory, so
-components that must serialize through `lode.SingleProcess` must share one
-`Repo`. Whether the root handle exposes that
-store for objects outside any dataset, or whether such objects become a
-part of the layout, is a separate question that this entry records but does
-not decide.
-
-**Proposed.** Option 3, provided that the Go 1.27.3 minimum (#261) is
-accepted; otherwise, option 2. Options 2 and 3 persist each dataset's
-configuration, as `AGENTS.md` requires of metadata. Option 3 also retains
-the single error check of the current factory. Options 2 and 3 type the
-records of a dataset with a codec but do not separate blob datasets from
-record datasets: D1 remains open, narrowed to that separation (for example,
-a distinct blob handle). D3 is resolved only if the options are also
-divided by target, which this entry does not yet specify. D2 remains,
-because the layout option still takes a layout value.
-
-**Breaks.**
-- Every constructor call: the examples, the README, `PUBLIC_API.md`, and
-  Quarry's three constructions and two query functions.
-- Under options 2 and 3, typed records require generic `Codec[T]` and
-  `Dataset[T]` interfaces in place of today's `Codec` and `Dataset`: every
-  custom codec and every caller of `Write` and `Read` changes, and the
-  bundled codecs gain typed forms (`JSONL[T]`, a typed Parquet codec).
-- Under options 2 and 3, a dataset written before the change has no
-  descriptor. A commit must not create one implicitly, because a handle
-  with a wrong configuration would then make that configuration
-  authoritative and strand the existing snapshots. The descriptor is
-  instead created by an explicit migration that validates the supplied
-  configuration against the existing manifests (their recorded codec,
-  compressor, and paths) and by decoding existing data objects with the
-  supplied codec and compressor. The manifests record only component
-  names, so a setting that neither check can verify fails the migration
-  rather than becoming authoritative. Until the migration, a reader
-  requires the layout option. The descriptors are new objects under a
-  reserved prefix, which D8 must name. The migration must detect any
-  existing object under that prefix, such as a consumer's own files, and
-  fail until it is relocated, and a dataset whose ID begins with the prefix
-  must be renamed. A consumer that reads objects by path is
-  otherwise unaffected.
-- Under option 3, the minimum Go version (#261).
+**Breaks.** Every caller, once: the examples, the README, `PUBLIC_API.md`,
+and Quarry, whose three constructions become one root and one `Records`
+call per role and whose queries lose their type assertions.
 
 **Status.** Open.
