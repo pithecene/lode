@@ -31,7 +31,7 @@ tasks:
       - ./scripts/fuzz.sh {{.FUZZTIME}}
 
   chaos:
-    desc: Run the chaos harness (BACKENDS, LAYOUTS, FAULTS, RETENTION, VOLUME, DURATION, WRITERS, SEED; s3:up for S3)
+    desc: Run the chaos harness (BACKENDS, LAYOUTS, FAULTS, RETENTION, VOLUME, DURATION, WRITERS, SEED, MEMPROFILE)
     vars:
       BACKENDS: '{{.BACKENDS | default "memory,fs"}}'
       LAYOUTS: '{{.LAYOUTS | default "default,hive"}}'
@@ -41,6 +41,7 @@ tasks:
       DURATION: '{{.DURATION | default "30s"}}'
       WRITERS: '{{.WRITERS | default "8"}}'
       SEED: '{{.SEED | default "0"}}'
+      MEMPROFILE: '{{.MEMPROFILE | default ""}}'
     cmds:
       - >-
         go test ./internal/chaos -run TestChaos -count=1 -v -timeout 0 -chaos
@@ -48,7 +49,7 @@ tasks:
         -chaos.faults={{shellQuote .FAULTS}}
         -chaos.retention={{shellQuote .RETENTION}} -chaos.volume={{shellQuote .VOLUME}}
         -chaos.duration={{shellQuote .DURATION}} -chaos.writers={{shellQuote .WRITERS}}
-        -chaos.seed={{shellQuote .SEED}}
+        -chaos.seed={{shellQuote .SEED}} -chaos.memprofile={{shellQuote .MEMPROFILE}}
 
   mutate:
     desc: Run mutation tests on the module (lode, internal; gremlins; config in .gremlins.yaml)

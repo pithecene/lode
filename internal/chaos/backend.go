@@ -7,6 +7,7 @@ import (
 	"maps"
 	"os"
 	"slices"
+	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -21,9 +22,15 @@ import (
 // Backend is a store shared by every writer and reader of one run, and the
 // release of whatever the run created on it. Release reports what it failed
 // to remove, so a run cannot pass while leaving data in a shared bucket.
+// RetainsData marks a store that keeps the data in process memory, whose
+// heap therefore grows with the run by design. Lingering, when set, reports
+// whether a goroutine's stack belongs to the backend's own machinery, which
+// legitimately outlives the run, rather than to a leak.
 type Backend struct {
-	Store   lode.Store
-	Release func(ctx context.Context) error
+	Store       lode.Store
+	Release     func(ctx context.Context) error
+	RetainsData bool
+	Lingering   func(stack string) bool
 }
 
 func keep(context.Context) error { return nil }
@@ -38,7 +45,7 @@ type openBackend func(ctx context.Context, dir, runID string) (Backend, error)
 // configured through CHAOS_S3_* environment variables (see s3FromEnv).
 var backends = map[string]openBackend{
 	"memory": func(context.Context, string, string) (Backend, error) {
-		return Backend{Store: lode.NewMemory(), Release: keep}, nil
+		return Backend{Store: lode.NewMemory(), Release: keep, RetainsData: true}, nil
 	},
 	"fs": func(_ context.Context, dir, _ string) (Backend, error) {
 		store, err := lode.NewFSFactory(dir)()
@@ -66,6 +73,25 @@ func OpenBackend(ctx context.Context, name, dir, runID string) (Backend, error) 
 	return backends[name](ctx, dir, runID)
 }
 
+// pooledConnectionFrames are the functions in which the HTTP client's
+// connection pool keeps a goroutine per open connection: two for an
+// HTTP/1.1 connection, one for an HTTP/2 connection, which an HTTPS
+// endpoint such as AWS S3 or R2 negotiates.
+var pooledConnectionFrames = []string{
+	"net/http.(*persistConn).readLoop",
+	"net/http.(*persistConn).writeLoop",
+	"net/http.(*http2ClientConn).readLoop",
+}
+
+// idleHTTPConnection reports whether a goroutine serves a connection that
+// the HTTP client keeps open for reuse. The AWS SDK owns its client and
+// pools connections privately, so such goroutines outlive a run on an S3
+// backend by design. A response body left open also holds a connection, but
+// it retains memory with every request, which the heap check reports.
+func idleHTTPConnection(stack string) bool {
+	return slices.ContainsFunc(pooledConnectionFrames, func(frame string) bool { return strings.Contains(stack, frame) })
+}
+
 // dockerS3 creates a bucket for the run on a local S3-compatible service and
 // removes the bucket's objects and the bucket on release.
 func dockerS3(ctx context.Context, endpoint, key, secret, runID string) (Backend, error) {
@@ -81,7 +107,11 @@ func dockerS3(ctx context.Context, endpoint, key, secret, runID string) (Backend
 	if err != nil {
 		return Backend{}, err
 	}
-	return Backend{Store: store, Release: func(ctx context.Context) error { return emptyBucket(ctx, client, bucket, "") }}, nil
+	return Backend{
+		Store:     store,
+		Release:   func(ctx context.Context) error { return emptyBucket(ctx, client, bucket, "") },
+		Lingering: idleHTTPConnection,
+	}, nil
 }
 
 // s3FromEnv opens an existing bucket on any S3-compatible store (AWS S3,
@@ -116,7 +146,11 @@ func s3FromEnv(ctx context.Context, runID string) (Backend, error) {
 	if err != nil {
 		return Backend{}, err
 	}
-	return Backend{Store: store, Release: func(ctx context.Context) error { return emptyBucket(ctx, client, bucket, prefix) }}, nil
+	return Backend{
+		Store:     store,
+		Release:   func(ctx context.Context) error { return emptyBucket(ctx, client, bucket, prefix) },
+		Lingering: idleHTTPConnection,
+	}, nil
 }
 
 // refuseVersioned fails for a bucket with versioning enabled or suspended.
