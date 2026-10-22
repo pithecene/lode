@@ -137,21 +137,29 @@ func FuzzPartitionPrefix(f *testing.F) {
 
 // FuzzJoin checks that join, which builds a path in one allocation, returns
 // exactly what path.Join returns for the same parts, including empty parts,
-// separators, and dot segments.
+// separators, and dot segments. The input is split on NUL into the parts, so
+// the fuzzer varies their number as well as their content; the seeds cover
+// the counts that layouts pass (two, three, five, and eight).
 func FuzzJoin(f *testing.F) {
-	for _, seed := range [][3]string{
+	for _, seed := range [][]string{
+		{},
+		{""},
+		{"datasets", "ds"},
 		{"", "", ""},
 		{"datasets", "ds", "latest"},
 		{"", "ds", ""},
 		{"root/", "/ds", "x//y"},
 		{".", "..", "a/./b/../c"},
 		{"/", "", "/"},
+		{"root", "datasets", "ds", "snapshots", "1"},
+		{"", "datasets", "ds", "partitions", "day=1/region=us", "segments", "7", "data"},
 	} {
-		f.Add(seed[0], seed[1], seed[2])
+		f.Add(strings.Join(seed, "\x00"))
 	}
-	f.Fuzz(func(t *testing.T, a, b, c string) {
-		if got, want := join(a, b, c), path.Join(a, b, c); got != want {
-			t.Fatalf("join(%q, %q, %q) = %q, want %q", a, b, c, got, want)
+	f.Fuzz(func(t *testing.T, input string) {
+		parts := strings.Split(input, "\x00")
+		if got, want := join(parts...), path.Join(parts...); got != want {
+			t.Fatalf("join(%q) = %q, want %q", parts, got, want)
 		}
 	})
 }
