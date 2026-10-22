@@ -92,8 +92,11 @@ manifest as a pending commit:
   therefore names an ID without a manifest. Readers resolving lineage MUST
   treat such a parent as the end of the explainable chain, as they treat an
   expired parent (CONTRACT_RETENTION §Lineage).
-- A Volume commit requires its parent's manifest and therefore returns
-  `ErrSnapshotConflict` until that manifest is persisted (CONTRACT_VOLUME).
+- A Volume commit requires its parent's manifest. It therefore persists a
+  staged copy of its own manifest before it advances the pointer, so the
+  next commit can load the parent even after an abandoned commit; only a
+  parent without either copy makes a Volume commit return
+  `ErrSnapshotConflict` (CONTRACT_VOLUME §Error Semantics).
 - Parent resolution selects the largest snapshot ID only when the pointer
   is missing or does not contain a snapshot ID.
 - "Missing" means that the store reported the object as not found. When a

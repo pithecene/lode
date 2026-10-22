@@ -170,7 +170,7 @@ func (d *dataset) stageBlob(ctx context.Context, p *pendingSnapshot, data []any)
 }
 
 func (d *dataset) stageRecords(ctx context.Context, p *pendingSnapshot, data []any) error {
-	partitions, err := d.partitionRecords(data)
+	partitions, err := d.layout.partitioner().group(data)
 	if err != nil {
 		return fmt.Errorf("lode: partitioning failed: %w", err)
 	}
@@ -188,21 +188,6 @@ func (d *dataset) stageRecords(ctx context.Context, p *pendingSnapshot, data []a
 		p.timestamps.observe(record)
 	}
 	return nil
-}
-
-func (d *dataset) partitionRecords(records []any) (map[string][]any, error) {
-	partitions := make(map[string][]any)
-	part := d.layout.partitioner()
-
-	for _, record := range records {
-		key, err := part.partitionKey(record)
-		if err != nil {
-			return nil, err
-		}
-		partitions[key] = append(partitions[key], record)
-	}
-
-	return partitions, nil
 }
 
 // filePath places a data file of the given role in the snapshot's directory.

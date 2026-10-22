@@ -381,9 +381,11 @@ that names a snapshot without a manifest. The investigation of
 [#208](https://github.com/pithecene/lode/issues/208)
 (`dogfood_audit_2026-10.md` F3) identified six further questions that the
 contracts either leave open or answer inconsistently. Each is decided
-separately below. Only D10d changes the commit protocol: it removes the
+separately below. D10d changes the commit protocol: it removes the
 implicit pointer replacement by `Delete` and `Put`, which remains only in
-`lode.SingleProcess`, a wrapper the caller selects explicitly.
+`lode.SingleProcess`, a wrapper the caller selects explicitly. The
+resolution of D10e (#260) changes the Volume commit, which now persists a
+staged manifest before it advances the pointer.
 
 ### D10a — A listing cursor is not a commit-order cursor
 
@@ -554,7 +556,12 @@ stability gate (`V1_READINESS.md` §4).
 
 **Breaks.** Nothing.
 
-**Status.** Open.
+**Status.** Superseded by #260 (2026-10-22). A Volume commit now persists
+a staged copy of its manifest before it advances the pointer, so the next
+commit adopts an abandoned commit and merges its blocks (CONTRACT_VOLUME
+§Error Semantics). The manual repair of option 1 remains necessary only
+for a pointer that names a commit persisted by a release earlier than
+v0.11.0, or a pointer edited by hand.
 
 ### D10f — Commit rules are stated in several contracts
 
