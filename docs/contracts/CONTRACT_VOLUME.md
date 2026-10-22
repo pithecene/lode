@@ -342,10 +342,11 @@ per retry, before step 1. If all retries are exhausted,
 
 No new type of storage engine is required.
 
-The existing adapter capabilities remain sufficient:
+The capabilities that every `Store` provides are sufficient:
 - immutable object writes;
-- `List`, `Exists`, `Get`, and `Delete`; and
-- range reads.
+- `List`, `Exists`, `Get`, and `Delete`;
+- range reads; and
+- `CompareAndSwap` (CONTRACT_STORAGE §ConditionalWriter Capability).
 
 Adapters MUST preserve the semantics under which the manifest defines what
 is committed.
