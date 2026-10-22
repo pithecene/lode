@@ -9,3 +9,8 @@ import "os"
 func openRead(name string) (*os.File, error) {
 	return os.Open(name)
 }
+
+// replaceFile atomically renames from to to, replacing an existing to.
+func replaceFile(from, to string) error {
+	return os.Rename(from, to)
+}

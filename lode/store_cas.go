@@ -75,9 +75,9 @@ func (f *fsStore) CompareAndSwap(_ context.Context, path, expected, replacement 
 		return fmt.Errorf("lode: cas close temp: %w", err)
 	}
 
-	// os.Rename replaces an existing target on every supported platform: on
-	// Windows it calls MoveFileEx with MOVEFILE_REPLACE_EXISTING.
-	if err := os.Rename(tmpName, fullPath); err != nil {
+	// replaceFile replaces the pointer even while a reader holds it open,
+	// which os.Rename cannot do on Windows.
+	if err := replaceFile(tmpName, fullPath); err != nil {
 		_ = os.Remove(tmpName)
 		return fmt.Errorf("lode: cas rename: %w", err)
 	}
