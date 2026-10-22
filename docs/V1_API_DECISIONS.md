@@ -398,7 +398,8 @@ pattern.
    position in `(Partition, ID)` order, which within one partition is ID
    order, not commit order, and that v1.0 offers no cursor over commits. A
    consumer that must observe every commit reconciles against a full
-   listing.
+   listing, which on a Hive layout omits a canonical-only snapshot until
+   D10b is resolved.
 2. Assign each snapshot an ID at commit time that exceeds its parent's ID,
    so that ID order equals commit order along the history. This changes the
    meaning of the ID, which retention reads as the write's start instant
@@ -524,7 +525,10 @@ Semantics). No API performs the repair.
 
 **Options.**
 1. Document the manual procedure in `PUBLIC_API.md`, to be performed while
-   no writer is active, followed by `Latest` on any existing `Volume` value:
+   no writer is active. Afterward, a `Volume` value that remembers a head
+   other than the restored one refreshes it as CONTRACT_VOLUME §Error
+   Semantics requires; after the repair of a first commit, that `Latest`
+   call returns `lode.ErrNoSnapshots`. The procedure:
    - If the Volume has an earlier snapshot, replace the pointer content,
      the abandoned ID, with the ID of the previous head through
      `CompareAndSwap(ctx, "volumes/<id>/latest", <abandoned ID>, <previous
