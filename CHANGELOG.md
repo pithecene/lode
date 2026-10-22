@@ -53,8 +53,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A history no longer forks around an uncommitted head** ([#208](https://github.com/pithecene/lode/issues/208)): a commit adopts the snapshot that the `latest` pointer names as its parent even before that snapshot's manifest is persisted, `Latest` no longer replaces the pointer, and a failed read of the head is returned instead of being treated as absent. These paths produced the one fork observed in production under CAS.
 - **An abandoned Volume commit no longer stalls the volume**: a commit persists a staged copy of its manifest before it advances the pointer, so the next commit can adopt a parent whose writer terminated. Each commit makes two more store calls, to persist and then remove the staged copy.
 - **The filesystem store publishes objects atomically**: a concurrent reader can no longer open an empty object. The filesystem store now requires hard links, and every store rejects a key whose final segment begins with `.lode-tmp-`.
-- **A stream write retains the data of a snapshot that may be visible**: after a manifest write fails, the data object is deleted only if no manifest can have been stored; `Dataset.Sweep` reclaims it otherwise.
-- **S3 `CompareAndSwap` reports a concurrently deleted object as a conflict**: it returns `ErrSnapshotConflict`, so the commit retries.
+- **A stream write retains the data of a snapshot that may be visible**: after a manifest write fails, the data object is deleted only if no manifest can have been stored. If the commit did fail, `Dataset.Sweep` reclaims the retained object; if the manifest was stored, the snapshot is live and its data remains.
+- **S3 `CompareAndSwap` reports a concurrently deleted object as a conflict**: it returns `ErrSnapshotConflict`, which a commit configured with `WithRetryCount` retries.
 - **The filesystem store rejects a path that begins with `/` on Windows**: it returns `ErrInvalidPath`, as on other platforms.
 
 ### Security
