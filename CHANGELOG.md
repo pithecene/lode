@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking Changes
 
-- **Every `Store` must implement `CompareAndSwap`**: `Store` now combines `ObjectStore` with `ConditionalWriter`, and the Delete+Put pointer update, which could fork a history under concurrent writers, is removed. An adapter without a conditional write can be wrapped with `lode.SingleProcess` when every writer runs in one process. On platforms without file locks, such as Plan 9, the filesystem store's `CompareAndSwap` returns an error that matches `errors.ErrUnsupported`.
+- **Every `Store` must implement `CompareAndSwap`**: `Store` now combines `ObjectStore` with `ConditionalWriter`, and the Delete+Put pointer update, which could fork a history under concurrent writers, is removed. An adapter without a conditional write can be wrapped with `lode.SingleProcess` when every writer runs in one process and uses the same wrapped store. On platforms without file locks, such as Plan 9, the filesystem store's `CompareAndSwap` returns an error that matches `errors.ErrUnsupported`.
 - **`Store.Get` must return `ErrNotFound` for a missing path**: Lode now distinguishes an absent object from a failed read. The bundled adapters already comply.
 - **Go 1.27.3 is the minimum Go version**: Go 1.25 no longer receives security fixes.
 - **The module path is `github.com/pithecene/lode`**: it replaces `github.com/pithecene-io/lode`, under which releases up to v0.10.0 remain available.
@@ -36,13 +36,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Snapshot expiry**: `Dataset.Expire` removes the snapshots selected by ID, by partition (on Hive layouts), or by age, and `DryRun` previews the result. The head is never expired. Reading an expired snapshot returns the new `ErrSnapshotExpired`, which also matches `ErrNotFound`. The new `ErrHeadUncommitted` reports that expiry cannot proceed because the head is uncommitted or because the dataset has snapshots but no `latest` pointer; any commit creates the pointer. ([#174](https://github.com/pithecene/lode/issues/174))
 - **Sweep of unreferenced objects**: `Dataset.Sweep` completes interrupted expiries and reclaims the data of snapshots that never committed once they are older than a grace period. ([#174](https://github.com/pithecene/lode/issues/174))
-- **`lode.SingleProcess`**: adds `CompareAndSwap` to a store without a conditional write, for writers that share one process.
+- **`lode.SingleProcess`**: adds `CompareAndSwap` to a store without a conditional write by serializing its calls under a lock in the process. Writers are serialized only if they use the same returned store, and writers in other processes are not coordinated.
 - **Concurrent writers on Windows**: the filesystem store implements `CompareAndSwap` on Windows, so several processes may write to one dataset or volume.
 - **Documentation**: `CONTRACT_RETENTION.md`, the guides in `docs/guides/`, the example `examples/retention/`, and a security policy in `SECURITY.md`.
 
 ### Changed
 
-- **Fewer S3 requests per commit**: a commit through a store that made the previous commit issues three requests instead of four, and the first commit of a dataset five instead of six.
+- **Fewer S3 requests per commit**: the first commit of a dataset issues five requests instead of six, and each commit after the second through the same store issues three instead of four.
 - **Fewer allocations**: the JSON Lines decoder no longer allocates 64 KiB for every file, so a read of a small file allocates 88 percent fewer bytes, and writes and reads allocate fewer objects.
 - **Snapshot IDs include a random suffix**: an ID has the form `<instant>-<nonce>`, so a clock that repeats can no longer issue the same ID twice. IDs remain ordered by instant, and earlier IDs remain valid.
 - **Listings tolerate concurrent deletion**: `Snapshots`, `Latest`, `ListManifests`, and `ListPartitions` omit a manifest that is deleted during the listing instead of failing.
@@ -65,7 +65,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Upgrade Notes
 
 - **Module path**: replace `github.com/pithecene-io/lode` with `github.com/pithecene/lode` in imports and in `go.mod`.
-- **Custom store adapters**: implement `CompareAndSwap`, or wrap the adapter with `lode.SingleProcess` when every writer runs in one process, and return `ErrNotFound` from `Get` for a missing path.
+- **Custom store adapters**: implement `CompareAndSwap`, or wrap it with `lode.SingleProcess` when every writer runs in one process and uses the same wrapped store, and return `ErrNotFound` from `Get` for a missing path.
 - **Volume**: import `github.com/pithecene/lode/lode/volume` and rename according to the table above.
 - **Snapshot IDs**: code that parsed an ID as an integer must treat it as an opaque string.
 - **No data migration required**: the storage layout and the manifest format are unchanged.
