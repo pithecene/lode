@@ -2,6 +2,8 @@ package lode
 
 import (
 	"bytes"
+	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -33,6 +35,65 @@ func BenchmarkDataset_Read(b *testing.B) {
 			b.Fatal(err)
 		}
 	}
+}
+
+// -----------------------------------------------------------------------------
+// BenchmarkJSONLCodec_Decode measures decoding files of increasing size, so a
+// fixed cost per file and a cost per record can be told apart.
+// -----------------------------------------------------------------------------
+
+func BenchmarkJSONLCodec_Decode(b *testing.B) {
+	codec := NewJSONLCodec()
+	for _, n := range []int{3, 1_000, 100_000} {
+		var buf bytes.Buffer
+		if err := codec.Encode(&buf, benchRecords(n)); err != nil {
+			b.Fatal(err)
+		}
+		data := buf.Bytes()
+		b.Run(fmt.Sprintf("records=%d", n), func(b *testing.B) {
+			b.SetBytes(int64(len(data)))
+			for b.Loop() {
+				if _, err := codec.Decode(bytes.NewReader(data)); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+// BenchmarkJSONLCodec_DecodeLineLength measures decoding a file of ten
+// records whose lines have the given length, since the decoder's buffer
+// must grow to the longest line.
+func BenchmarkJSONLCodec_DecodeLineLength(b *testing.B) {
+	codec := NewJSONLCodec()
+	for _, size := range []int{1 << 10, 16 << 10, 48 << 10, 256 << 10} {
+		records := make([]any, 10)
+		for i := range records {
+			records[i] = D{"id": strconv.Itoa(i), "payload": strings.Repeat("x", size)}
+		}
+		var buf bytes.Buffer
+		if err := codec.Encode(&buf, records); err != nil {
+			b.Fatal(err)
+		}
+		data := buf.Bytes()
+		b.Run(fmt.Sprintf("line=%dKiB", size>>10), func(b *testing.B) {
+			b.SetBytes(int64(len(data)))
+			for b.Loop() {
+				if _, err := codec.Decode(bytes.NewReader(data)); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+// benchRecords builds n records of a representative shape.
+func benchRecords(n int) []any {
+	records := make([]any, n)
+	for i := range records {
+		records[i] = D{"id": strconv.Itoa(i), "name": "record", "value": i, "tags": []any{"a", "b"}}
+	}
+	return records
 }
 
 // -----------------------------------------------------------------------------
