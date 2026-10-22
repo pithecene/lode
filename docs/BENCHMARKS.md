@@ -83,7 +83,7 @@ bytes.
 
 | Gate | Allocations | Bytes |
 |------|------------:|------:|
-| Write of three records | 61 | 6,208 |
+| Write of three records | 58 | 6,080 |
 | Read of three records | 70 | 8,512 |
 | StreamWrite of one kibibyte | 33 | 6,784 |
 | StreamWriteRecords of three records | 63 | 6,208 |
