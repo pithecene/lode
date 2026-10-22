@@ -83,6 +83,37 @@ func TestFSStore_CompareAndSwap(t *testing.T) {
 		}
 	})
 
+	// An open reader must not prevent the replacement: on Windows a reader
+	// opened without delete sharing makes the rename fail.
+	t.Run("update while a reader holds the pointer", func(t *testing.T) {
+		ctx := t.Context()
+		store, err := NewFS(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		cw := store.(ConditionalWriter)
+		if err := cw.CompareAndSwap(ctx, "ptr/latest", "", "snap-1"); err != nil {
+			t.Fatal(err)
+		}
+		held, err := store.Get(ctx, "ptr/latest")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer closer(held)()
+
+		if err := cw.CompareAndSwap(ctx, "ptr/latest", "snap-1", "snap-2"); err != nil {
+			t.Fatalf("CompareAndSwap with an open reader: %v", err)
+		}
+		rc, err := store.Get(ctx, "ptr/latest")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer closer(rc)()
+		if data, _ := io.ReadAll(rc); string(data) != "snap-2" {
+			t.Errorf("pointer = %q, want snap-2", data)
+		}
+	})
+
 	t.Run("conflict mismatch", func(t *testing.T) {
 		ctx := t.Context()
 		tmpDir, err := os.MkdirTemp("", "lode-test-*")
