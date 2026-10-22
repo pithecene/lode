@@ -715,9 +715,18 @@ because the layout option still takes a layout value.
 **Breaks.**
 - Every constructor call: the examples, the README, `PUBLIC_API.md`, and
   Quarry's three constructions and two query functions.
+- Under options 2 and 3, typed records require generic `Codec[T]` and
+  `Dataset[T]` interfaces in place of today's `Codec` and `Dataset`: every
+  custom codec and every caller of `Write` and `Read` changes, and the
+  bundled codecs gain typed forms (`JSONL[T]`, a typed Parquet codec).
 - Under options 2 and 3, a dataset written before the change has no
-  descriptor. Its next commit creates one; until then, a reader requires
-  the layout option. The descriptors are new objects under a reserved
+  descriptor. A commit must not create one implicitly, because a handle
+  with a wrong configuration would then make that configuration
+  authoritative and strand the existing snapshots. The descriptor is
+  instead created by an explicit migration that validates the supplied
+  configuration against the existing manifests (their recorded codec,
+  compressor, and paths) before persisting it; until then, a reader
+  requires the layout option. The descriptors are new objects under a reserved
   prefix, which D8 must name, and a dataset whose ID begins with that
   prefix must be renamed. A consumer that reads objects by path is
   otherwise unaffected.
