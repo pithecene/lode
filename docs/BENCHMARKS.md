@@ -84,13 +84,13 @@ figures in the other sections were measured with Go 1.25.
 
 | Gate | Allocations | Bytes |
 |------|------------:|------:|
-| Write of three records | 62 | 6,528 |
-| Read of three records | 58 | 8,640 |
-| StreamWrite of one kibibyte | 35 | 6,528 |
-| StreamWriteRecords of three records | 64 | 6,528 |
+| Write of three records | 56 | 6,208 |
+| Read of three records | 57 | 8,512 |
+| StreamWrite of one kibibyte | 32 | 6,336 |
+| StreamWriteRecords of three records | 61 | 6,400 |
 | JSONL Decode of three records | 33 | 5,568 |
 | Volume ReadAt within one of ten blocks | 39 | 10,752 |
-| Volume Commit of one block onto a small volume | 123 | 209,792 |
+| Volume Commit of one block onto a small volume | 136 | 252,032 |
 
 A change that exceeds a ceiling fails the test and must justify the increase
 in its pull request before the ceiling is raised. A change that reduces a

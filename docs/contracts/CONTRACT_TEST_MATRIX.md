@@ -95,6 +95,7 @@ Gaps are recorded with codes that indicate category and priority:
 | Parent snapshot linked | `TestDataset_StreamWrite_Lineage/parent_snapshot_linked` |
 | Parent ID resolved O(1) via persistent pointer | `TestDataset_Write_Pointer/latest_pointer_skips_scan` |
 | Raw blob RowCount=1 | `TestDataset_StreamWrite_Commit/success` |
+| A write of no records commits a snapshot without data files on every layout | `TestDataset_Write_EmptyBatch` |
 
 **StreamWrite**: All covered ✅
 
@@ -504,7 +505,11 @@ resolution.
 |-------------|------|
 | Dataset: pointer holds no snapshot ID → scan fallback | `TestDataset_Write_Pointer/corrupt_pointer_falls_back_to_scan` |
 | Volume: pointer holds no snapshot ID → scan fallback | `TestVolume_Commit_Pointer/stale_pointer_falls_back_to_scan` |
-| Volume: pointer names a snapshot without a manifest → `ErrSnapshotConflict` | `TestVolume_Commit_PendingCommit`, `TestResolveParent/pointer's_manifest_missing_is_a_conflict` |
+| Volume: pointer names a snapshot without a canonical manifest → the next commit loads its staged copy as parent and merges its blocks | `TestVolume_Commit_AbandonedCommit`, `TestResolveParent_Staged/an_abandoned_commit's_staged_copy_is_the_parent`, `TestResolveParent_Staged/a_staged_copy_removed_meanwhile_falls_back_to_the_canonical_manifest` |
+| Volume: pointer names a snapshot with neither a canonical manifest nor a staged copy → `ErrSnapshotConflict` | `TestVolume_Commit_PendingCommit`, `TestResolveParent/pointer's_manifest_missing_is_a_conflict`, `TestResolveParent_Staged/neither_copy_is_a_conflict` |
+| Volume: a failed read of a staged copy, or of the canonical manifest after the staged copy was removed, is returned | `TestResolveParent_Staged/an_unreadable_staged_copy_is_returned`, `TestResolveParent_Staged/an_unreadable_canonical_manifest_after_a_removed_staged_copy_is_returned` |
+| Volume: a commit persists its staged copy before the pointer and removes it after the canonical manifest; a staging failure writes nothing else | `TestAdvance_Staged/staged_copy_precedes_the_pointer_and_is_removed_after_the_manifests`, `TestAdvance_Staged/staging_failure_is_wrapped_and_nothing_else_is_written` |
+| Volume: the staged copy is retained after a manifest failure and after a pointer failure that the store applied, and is removed after a pointer update that another commit won | `TestAdvance_Staged/manifest_failure_retains_the_staged_copy`, `TestAdvance_Staged/pointer_failure_the_store_applied_retains_the_staged_copy`, `TestAdvance_Staged/lost_race_discards_the_staged_copy` |
 | Dataset: existing-but-stale pointer → in-memory cache wins | `TestDataset_Write_Pointer/stale_but_existing_pointer_uses_in_memory_cache` |
 | Volume: existing-but-stale pointer → in-memory cache wins | `TestVolume_Commit_Pointer/stale_but_existing_pointer_uses_in_memory_cache` |
 
@@ -652,16 +657,18 @@ run, and the run ends with a final `Sweep`.
 
 With `-chaos.volume`, each writer stages and commits blocks in its own
 stripe of one Volume's address space. After the workload stops, a clean
-handle commits one block in a stripe of its own. After an abandoned commit
-that settling commit conflicts, as every Volume commit does until an
-operator repairs the pointer (CONTRACT_VOLUME), and the run is reported as
-stalled rather than failed.
+handle commits one block in a stripe of its own. That settling commit must
+succeed even after an abandoned commit, because it loads the abandoned
+commit's staged manifest (CONTRACT_VOLUME §Error Semantics); a settling
+commit that fails is a violation. An abandoned commit has no canonical
+manifest, so it appears in the history only as a missing parent, which
+`history-shape` accepts as one extra end of chain; an acknowledged commit
+without a manifest violates `acknowledged-commits-persist`.
 
 | Invariant | Check |
 |-----------|-------|
 | Every commit the library acknowledged has a manifest | `acknowledged-commits-persist` |
-| `Latest` returns the settling commit when there is one; the history is linear and the head reaches every snapshot | `history-shape` |
-| Every parent has a manifest: a Volume commit never builds on a parent without one | `parents-exist` |
+| `Latest` returns the settling commit; the history is linear and the head reaches every snapshot | `history-shape` |
 | The head's cumulative manifest holds no overlapping blocks | `blocks-disjoint` |
 | The head's manifest holds every acknowledged block, and each reads back its bytes | `blocks-read-back` |
 
