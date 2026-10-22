@@ -232,7 +232,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking Changes
 
-- **Dataset types are renamed** to distinguish them from the new Volume types; no aliases are provided.
+- **Dataset types are renamed**: the new names distinguish them from the Volume types, and no aliases are provided.
 
   | Before | After |
   |---|---|
