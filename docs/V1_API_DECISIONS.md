@@ -431,9 +431,11 @@ partition-filtered listing cannot miss a committed snapshot.
 **Problem.** A writer that terminates after the canonical manifest leaves
 the partition index incomplete, which contradicts CONTRACT_LAYOUT. If it
 terminates before the first partition manifest, the snapshot is
-*canonical-only*: `Latest` returns it, but no listing shows it. If it
-terminates later, the snapshot is missing only from the listings of the
-partitions whose manifests were not persisted. The audit's open question
+*canonical-only*: `Latest` and `Dataset.Snapshots` return it, but
+`DatasetReader.ListManifests`, `ListPartitions`, and expiry by `Partition`
+do not. If it terminates later, the snapshot is missing only from the
+partition-filtered results of the partitions whose manifests were not
+persisted. The audit's open question
 F6 (six production snapshots that `ListManifests` does not return) is
 consistent with the canonical-only case, though not yet confirmed.
 
