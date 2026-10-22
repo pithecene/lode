@@ -439,7 +439,9 @@ consistent with the canonical-only case, though not yet confirmed.
 1. Define the canonical manifest as the commit and partition manifests as
    an index. An unfiltered listing, which already enumerates canonical
    manifests and currently discards them, reports a canonical-only snapshot
-   under the empty partition. A repair, for example as part of `Sweep`,
+   under the empty partition. A snapshot that has any partition manifest is
+   reported through its partition manifests as before, so the references
+   and `StartAfter` positions of existing snapshots do not change. A repair, for example as part of `Sweep`,
    persists any missing partition manifest from the canonical manifest,
    whose `Files` name every partition; this creates objects and modifies
    none. Until the repair runs, a partition-filtered listing documents that
