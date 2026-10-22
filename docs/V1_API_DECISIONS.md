@@ -397,10 +397,16 @@ pattern.
    `(Partition, ID)` order, which within one partition is ID order, not
    commit order. Document the supported way to read new snapshots: follow
    `ParentSnapshotID` from `Latest` back to the last snapshot already read
-   (one `Get` per new snapshot, no new API). The traversal is exact while
-   the lineage is unbroken; an expired or abandoned parent ends it before
-   the last snapshot read (CONTRACT_RETENTION §Lineage, CONTRACT_CORE §Head
-   Pointer), and the reader must then reconcile through a full listing.
+   (one `Get` per new snapshot). The traversal is exact only when it starts
+   from a head that `Latest` resolved through the pointer and the lineage
+   is unbroken. When the pointer is missing or holds no snapshot ID,
+   `Latest` selects the largest ID, which may be older than the head
+   (CONTRACT_CORE §Head Pointer); an expired or abandoned parent ends the
+   traversal before the last snapshot read (CONTRACT_RETENTION §Lineage). In
+   either case the reader must reconcile through a full listing. `Latest`
+   does not currently report which path produced its result, so this
+   option also requires a way for the caller to know it, for example a
+   field of the returned snapshot.
 2. Assign each snapshot an ID at commit time that exceeds its parent's ID,
    so that ID order equals commit order along the history. This changes the
    meaning of the ID, which retention reads as the write's start instant
@@ -504,11 +510,17 @@ operator sets the pointer to an earlier snapshot (CONTRACT_VOLUME §Error
 Semantics). No API performs the repair.
 
 **Options.**
-1. Document the manual procedure in `PUBLIC_API.md`: write the ID of the
-   previous head to `volumes/<id>/latest`, then call `Latest`. The previous
-   head is the snapshot with a manifest that no other snapshot names as its
-   parent; in a linear history exactly one exists. The newest ID is not a
-   safe choice, because IDs record when a write began, not commit order.
+1. Document the manual procedure in `PUBLIC_API.md`, to be performed while
+   no writer is active, followed by `Latest` on any existing `Volume` value:
+   - If the Volume has an earlier snapshot, replace the pointer content,
+     the abandoned ID, with the ID of the previous head through
+     `CompareAndSwap(ctx, "volumes/<id>/latest", <abandoned ID>, <previous
+     head>)`; `Put` cannot replace an existing object. The previous head is
+     the snapshot with a manifest that no other snapshot names as its
+     parent; in a linear history exactly one exists. The newest ID is not a
+     safe choice, because IDs record when a write began, not commit order.
+   - If the abandoned commit was the Volume's first, no previous head
+     exists: `Delete` the pointer, after which the next commit creates it.
 2. Add a repair operation to `lode/volume`, which is experimental (D9) and
    can therefore change without a compatibility cost.
 
