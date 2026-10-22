@@ -97,7 +97,12 @@ func (n *noopPartitioner) name() string {
 }
 
 // group returns every record under the empty key, without copying them.
+// An empty batch has no group, so a write of no records persists no data
+// file, as with the Hive partitioner.
 func (n *noopPartitioner) group(records []any) (map[string][]any, error) {
+	if len(records) == 0 {
+		return map[string][]any{}, nil
+	}
 	return map[string][]any{"": records}, nil
 }
 
