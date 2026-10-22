@@ -556,6 +556,14 @@ listing.
 | CX-6 | `Volume.Snapshots` sort checks | Fixed: sort at load time | `TestVolume_Snapshots/load_snapshot_sorts_blocks_at_load_time` |
 | CX-7 | `fsStore.List` Walk vs WalkDir | Fixed: `filepath.WalkDir` | Existing `fsStore.List` tests |
 
+### Allocation Gates
+
+| Requirement | Test |
+|-------------|------|
+| Each Dataset hot path (`Write`, `Read`, `StreamWrite`, `StreamWriteRecords`, and JSON Lines decoding) stays within its ceilings on allocations and bytes per operation | `TestAllocationGates` (`lode`) |
+| Each Volume hot path (`ReadAt` and `Commit`) stays within its ceilings on allocations and bytes per operation | `TestAllocationGates` (`lode/volume`) |
+| The JSON Lines decoder grows its buffer to the longest line, decodes a line far longer than its initial buffer, and refuses a line beyond its limit | `TestJSONLCodec_Decode_LineLength` |
+
 ### Documented Inherent Costs (not violations)
 
 | Operation | Cost | Reason |
@@ -611,6 +619,23 @@ store.
 
 After the workload stops, a clean handle makes one settling commit, which
 `Latest` must then return.
+
+Every configuration also checks that the run released its resources. The
+limits on retained heap allow a fixed one mebibyte and sixty-four bytes per
+acknowledged commit, more than ten times the figures measured when they
+were set; `TestMemoryBaseline_DetectsLeaks` confirms that both checks fail
+on a leaked goroutine, including one masked by a goroutine of the baseline
+that exits meanwhile or one beside an idle HTTP/1.1 or HTTP/2 connection,
+and on retained heap. A response body left open on an S3 backend holds a
+connection too, but it also retains memory with every request, which the
+heap check reports. With `-chaos.memprofile=<dir>`
+(`MEMPROFILE` for `task chaos`), each configuration also writes a heap
+profile to the directory after its run.
+
+| Invariant | Check |
+|-----------|-------|
+| Once the run ends and its backend is released, every goroutine started during the run has exited within five seconds, compared by goroutine identity, except, on S3 backends, those of the HTTP connections that the AWS SDK keeps open for reuse | `goroutines-released` |
+| On a store that keeps no data in memory, the heap that the finished run retains stays within the limits | `heap-retained` |
 
 With `-chaos.faults=mild` or `heavy`, every handle reaches the store
 through a faulty store that delays calls, fails them before or after they
