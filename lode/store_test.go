@@ -445,6 +445,19 @@ var casBackends = append(slices.Clone(storeBackends), storeBackend{
 	open: func(*testing.T) Store { return SingleProcess(testutil.WithoutCAS(NewMemory())) },
 })
 
+// TestSingleProcess_WrapsOnlyStoresWithoutCAS checks that the conformance
+// test reaches the process lock: testutil.WithoutCAS must hide the memory
+// store's CompareAndSwap, and a store with CAS is returned unchanged.
+func TestSingleProcess_WrapsOnlyStoresWithoutCAS(t *testing.T) {
+	if _, ok := SingleProcess(testutil.WithoutCAS(NewMemory())).(*singleProcessStore); !ok {
+		t.Error("SingleProcess did not wrap a store without CompareAndSwap")
+	}
+	mem := NewMemory()
+	if got := SingleProcess(mem); got != mem {
+		t.Error("SingleProcess wrapped a store that already has CompareAndSwap")
+	}
+}
+
 // TestStore_CompareAndSwap checks the ConditionalWriter semantics table
 // (CONTRACT_STORAGE §ConditionalWriter Capability) on every store with CAS.
 // The steps run in order on one path; want is the content afterwards, ""
