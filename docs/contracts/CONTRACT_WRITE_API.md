@@ -315,10 +315,15 @@ Parent resolution MUST NOT use List when a valid pointer exists.
 | `StreamWrite` | 4 fixed | O(1) streaming |
 | `StreamWriteRecords` | 4 fixed | O(1) streaming |
 
-When the store implements `ConditionalWriter`, each commit incurs **one
-additional read** (the `CompareAndSwap` operation reads the current pointer
-before the conditional write). This overhead is constant per commit, not
-per record or per file.
+When the store implements `ConditionalWriter`, a commit may incur **one
+additional read**: `CompareAndSwap` reads the current pointer before the
+conditional write when it cannot otherwise establish the precondition. The
+S3 adapter omits that read when it creates the pointer and when it
+replaces a pointer that it last replaced itself (CONTRACT_STORAGE
+§ConditionalWriter Capability). Each commit after the second through the
+same store therefore reads the pointer only after another writer has
+advanced it. This overhead is constant per commit, not per record or per
+file.
 
 Hot-path writes MUST NOT invoke `Store.List`.
 
