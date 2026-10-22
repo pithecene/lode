@@ -2,6 +2,7 @@ package lode
 
 import (
 	"path"
+	"slices"
 	"strings"
 
 	"github.com/pithecene/lode/internal/storepath"
@@ -199,7 +200,7 @@ func (g pathGrammar) parse(p string) (sp snapshotPath, ok bool) {
 
 	if g.partitioned && len(parts) > 0 && parts[0] == partitionsDir {
 		parts = parts[1:]
-		end := indexOf(parts, g.snapshotDir)
+		end := slices.Index(parts, g.snapshotDir)
 		if end <= 0 {
 			return sp, false // no partition segments, or no snapshot dir after them
 		}
@@ -226,15 +227,6 @@ func (g pathGrammar) parse(p string) (sp snapshotPath, ok bool) {
 		return sp, true
 	}
 	return sp, false
-}
-
-func indexOf(parts []string, want string) int {
-	for i, p := range parts {
-		if p == want {
-			return i
-		}
-	}
-	return -1
 }
 
 // -----------------------------------------------------------------------------

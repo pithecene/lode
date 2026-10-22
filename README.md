@@ -99,7 +99,7 @@ and complete programs are listed in [`examples/`](examples/).
 **Both:**
 - A snapshot is visible only once its manifest is persisted.
 - Metadata is explicit and persisted, never inferred.
-- Stores that support CAS detect concurrent writers.
+- Every store detects concurrent writers through CAS.
 
 ---
 
@@ -110,8 +110,8 @@ and complete programs are listed in [`examples/`](examples/).
 - **Atomic commits**: a snapshot is visible only once its manifest exists.
 - **Explicit metadata**: every snapshot carries metadata supplied by the
   caller, never inferred.
-- **Safe writes**: existing objects are never overwritten, and stores that
-  support CAS detect concurrent writers.
+- **Safe writes**: existing objects are never overwritten, and every store
+  detects concurrent writers through CAS.
 
 Lode does not coordinate distributed writers, execute queries, compact
 data, or remove anything without being asked; [the concepts

@@ -272,8 +272,7 @@ value returns `lode.ErrInvalidArgument` with the same message.
 - Range reads MUST NOT return partial data without an error.
 - `Latest` on an empty volume MUST return `lode.ErrNoSnapshots`.
 - `Snapshot` for an unknown ID MUST return `lode.ErrNotFound`.
-- An obsolete parent at `Commit` MUST produce `lode.ErrSnapshotConflict`
-  when the store implements `lode.ConditionalWriter`.
+- An obsolete parent at `Commit` MUST produce `lode.ErrSnapshotConflict`.
 - Before it advances the pointer, Commit MUST persist a staged copy of its
   manifest at `volumes/<volume_id>/staged/<snapshot_id>.json`. After it
   persists the canonical manifest, Commit removes the staged copy. When the
@@ -291,7 +290,11 @@ value returns `lode.ErrInvalidArgument` with the same message.
   `lode.ErrSnapshotConflict`, because the parent's blocks cannot be merged.
   If retries are configured, Commit retries. Commits return
   `lode.ErrSnapshotConflict` until the pointer names a snapshot that has a
-  manifest.
+  manifest: either the missing manifest is persisted, or an operator sets
+  the pointer to an earlier snapshot. A `Volume` value that remembers an
+  earlier head continues to expect that head's pointer content, so after
+  the repair the caller MUST call `Latest` or open the volume again, unless
+  retries are configured (each retry refreshes the head).
 - `Latest`, `Snapshot`, and `Snapshots` never read staged copies. An
   abandoned commit has no canonical manifest, so it is never listed, and its
   blocks become visible through the next commit, which merges them; that
@@ -309,19 +312,18 @@ The snapshot history of a Volume is linear.
 |---------|---------|--------|---------|--------|
 | Single writer | 1 process | Non-overlapping blocks | Linear (guaranteed) | ✅ Supported |
 | Multiple processes, serialized | N processes, external coordination | Non-overlapping blocks | Linear (enforced by the caller) | ✅ Supported (the caller provides coordination) |
-| Multiple processes, uncoordinated | N processes, no coordination | Non-overlapping blocks | Linear (enforced by CAS) | ✅ Safe (CAS) |
+| Multiple processes, uncoordinated | N processes, no coordination | Non-overlapping blocks | Linear (enforced by CAS) | ✅ Supported; a later commit adopts an abandoned commit from its staged manifest (§Error Semantics) |
+| Multiple writers in one process, store wrapped with `lode.SingleProcess` | N goroutines, each with its own `Volume`, sharing one wrapped store | Non-overlapping blocks | Linear (enforced by the process lock) | ✅ Supported |
 
 ### Optimistic Concurrency (CAS)
 
-When the storage adapter implements `ConditionalWriter`, Volume detects
-concurrent commits and returns `ErrSnapshotConflict`.
+Volume detects concurrent commits and returns `ErrSnapshotConflict`.
 
 The mechanism is identical to Dataset CAS (see `CONTRACT_WRITE_API.md`
 §Optimistic Concurrency (CAS)):
 - `Commit` records the expected parent when it resolves the parent.
-- The pointer is updated with `CompareAndSwap` when available.
+- The pointer is updated with `CompareAndSwap`.
 - An obsolete parent produces `ErrSnapshotConflict`.
-- When `ConditionalWriter` is not implemented, the commit uses Delete+Put.
 
 **A Volume CAS retry merges blocks without conflict:**
 - Non-overlapping blocks from concurrent writers can be merged on retry:
@@ -347,8 +349,7 @@ per retry, before step 1. If all retries are exhausted,
 
 **Single-writer compatibility:**
 - Single-writer workflows are unaffected.
-- External coordination remains valid but is no longer required with a
-  store that supports CAS.
+- External coordination remains valid but is not required.
 
 ---
 
@@ -356,10 +357,11 @@ per retry, before step 1. If all retries are exhausted,
 
 No new type of storage engine is required.
 
-The existing adapter capabilities remain sufficient:
+The capabilities that every `Store` provides are sufficient:
 - immutable object writes;
-- `List`, `Exists`, `Get`, and `Delete`; and
-- range reads.
+- `List`, `Exists`, `Get`, and `Delete`;
+- range reads; and
+- `CompareAndSwap` (CONTRACT_STORAGE §ConditionalWriter Capability).
 
 Adapters MUST preserve the semantics under which the manifest defines what
 is committed.

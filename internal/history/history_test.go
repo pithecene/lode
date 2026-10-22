@@ -111,10 +111,9 @@ func (s *memStore) Delete(_ context.Context, path string) error {
 	return nil
 }
 
-// casStore adds CompareAndSwap: expected "" means the object must be absent.
-type casStore struct{ *memStore }
-
-func (s casStore) CompareAndSwap(_ context.Context, path, expected, replacement string) error {
+// CompareAndSwap follows the ConditionalWriter table: expected "" means the
+// object must be absent.
+func (s *memStore) CompareAndSwap(_ context.Context, path, expected, replacement string) error {
 	if err := s.injected("cas", path+" "+expected); err != nil {
 		return err
 	}
@@ -360,7 +359,7 @@ func TestWritePointer(t *testing.T) {
 	t.Run("CAS store swaps against expected", func(t *testing.T) {
 		s := newMemStore()
 		s.objects[pointer] = []byte("1")
-		h := newTestHistory(casStore{s})
+		h := newTestHistory(s)
 		if err := h.writePointer(t.Context(), "1", "2"); err != nil {
 			t.Fatal(err)
 		}
@@ -369,17 +368,6 @@ func TestWritePointer(t *testing.T) {
 		}
 		if err := h.writePointer(t.Context(), "1", "3"); !errors.Is(err, errConflict) {
 			t.Fatalf("stale expected: got %v, want conflict", err)
-		}
-	})
-	t.Run("plain store deletes then puts", func(t *testing.T) {
-		s := newMemStore()
-		s.objects[pointer] = []byte("1")
-		h := newTestHistory(s)
-		if err := h.writePointer(t.Context(), "ignored", "2"); err != nil {
-			t.Fatal(err)
-		}
-		if string(s.objects[pointer]) != "2" || !slices.Equal(s.ops, []string{"delete " + pointer, "put " + pointer}) {
-			t.Fatalf("pointer = %q, ops = %v", s.objects[pointer], s.ops)
 		}
 	})
 }
@@ -421,7 +409,7 @@ func TestLatest(t *testing.T) {
 		put(t, s, "1", "one")
 		put(t, s, "3", "three")
 		put(t, s, "2", "two")
-		h := newTestHistory(casStore{s})
+		h := newTestHistory(s)
 		got, err := h.Latest(t.Context())
 		if err != nil || got.ID != "3" {
 			t.Fatalf("got %+v, %v; want snapshot 3", got, err)
@@ -436,7 +424,7 @@ func TestLatest(t *testing.T) {
 		s := newMemStore()
 		put(t, s, "1", "one")
 		s.objects[pointer] = []byte("9")
-		h := newTestHistory(casStore{s})
+		h := newTestHistory(s)
 		h.remember("1", "1")
 		got, err := h.Latest(t.Context())
 		if err != nil || got.ID != "1" {
@@ -456,7 +444,7 @@ func TestLatest(t *testing.T) {
 		put(t, s, "1", "one")
 		s.objects[pointer] = []byte("1")
 		s.fail = failOn("get", pointer, errBoom)
-		h := newTestHistory(casStore{s})
+		h := newTestHistory(s)
 		h.remember("1", "1")
 		_, err := h.Latest(t.Context())
 		wantMessage(t, err, "lode: failed to read latest pointer: boom")
@@ -469,7 +457,7 @@ func TestLatest(t *testing.T) {
 		put(t, s, "2", "two")
 		s.objects[pointer] = []byte("1")
 		s.fail = failOn("get", testKind{}.ManifestPath("1"), errBoom)
-		h := newTestHistory(casStore{s})
+		h := newTestHistory(s)
 		h.remember("2", "2")
 		_, err := h.Latest(t.Context())
 		wantMessage(t, err, "lode: failed to load latest snapshot: boom")
@@ -480,7 +468,7 @@ func TestLatest(t *testing.T) {
 		s := newMemStore()
 		put(t, s, "1", "one")
 		s.fail = failOn("cas", "", errBoom)
-		h := newTestHistory(casStore{s})
+		h := newTestHistory(s)
 		got, err := h.Latest(t.Context())
 		if err != nil || got.ID != "1" {
 			t.Fatalf("got %+v, %v", got, err)
@@ -688,7 +676,7 @@ func TestAdvance(t *testing.T) {
 		if err := h.Advance(t.Context(), "", "5", &manifest{Tag: "five"}, paths); err != nil {
 			t.Fatal(err)
 		}
-		want := []string{"delete " + pointer, "put " + pointer, "put " + paths[0], "put " + paths[1]}
+		want := []string{"cas " + pointer + " ", "put " + paths[0], "put " + paths[1]}
 		if !slices.Equal(s.ops, want) {
 			t.Fatalf("ops = %v, want %v", s.ops, want)
 		}
@@ -702,7 +690,7 @@ func TestAdvance(t *testing.T) {
 	})
 	t.Run("pointer failure is wrapped and nothing else is written", func(t *testing.T) {
 		s := newMemStore()
-		s.fail = failOn("put", pointer, errBoom)
+		s.fail = failOn("cas", pointer, errBoom)
 		h := newTestHistory(s)
 		err := h.Advance(t.Context(), "", "5", &manifest{}, paths)
 		wantMessage(t, err, "lode: failed to update latest pointer: boom")
@@ -864,7 +852,7 @@ func TestAdvance_Staged(t *testing.T) {
 		if err := h.Advance(t.Context(), "", "5", &manifest{Tag: "five"}, paths); err != nil {
 			t.Fatal(err)
 		}
-		want := []string{"put " + staged, "delete " + pointer, "put " + pointer, "put " + paths[0], "delete " + staged}
+		want := []string{"put " + staged, "cas " + pointer + " ", "put " + paths[0], "delete " + staged}
 		if !slices.Equal(s.ops, want) {
 			t.Fatalf("ops = %v, want %v", s.ops, want)
 		}
@@ -894,7 +882,7 @@ func TestAdvance_Staged(t *testing.T) {
 		}
 	})
 	t.Run("lost race discards the staged copy", func(t *testing.T) {
-		s := casStore{newMemStore()}
+		s := newMemStore()
 		s.objects[pointer] = []byte("4")
 		h := newStagingHistory(s)
 		if err := h.Advance(t.Context(), "", "5", &manifest{}, paths); !errors.Is(err, errConflict) {
@@ -908,7 +896,7 @@ func TestAdvance_Staged(t *testing.T) {
 	// response); the staged copy is then the only manifest of a committed
 	// snapshot.
 	t.Run("pointer failure the store applied retains the staged copy", func(t *testing.T) {
-		s := casStore{newMemStore()}
+		s := newMemStore()
 		s.fail = func(op, _ string) error {
 			if op == "cas" {
 				s.objects[pointer] = []byte("5")

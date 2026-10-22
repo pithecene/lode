@@ -1,7 +1,6 @@
 package lode
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -167,18 +166,14 @@ func (ts tombstones) isCanonicalPath(key string, id DatasetSnapshotID) bool {
 	return ok && named && canonical == key && key == p
 }
 
-// create writes p only if it is absent: atomically when the store is a
-// ConditionalWriter, otherwise with Put's best-effort create-only guarantee.
+// create writes p atomically, only if it is absent.
 func (ts tombstones) create(ctx context.Context, p string, data []byte) error {
-	if cw, ok := ts.store.(ConditionalWriter); ok {
-		return cw.CompareAndSwap(ctx, p, "", string(data))
-	}
-	return ts.store.Put(ctx, p, bytes.NewReader(data))
+	return ts.store.CompareAndSwap(ctx, p, "", string(data))
 }
 
-// errEmptyTombstone is a zero-length object at a tombstone path of a
-// ConditionalWriter. record replaces it (a CAS from "" matches it), so it
-// stands for no tombstone only while a manifest is left to record from.
+// errEmptyTombstone is a zero-length object at a tombstone path. record
+// replaces it (a CAS from "" matches it), so it stands for no tombstone only
+// while a manifest is left to record from.
 var errEmptyTombstone = errors.New("lode: tombstone is empty")
 
 // lookup returns the tombstone recorded for id. ErrNotFound means there is
@@ -194,7 +189,7 @@ func (ts tombstones) lookup(ctx context.Context, id DatasetSnapshotID) (tombston
 	if err != nil {
 		return tombstone{}, err
 	}
-	if _, cas := ts.store.(ConditionalWriter); cas && len(data) == 0 {
+	if len(data) == 0 {
 		return tombstone{}, fmt.Errorf("%w: %s", errEmptyTombstone, p)
 	}
 	return validTombstone(p, data, id)

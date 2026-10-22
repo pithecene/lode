@@ -79,8 +79,8 @@ abandoned one, so Lode treats every pointer that names a snapshot without a
 manifest as a pending commit:
 
 - When the pointer is missing or names a snapshot without a manifest (a
-  pending or abandoned commit, a manual edit, or the interval of a non-CAS
-  Delete+Put), `Latest` selects the largest snapshot ID that has a
+  pending or abandoned commit, a manual edit, or a failed `Put` in the
+  replacement of `lode.SingleProcess`), `Latest` selects the largest snapshot ID that has a
   manifest. If the clock was set back, or two commits began in the same
   nanosecond, that selection may not be the most recent commit. `Latest`
   creates a missing pointer from the selection but never replaces an

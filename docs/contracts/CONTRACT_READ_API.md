@@ -53,6 +53,11 @@ The authoritative adapter shape is `Store` (see `lode/api.go` and
 
 ```go
 type Store interface {
+    ObjectStore
+    ConditionalWriter
+}
+
+type ObjectStore interface {
     Put(ctx context.Context, path string, r io.Reader) error
     Get(ctx context.Context, path string) (io.ReadCloser, error)
     Exists(ctx context.Context, path string) (bool, error)
@@ -61,7 +66,14 @@ type Store interface {
     ReadRange(ctx context.Context, path string, offset, length int64) ([]byte, error)
     ReaderAt(ctx context.Context, path string) (io.ReaderAt, error)
 }
+
+type ConditionalWriter interface {
+    CompareAndSwap(ctx context.Context, path, expected, replacement string) error
+}
 ```
+
+The read path uses the `ObjectStore` methods; commits and retention also use
+`CompareAndSwap` (CONTRACT_STORAGE §ConditionalWriter Capability).
 
 ### Adapter Obligations (Read Path)
 

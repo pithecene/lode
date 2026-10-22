@@ -257,9 +257,9 @@ a snapshot ID in the generated form (CONTRACT_CORE §Snapshot ID) is
 corrupt: retention fails rather than confirm it, even if a manifest exists
 at the path that it would name.
 
-Every commit writes the pointer, so the pointer is absent only during a
-Delete+Put commit on a store without `ConditionalWriter`, in a dataset
-written before the pointer was introduced, or after a manual edit. In none
+Every commit writes the pointer, so the pointer is absent only in a dataset
+written before the pointer was introduced, after a manual edit, or after a
+failed `Put` in the replacement of `lode.SingleProcess`. In none
 of these cases can retention determine the head safely. `Latest` serves the
 largest ID in these cases, but a clock that was set back between two commits
 can assign the most recent commit the smaller ID. Any commit creates the
@@ -323,17 +323,13 @@ with `ErrHeadUncommitted`.
    snapshot and dataset under which it was found; an invalid or misplaced
    copy causes the operation to fail before anything is written or deleted.
 
-   When the store implements `ConditionalWriter`, the write MUST be an
-   atomic conditional create (`CompareAndSwap` from absent), and an
-   `ErrSnapshotConflict` result means that the tombstone already exists.
-   Otherwise `Store.Put` is used; its create-only guarantee is best-effort
-   (CONTRACT_STORAGE §Put), and `ErrPathExists` means that the tombstone
-   already exists. In both cases an existing tombstone MUST be read back
+   The write MUST be an atomic conditional create (`CompareAndSwap` from
+   absent), and an `ErrSnapshotConflict` result means that the tombstone
+   already exists. An existing tombstone MUST then be read back
    and, if it names this snapshot ID, treated as success: the same expiry
    has already been recorded by an earlier or concurrent run, and steps 2
-   through 4 use **that tombstone's** inventory. This read is the single
-   exception to the rule in CONTRACT_STORAGE §Put against accessing a path
-   whose `Put` failed. A tombstone is written once and never rewritten, so
+   through 4 use **that tombstone's** inventory. A tombstone is written once
+   and never rewritten, so
    whatever another run created at the path is a complete record to verify,
    not an object to remove.
 
@@ -438,14 +434,9 @@ pointer and does not require CAS. Concurrent writers are unaffected.
 Concurrent readers that retain an expired ID observe `ErrSnapshotExpired` on
 their next access; this is the documented and expected outcome.
 
-Two concurrent expiries of the same ID are safe on stores that implement
-`ConditionalWriter`, because every step is idempotent and tombstone creation
-is atomic. On stores without `ConditionalWriter`, two concurrent expiries
-may both create the tombstone. The deletions remain idempotent, so no data
-is lost, but tombstone immutability is then best-effort. This limitation
-mirrors the single-writer requirement in CONTRACT_WRITE_API §Concurrency:
-callers on stores without CAS MUST run at most one retention operation per
-dataset at a time.
+Two concurrent expiries of the same ID are safe, because every step is
+idempotent and tombstone creation is atomic. With `lode.SingleProcess`,
+that holds for expiries within the process that shares the wrapped store.
 
 A commit writes the pointer, then the canonical manifest, and then its
 partition manifests one at a time (the pointer-before-manifest protocol).

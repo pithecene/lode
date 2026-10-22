@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"os"
+	"slices"
 	"sort"
 	"testing"
 
@@ -54,7 +55,7 @@ func assertStringPrefixSemantics(t *testing.T, store Store) {
 		"ds/partitions/day=2024-01-150/segments/4/manifest.json",
 		"ds/partitions/day=2024-01-16/segments/2/manifest.json",
 	}
-	if !equalStrings(got, want) {
+	if !slices.Equal(got, want) {
 		t.Fatalf("partial-token prefix: got %v, want %v", got, want)
 	}
 
@@ -65,7 +66,7 @@ func assertStringPrefixSemantics(t *testing.T, store Store) {
 		"ds/partitions/day=2024-01-15/segments/1/data/f.jsonl",
 		"ds/partitions/day=2024-01-15/segments/1/manifest.json",
 	}
-	if !equalStrings(got, want) {
+	if !slices.Equal(got, want) {
 		t.Fatalf("trailing-slash prefix: got %v, want %v", got, want)
 	}
 

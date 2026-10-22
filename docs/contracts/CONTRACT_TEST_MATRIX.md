@@ -203,6 +203,16 @@ Gaps are recorded with codes that indicate category and priority:
 | Beyond EOF | `TestStore_ReadRange/beyond_EOF`, `TestStore_ReadRange/offset_beyond_EOF` |
 | Exact bounds; allocation bounded by available bytes | `TestStore_ReadRange_Bounds/exact_bounds`, `TestStore_ReadRange_Bounds/exact_bounds` |
 
+**CompareAndSwap (filesystem, memory, and `SingleProcess`)**: All covered ✅
+
+| Requirement | Tests |
+|-------------|-------|
+| `CompareAndSwap` creates, replaces, and refuses as the semantics table requires | `TestStore_CompareAndSwap/fs`, `TestStore_CompareAndSwap/memory`, `TestStore_CompareAndSwap/single-process` |
+| The filesystem store replaces a pointer that a reader holds open, and one beyond MAX_PATH | `TestFSStore_CompareAndSwap_Replacement` |
+| `SingleProcess` keeps histories linear under concurrent writers in one process | `TestChaos` with `-chaos -chaos.backends single-process` (on demand) |
+| A read through `SingleProcess` waits for a replacement in progress and observes the new content, never the absent path | `TestSingleProcess_ReadsWaitForReplacement` |
+| `SingleProcess` returns a nil store as nil, so that a constructor rejects it | `TestSingleProcess_NilStore` |
+
 **CompareAndSwap (S3)**: All covered ✅
 
 | Requirement | Tests |
@@ -314,7 +324,7 @@ All error sentinels covered ✅
 | The head is retained and reported, and no tombstone is written for it; a head superseded during the run remains retained | `TestExpire_Head/retained_and_reported`, `TestExpire_Head/superseded_mid-run_stays_retained` | ✅ |
 | An uncommitted head terminates expiry, including at the check before a retained head, and the report lists the work completed | `TestExpire_Head/uncommitted_expires_nothing`, `TestExpire_Head/uncommitted_mid-run_reports_completed_work`, `TestExpire_Head/uncommitted_before_a_retained_head_stops_the_run` | ✅ |
 | A dry run writes and deletes nothing and fails wherever a real run would fail | `TestExpire_DryRun/changes_nothing`, `TestExpire_DryRun/fails_where_a_real_run_would` | ✅ |
-| An existing tombstone for the same ID resumes the expiry, and one for another ID fails it (with and without CAS). A tombstone records the whole `Files[]` and the manifest's `CreatedAt`. A tombstone without a commit instant, with a missing or invalid inventory, or of zero length with no manifest remaining is corrupt. Nothing is recorded from a manifest that violates the manifest invariants | `TestExpire_Tombstone/existing`, `TestExpire_Tombstone/zero_length`, `TestExpire_Tombstone/records_the_inventory`, `TestExpire_InvalidManifest`, `TestExpire_CorruptTombstone/no_commit_instant`, `TestExpire_CorruptTombstone/a_corrupt_one_does_not_expire_a_legacy_snapshot`, `TestExpire_CorruptTombstone/invalid_inventory`, `TestExpire_CorruptTombstone/zero_length_with_no_manifest_left` | ✅ |
+| An existing tombstone for the same ID resumes the expiry, and one for another ID fails it. A tombstone records the whole `Files[]` and the manifest's `CreatedAt`. A tombstone without a commit instant, with a missing or invalid inventory, or of zero length with no manifest remaining is corrupt. Nothing is recorded from a manifest that violates the manifest invariants | `TestExpire_Tombstone/existing_for_the_same_snapshot_resumes`, `TestExpire_Tombstone/existing_for_another_snapshot_fails`, `TestExpire_Tombstone/zero_length_is_replaced`, `TestExpire_Tombstone/records_the_inventory`, `TestExpire_InvalidManifest`, `TestExpire_CorruptTombstone/no_commit_instant`, `TestExpire_CorruptTombstone/a_corrupt_one_does_not_expire_a_legacy_snapshot`, `TestExpire_CorruptTombstone/invalid_inventory`, `TestExpire_CorruptTombstone/zero_length_with_no_manifest_left` | ✅ |
 | A recorded expiry resumes from its tombstone when no manifest remains, and each run counts only what it deleted | `TestExpire_Resumption/from_a_tombstone_with_no_manifest_left` | ✅ |
 | An ID not in the generated form never becomes a store path. A tombstone that does not describe every manifest copy (by commit instant and inventory) is refused, and a concurrently created tombstone is accepted only if its inventory is the same | `TestExpire_Tombstone/ID_not_in_the_generated_form_never_reaches_a_path`, `TestSnapshot_IDNotInGeneratedForm_IsNotExpired`, `TestExpire_ReusedID/same_files_with_another_commit_instant_is_refused`, `TestExpire_ReusedID/a_fresh_expiry_checks_every_manifest_copy`, `TestExpire_ReusedID/tombstone_of_another_inventory_is_refused`, `TestExpire_ReusedID/recorded_tombstone_must_match_every_manifest_copy`, `TestExpire_ReusedID/copy_reappearing_at_a_derived_path_is_checked`, `TestExpire_ReusedID/manifest_reappearing_for_a_tombstone_is_checked`, `TestExpire_Tombstone/concurrent_one_is_accepted`, `TestExpire_Tombstone/concurrent_one_of_another_inventory_is_refused` | ✅ |
 | A dataset with snapshots but no pointer is refused with `ErrHeadUncommitted`, regardless of its IDs; an empty dataset requires no pointer | `TestExpire_HeadResolution/a_pointer-less_dataset_is_refused`, `TestExpire_HeadResolution/a_pointer_missing_beside_new-form_IDs_is_refused`, `TestExpire_HeadResolution/tombstones_without_a_pointer_or_manifest_are_refused`, `TestExpire_HeadResolution/an_empty_dataset_needs_no_pointer`, `TestExpire_HeadResolution/a_pointer_that_is_not_a_snapshot_ID_is_refused`, `TestExpire_HeadResolution/a_pointer_outside_the_generated_form_is_refused` | ✅ |
@@ -599,12 +609,12 @@ cases. `go test` runs their seed inputs; `task fuzz` explores further (see
 `internal/chaos` runs concurrent writers and readers, each with its own
 `Dataset` handle, against a shared store for a fixed duration, and then
 checks the history they left. It runs on demand (`task chaos`, or the Chaos
-workflow) against memory, the filesystem, LocalStack, RustFS, or any
-S3-compatible store configured through `CHAOS_S3_*` variables. The
-invariants assume CAS (CONTRACT_WRITE_API §Concurrency), so a store that
-does not implement `ConditionalWriter`, such as the filesystem store on a
-platform other than Unix, is skipped. A run fails if the harness cannot
-remove what it created on the store.
+workflow) against memory, the filesystem, LocalStack, RustFS, any
+S3-compatible store configured through `CHAOS_S3_*` variables, or
+`lode.SingleProcess` over a memory store without CAS (`single-process`). The
+invariants assume CAS (CONTRACT_WRITE_API §Concurrency), which every store
+provides. A run fails if the harness cannot remove what it created on the
+store.
 
 | Invariant | Check |
 |-----------|-------|
