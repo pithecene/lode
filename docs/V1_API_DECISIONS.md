@@ -675,16 +675,20 @@ read under it.
    chained construction checks one error, as a factory does today:
 
    ```go
-   events, err := lode.Open(ctx, lode.FS(root)).Dataset("events",
+   events, err := lode.Open(ctx, lode.FS(root)).Dataset("events", lode.JSONL[Record](),
    	lode.WithHiveLayout("source", "category", "day", "run_id", "event_type"),
-   	lode.WithCodec(lode.JSONL[Record]()), lode.WithRetryCount(3))
+   	lode.WithRetryCount(3))
    ```
 
-   The record type is inferred from the typed codec; a dataset without a
-   codec states it (`Dataset[[]byte]`). A prototype compiled with Go 1.27.3
-   confirms both the chain and the inference. `Repo` must be a concrete
-   type, because interface methods cannot declare type parameters; the
-   returned `Dataset[T]` remains an interface.
+   The method's signature is `func (r *Repo) Dataset[T any](id DatasetID,
+   codec Codec[T], opts ...DatasetOption) (Dataset[T], error)`. The record
+   type is inferred from the codec, which is therefore a typed parameter of
+   its own; a type parameter cannot be inferred from an untyped variadic
+   option. A prototype compiled with Go 1.27.3 confirms both the chain and
+   the inference. The Go version this branch pins (1.25.6) rejects a
+   method with its own type parameters, so this option requires #261.
+   `Repo` must be a concrete type, because interface methods cannot declare
+   type parameters; the returned `Dataset[T]` remains an interface.
 
 None of the options resolves cost 2 entirely. Options 2 and 3 give the
 process one store value per root, but whether the root handle exposes that
