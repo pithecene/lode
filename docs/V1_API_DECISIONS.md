@@ -646,15 +646,20 @@ read under it.
    	lode.WithCodec(lode.JSONL[Record]()), lode.WithRetryCount(3))
    ```
 
-   The first commit of a dataset persists a dataset descriptor that records
-   its complete configuration, not only component names: the layout's
+   Before the first commit of a dataset, the handle persists a dataset
+   descriptor that records its complete configuration, not only component names: the layout's
    grammar and partition keys, the codec and compressor with their settings
    (a Parquet codec's schema, for example), and the checksum. The
    descriptor is created with `CompareAndSwap` at a
    path that no layout uses (for example, `_lode/datasets/<id>.json`; the
-   dataset ID grammar must then exclude the prefix). A later handle reads
+   dataset ID grammar must then exclude the prefix). Because the descriptor
+   precedes the first commit, a reader never observes a committed dataset
+   without one; a descriptor that names no snapshot denotes an empty
+   dataset, and while no snapshot exists, a handle with a corrected
+   configuration may replace it with `CompareAndSwap`. A later handle reads
    the descriptor: a reader needs no layout option, and a handle whose
-   layout, codec, or compressor conflicts with it is rejected. Retry
+   layout, codec, compressor, or checksum (configured or absent) conflicts
+   with it is rejected. Retry
    settings govern a handle rather than the data and are not persisted.
    Datasets under one root may therefore retain different layouts, as they
    may today, and every layout, the flat layout included, can enumerate
@@ -664,7 +669,9 @@ read under it.
    checksum expose only a name, and the layout exposes none, so this option
    either adds a description method to those interfaces, which breaks
    custom implementations, or records names alone and detects only a
-   change of component, not of its settings. This resolves costs 3 and 4. It resolves cost 1 in part:
+   change of component, not of its settings. This resolves cost 4, and
+   cost 3 for records; snapshot metadata remains `map[string]any`, so its
+   numbers still return as `float64`. It resolves cost 1 in part:
    the layout is stated once, but each handle still states its codec, which
    the descriptor checks, and its retry settings. Cost 5 is resolved only
    if writer options are also separated from reader options (D3). Two
@@ -696,8 +703,10 @@ read under it.
    `Repo` must be a concrete type, because interface methods cannot declare
    type parameters; the returned `Dataset[T]` remains an interface.
 
-None of the options resolves cost 2 entirely. Options 2 and 3 give the
-process one store value per root, but whether the root handle exposes that
+None of the options resolves cost 2 entirely. Options 2 and 3 give one
+store value per `Repo`, not per process: each `Open` calls the factory, so
+components that must serialize through `lode.SingleProcess` must share one
+`Repo`. Whether the root handle exposes that
 store for objects outside any dataset, or whether such objects become a
 part of the layout, is a separate question that this entry records but does
 not decide.
@@ -725,10 +734,15 @@ because the layout option still takes a layout value.
   authoritative and strand the existing snapshots. The descriptor is
   instead created by an explicit migration that validates the supplied
   configuration against the existing manifests (their recorded codec,
-  compressor, and paths) before persisting it; until then, a reader
-  requires the layout option. The descriptors are new objects under a reserved
-  prefix, which D8 must name, and a dataset whose ID begins with that
-  prefix must be renamed. A consumer that reads objects by path is
+  compressor, and paths) and by decoding existing data objects with the
+  supplied codec and compressor. The manifests record only component
+  names, so a setting that neither check can verify fails the migration
+  rather than becoming authoritative. Until the migration, a reader
+  requires the layout option. The descriptors are new objects under a
+  reserved prefix, which D8 must name. The migration must detect any
+  existing object under that prefix, such as a consumer's own files, and
+  fail until it is relocated, and a dataset whose ID begins with the prefix
+  must be renamed. A consumer that reads objects by path is
   otherwise unaffected.
 - Under option 3, the minimum Go version (#261).
 
