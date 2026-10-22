@@ -96,6 +96,10 @@ in its pull request before the ceiling is raised. A change that reduces a
 figure lowers the ceiling to the new figure in the same pull request, so the
 gates never retain unused headroom. A toolchain or dependency upgrade that
 moves the figures resets the ceilings in the upgrade's pull request.
+`task gates` runs each gate three times and reports the ceilings that each
+run calls for, with the byte figure already rounded. A byte figure near a
+multiple of 64 can round to either side, so a ceiling is reset to the
+highest figure that a gate reports.
 
 ### S3 (Docker-local)
 
