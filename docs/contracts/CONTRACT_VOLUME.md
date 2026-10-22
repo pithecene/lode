@@ -291,7 +291,11 @@ value returns `lode.ErrInvalidArgument` with the same message.
   `lode.ErrSnapshotConflict`, because the parent's blocks cannot be merged.
   If retries are configured, Commit retries. Commits return
   `lode.ErrSnapshotConflict` until the pointer names a snapshot that has a
-  manifest.
+  manifest: either the missing manifest is persisted, or an operator sets
+  the pointer to an earlier snapshot. A `Volume` value that remembers an
+  earlier head continues to expect that head's pointer content, so after
+  the repair the caller MUST call `Latest` or open the volume again, unless
+  retries are configured (each retry refreshes the head).
 - `Latest`, `Snapshot`, and `Snapshots` never read staged copies. An
   abandoned commit has no canonical manifest, so it is never listed, and its
   blocks become visible through the next commit, which merges them; that
@@ -309,7 +313,8 @@ The snapshot history of a Volume is linear.
 |---------|---------|--------|---------|--------|
 | Single writer | 1 process | Non-overlapping blocks | Linear (guaranteed) | ✅ Supported |
 | Multiple processes, serialized | N processes, external coordination | Non-overlapping blocks | Linear (enforced by the caller) | ✅ Supported (the caller provides coordination) |
-| Multiple processes, uncoordinated | N processes, no coordination | Non-overlapping blocks | Linear (enforced by CAS) | ✅ Safe (CAS) |
+| Multiple processes, uncoordinated, store implements `ConditionalWriter` | N processes, no coordination | Non-overlapping blocks | Linear (enforced by CAS) | ✅ Supported; a later commit adopts an abandoned commit from its staged manifest (§Error Semantics) |
+| Multiple processes, uncoordinated, store without `ConditionalWriter` | N processes, no coordination | Non-overlapping blocks | Undefined: concurrent Delete+Put commits can fork the history and omit blocks from the head | ❌ Unsafe |
 
 ### Optimistic Concurrency (CAS)
 
