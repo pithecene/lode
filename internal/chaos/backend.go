@@ -15,6 +15,7 @@ import (
 	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/smithy-go"
 
+	"github.com/pithecene/lode/internal/testutil"
 	"github.com/pithecene/lode/lode"
 	"github.com/pithecene/lode/lode/s3"
 )
@@ -43,9 +44,15 @@ type openBackend func(ctx context.Context, dir, runID string) (Backend, error)
 // backends are the stores the harness knows. LocalStack and RustFS are the
 // services of lode/s3/docker-compose.yaml; "s3" is any S3-compatible store
 // configured through CHAOS_S3_* environment variables (see s3FromEnv).
+// "single-process" is lode.SingleProcess over a memory store without CAS:
+// every writer of a run is a goroutine of this process, which is the scope
+// within which SingleProcess serializes commits.
 var backends = map[string]openBackend{
 	"memory": func(context.Context, string, string) (Backend, error) {
 		return Backend{Store: lode.NewMemory(), Release: keep, RetainsData: true}, nil
+	},
+	"single-process": func(context.Context, string, string) (Backend, error) {
+		return Backend{Store: lode.SingleProcess(testutil.WithoutCAS(lode.NewMemory())), Release: keep, RetainsData: true}, nil
 	},
 	"fs": func(_ context.Context, dir, _ string) (Backend, error) {
 		store, err := lode.NewFSFactory(dir)()

@@ -265,6 +265,17 @@ Adapters that do not implement `ConditionalWriter` are valid. The commit
 path then uses Delete+Put, and callers remain responsible for ensuring
 single-writer semantics.
 
+`lode.SingleProcess(store)` adds `CompareAndSwap` to such a store by
+serializing calls under a lock held by the process; a store that already
+implements `ConditionalWriter` is returned unchanged. Its `CompareAndSwap`
+MUST follow the semantics table above. It serializes only callers that share
+the returned value within one process, and its replacement is a `Delete`
+followed by a `Put`, so a failed `Put` leaves the path absent. Reads
+through the returned value (`Get`, `Exists`, `List`, `ReadRange`, and
+`ReaderAt`) MUST wait for a replacement in progress, so that a reader in the
+process observes the old or the new content, never the absence between the
+`Delete` and the `Put`. A nil store MUST be returned as nil.
+
 When an adapter implements `ConditionalWriter`, the commit path uses
 `CompareAndSwap` automatically. The caller need not configure anything.
 
