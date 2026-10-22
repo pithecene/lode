@@ -1,4 +1,4 @@
-//go:build unix
+//go:build unix || windows
 
 package lode
 
@@ -12,7 +12,7 @@ import (
 )
 
 // -----------------------------------------------------------------------------
-// CompareAndSwap tests — FS store (Unix-only, requires flock)
+// CompareAndSwap tests — FS store (Unix and Windows)
 // -----------------------------------------------------------------------------
 
 func TestFSStore_CompareAndSwap(t *testing.T) {
