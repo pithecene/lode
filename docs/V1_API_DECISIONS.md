@@ -662,7 +662,7 @@ view, err := lode.OpenReadOnly(lode.FS("/data")).Records(ctx, "events", lode.JSO
 | Options | Writer handles take `DatasetOption`. A view takes no layout, codec settings, or retry, which come from the descriptor; Lode reconstructs the bundled compressors and checksums from their descriptions, and a custom compressor or checksum is passed to the view explicitly, through `ReadRoot.Records(ctx, id, codec, opts ...ViewOption)`, and checked against the descriptor. `ViewOption` holds only `WithCompressor` and `WithChecksum`. No global registry is introduced. The `ErrOptionNotValidFor...` sentinels are removed. | Cost 5; D3 |
 | Metadata | `Write` takes any value that encodes as a JSON object, a struct or a map; nil persists as `{}`, as CONTRACT_CORE §Metadata Rules requires. `Snapshot.Metadata` retains the persisted JSON and decodes it on request (`Decode(&v)`), so a struct target receives its declared field types; a map target receives JSON's types, with numbers as `float64`. | Cost 3 (metadata) |
 
-The surface requires Go 1.27 for generic methods (#261). A prototype
+The surface requires Go 1.27 for generic methods, which is the minimum since #261. A prototype
 compiled with Go 1.27.3 confirms the chained construction, the inference
 of the record type from the codec, typed metadata, and a view over a store
 without `CompareAndSwap`.
