@@ -648,9 +648,9 @@ read under it.
 
    The first commit of a dataset persists a dataset descriptor that records
    its complete configuration, not only component names: the layout's
-   grammar and partition keys, and the codec and compressor with their
-   settings (a Parquet codec's schema, for example). The descriptor is
-   created with `CompareAndSwap` at a
+   grammar and partition keys, the codec and compressor with their settings
+   (a Parquet codec's schema, for example), and the checksum. The
+   descriptor is created with `CompareAndSwap` at a
    path that no layout uses (for example, `_lode/datasets/<id>.json`; the
    dataset ID grammar must then exclude the prefix). A later handle reads
    the descriptor: a reader needs no layout option, and a handle whose
@@ -659,7 +659,12 @@ read under it.
    Datasets under one root may therefore retain different layouts, as they
    may today, and every layout, the flat layout included, can enumerate
    datasets through the descriptors. `OpenReadOnly` takes an
-   `ObjectStore`. This resolves costs 3 and 4. It resolves cost 1 in part:
+   `ObjectStore`. The descriptor requires that every component have a
+   stable, serializable description. Today `Codec`, `Compressor`, and the
+   checksum expose only a name, and the layout exposes none, so this option
+   either adds a description method to those interfaces, which breaks
+   custom implementations, or records names alone and detects only a
+   change of component, not of its settings. This resolves costs 3 and 4. It resolves cost 1 in part:
    the layout is stated once, but each handle still states its codec, which
    the descriptor checks, and its retry settings. Cost 5 is resolved only
    if writer options are also separated from reader options (D3). Two
@@ -669,9 +674,10 @@ read under it.
    obtained through a generic method of a concrete `Repo`; since Go 1.27, a
    method declaration may declare its own type parameters
    ([release notes](https://go.dev/doc/go1.27)). `Open` returns only the
-   handle, `func Open[S Store](ctx context.Context, f Factory[S], opts
-   ...Option) *Repo`; it records any error of the factory or of its
-   options and returns that error from every method of the handle, so a
+   handle, `func Open[S Store](ctx context.Context, f Factory[S]) *Repo`,
+   which takes no options, because every option belongs to a dataset; it
+   records any error of the factory and returns that error from every
+   method of the handle, so a
    chained construction checks one error, as a factory does today:
 
    ```go

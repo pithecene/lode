@@ -151,8 +151,8 @@ partitions, one dataset on R2.
 > **Evidence:** D1–D8 all Open. D9 accepted and shipped: Volume is experimental in package `lode/volume`, and `PUBLIC_API.md` / `CONTRACT_VOLUME.md` say so. Dogfooding now bears on D8: `private-A` reads the on-disk path grammar directly (audit F8), so the path-compatibility policy has a real consumer.
 > Date: 2026-10-20 | Observer: @pithecene | Project: lode, private-A
 >
-> **Evidence:** D10a–D10c, D10e, D10f, and D11 Open. D10d accepted and shipped: every `Store` implements `CompareAndSwap`.
-> Date: 2026-10-22 | Observer: @pithecene | Project: lode
+> **Evidence:** D10a–D10c, D10e, D10f, and D11 Open. D10d accepted and shipped: every `Store` implements `CompareAndSwap`. D10 follows from the history fork investigated in #208 (audit F3); D11 follows from Quarry's call sites (three constructions of one dataset, a second store value for sidecar files, and untyped records).
+> Date: 2026-10-22 | Observer: @pithecene | Project: lode, Quarry
 > Summary: Not met; D8 should be decided with the consumer's raw-layout reads in view.
 > Issue: —
 
