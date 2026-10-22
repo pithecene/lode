@@ -79,23 +79,28 @@ detector, which adds allocations of its own. The byte ceiling catches a
 single oversized allocation, such as a fixed buffer, which the allocation
 count does not; each byte ceiling is the measured figure rounded up to the
 next 64 bytes, because map growth in the in-memory store varies it by a few
-bytes.
+bytes. The ceilings below were measured with Go 1.27.3; the benchmark
+figures in the other sections were measured with Go 1.25.
 
 | Gate | Allocations | Bytes |
 |------|------------:|------:|
-| Write of three records | 55 | 5,888 |
-| Read of three records | 69 | 8,448 |
-| StreamWrite of one kibibyte | 30 | 6,656 |
-| StreamWriteRecords of three records | 60 | 6,016 |
-| JSONL Decode of three records | 35 | 5,568 |
-| Volume ReadAt within one of ten blocks | 44 | 8,960 |
-| Volume Commit of one block onto a small volume | 139 | 334,720 |
+| Write of three records | 56 | 6,208 |
+| Read of three records | 57 | 8,512 |
+| StreamWrite of one kibibyte | 32 | 6,336 |
+| StreamWriteRecords of three records | 61 | 6,400 |
+| JSONL Decode of three records | 33 | 5,568 |
+| Volume ReadAt within one of ten blocks | 39 | 10,752 |
+| Volume Commit of one block onto a small volume | 136 | 252,032 |
 
 A change that exceeds a ceiling fails the test and must justify the increase
 in its pull request before the ceiling is raised. A change that reduces a
 figure lowers the ceiling to the new figure in the same pull request, so the
 gates never retain unused headroom. A toolchain or dependency upgrade that
 moves the figures resets the ceilings in the upgrade's pull request.
+`task gates` runs each gate three times and reports the ceilings that each
+run calls for, with the byte figure already rounded. A byte figure near a
+multiple of 64 can round to either side, so a ceiling is reset to the
+highest figure that a gate reports.
 
 ### S3 (Docker-local)
 
