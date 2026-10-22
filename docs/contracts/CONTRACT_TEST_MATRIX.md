@@ -202,6 +202,14 @@ Gaps are recorded with codes that indicate category and priority:
 | Beyond EOF | `TestStore_ReadRange/beyond_EOF`, `TestStore_ReadRange/offset_beyond_EOF` |
 | Exact bounds; allocation bounded by available bytes | `TestStore_ReadRange_Bounds/exact_bounds`, `TestStore_ReadRange_Bounds/exact_bounds` |
 
+**CompareAndSwap (filesystem, memory, and `SingleProcess`)**: All covered ✅
+
+| Requirement | Tests |
+|-------------|-------|
+| `CompareAndSwap` creates, replaces, and refuses as the semantics table requires | `TestStore_CompareAndSwap/fs`, `TestStore_CompareAndSwap/memory`, `TestStore_CompareAndSwap/single-process` |
+| The filesystem store replaces a pointer that a reader holds open, and one beyond MAX_PATH | `TestFSStore_CompareAndSwap_Replacement` |
+| `SingleProcess` keeps histories linear under concurrent writers in one process | `TestChaos` with `-chaos -chaos.backends single-process` (on demand) |
+
 **CompareAndSwap (S3)**: All covered ✅
 
 | Requirement | Tests |

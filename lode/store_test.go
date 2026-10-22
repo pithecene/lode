@@ -6,6 +6,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"slices"
 	"testing"
 
 	"github.com/pithecene/lode/internal/testutil"
@@ -434,95 +435,74 @@ func TestStore_ReaderAt(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------------
-// CompareAndSwap tests — Memory store
+// CompareAndSwap conformance
 // -----------------------------------------------------------------------------
 
-func TestMemoryStore_CompareAndSwap(t *testing.T) {
-	t.Run("create when empty", func(t *testing.T) {
-		ctx := t.Context()
-		store := NewMemory()
-		cw := store.(ConditionalWriter)
+// casBackends are the stores whose CompareAndSwap the conformance test
+// checks: the built-in stores, and SingleProcess over a store without CAS.
+var casBackends = append(slices.Clone(storeBackends), storeBackend{
+	name: "single-process",
+	open: func(*testing.T) Store { return SingleProcess(testutil.WithoutCAS(NewMemory())) },
+})
 
-		if err := cw.CompareAndSwap(ctx, "ptr/latest", "", "snap-1"); err != nil {
-			t.Fatalf("CompareAndSwap create failed: %v", err)
-		}
+// TestStore_CompareAndSwap checks the ConditionalWriter semantics table
+// (CONTRACT_STORAGE §ConditionalWriter Capability) on every store with CAS.
+// The steps run in order on one path; want is the content afterwards, ""
+// meaning absent.
+func TestStore_CompareAndSwap(t *testing.T) {
+	steps := []struct {
+		name, expected, replacement string
+		wantErr                     error
+		want                        string
+	}{
+		{"missing path, non-empty expected conflicts", "snap-0", "snap-1", ErrSnapshotConflict, ""},
+		{"missing path, empty expected creates", "", "snap-1", nil, "snap-1"},
+		{"existing path, empty expected conflicts", "", "snap-x", ErrSnapshotConflict, "snap-1"},
+		{"matching expected replaces", "snap-1", "snap-2", nil, "snap-2"},
+		{"mismatched expected conflicts", "stale", "snap-3", ErrSnapshotConflict, "snap-2"},
+	}
+	for _, b := range casBackends {
+		t.Run(b.name, func(t *testing.T) {
+			store := b.open(t)
+			cw, ok := store.(ConditionalWriter)
+			if !ok {
+				t.Skip("the store does not implement ConditionalWriter on this platform")
+			}
+			for _, s := range steps {
+				err := cw.CompareAndSwap(t.Context(), "ptr/latest", s.expected, s.replacement)
+				if !errors.Is(err, s.wantErr) {
+					t.Fatalf("%s: err = %v, want %v", s.name, err, s.wantErr)
+				}
+				if got := readOrAbsent(t, store, "ptr/latest"); got != s.want {
+					t.Fatalf("%s: content = %q, want %q", s.name, got, s.want)
+				}
+			}
+		})
+	}
+}
 
-		rc, err := store.Get(ctx, "ptr/latest")
-		if err != nil {
-			t.Fatalf("Get after CAS create failed: %v", err)
-		}
-		defer closer(rc)()
-		data, _ := io.ReadAll(rc)
-		if string(data) != "snap-1" {
-			t.Errorf("expected 'snap-1', got %q", string(data))
-		}
-	})
-
-	t.Run("update match", func(t *testing.T) {
-		ctx := t.Context()
-		store := NewMemory()
-		cw := store.(ConditionalWriter)
-
-		if err := cw.CompareAndSwap(ctx, "ptr/latest", "", "snap-1"); err != nil {
-			t.Fatalf("initial create failed: %v", err)
-		}
-
-		if err := cw.CompareAndSwap(ctx, "ptr/latest", "snap-1", "snap-2"); err != nil {
-			t.Fatalf("CompareAndSwap update failed: %v", err)
-		}
-
-		rc, err := store.Get(ctx, "ptr/latest")
-		if err != nil {
-			t.Fatalf("Get after CAS update failed: %v", err)
-		}
-		defer closer(rc)()
-		data, _ := io.ReadAll(rc)
-		if string(data) != "snap-2" {
-			t.Errorf("expected 'snap-2', got %q", string(data))
-		}
-	})
-
-	t.Run("conflict mismatch", func(t *testing.T) {
-		ctx := t.Context()
-		store := NewMemory()
-		cw := store.(ConditionalWriter)
-
-		if err := cw.CompareAndSwap(ctx, "ptr/latest", "", "snap-1"); err != nil {
-			t.Fatalf("initial create failed: %v", err)
-		}
-
-		err := cw.CompareAndSwap(ctx, "ptr/latest", "stale", "snap-2")
-		if !errors.Is(err, ErrSnapshotConflict) {
-			t.Errorf("expected ErrSnapshotConflict, got: %v", err)
-		}
-
-		rc, err := store.Get(ctx, "ptr/latest")
-		if err != nil {
-			t.Fatalf("Get after conflict: %v", err)
-		}
-		defer closer(rc)()
-		data, _ := io.ReadAll(rc)
-		if string(data) != "snap-1" {
-			t.Errorf("expected 'snap-1' (unchanged), got %q", string(data))
-		}
-	})
-
-	t.Run("conflict not exist", func(t *testing.T) {
-		ctx := t.Context()
-		store := NewMemory()
-		cw := store.(ConditionalWriter)
-
-		err := cw.CompareAndSwap(ctx, "ptr/latest", "snap-0", "snap-1")
-		if !errors.Is(err, ErrSnapshotConflict) {
-			t.Errorf("expected ErrSnapshotConflict, got: %v", err)
-		}
-	})
+// readOrAbsent returns the content at path, or "" when the path is absent.
+func readOrAbsent(t *testing.T, store Store, path string) string {
+	t.Helper()
+	rc, err := store.Get(t.Context(), path)
+	if errors.Is(err, ErrNotFound) {
+		return ""
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closer(rc)()
+	data, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
 }
 
 // -----------------------------------------------------------------------------
 // Compile-time interface assertions
 // -----------------------------------------------------------------------------
 
-// fsStore ConditionalWriter assertion is in store_cas_unix_test.go
-// (Unix-only: fsStore only implements ConditionalWriter where flock is available).
+// The fsStore ConditionalWriter assertion is in store_cas_test.go: fsStore
+// implements ConditionalWriter on Unix and Windows.
 var _ ConditionalWriter = (*memoryStore)(nil)
