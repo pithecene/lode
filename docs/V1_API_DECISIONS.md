@@ -647,9 +647,9 @@ view, err := lode.OpenReadOnly(ctx, lode.FS("/data")).Records("events", lode.JSO
 | Root | `func Open[S Store](ctx context.Context, f Factory[S]) *Root` and `func OpenReadOnly[S ObjectStore](ctx context.Context, f Factory[S]) *ReadRoot`. Each calls the factory once and records any error, which every method of the handle returns. Every dataset of a root shares its one store value. | Cost 4; cost 2 in part |
 | Record datasets | A generic method, `func (r *Root) Records[T any](id DatasetID, codec Codec[T], opts ...DatasetOption) (Records[T], error)`. `Records[T]` embeds the read-only `RecordView[T]`, which is what `ReadRoot.Records` returns. Codec constructors return the interface type, so that `T` is inferred from the codec. | Cost 3; D1 |
 | Blob datasets | `func (r *Root) Blobs(id DatasetID, opts ...DatasetOption) (Blobs, error)`, whose `Write` takes one `[]byte` and whose `Read` returns one, with streaming writes. | D1 |
-| Descriptor | Before the first commit, the handle persists a dataset descriptor that records the complete configuration: the layout with its partition keys, and the codec, compressor, and checksum, each with its settings. Every component implements `Describe() Descriptor` (a name and settings). A view reads the descriptor and takes no options; a writer whose configuration conflicts with it is rejected. | Cost 1 |
+| Descriptor | Before the first commit, the handle persists a dataset descriptor that records the complete configuration: the layout with its partition keys, and the codec, compressor, and checksum, each with its settings. Every component implements `Describe() Descriptor` (a name and settings). A writer whose configuration conflicts with it is rejected. A descriptor that names no snapshot, left by a failed first commit, denotes an empty dataset, and a writer may replace it with `CompareAndSwap` while no snapshot exists. | Cost 1 |
 | Layout | An exported `Layout` type with one spelling per layout: `lode.Default()`, `lode.Hive(keys...)`, and `lode.Flat()`. An invalid key is reported by `Records` or `Blobs`, as every construction error is. | D2 |
-| Options | One option type, `DatasetOption`, accepted only by writer handles; a view's configuration comes from the descriptor. The `ErrOptionNotValidFor...` sentinels are removed. | Cost 5; D3 |
+| Options | Writer handles take `DatasetOption`. A view takes no layout, codec settings, or retry, which come from the descriptor; Lode reconstructs the bundled compressors and checksums from their descriptions, and a custom compressor or checksum is passed to the view explicitly and checked against the descriptor. No global registry is introduced. The `ErrOptionNotValidFor...` sentinels are removed. | Cost 5; D3 |
 | Metadata | `Write` takes any value that encodes as a JSON object, a struct or a map; nil persists as `{}`, as CONTRACT_CORE §Metadata Rules requires. `Snapshot.Metadata` retains the persisted JSON and decodes it on request (`Decode(&v)`), so a caller's numbers keep their types. | Cost 3 (metadata) |
 
 The surface requires Go 1.27 for generic methods (#261). A prototype
@@ -662,8 +662,9 @@ the snapshot model are unchanged; the handles change how a caller reaches
 them, not what they do. Metadata becomes more explicit: the descriptor
 persists the configuration that callers now restate at each construction.
 Constructing a handle costs one `Get` of the descriptor, and a dataset's
-first commit costs one `CompareAndSwap` to create it; commits, reads, and
-listings keep their bounds. Generic records add no per-record cost beyond
+first commit costs one `CompareAndSwap` to create it, which
+CONTRACT_COMPLEXITY would state as an exception for the first commit;
+later commits, reads, and listings keep their bounds. Generic records add no per-record cost beyond
 the codec's own encoding.
 
 **Alternatives considered.**
@@ -682,7 +683,9 @@ the codec's own encoding.
    snapshot. The second keeps them within the snapshot model but is a new
    feature; the first is an escape hatch that `AGENTS.md` discourages.
 2. **The descriptor's path.** It must lie outside every layout's grammar
-   (for example, `_lode/datasets/<id>.json`), and D8 must name it.
+   (for example, `_lode/datasets/<id>.json`), and D8 must name it. The flat
+   layout places dataset IDs at the store root, so the dataset ID grammar
+   must exclude the reserved prefix.
 3. **Migration of existing datasets.** A dataset written before descriptors
    has none. A commit must not create one implicitly, because a wrong
    configuration would then become authoritative. An explicit migration
