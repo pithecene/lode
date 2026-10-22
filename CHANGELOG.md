@@ -76,36 +76,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Listing filters and cursors**: `PartitionListOptions.Prefix` narrows `ListPartitions` to a partition-path prefix (a storage prefix on Hive layouts); `PartitionListOptions.StartAfter` and `ManifestListOptions.StartAfter` resume a listing after a previous result. ([#175](https://github.com/pithecene/lode/issues/175))
-- **`ErrPartitionPrefixNotSupported`**: Sentinel for `Prefix` on a layout without partitions.
-- **`ErrInvalidArgument`**: One sentinel for every caller-supplied value Lode refuses — nil factories, nil layouts or compressors, out-of-range retry options, blob writes without exactly one `[]byte`, Volume offsets, lengths, blocks and commits. Previously these were ad-hoc errors matchable only by message; `errors.Is(err, lode.ErrInvalidArgument)` now classifies them and the message still names the value.
-- **`DatasetListOptions.StartAfter`**: `ListDatasets` gains the cursor the other listings have; the last ID from a previous call resumes after it.
-- **Mutation testing**: a nightly gremlins job gates `./lode` on test efficacy above 88% and mutant coverage above 95% (gremlins v0.6.0 fails a run that lands exactly on a threshold) (`.gremlins.yaml`; `task mutate` locally). The test hardening it drove is what surfaced the `Put`, stream-write and `ReadRange` fixes below.
-- **`docs/V1_API_DECISIONS.md`**: the breaking API candidates held for v1.0 (`Write`/`WriteBlob` split, exported `Layout`, option applicability, opaque `PartitionPath`, optional `RangeReader`, error-prefix rule, the exported S3 mock, on-disk path policy), each recorded once with blast radius and a status. `V1_READINESS.md` §1 requires every one decided before the surface freeze.
+- **Listing filters and cursors**: `PartitionListOptions.Prefix` narrows `ListPartitions` to a partition-path prefix, and `StartAfter` on `DatasetListOptions`, `PartitionListOptions`, and `ManifestListOptions` resumes a listing after a previous result. The new `ErrPartitionPrefixNotSupported` reports `Prefix` on a layout without partitions. ([#175](https://github.com/pithecene/lode/issues/175))
+- **`ErrInvalidArgument`**: every caller-supplied value that Lode refuses, such as a nil factory, an out-of-range retry option, or a blob write without exactly one `[]byte`, returns an error that matches `ErrInvalidArgument`, and the message still names the value. Constructors validate their options before they call the store factory.
 
 ### Changed
 
-- **Deterministic listing order**: `ListDatasets` returns lexicographic ID order, `ListPartitions` returns lexicographic `Path` order and `ListManifests` returns `(Partition, ID)` order on every store. Previously both followed the store's unspecified `List` order, and a multi-partition snapshot's `ManifestRef.Partition` could differ between calls. `Limit` now bounds the result set after sorting rather than stopping enumeration early; store-call bounds are unchanged.
-- **Argument error messages**: errors that now match `ErrInvalidArgument` read `lode: invalid argument: <value>`; the value text is unchanged, so substring checks keep working. `ErrInvalidPath`'s message is now `invalid path` — it was `invalid path: escapes storage root`, which was wrong for the `ReadRange` bounds and partition-prefix cases that return it.
-- **Sentinel homes**: `ErrInvalidPath`, `ErrManifestInvalid` and the `ErrOptionNotValidFor*` sentinels are declared in `api.go` with the others. Identity under `errors.Is` and messages are unchanged.
-- **Argument errors before store work**: `NewDataset`, `NewDatasetReader` and `NewVolume` apply and validate their options before calling the store factory, so an out-of-range option value is reported as `ErrInvalidArgument` (and an option that does not apply as its `ErrOptionNotValidFor*` sentinel, as before) even when the factory would fail; `Volume.ReadAt` checks every bound before loading the snapshot.
-- **Internal restructuring (no API change)**: Dataset and Volume share one head-pointer protocol (`history`); the three layouts are one path grammar; every store adapter validates keys, prefixes and ranges through `internal/storepath`; the write paths stage into a `pendingSnapshot` and stream through one pipeline type. `dataset.go` is half its size. Behavior, on-disk paths, the public API and benchmarks are unchanged (allocations within +2 per write of the previous release; see `docs/BENCHMARKS.md`). Dataset error contexts are the same words but nest once more on the read path: a malformed canonical manifest makes `Dataset.Snapshot` fail with `lode: failed to get manifest: lode: failed to decode manifest: …` (previously `lode: failed to decode manifest: …`), and a failed compatibility scan reads `lode: failed to get manifest: lode: failed to list snapshots: …` (previously `lode: failed to list for snapshot search: …`). Four Volume error contexts now use the shared wording: `failed to list volume snapshots` → `failed to list snapshots`, `failed to read volume latest pointer` → `failed to read latest pointer`, `failed to load snapshot from pointer` → `failed to load latest snapshot`, `failed to load snapshot from cache` → `failed to load snapshot` (and a parent that cannot be loaded during a commit reads `failed to load parent snapshot`). `failed to write volume manifest`, `failed to marshal volume manifest`, `failed to get volume manifest` and `failed to decode volume manifest` are unchanged. Wrapped causes and `errors.Is` classification are unaffected.
+- **Listings are sorted**: on every store, `ListDatasets` returns IDs in lexicographic order, `ListPartitions` returns paths in lexicographic order, and `ListManifests` returns references ordered by partition and then by ID. `Limit` applies after sorting.
+- **Error messages**: errors that match `ErrInvalidArgument` begin `lode: invalid argument:`, and `ErrInvalidPath` reads `invalid path`. Two Dataset read failures add one level of context, and four Volume read failures omit the word `volume`, so that `failed to list volume snapshots` becomes `failed to list snapshots`. Classification with `errors.Is` is unchanged.
 
 ### Fixed
 
-- **Backslashes in keys**: every store rejects a key or prefix containing `\` with `ErrInvalidPath`. Previously the filesystem store rejected `..\x` only on Windows and the memory store only through `filepath`; the rule is now platform-independent and shared (`CONTRACT_STORAGE.md` §Put), and `s3.New` applies it to `Config.Prefix` too.
-- **Filesystem `List` prefix semantics**: `NewFS` treated the prefix as a directory, so a partial final token (`day=2024-01`) listed nothing while the memory and S3 stores matched it as a string prefix. All stores now agree; `CONTRACT_STORAGE.md` §List states the string-prefix rule.
-- **`Put` is all-or-nothing**: `NewFS` left a partial object behind when the supplied reader failed mid-copy; it now removes what it created. `CONTRACT_STORAGE.md` §Put makes the rule normative for every adapter: on error the path is left as it was, callers never clean up after a failed `Put`, and a path whose `Put` returned `ErrPathExists` belongs to another writer.
-- **Stream writes no longer block on a fast `Put` failure**: when the store's `Put` returned before draining the stream (for example `ErrPathExists`), `StreamWrite` and `StreamWriteRecords` blocked forever on the pipe. The read end is now closed with `Put`'s error, so `Write`, `Commit`, and `StreamWriteRecords` fail with it instead. The writer never deletes after a failed `Put` — `Put` is all-or-nothing (above), so there is nothing of its own to remove and a path that returned `ErrPathExists` belongs to another writer. Found by mutation testing.
-- **Filesystem `ReadRange` allocation**: `NewFS` allocated the full requested `length` before reading, so a valid range far beyond EOF (which the contract says returns the available bytes) could exhaust memory. The buffer is now bounded by the bytes the file can supply.
+- **Backslashes in keys**: every store rejects a key or prefix that contains `\` with `ErrInvalidPath` on every platform, and `s3.New` applies the rule to `Config.Prefix`.
+- **Filesystem listing by prefix**: the filesystem store treated a prefix as a directory, so a partial final segment such as `day=2024-01` listed nothing. It now matches a string prefix, as the other stores do.
+- **A failed `Put` leaves no partial object**: the filesystem store left a partial object when the reader failed during the copy; it now removes it.
+- **Stream writes no longer hang on a failed `Put`**: when a store's `Put` failed before it read the whole stream, `StreamWrite` and `StreamWriteRecords` blocked indefinitely; they now return the error.
+- **Filesystem `ReadRange` allocation**: a range that extends far beyond the end of a file no longer allocates the full requested length.
 
 ### Upgrade Notes
 
-- **Additive API**: `ErrInvalidArgument`, `DatasetListOptions.StartAfter`, `ErrPartitionPrefixNotSupported`, `PartitionListOptions.Prefix`/`StartAfter`, `ManifestListOptions.StartAfter`. No removals; no new options (the option-surface freeze window is unaffected; the sentinel freeze window resets).
-- **Message text**: errors classified as `ErrInvalidArgument` now begin `lode: invalid argument:`; `ErrInvalidPath` reads `invalid path`; four Volume read-path contexts dropped the word `volume` and two Dataset read-path failures nest one more context (both listed under Changed). Code matching with `errors.Is` is unaffected; substring matches on the value text still hold.
-- **Listing order**: `ListDatasets`, `ListPartitions` and `ListManifests` are now sorted; `Limit` applies after sorting. Callers that depended on store order (undefined by contract) should re-check pagination.
-- **Keys with backslashes** are now `ErrInvalidPath` on every store and in `s3.Config.Prefix`.
-- **No data migration required**: storage layout and manifest format are unchanged.
+- **Error text**: code that matches error messages should be checked against the new wording; matching with `errors.Is` is unaffected.
+- **Pagination**: code that relied on the store's listing order should be checked, because listings are now sorted and `Limit` applies after sorting.
+- **Backslashes**: keys and prefixes that contain `\` now return `ErrInvalidPath`.
+- **No data migration required**: the storage layout and the manifest format are unchanged.
 
 ---
 
@@ -113,50 +105,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Retry observer**: `WithRetryObserver(fn)` registers a callback invoked synchronously once per CAS retry attempt (1-indexed, before backoff) for Dataset and Volume. Enables callers to populate retry metrics such as `lode_write_retry_total`. ([#171](https://github.com/pithecene/lode/pull/171), closes [#169](https://github.com/pithecene/lode/issues/169))
+- **Retry observer**: `WithRetryObserver(fn)` registers a function that Lode calls once for each commit retry, before the backoff, on Datasets and Volumes, for example to count retries in a metric. ([#171](https://github.com/pithecene/lode/pull/171), closes [#169](https://github.com/pithecene/lode/issues/169))
 
 ### Security
 
-- **AWS SDK EventStream DoS**: Bump `github.com/aws/aws-sdk-go-v2/service/s3` to v1.97.3 and `aws/protocol/eventstream` to v1.7.8, the first patched versions for the EventStream decoder panic advisory. Transitive `aws-sdk-go-v2` and `smithy-go` patch bumps follow via MVS. ([#170](https://github.com/pithecene/lode/pull/170))
+- **AWS SDK**: `github.com/aws/aws-sdk-go-v2/service/s3` is upgraded to v1.97.3 and `aws/protocol/eventstream` to v1.7.8, which resolve a denial-of-service advisory in the EventStream decoder. ([#170](https://github.com/pithecene/lode/pull/170))
 
 ### Upgrade Notes
 
-- **Additive only**: No API removals or behavior changes. `WithRetryObserver` is opt-in and inert unless `WithRetryCount(n > 0)` is configured.
-- **No data migration required**: Storage layout and manifest format are unchanged.
+- **No action required**: `WithRetryObserver` takes effect only when `WithRetryCount` is greater than zero, and the storage layout and the manifest format are unchanged.
 
 ---
 
 ## [0.9.0] - 2026-03-08
 
-### Added
-
-- **Opt-in CAS retry**: `WithRetryCount(n)` enables automatic bounded retry on `ErrSnapshotConflict` within the commit path for both Dataset and Volume. Data files are written once; only the manifest re-parent and pointer CAS are retried. ([#164](https://github.com/pithecene/lode/pull/164), closes [#163](https://github.com/pithecene/lode/issues/163))
-- **Backoff customization**: `WithRetryBaseDelay(d)`, `WithRetryMaxDelay(d)`, `WithRetryJitter(j)` for full control over jittered exponential backoff. Defaults: 10ms base, 2s max, full jitter.
-- **`ErrOptionNotValidForVolume`**: Sentinel error for options that do not apply to Volume construction.
-
-### Changed
-
-- **Unified `Option` interface**: `VolumeOption` function type replaced by the shared `Option` interface (already used by Dataset and DatasetReader). `NewVolume` now takes `...Option`. Options that do not apply to a given constructor return an error at construction time. ([#164](https://github.com/pithecene/lode/pull/164))
-- **`WithVolumeChecksum` → `WithChecksum`**: Volume block checksums now use the same `WithChecksum(c)` option as Dataset file checksums.
-
 ### Breaking Changes
 
-- **`VolumeOption` type removed**: Replace `lode.VolumeOption` with `lode.Option`.
-- **`WithVolumeChecksum` removed**: Replace `lode.WithVolumeChecksum(c)` with `lode.WithChecksum(c)`.
+- **`VolumeOption` is removed**: `NewVolume` takes the `Option` type that `NewDataset` and `NewDatasetReader` take, and an option that does not apply to a Volume returns the new `ErrOptionNotValidForVolume`. ([#164](https://github.com/pithecene/lode/pull/164))
+- **`WithVolumeChecksum` is removed**: a Volume takes `WithChecksum`, as a Dataset does.
+
+### Added
+
+- **Retry on conflict**: `WithRetryCount(n)` retries a commit that fails with `ErrSnapshotConflict` up to `n` times, on Datasets and Volumes. Data files are written once; only the manifest and the pointer update are retried. `WithRetryBaseDelay`, `WithRetryMaxDelay`, and `WithRetryJitter` configure the exponential backoff, whose defaults are a base delay of 10 ms, a maximum of 2 s, and full jitter. ([#164](https://github.com/pithecene/lode/pull/164), closes [#163](https://github.com/pithecene/lode/issues/163))
 
 ### Upgrade Notes
 
-- **Search-and-replace migration**:
-  - `lode.VolumeOption` → `lode.Option`
-  - `lode.WithVolumeChecksum(` → `lode.WithChecksum(`
-- **Retry is opt-in**: Default behavior (0 retries) is unchanged. Existing callers see no difference unless they configure `WithRetryCount`.
-- **No data migration required**: Storage layout and manifest format are unchanged.
-
-### References
-
-- [CONTRACT_WRITE_API.md](docs/contracts/CONTRACT_WRITE_API.md) — Automatic retry semantics
-- [CONTRACT_VOLUME.md](docs/contracts/CONTRACT_VOLUME.md) — Unified Option interface, Volume retry
-- [CONTRACT_ERRORS.md](docs/contracts/CONTRACT_ERRORS.md) — Automatic retry guidance for ErrSnapshotConflict
+- **Renames**: replace `lode.VolumeOption` with `lode.Option` and `lode.WithVolumeChecksum` with `lode.WithChecksum`.
+- **Retry is opt-in**: without `WithRetryCount`, a commit is not retried, as before.
+- **No data migration required**: the storage layout and the manifest format are unchanged.
 
 ---
 
@@ -164,64 +140,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **CAS optimistic concurrency**: `ConditionalWriter` interface and `CompareAndSwap` method on FS, Memory, and S3 stores. Dataset and Volume commit paths use CAS when available, falling back to Delete+Put for single-writer stores. `ErrSnapshotConflict` sentinel for conflict detection and retry. ([#134](https://github.com/pithecene/lode/pull/134), [#135](https://github.com/pithecene/lode/pull/135))
-- **Optimistic concurrency example**: `examples/optimistic_concurrency/` demonstrates CAS conflict detection and retry pattern. ([#135](https://github.com/pithecene/lode/pull/135))
-- **Vector artifact pipeline example**: `examples/vector_artifacts/` demonstrates embeddings, indices, and active pointers. ([#138](https://github.com/pithecene/lode/pull/138))
-- **S3 adapter promoted from experimental**: Documentation, ARCH_INDEX, and README updated. ([#154](https://github.com/pithecene/lode/pull/154))
-- **AI governance**: `CLAUDE.md` repository constitution and `ai/skills/` repo-local skill definitions. ([#136](https://github.com/pithecene/lode/pull/136))
-- **Race detection in CI**: `-race` testing added as a parallel CI job. ([#141](https://github.com/pithecene/lode/pull/141))
-- **Test hardening**: Store coverage (Exists, List, path safety), sentinel error messages, and Parquet type conversion. ([#145](https://github.com/pithecene/lode/pull/145), [#146](https://github.com/pithecene/lode/pull/146))
-
-### Fixed
-
-- **Windows build**: Extract `fsStore.CompareAndSwap` into build-constrained files. Panic replaced with error return in `buildFieldNode`. Metadata docs corrected to reflect nil coalescing. S3 test cleanup lifecycle fixed. ([#149](https://github.com/pithecene/lode/pull/149))
-- **Example metadata docs, S3 connectivity detection, `.gitignore` anchoring, and CI race scope**. ([#150](https://github.com/pithecene/lode/pull/150))
+- **Optimistic concurrency**: the new `ConditionalWriter` interface provides `CompareAndSwap`, which the memory and S3 stores implement, and the filesystem store implements on Unix. A Dataset or Volume commit advances the `latest` pointer through it when the store implements it, so a concurrent commit fails with the new `ErrSnapshotConflict` instead of replacing the head. Other stores update the pointer with `Delete` and `Put`, which supports one writer. ([#134](https://github.com/pithecene/lode/pull/134), [#135](https://github.com/pithecene/lode/pull/135))
+- **Examples**: `examples/optimistic_concurrency/` shows conflict detection and retry, and `examples/vector_artifacts/` shows embeddings, indices, and active pointers. ([#135](https://github.com/pithecene/lode/pull/135), [#138](https://github.com/pithecene/lode/pull/138))
 
 ### Changed
 
-- **Table-driven manifest validation**: `validateVolumeManifest` refactored from sequential checks to validation table. ([#143](https://github.com/pithecene/lode/pull/143))
-- **StreamWriteRecords cleanup helper**: Deduplicated 4 cleanup sequences into `cleanupStreamWrite()`. ([#144](https://github.com/pithecene/lode/pull/144))
-- **S3 test context**: Replaced `context.Background()` with `t.Context()`/`b.Context()` in S3 integration test cleanup. ([#142](https://github.com/pithecene/lode/pull/142))
-- **CI workflows hardened** with explicit least-privilege permissions. ([#151](https://github.com/pithecene/lode/pull/151), [#152](https://github.com/pithecene/lode/pull/152), [#153](https://github.com/pithecene/lode/pull/153))
+- **The S3 adapter is no longer experimental**. ([#154](https://github.com/pithecene/lode/pull/154))
+
+### Fixed
+
+- **Windows builds**: the module builds on Windows, where the filesystem store does not implement `CompareAndSwap`. ([#149](https://github.com/pithecene/lode/pull/149))
 
 ### Upgrade Notes
 
-- **CAS is always-on**: When the store implements `ConditionalWriter`, CAS is used automatically. No configuration required.
-- **Retry on conflict**: Callers that write concurrently should handle `ErrSnapshotConflict` by re-reading `Latest()`, merging state, and re-committing.
-- **No migration required**: Existing data and stores work without modification. Stores without `ConditionalWriter` retain the existing Delete+Put single-writer path.
+- **No configuration required**: a commit uses `CompareAndSwap` whenever the store implements `ConditionalWriter`.
+- **Concurrent writers**: handle `ErrSnapshotConflict` by reading `Latest`, merging, and committing again.
+- **No data migration required**: the storage layout and the manifest format are unchanged.
 
 ---
 
 ## [0.7.4] - 2026-02-12
 
-### Added
-
-- **Complexity bounds contract**: `CONTRACT_COMPLEXITY.md` documents the cost of every public method in store calls, memory, and CPU. Operations are classified as hot-path (per-read/write), cold-path (explicit listing), or degraded (backward-compat fallback). Cost that exceeds the documented bound is a bug. ([#129](https://github.com/pithecene/lode/pull/129))
-- **Cross-references**: `CONTRACT_WRITE_API.md`, `CONTRACT_READ_API.md`, `CONTRACT_VOLUME.md`, and `CONTRACT_STORAGE.md` now link to `CONTRACT_COMPLEXITY.md` for cost definitions. ([#129](https://github.com/pithecene/lode/pull/129))
-
-### Fixed
-
-- **CX-1: Per-read sort check in `findCoveringBlocks`**: Blocks are now sorted once at load time in `validateVolumeManifest` instead of checked on every read. ([#130](https://github.com/pithecene/lode/pull/130))
-- **CX-3: Double deserialization in `ListPartitions`**: Reduced from 2 Gets per manifest to 1 Get (single-pass extraction). ([#130](https://github.com/pithecene/lode/pull/130))
-- **CX-6: Redundant sort checks in `Volume.Snapshots`**: Eliminated by the same load-time sort fix as CX-1. ([#130](https://github.com/pithecene/lode/pull/130))
-- **CX-7: `fsStore.List` used `filepath.Walk`**: Replaced with `filepath.WalkDir` to avoid per-entry `os.Stat` calls. ([#130](https://github.com/pithecene/lode/pull/130))
-
 ### Changed
 
-- **`fmt.Errorf` → `errors.New`**: 10 instances in `volume.go` where no formatting verbs were used, per AGENTS.md code style rules. ([#131](https://github.com/pithecene/lode/pull/131))
-- **Extracted `resolveParent` method**: Parent resolution cascade (cache → pointer → scan) moved from inline in `Commit` to a dedicated method for readability. ([#131](https://github.com/pithecene/lode/pull/131))
-- **Extracted `ensureBlocksSortedByOffset` helper**: Deduplicated the check-then-sort pattern in `validateVolumeManifest`. ([#131](https://github.com/pithecene/lode/pull/131))
+- **Faster Volume reads and partition listings**: a Volume sorts its blocks once, when it loads a manifest, instead of on every read; `ListPartitions` reads each manifest once instead of twice; and the filesystem store lists without a `Stat` call per entry. ([#130](https://github.com/pithecene/lode/pull/130))
+- **Documented costs**: `CONTRACT_COMPLEXITY.md` states the store calls, memory, and CPU of every public operation. ([#129](https://github.com/pithecene/lode/pull/129))
 
 ### Upgrade Notes
 
-- No API changes; all improvements are internal
-- No migration required; existing data is compatible without modification
-- Safe to upgrade from v0.7.3
-
-### References
-
-- [docs/contracts/CONTRACT_COMPLEXITY.md](docs/contracts/CONTRACT_COMPLEXITY.md) — Complexity bounds contract
-- [docs/contracts/CONTRACT_TEST_MATRIX.md](docs/contracts/CONTRACT_TEST_MATRIX.md) — Contract-to-test traceability
+- **No action required**: the API, the storage layout, and the manifest format are unchanged.
 
 ---
 
@@ -229,49 +176,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **O(N) cold-start `Latest()` on remote stores**: `Latest()` previously downloaded every manifest in the dataset to find the most recent snapshot. On Cloudflare R2 with ~5,800 manifests this took ~30 minutes. A persistent `latest` pointer file now provides O(1) resolution: 1 Get (pointer) + 1 Get (manifest). ([#127](https://github.com/pithecene/lode/pull/127), closes [#118](https://github.com/pithecene/lode/issues/118), [#119](https://github.com/pithecene/lode/issues/119))
-- **O(N) `Snapshot(ctx, id)` on HiveLayout**: `Snapshot()` scanned all partition directories to find a manifest matching the given ID. A canonical manifest is now written at the non-partitioned path for O(1) lookup, with scan fallback for pre-v0.7.3 data. ([#127](https://github.com/pithecene/lode/pull/127), closes [#121](https://github.com/pithecene/lode/issues/121))
-- **O(N) `latestByScan` downloaded ALL manifests**: Even the scan fallback path loaded every manifest. It now sorts paths lexicographically and loads only the last one: 1 List + 1 Get. ([#127](https://github.com/pithecene/lode/pull/127), closes [#122](https://github.com/pithecene/lode/issues/122))
-- **O(B) `Volume.ReadAt` block lookup**: `findCoveringBlocks` used linear scan over all blocks. Now uses binary search on sorted blocks for O(log B) start-index lookup. Blocks are sorted at commit time via a merge-insert algorithm. ([#127](https://github.com/pithecene/lode/pull/127), closes [#123](https://github.com/pithecene/lode/issues/123))
-- **O(N) `ListManifests` / `ListPartitions`**: Both methods downloaded every manifest to extract IDs and partition paths. Snapshot IDs and partition paths are now extracted from store listing paths. ([#127](https://github.com/pithecene/lode/pull/127), closes [#124](https://github.com/pithecene/lode/issues/124), [#125](https://github.com/pithecene/lode/issues/125))
-- **O(N log N) `validateNoOverlaps` on pre-sorted blocks**: Skips redundant sort when blocks are already sorted (the common case after `mergeBlocks`). ([#127](https://github.com/pithecene/lode/pull/127), closes [#126](https://github.com/pithecene/lode/issues/126))
-
-### Added
-
-- **Persistent latest pointer**: Datasets and Volumes write a `latest` file containing the most recent snapshot ID. Cold-start `Latest()` reads this pointer (1 Get) instead of scanning all manifests. The pointer is written before the manifest (pointer-before-manifest protocol) to ensure cross-process correctness.
-- **Pointer-before-manifest protocol**: Pointer write failure aborts the commit — no manifest is written. A pointer ahead of reality is harmless (Exists verification falls through to scan). This eliminates stale-but-existing pointer bugs across process restarts.
-- **Canonical manifest for HiveLayout**: `Snapshot(ctx, id)` is now O(1) via a canonical manifest at the non-partitioned path, alongside the partition-specific copies.
-- **Binary search for Volume block lookup**: Blocks are stored sorted by offset in the manifest. `findCoveringBlocks` uses `sort.Search` for O(log B) lookup instead of O(B) linear scan.
-- **Merge-insert for cumulative blocks**: `mergeBlocks` merges pre-sorted existing blocks with new blocks in O(N + K log K) instead of re-sorting the entire set.
-- **Benchmarks**: `BenchmarkFindCoveringBlocks` (O(log B) at 10–10K blocks), `BenchmarkMergeBlocks` (O(N + K log K) at 10–10K existing blocks)
+- **`Latest` no longer reads every manifest**: Datasets and Volumes persist a `latest` pointer that names the newest snapshot, so `Latest` makes two `Get` calls on a cold start. It formerly read every manifest, which took about thirty minutes for 5,800 manifests on Cloudflare R2. Without a pointer, `Latest` lists the manifests and reads only the newest. ([#127](https://github.com/pithecene/lode/pull/127), closes [#118](https://github.com/pithecene/lode/issues/118), [#119](https://github.com/pithecene/lode/issues/119), [#122](https://github.com/pithecene/lode/issues/122))
+- **`Snapshot` no longer scans partitions on Hive layouts**: each commit also persists the manifest at a path outside the partitions, so `Snapshot` reads one object; snapshots written before 0.7.3 are found by a scan. ([#127](https://github.com/pithecene/lode/pull/127), closes [#121](https://github.com/pithecene/lode/issues/121))
+- **`ListManifests` and `ListPartitions` no longer read manifests**: they derive snapshot IDs and partition paths from the listed paths. ([#127](https://github.com/pithecene/lode/pull/127), closes [#124](https://github.com/pithecene/lode/issues/124), [#125](https://github.com/pithecene/lode/issues/125))
+- **Faster Volume reads and commits**: `ReadAt` finds blocks by binary search, and `Commit` merges new blocks into the sorted blocks instead of sorting them all. ([#127](https://github.com/pithecene/lode/pull/127), closes [#123](https://github.com/pithecene/lode/issues/123), [#126](https://github.com/pithecene/lode/issues/126))
 
 ### Upgrade Notes
 
-- **No API changes**: All improvements are internal and transparent
-- **No migration required**: Pre-v0.7.3 datasets and volumes work without modification
-- **Automatic self-healing**: On first write after upgrade, the `latest` pointer is created. On first `Snapshot(ctx, id)` for HiveLayout, scan fallback works for pre-v0.7.3 data; the canonical manifest is created on the next write.
-- **Safe to upgrade from v0.7.2**
-
-### References
-
-- [docs/BENCHMARKS.md](docs/BENCHMARKS.md) — Benchmark inventory and results
-- [docs/contracts/CONTRACT_TEST_MATRIX.md](docs/contracts/CONTRACT_TEST_MATRIX.md) — Performance test coverage
+- **No action required**: datasets and volumes written by earlier releases are read as before. The first commit after the upgrade creates the `latest` pointer.
 
 ---
 
 ## [0.7.2] - 2026-02-09
 
-### Changed
+### Breaking Changes
 
-- **Go module path**: Renamed from `github.com/justapithecus/lode` to `github.com/pithecene-io/lode` across all source, tests, examples, documentation, and tooling configuration
+- **The module path is `github.com/pithecene-io/lode`**: it replaces `github.com/justapithecus/lode`.
 
 ### Upgrade Notes
 
-- **Import path migration**: Update all import paths in your codebase:
-  - `github.com/justapithecus/lode/lode` → `github.com/pithecene-io/lode/lode`
-  - `github.com/justapithecus/lode/lode/s3` → `github.com/pithecene-io/lode/lode/s3`
-- **go.mod**: Update `require` directive to `github.com/pithecene-io/lode`
-- No behavior changes; all APIs, semantics, and contracts are unchanged
+- **Module path**: replace `github.com/justapithecus/lode` with `github.com/pithecene-io/lode` in imports and in `go.mod`. The API and behavior are unchanged.
 
 ---
 
@@ -279,17 +203,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **O(n²) write degradation on remote stores**: `Write()`, `StreamWrite()`, and `StreamWriteRecords()` called `Latest()` on every invocation, scanning all manifests via `store.List` + N×`store.Get`. On remote stores (S3, R2), this caused sequential writes to degrade quadratically. A 40-write burst that should complete in <1s took ~40 minutes. Parent snapshot ID is now cached after each successful write; only the first write (cold start) falls back to `Latest()`. ([#109](https://github.com/pithecene/lode/pull/109), closes [#108](https://github.com/pithecene/lode/issues/108))
-
-### Added
-
-- **Sequential write benchmarks**: `BenchmarkDataset_SequentialWrites` (wall-clock with simulated latency) and `BenchmarkDataset_SequentialWrites_StoreCallCount` (correctness assertion) guard against parent-resolution regressions
+- **Sequential writes no longer slow down as a dataset grows**: `Write`, `StreamWrite`, and `StreamWriteRecords` read every manifest to find the parent snapshot on every call, so on a remote store each write took longer than the last, and forty writes took about forty minutes. A dataset now retains its last commit, so only its first write looks up the parent. ([#109](https://github.com/pithecene/lode/pull/109), closes [#108](https://github.com/pithecene/lode/issues/108))
 
 ### Upgrade Notes
 
-- No API changes; transparent internal optimization
-- All write paths (`Write`, `StreamWrite`, `StreamWriteRecords`) benefit automatically
-- Safe to upgrade from v0.7.0
+- **No action required**: the API, the storage layout, and the manifest format are unchanged.
 
 ---
 
@@ -297,72 +215,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Per-File Column Statistics**: New `StatisticalCodec` and `StatisticalStreamEncoder` interfaces allow any codec to report per-file column stats (min, max, null count, distinct count) persisted on `FileRef`
-- **Parquet Statistics**: Parquet codec implements `StatisticalCodec`, reporting column-level min/max/null count for all orderable types (int32, int64, float32, float64, string, timestamp)
-- **New Public Types**: `FileStats`, `ColumnStats` on the public API surface
+- **Per-file column statistics**: a codec that implements the new `StatisticalCodec` or `StatisticalStreamEncoder` interface reports statistics for each file, which are persisted on its `FileRef` as the new `FileStats` and `ColumnStats` types: minimum, maximum, null count, and distinct count. The Parquet codec reports the minimum, maximum, and null count of every orderable column.
 
 ### Changed
 
-- **Nil Metadata Coalescing**: `Write`, `StreamWrite`, `StreamWriteRecords`, and `Volume.Commit` now coalesce nil metadata to `Metadata{}` instead of returning an error
+- **Nil metadata is accepted**: `Write`, `StreamWrite`, `StreamWriteRecords`, and `Volume.Commit` treat nil metadata as empty instead of returning an error.
 
 ### Upgrade Notes
 
-- Callers that previously passed `Metadata{}` solely to avoid nil errors can now pass `nil` safely
-- Callers that relied on nil metadata returning an error should remove that expectation
-- Per-file stats are opt-in: only codecs implementing `StatisticalCodec` produce them; manifests without stats remain valid
-
-### References
-
-- [CONTRACT_PARQUET.md](docs/contracts/CONTRACT_PARQUET.md) — Updated with per-file statistics spec
-- [CONTRACT_WRITE_API.md](docs/contracts/CONTRACT_WRITE_API.md) — Updated with stats collection and nil coalescing semantics
-- [CONTRACT_CORE.md](docs/contracts/CONTRACT_CORE.md) — Updated metadata rules
+- **Nil metadata**: code that expected an error for nil metadata no longer receives one.
+- **Statistics are optional**: manifests without statistics remain valid.
 
 ---
 
 ## [0.6.0] - 2026-02-07
 
-### Added
-
-- **Volume Persistence Paradigm**: `NewVolume`, `StageWriteAt`, `Commit`, `ReadAt`, `Latest`, `Snapshots`, `Snapshot` — sparse, resumable byte-range persistence as a coequal paradigm alongside Dataset
-- **Volume Type Definitions**: `VolumeID`, `VolumeSnapshotID`, `BlockRef`, `VolumeManifest`, `VolumeSnapshot`, `VolumeOption`, `WithVolumeChecksum`
-- **Volume Error Sentinels**: `ErrRangeMissing`, `ErrOverlappingBlocks`
-- **Volume Example**: `examples/volume_sparse/` demonstrating stage → commit → read, ErrRangeMissing, incremental commits, resume pattern
-- **Volume Test Suite**: Comprehensive contract-driven tests covering construction, staging, commit, read, validation, overlap detection, resume, cumulative manifests, and fault injection
-- **Volume Contract**: `CONTRACT_VOLUME.md` — normative contract for Volume persistence model
-- **Overflow-Safe Arithmetic**: Volume bounds checks use overflow-safe arithmetic to prevent silent wrapping on extreme int64 values
-
-### Changed
-
-- **Dataset Rename Pass (DD-1/DD-7)**: Public API types renamed for clarity now that Volume types coexist:
-  - `SnapshotID` → `DatasetSnapshotID`
-  - `Snapshot` → `DatasetSnapshot`
-  - `Reader` → `DatasetReader`
-  - `NewReader` → `NewDatasetReader`
-  - `SegmentRef` → `ManifestRef`
-  - `SegmentListOptions` → `ManifestListOptions`
-  - `ListSegments` → `ListManifests`
-  - `ErrOptionNotValidForReader` → `ErrOptionNotValidForDatasetReader`
-
 ### Breaking Changes
 
-- **Public API renames**: All types and functions listed above are renamed without compatibility aliases. This is intentional — the renames disambiguate Dataset-specific types from the new Volume type definitions.
+- **Dataset types are renamed**: the new names distinguish them from the Volume types, and no aliases are provided.
+
+  | Before | After |
+  |---|---|
+  | `SnapshotID`, `Snapshot` | `DatasetSnapshotID`, `DatasetSnapshot` |
+  | `Reader`, `NewReader` | `DatasetReader`, `NewDatasetReader` |
+  | `SegmentRef`, `SegmentListOptions`, `ListSegments` | `ManifestRef`, `ManifestListOptions`, `ListManifests` |
+  | `ErrOptionNotValidForReader` | `ErrOptionNotValidForDatasetReader` |
+
+### Added
+
+- **Volume**: a Volume persists sparse byte ranges of one object of fixed length. `NewVolume` creates one; `StageWriteAt` writes a block, `Commit` publishes staged blocks as a snapshot, and `ReadAt`, `Latest`, `Snapshots`, and `Snapshot` read them. `ReadAt` returns the new `ErrRangeMissing` for a range that committed blocks do not fully cover, and `Commit` returns `ErrOverlappingBlocks` for blocks that overlap. `CONTRACT_VOLUME.md` specifies the model, and `examples/volume_sparse/` demonstrates it.
 
 ### Upgrade Notes
 
-- **Search-and-replace migration**: The renames are mechanical. Apply these replacements across your codebase:
-  - `lode.NewReader(` → `lode.NewDatasetReader(`
-  - `lode.Reader` → `lode.DatasetReader`
-  - `lode.SnapshotID` → `lode.DatasetSnapshotID`
-  - `lode.Snapshot` → `lode.DatasetSnapshot`
-  - `lode.SegmentRef` → `lode.ManifestRef`
-  - `lode.SegmentListOptions` → `lode.ManifestListOptions`
-  - `.ListSegments(` → `.ListManifests(`
-  - `lode.ErrOptionNotValidForReader` → `lode.ErrOptionNotValidForDatasetReader`
-- **No behavior changes intended**: All existing functionality is preserved under the new names.
-
-### References
-
-- [CONTRACT_VOLUME.md](docs/contracts/CONTRACT_VOLUME.md) — Volume persistence contract
+- **Renames**: replace each name according to the table; behavior is unchanged.
 
 ---
 
@@ -370,139 +255,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Parquet Codec**: `NewParquetCodec(schema, opts...)` for columnar storage with schema-explicit encoding
-- **Parquet Example**: `examples/parquet/` demonstrating schema-typed columnar storage
-- **Parquet Types**: `ParquetSchema`, `ParquetField`, and `ParquetType` constants for all primitive types
-- **Parquet Compression**: `WithParquetCompression()` option for Snappy/Gzip internal compression
-- **Parquet Error Sentinels**: `ErrSchemaViolation` and `ErrInvalidFormat` for precise error handling
+- **Parquet codec**: `NewParquetCodec(schema, opts...)` encodes records as Parquet according to a `ParquetSchema` of `ParquetField` values, and returns an error for an invalid schema. `WithParquetCompression` selects Snappy, the default, Gzip, or no compression within the file. A record that lacks a required field or holds a value of the wrong type returns the new `ErrSchemaViolation`, and a malformed file returns `ErrInvalidFormat`; fields that the schema does not name are ignored. `examples/parquet/` demonstrates the codec.
 
 ### Upgrade Notes
 
-- **Parquet codec is non-streaming**: Parquet requires a footer referencing all row groups, so `StreamWriteRecords` returns `ErrCodecNotStreamable`. Use `Dataset.Write` for Parquet encoding.
-- **Compression layering**: When using Parquet codec, set Lode's compressor to `NewNoOpCompressor()`. Parquet has internal compression; double compression wastes CPU.
-- **Schema validation**: `NewParquetCodec` returns an error for an invalid schema (an unknown type, an empty name, or a duplicate name).
-
-### References
-
-- [CONTRACT_PARQUET.md](docs/contracts/CONTRACT_PARQUET.md) — Parquet codec contract
-- [CONTRACT_ERRORS.md](docs/contracts/CONTRACT_ERRORS.md) — Updated with Parquet error semantics
+- **Parquet does not stream**: `StreamWriteRecords` returns `ErrCodecNotStreamable` with the Parquet codec, because a Parquet file ends with a footer that references every row group; use `Write`.
+- **Compression**: with the Parquet codec, configure `NewNoOpCompressor()`, because Parquet compresses within the file.
 
 ---
 
 ## [0.4.1] - 2026-02-05
 
-### Changed
-
-- **S3 Backend Compatibility Matrix**: Added documentation for conditional multipart completion support across S3-compatible backends; verified on AWS S3, untested on MinIO/LocalStack/R2
-
 ### Fixed
 
-- **S3 Multipart Atomic No-Overwrite**: Large uploads (>5GB) now use conditional completion (`If-None-Match` on `CompleteMultipartUpload`) for atomic no-overwrite guarantee, closing the TOCTOU window that existed since v0.3.0
+- **Large S3 uploads are atomic**: an upload larger than 5 GB completes with `If-None-Match`, so on a backend that honors it, the upload can no longer replace an object that a concurrent writer created after the existence check.
 
 ### Known Limitations
 
-- **S3-compatible backend caveat**: Atomic no-overwrite for large uploads (>5GB) is verified on AWS S3; assumed but untested for other S3-compatible backends (MinIO, LocalStack, R2). If your backend does not support `If-None-Match` on `CompleteMultipartUpload`, large uploads may fail or lose atomicity. See `lode/s3` package docs for the backend support matrix.
-
-### References
-
-- [PUBLIC_API.md](PUBLIC_API.md) — User-facing API documentation
-- [docs/contracts/](docs/contracts/) — Normative contract specifications
+- **Other S3-compatible backends**: the conditional completion is verified on AWS S3 only. A backend that does not honor `If-None-Match` on `CompleteMultipartUpload` may reject large uploads or lose their atomicity; the `lode/s3` package documentation lists backend support.
 
 ---
 
 ## [0.4.0] - 2026-02-05
 
-### Added
-
-- **Zstd Compressor**: `NewZstdCompressor()` for higher compression ratio and faster decompression than gzip
-- **Example Convention Contract**: `CONTRACT_EXAMPLES.md` defines normative callsite conventions
-- **Agent Convention Rules**: `AGENTS.md` now includes API/example convention rules with stop triggers
-
-### Changed
-
-- **StreamWriteRecords Parameter Order**: Reordered from `(ctx, metadata, records)` to `(ctx, records, metadata)` for ergonomic consistency with iterator-first patterns
-- **Example Variable Naming**: Normalized `snapshot` variable naming across all examples
-
 ### Breaking Changes
 
-- **StreamWriteRecords Signature**: Parameter order changed from `StreamWriteRecords(ctx, metadata, records)` to `StreamWriteRecords(ctx, records, metadata)`. Update callsites accordingly.
+- **`StreamWriteRecords` takes the records before the metadata**: the signature is `StreamWriteRecords(ctx, records, metadata)`.
+
+### Added
+
+- **Zstandard compression**: `NewZstdCompressor()`.
 
 ### Known Limitations
 
-- **G3-4 (Residual Risk)**: Context cancellation cleanup behavior remains nondeterministic due to
-  timing characteristics of storage adapters. Deterministic abort paths are tested; context
-  cancellation semantics documented as best-effort. See `docs/contracts/CONTRACT_TEST_MATRIX.md` for details.
+- **Cleanup after cancellation**: when the context of a stream write is canceled, removal of the partial object is best-effort.
 
 ### Upgrade Notes
 
-- **StreamWriteRecords migration**: Update all `StreamWriteRecords` callsites to use the new parameter order: `ds.StreamWriteRecords(ctx, iter, metadata)` instead of `ds.StreamWriteRecords(ctx, metadata, iter)`
-
-### References
-
-- [PUBLIC_API.md](PUBLIC_API.md) — User-facing API documentation
-- [docs/contracts/CONTRACT_EXAMPLES.md](docs/contracts/CONTRACT_EXAMPLES.md) — Example convention contract
-- [docs/contracts/](docs/contracts/) — Normative contract specifications
+- **Argument order**: exchange the last two arguments of every `StreamWriteRecords` call.
 
 ---
 
 ## [0.3.0] - 2026-02-04
 
+### Breaking Changes
+
+- **`Dataset` and `s3.API` gain methods**: `Dataset` adds `StreamWrite` and `StreamWriteRecords`, and `s3.API` adds `CreateMultipartUpload`, `UploadPart`, `CompleteMultipartUpload`, and `AbortMultipartUpload`, so a type that implements either interface must add them.
+
 ### Added
 
 - **Streaming writes**: `Dataset.StreamWrite(ctx, metadata)` returns a `StreamWriter` that streams one blob into storage, and `Dataset.StreamWriteRecords(ctx, metadata, records)` encodes the records of a `RecordIterator` as they arrive, so the Dataset holds neither payload whole in memory; the memory store still keeps each object in memory. Streaming records requires a codec that implements `StreamingRecordCodec` and a layout without partitioning; the new sentinels `ErrCodecConfigured`, `ErrCodecNotStreamable`, `ErrNilIterator`, and `ErrPartitioningNotSupported` report misuse. ([#48](https://github.com/pithecene/lode/pull/48), [#49](https://github.com/pithecene/lode/pull/49), [#50](https://github.com/pithecene/lode/pull/50))
 - **Checksums**: `WithChecksum(NewMD5Checksum())` records a checksum of each data file in the manifest; the `Checksum` and `HashWriter` interfaces support other algorithms.
-- **S3 uploads in constant memory**: `Put` spools the payload to a temporary file instead of reading it into memory, and an upload larger than 5 GB uses a multipart upload. ([#50](https://github.com/pithecene/lode/pull/50), [#51](https://github.com/pithecene/lode/pull/51))
-- **README Quick Start**: 5-minute guide with blob, records, and streaming examples
-- **Write API Decision Table**: Clear guidance for choosing Write/StreamWrite/StreamWriteRecords
-- **Guarantees Table**: Explicit commitments vs non-goals in README
-- **Gotchas Section**: Common pitfalls documented in README
-- **Examples Index**: One-line purpose + run commands for all examples
-- **Option Applicability Matrix**: Dataset vs Reader option compatibility in PUBLIC_API.md
-- **Sentinel Error Table**: Complete error reference with `errors.Is()` guidance
-- **Streaming Constraints Table**: Clear codec/partitioning rules for streaming APIs
-- **Contract Cross-Links**: All PUBLIC_API.md claims now traceable to contracts
-- **Streaming Failure Tests**: G3-1..G3-3 hardening tests for commit/abort/error semantics
+- **Documentation**: the README gains a quick start and guidance on choosing among `Write`, `StreamWrite`, and `StreamWriteRecords`, and `PUBLIC_API.md` lists every sentinel error and the options that each constructor accepts.
 
 ### Changed
 
-- **CHANGELOG Format**: Adopted Keep a Changelog structured format
-- **PUBLIC_API.md**: Reorganized with Safety Guarantees section and error handling guidelines
-
-### Fixed
-
-- N/A
-
-### Breaking Changes
-
-- None
+- **S3 uploads use constant memory**: `Put` spools the payload to a temporary file instead of reading it into memory, and an upload larger than 5 GB uses a multipart upload. ([#50](https://github.com/pithecene/lode/pull/50), [#51](https://github.com/pithecene/lode/pull/51))
 
 ### Known Limitations
 
-- **Large S3 uploads**: an upload larger than 5 GB checks for an existing object before it begins, so a concurrent writer can create the object in the interval (resolved in v0.4.1).
-- **G3-4 (Residual Risk)**: Context cancellation cleanup behavior is nondeterministic due to
-  timing characteristics of storage adapters. Deterministic abort paths are tested; context
-  cancellation semantics documented as best-effort. See `docs/contracts/CONTRACT_TEST_MATRIX.md` for details.
-
-### Next
-
-Post-v0.3.0 improvements planned:
-
-- **Bootstrap pattern documentation**: "Ensure storage exists before constructing dataset/reader"
-  as an explicit callsite pattern in examples and docs.
-- **Optional helper utilities**: Bootstrap helpers (e.g., `EnsureStorageExists`) may be added
-  outside core write/read semantics, in examples, docs, or a separate helpers package.
-- **Markdown snippet CI**: Lint extracted code snippets from README and PUBLIC_API.md.
+- **Large S3 uploads**: an upload larger than 5 GB checks for an existing object before it begins, so a concurrent writer can create the object in the interval (resolved in 0.4.1).
+- **Cleanup after cancellation**: when the context of a stream write is canceled, removal of the partial object is best-effort.
 
 ### Upgrade Notes
 
-- The streaming and checksum APIs are additions, so existing calls are unchanged. A type that implements `Dataset` must add `StreamWrite` and `StreamWriteRecords`, and a type that implements `s3.API` must add `CreateMultipartUpload`, `UploadPart`, `CompleteMultipartUpload`, and `AbortMultipartUpload`
-- Safe to upgrade from v0.2.0
-
-### References
-
-- [PUBLIC_API.md](PUBLIC_API.md) — Enhanced with option matrix and error guidance
-- [docs/contracts/CONTRACT_TEST_MATRIX.md](docs/contracts/CONTRACT_TEST_MATRIX.md) — Test coverage traceability
-- [docs/contracts/](docs/contracts/) — Normative contract specifications
+- **Calls**: the new APIs are additions, and existing calls are unchanged.
+- **Implementations of the interfaces**: a type that implements `Dataset` adds `StreamWrite` and `StreamWriteRecords`, and a type that implements `s3.API` adds the four multipart methods.
 
 ---
 
@@ -510,37 +328,21 @@ Post-v0.3.0 improvements planned:
 
 ### Added
 
-- **S3 Adapter**: Now part of public API under `lode/s3`
-- **S3 Documentation**: Examples for AWS S3, MinIO, LocalStack, and Cloudflare R2
-- **CHANGELOG.md**: Added for release tracking
+- **S3 adapter**: the package `lode/s3` stores datasets in AWS S3 and S3-compatible stores, with examples for AWS S3, MinIO, LocalStack, and Cloudflare R2.
 
 ### Changed
 
-- **License**: Project is now licensed under Apache 2.0
-- **README**: Now lists supported backends and license
-
-### Fixed
-
-- N/A
-
-### Breaking Changes
-
-- None
+- **License**: Lode is licensed under the Apache License 2.0.
 
 ### Known Limitations
 
-- Single-writer semantics required (no concurrent writer conflict resolution)
-- The S3 adapter reads each payload into memory, so an upload cannot exceed 5 GB, the limit of one `PutObject`
-- Cleanup of partial objects is best-effort, not guaranteed
+- **One writer per dataset**: concurrent writers are not coordinated.
+- **Uploads are held in memory**: the S3 adapter reads each payload into memory, so an upload cannot exceed 5 GB, the limit of one `PutObject`.
+- **Cleanup of partial objects is best-effort**.
 
 ### Upgrade Notes
 
-- S3 adapter moved from `internal/` to `lode/s3`; update import paths if using experimental adapter
-
-### References
-
-- [PUBLIC_API.md](PUBLIC_API.md) — S3 adapter documentation
-- [examples/s3/](examples/s3/) — S3 usage examples
+- **Import path**: code that used the experimental adapter under `internal/` imports `lode/s3`.
 
 ---
 
@@ -548,49 +350,21 @@ Post-v0.3.0 improvements planned:
 
 ### Added
 
-- **Public API**: Datasets and readers with immutable snapshots, manifests, and explicit metadata
-- **Layout System**: Default, Hive, and Flat layouts with dataset enumeration and partition-pruning
-- **Storage Adapters**: Filesystem (`NewFSFactory`) and in-memory (`NewMemoryFactory`)
-- **S3 Adapter**: Experimental adapter under `internal/` (promoted to public in v0.2.0)
-- **Codecs**: JSONL codec for structured records
-- **Compression**: Gzip compressor and no-op default
-- **Range Reads**: `ReadRange` and `ReaderAt` for partial object access
-- **Examples**: Default layout, Hive layout, manifest-driven discovery, blob upload, S3 experimental
-
-### Changed
-
-- N/A (initial release)
-
-### Fixed
-
-- N/A (initial release)
-
-### Breaking Changes
-
-- None (initial release)
+- **Datasets**: datasets and readers with immutable snapshots, manifests, and explicit metadata.
+- **Layouts**: the default, Hive, and flat layouts, with dataset enumeration and partition pruning.
+- **Stores**: a filesystem store (`NewFSFactory`) and an in-memory store (`NewMemoryFactory`), with range reads through `ReadRange` and `ReaderAt`.
+- **Codecs and compression**: a JSON Lines codec, a Gzip compressor, and a no-op compressor, which is the default.
+- **Examples**: the default layout, the Hive layout, manifest-driven discovery, and blob upload.
 
 ### Known Limitations
 
-1. **Single-writer only**: Concurrent writes to the same dataset may corrupt history
-2. **No query execution**: Lode structures data; query engines consume it
-3. **No background compaction**: Callers control snapshot lifecycle
-4. **No automatic cleanup**: Partial objects from failed writes may remain
-5. **Manifest-driven only**: Data files without manifests are not discovered
+- **One writer per dataset**: concurrent writers to one dataset can corrupt its history.
+- **Cleanup of partial objects**: objects from failed writes may remain.
+- **Discovery through manifests only**: data files without a manifest are not found.
 
 ### Upgrade Notes
 
-**Runtime Requirements:**
-- Go 1.25.6 or later
-
-**Storage:**
-- The filesystem root must exist before use; Lode creates directories beneath it but not the root
-- S3 buckets must exist before use; Lode does not create buckets
-
-### References
-
-- [PUBLIC_API.md](PUBLIC_API.md) — Public API documentation
-- [docs/contracts/](docs/contracts/) — Normative contract specifications
-- [examples/](examples/) — Runnable usage examples
+- **Requirements**: Go 1.25.6 or later. The filesystem root and an S3 bucket must exist before use; Lode creates directories beneath the root but neither the root nor the bucket.
 
 ---
 
