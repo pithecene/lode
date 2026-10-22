@@ -123,8 +123,8 @@ func commitBlocks(ctx context.Context, vol volume.Volume, blocks []Block, writer
 type volumeVerifier struct {
 	vol    volume.Volume
 	chain  *chain[volume.SnapshotID]
-	settle volume.SnapshotID // the settling commit; empty when the volume stalled
-	head   *volume.Snapshot  // Latest when settled, otherwise the chain's end
+	settle volume.SnapshotID // the settling commit
+	head   *volume.Snapshot  // Latest after the settling commit
 	refs   []volume.BlockRef // the head's blocks, sorted by offset
 	acked  []volume.SnapshotID
 	blocks []Block
@@ -135,36 +135,26 @@ type volumeVerifier struct {
 var volumeChecks = []check[*volumeVerifier]{
 	{"acknowledged-commits-persist", (*volumeVerifier).acknowledgedPersist},
 	{"history-shape", (*volumeVerifier).historyShape},
-	{"parents-exist", (*volumeVerifier).parentsExist},
 	{"blocks-disjoint", (*volumeVerifier).blocksDisjoint},
 	{"blocks-read-back", (*volumeVerifier).blocksReadBack},
 }
 
 // verifyVolume settles the head with one clean commit and checks the
-// history and contents the run left. After an abandoned commit the settling
-// commit conflicts, as every Volume commit does until an operator repairs
-// the pointer (CONTRACT_VOLUME); the run is then reported as stalled, and
-// the head is the end of the chain. Latest would select the largest ID with
-// a manifest, which need not be the end if the clock repeated or moved back
-// (CONTRACT_CORE §Head Pointer).
+// history and contents the run left. The settling commit must succeed even
+// after an abandoned commit, whose staged manifest supplies the blocks it
+// merges (CONTRACT_VOLUME §Error Semantics).
 func verifyVolume(ctx context.Context, cfg Config, store lode.Store, ledger *Ledger) int {
 	vol, err := volume.New(volumeID, func() (lode.Store, error) { return store, nil }, cfg.volumeLength(), volume.WithRetryCount(cfg.Retries))
 	if err != nil {
 		ledger.violate("verify", "open: %v", err)
 		return 0
 	}
-	var settle volume.SnapshotID
 	snap, err := commitBlocks(ctx, vol, []Block{cfg.settleBlock()}, -1)
-	switch {
-	case err == nil:
-		settle = snap.ID
-	case errors.Is(err, lode.ErrSnapshotConflict):
-		ledger.stall()
-	default:
+	if err != nil {
 		ledger.violate("verify", "settling commit: %v", err)
 		return 0
 	}
-	v, err := newVolumeVerifier(ctx, vol, settle, ledger)
+	v, err := newVolumeVerifier(ctx, vol, snap.ID, ledger)
 	if err != nil {
 		ledger.violate("verify", "%v", err)
 		return 0
@@ -183,15 +173,10 @@ func newVolumeVerifier(ctx context.Context, vol volume.Volume, settle volume.Sna
 		return nil, fmt.Errorf("chaos: resolve the volume head: %w", err)
 	}
 	v := &volumeVerifier{vol: vol, chain: newChain[volume.SnapshotID](), settle: settle}
-	byID := make(map[volume.SnapshotID]*volume.Snapshot, len(snaps))
 	for _, s := range snaps {
-		byID[s.ID] = s
 		v.chain.add(s.ID, s.Manifest.ParentSnapshotID)
 	}
 	v.head = head
-	if ends := v.chain.ends(); settle == "" && len(ends) == 1 {
-		v.head = byID[ends[0]]
-	}
 	if v.head != nil {
 		v.refs = slices.SortedFunc(slices.Values(v.head.Manifest.Blocks), byOffset)
 	}
@@ -218,16 +203,6 @@ func (v *volumeVerifier) historyShape(context.Context) []string {
 		return nil
 	}
 	return append(settled(v.head.ID, v.settle), v.chain.shape(v.head.ID)...)
-}
-
-// parentsExist requires every parent to have a manifest: a Volume commit
-// merges its parent's blocks and so never commits on a parent without one.
-func (v *volumeVerifier) parentsExist(context.Context) []string {
-	var bad []string
-	for _, parent := range v.chain.missingParents() {
-		bad = append(bad, fmt.Sprintf("%s is a parent but has no manifest", parent))
-	}
-	return bad
 }
 
 // byOffset orders block references by offset.

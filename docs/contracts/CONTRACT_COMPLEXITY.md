@@ -138,8 +138,12 @@ selected. The complete bounds and their derivation are given in
 | Operation | Path | Store Calls | Memory | CPU |
 |-----------|------|-------------|--------|-----|
 | StageWriteAt | Hot | 1 Put | O(block) | O(block) |
-| Commit (warm) | Hot | 4 fixed | O(B) manifest | O(B + K log K) |
+| Commit (warm) | Hot | 5 fixed | O(B) manifest | O(B + K log K) |
 | Commit (cold) | Degraded | +1 List | +O(N) | +O(N) |
+
+A warm commit makes one Get of the parent's manifest, one Put of the staged
+manifest, one pointer update, one Put of the canonical manifest, and one
+Delete of the staged manifest (CONTRACT_VOLUME §Error Semantics).
 
 The size of the cumulative manifest grows by O(B) per commit, a cost
 inherent in the cumulative design.
