@@ -102,15 +102,16 @@ run calls for, with the byte figure already rounded. A byte figure near a
 multiple of 64 can round to either side, so a ceiling is reset to the
 highest figure that a gate reports.
 
-Two gates vary between test processes. Under Go 1.27, `encoding/json` uses
-its v2 implementation, and in a few percent of processes the Dataset Read
-and Volume ReadAt paths allocate two more objects on every run (and the
-corresponding bytes). With `GOEXPERIMENT=nojsonv2` every figure is
-identical across processes, so the variation lies in the standard library,
-not in Lode. The ceilings of those two gates are therefore the higher
-figures; `task gates` reports the lower ones in most processes, and a
-ceiling reset uses the highest figure observed across repeated runs
-(`go test -count=120`).
+Two gates vary between measurements. Under Go 1.27, `encoding/json` uses
+its v2 implementation, and in a few percent of measurements the Dataset
+Read and Volume ReadAt paths allocate two more objects per run (and the
+corresponding bytes). The variation occurs between repetitions within one
+test process, so `go test -count=120` observes it; with
+`GOEXPERIMENT=nojsonv2` every figure is identical across the 120
+repetitions, so the variation lies in the standard library, not in Lode.
+The ceilings of those two gates are therefore the higher figures; `task
+gates` reports the lower ones in most repetitions, and a ceiling reset uses
+the highest figure observed across `go test -count=120`.
 
 ### S3 (Docker-local)
 
