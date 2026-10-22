@@ -2,6 +2,7 @@ package chaos
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"strings"
@@ -97,6 +98,14 @@ func runOne(t *testing.T, backendName, level string, cfg Config) {
 			t.Errorf("release the %s backend: %v", backendName, err)
 		}
 	})
+	// The filesystem store has no file lock on platforms such as Plan 9, where
+	// every commit would fail; such a backend is skipped, not reported.
+	const probe = "chaos-probe/cas"
+	if err := backend.Store.CompareAndSwap(t.Context(), probe, "", "probe"); errors.Is(err, errors.ErrUnsupported) {
+		t.Skipf("the %s store does not support CompareAndSwap here: %v", backendName, err)
+	}
+	_ = backend.Store.Delete(t.Context(), probe) // best-effort: the probe is not part of any dataset
+
 	report := Run(t.Context(), cfg, backend.Store)
 	t.Logf("seed %d: %d commits, %d conflicts after retries, %d injected failures, %d reads, %d expired, %d snapshots persisted",
 		report.Seed, report.Commits, report.Conflicts, report.Faults, report.Reads, report.Expired, report.Snapshots)
