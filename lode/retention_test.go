@@ -108,6 +108,7 @@ func writeRun(t *testing.T, ds Dataset, run string, eventTypes ...string) *Datas
 	if err != nil {
 		t.Fatal(err)
 	}
+	testutil.AwaitClockPast(t, string(snap.ID))
 	return snap
 }
 
@@ -117,6 +118,7 @@ func writeRecord(t *testing.T, ds Dataset, n int) *DatasetSnapshot {
 	if err != nil {
 		t.Fatal(err)
 	}
+	testutil.AwaitClockPast(t, string(snap.ID))
 	return snap
 }
 
