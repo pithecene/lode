@@ -61,6 +61,32 @@ func BenchmarkJSONLCodec_Decode(b *testing.B) {
 	}
 }
 
+// BenchmarkJSONLCodec_DecodeLineLength measures decoding a file of ten
+// records whose lines have the given length, since the decoder's buffer
+// must grow to the longest line.
+func BenchmarkJSONLCodec_DecodeLineLength(b *testing.B) {
+	codec := NewJSONLCodec()
+	for _, size := range []int{1 << 10, 16 << 10, 48 << 10, 256 << 10} {
+		records := make([]any, 10)
+		for i := range records {
+			records[i] = D{"id": strconv.Itoa(i), "payload": strings.Repeat("x", size)}
+		}
+		var buf bytes.Buffer
+		if err := codec.Encode(&buf, records); err != nil {
+			b.Fatal(err)
+		}
+		data := buf.Bytes()
+		b.Run(fmt.Sprintf("line=%dKiB", size>>10), func(b *testing.B) {
+			b.SetBytes(int64(len(data)))
+			for b.Loop() {
+				if _, err := codec.Decode(bytes.NewReader(data)); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
 // benchRecords builds n records of a representative shape.
 func benchRecords(n int) []any {
 	records := make([]any, n)

@@ -57,6 +57,17 @@ decoder stopped allocating a 64 KiB buffer for every file it decodes
 bytes and takes 42 percent less time; decoding files of one thousand and one
 hundred thousand records takes the same time as before, within noise.
 
+The buffer grows by doubling from four kibibytes to the longest line, so a
+file whose lines are longer than about thirty-two kibibytes allocates the
+intermediate buffers that the former fixed buffer avoided.
+`BenchmarkJSONLCodec_DecodeLineLength` measures that cost on files of ten
+records: with lines of one kibibyte the decoder allocates 76 percent fewer
+bytes and takes 26 percent less time than before; with lines of sixteen
+kibibytes it is unchanged; with lines of forty-eight and two hundred
+fifty-six kibibytes it allocates 11 and 2 percent more bytes, in the same
+time. Avoiding both costs would require a buffer pool shared across decodes,
+which would be package-level state.
+
 ## Allocation Gates
 
 `TestAllocationGates` in `lode/alloc_test.go` and `lode/volume/alloc_test.go`
@@ -138,6 +149,7 @@ the benchmark does not measure such commits.
 | `BenchmarkParquetCodec_Encode` | `lode/bench_test.go` | In-memory | Done |
 | `BenchmarkParquetCodec_Decode` | `lode/bench_test.go` | In-memory | Done |
 | `BenchmarkJSONLCodec_Decode` | `lode/bench_test.go` | In-memory (three, one thousand, and one hundred thousand records) | Done |
+| `BenchmarkJSONLCodec_DecodeLineLength` | `lode/bench_test.go` | In-memory (lines of 1, 16, 48, and 256 KiB) | Done |
 | `BenchmarkFindCoveringBlocks` | `lode/volume/volume_test.go` | In-memory | Done |
 | `BenchmarkMergeBlocks` | `lode/volume/volume_test.go` | In-memory | Done |
 
