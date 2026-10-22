@@ -650,7 +650,7 @@ view, err := lode.OpenReadOnly(ctx, lode.FS("/data")).Records("events", lode.JSO
 | Descriptor | Before the first commit, the handle persists a dataset descriptor that records the complete configuration: the layout with its partition keys, and the codec, compressor, and checksum, each with its settings. Every component implements `Describe() Descriptor` (a name and settings). A view reads the descriptor and takes no options; a writer whose configuration conflicts with it is rejected. | Cost 1 |
 | Layout | An exported `Layout` type with one spelling per layout: `lode.Default()`, `lode.Hive(keys...)`, and `lode.Flat()`. An invalid key is reported by `Records` or `Blobs`, as every construction error is. | D2 |
 | Options | One option type, `DatasetOption`, accepted only by writer handles; a view's configuration comes from the descriptor. The `ErrOptionNotValidFor...` sentinels are removed. | Cost 5; D3 |
-| Metadata | `Write` takes any value that encodes as a JSON object, a struct or a map. `Snapshot.Metadata` retains the persisted JSON and decodes it on request (`Decode(&v)`), so a caller's numbers keep their types. | Cost 3 (metadata) |
+| Metadata | `Write` takes any value that encodes as a JSON object, a struct or a map; nil persists as `{}`, as CONTRACT_CORE §Metadata Rules requires. `Snapshot.Metadata` retains the persisted JSON and decodes it on request (`Decode(&v)`), so a caller's numbers keep their types. | Cost 3 (metadata) |
 
 The surface requires Go 1.27 for generic methods (#261). A prototype
 compiled with Go 1.27.3 confirms the chained construction, the inference
