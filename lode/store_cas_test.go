@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/pithecene/lode/internal/testutil"
@@ -107,6 +108,32 @@ func TestFSStore_CompareAndSwap(t *testing.T) {
 		rc, err := store.Get(ctx, "ptr/latest")
 		if err != nil {
 			t.Fatal(err)
+		}
+		defer closer(rc)()
+		if data, _ := io.ReadAll(rc); string(data) != "snap-2" {
+			t.Errorf("pointer = %q, want snap-2", data)
+		}
+	})
+
+	// Win32 calls made directly must use extended-length paths, which
+	// os.Open applies itself; a path beyond MAX_PATH (260) exercises them.
+	t.Run("update and read at a path longer than MAX_PATH", func(t *testing.T) {
+		ctx := t.Context()
+		store, err := NewFS(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := strings.Repeat("segment-0123456789/", 16) + "latest"
+		cw := store.(ConditionalWriter)
+		if err := cw.CompareAndSwap(ctx, path, "", "snap-1"); err != nil {
+			t.Fatal(err)
+		}
+		if err := cw.CompareAndSwap(ctx, path, "snap-1", "snap-2"); err != nil {
+			t.Fatalf("CompareAndSwap at a long path: %v", err)
+		}
+		rc, err := store.Get(ctx, path)
+		if err != nil {
+			t.Fatalf("Get at a long path: %v", err)
 		}
 		defer closer(rc)()
 		if data, _ := io.ReadAll(rc); string(data) != "snap-2" {
