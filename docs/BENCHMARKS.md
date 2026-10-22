@@ -28,7 +28,10 @@ revision, which the next CI benchmark run will provide.
 | | CI (v0.8.0) | 177,600 ± 4% | 99,702 ± 0% | 680 |
 | `BenchmarkDataset_SequentialWrites_StoreCallCount` | Workstation | 187,400 ± 1% | 104,960 ± 0% | 773 |
 | | CI (v0.8.0) | 188,000 ± 3% | 101,881 ± 0% | 687 |
-| `BenchmarkDataset_Read` | Workstation | 16,170 ± 3% | 69,980 ± 0% | 70 |
+| `BenchmarkDataset_Read` | Workstation | 9,826 ± 3% | 8,573 ± 0% | 70 |
+| `BenchmarkJSONLCodec_Decode/records=3` | Workstation | 3,728 ± 3% | 6,129 ± 0% | 70 |
+| `BenchmarkJSONLCodec_Decode/records=1000` | Workstation | 1,145,000 ± 1% | 671,744 ± 0% | 23,000 |
+| `BenchmarkJSONLCodec_Decode/records=100000` | Workstation | 120,900,000 ± 3% | 72,142,438 ± 0% | 2,300,000 |
 | `BenchmarkDataset_StreamWrite` | Workstation | 13,230 ± 3% | 6,584 ± 0% | 33 |
 | `BenchmarkVolume_ReadAt` | Workstation | 19,710 ± 2% | 9,056 ± 0% | 44 |
 | `BenchmarkParquetCodec_Encode` | Workstation | 197,500 ± 6% | 530,842 ± 1% | 514 |
@@ -47,6 +50,52 @@ each revision; allocation counts are deterministic. The first cut of that restru
 `Volume_ReadAt` to 126 allocs/op and `SequentialWrites` by +36%; both were
 found by this comparison and fixed before merge, which is why the comparison
 is part of the release checklist.
+
+The `Read` and `JSONLCodec_Decode` rows were measured after the JSON Lines
+decoder stopped allocating a 64 KiB buffer for every file it decodes
+(`-count=8`). A read of a three-record file then allocates 88 percent fewer
+bytes and takes 42 percent less time; decoding files of one thousand and one
+hundred thousand records takes the same time as before, within noise.
+
+The buffer grows by doubling from four kibibytes to the longest line, so a
+file whose lines are longer than about thirty-two kibibytes allocates the
+intermediate buffers that the former fixed buffer avoided.
+`BenchmarkJSONLCodec_DecodeLineLength` measures that cost on files of ten
+records: with lines of one kibibyte the decoder allocates 76 percent fewer
+bytes and takes 26 percent less time than before; with lines of sixteen
+kibibytes it is unchanged; with lines of forty-eight and two hundred
+fifty-six kibibytes it allocates 11 and 2 percent more bytes, in the same
+time. Avoiding both costs would require a buffer pool shared across decodes,
+which would be package-level state.
+
+## Allocation Gates
+
+`TestAllocationGates` in `lode/alloc_test.go` and `lode/volume/alloc_test.go`
+holds each hot path of the Dataset and Volume APIs to a ceiling on the
+allocations per operation and on the bytes they allocate, measured on the
+in-memory store with the head known. Both figures are deterministic for a
+given toolchain, so the gates run in every `go test` without the race
+detector, which adds allocations of its own. The byte ceiling catches a
+single oversized allocation, such as a fixed buffer, which the allocation
+count does not; each byte ceiling is the measured figure rounded up to the
+next 64 bytes, because map growth in the in-memory store varies it by a few
+bytes.
+
+| Gate | Allocations | Bytes |
+|------|------------:|------:|
+| Write of three records | 61 | 6,208 |
+| Read of three records | 70 | 8,512 |
+| StreamWrite of one kibibyte | 33 | 6,784 |
+| StreamWriteRecords of three records | 63 | 6,208 |
+| JSONL Decode of three records | 35 | 5,568 |
+| Volume ReadAt within one of ten blocks | 44 | 8,960 |
+| Volume Commit of one block onto a small volume | 128 | 254,336 |
+
+A change that exceeds a ceiling fails the test and must justify the increase
+in its pull request before the ceiling is raised. A change that reduces a
+figure lowers the ceiling to the new figure in the same pull request, so the
+gates never retain unused headroom. A toolchain or dependency upgrade that
+moves the figures resets the ceilings in the upgrade's pull request.
 
 ### S3 (Docker-local)
 
@@ -99,6 +148,8 @@ the benchmark does not measure such commits.
 | `BenchmarkVolume_ReadAt` | `lode/volume/bench_test.go` | In-memory (10 committed blocks) | Done |
 | `BenchmarkParquetCodec_Encode` | `lode/bench_test.go` | In-memory | Done |
 | `BenchmarkParquetCodec_Decode` | `lode/bench_test.go` | In-memory | Done |
+| `BenchmarkJSONLCodec_Decode` | `lode/bench_test.go` | In-memory (three, one thousand, and one hundred thousand records) | Done |
+| `BenchmarkJSONLCodec_DecodeLineLength` | `lode/bench_test.go` | In-memory (lines of 1, 16, 48, and 256 KiB) | Done |
 | `BenchmarkFindCoveringBlocks` | `lode/volume/volume_test.go` | In-memory | Done |
 | `BenchmarkMergeBlocks` | `lode/volume/volume_test.go` | In-memory | Done |
 

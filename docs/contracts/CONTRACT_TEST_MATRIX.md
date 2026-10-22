@@ -548,6 +548,14 @@ listing.
 | CX-6 | `Volume.Snapshots` sort checks | Fixed: sort at load time | `TestVolume_Snapshots/load_snapshot_sorts_blocks_at_load_time` |
 | CX-7 | `fsStore.List` Walk vs WalkDir | Fixed: `filepath.WalkDir` | Existing `fsStore.List` tests |
 
+### Allocation Gates
+
+| Requirement | Test |
+|-------------|------|
+| Each Dataset hot path (`Write`, `Read`, `StreamWrite`, `StreamWriteRecords`, and JSON Lines decoding) stays within its ceilings on allocations and bytes per operation | `TestAllocationGates` (`lode`) |
+| Each Volume hot path (`ReadAt` and `Commit`) stays within its ceilings on allocations and bytes per operation | `TestAllocationGates` (`lode/volume`) |
+| The JSON Lines decoder grows its buffer to the longest line, decodes a line far longer than its initial buffer, and refuses a line beyond its limit | `TestJSONLCodec_Decode_LineLength` |
+
 ### Documented Inherent Costs (not violations)
 
 | Operation | Cost | Reason |
