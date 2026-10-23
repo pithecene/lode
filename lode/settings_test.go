@@ -668,3 +668,15 @@ func TestSettings_LegacyManifestsUseTheDefaultPathNames(t *testing.T) {
 		t.Errorf("got %v, want a root with the default names accepted", err)
 	}
 }
+
+func TestWrite_ForeignManifestOfALongDatasetID(t *testing.T) {
+	id := DatasetID(strings.Repeat("e", 2000))
+	store := NewMemory()
+	body := `{"schema_name": "lode-manifest", "format_version": "1.1.0", "dataset_id": "` + string(id) + `"}`
+	if err := store.Put(t.Context(), "datasets/"+string(id)+"/snapshots/x/_manifest.json", strings.NewReader(body)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(Use(store)).Records(t.Context(), id, jsonl); !errors.Is(err, ErrSettingsMismatch) {
+		t.Fatalf("got %v, want the manifest found past a fixed probe size", err)
+	}
+}

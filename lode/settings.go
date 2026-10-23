@@ -65,15 +65,22 @@ func missingPaths(m *Manifest) error {
 	if p == (ManifestPaths{}) {
 		return &validate.ManifestError{Field: "paths", Message: "is required from format version 1.1.0"}
 	}
-	names := []string{p.Partitions, p.Segments, p.Manifest, p.Data, p.Expired, p.Staged}
 	if p.Flat && (p.Datasets != "" || p.Snapshots != "") {
 		return &validate.ManifestError{Field: "paths", Message: "of flat paths must not name the datasets or snapshots directory"}
 	}
-	if !p.Flat {
-		names = append(names, p.Datasets, p.Snapshots)
+	names := []pathName{
+		{"partitions", p.Partitions},
+		{"segments", p.Segments},
+		{"manifest", p.Manifest},
+		{"data", p.Data},
+		{"expired", p.Expired},
+		{"staged", p.Staged},
 	}
-	if slices.ContainsFunc(names, func(n string) bool { return !storepath.Segment(n) }) {
-		return &validate.ManifestError{Field: "paths", Message: "must name every directory and file, each one path segment"}
+	if !p.Flat {
+		names = append(names, pathName{"datasets", p.Datasets}, pathName{"snapshots", p.Snapshots})
+	}
+	if problem := nameProblem(names); problem != "" {
+		return &validate.ManifestError{Field: "paths", Message: problem}
 	}
 	return nil
 }
@@ -208,14 +215,18 @@ func rejectForeignManifest(ctx context.Context, store Store, id DatasetID, layou
 	return nil
 }
 
-// manifestProbeSize bounds the bytes isManifest reads: enough to hold a
-// manifest's leading fields with the longest dataset ID a store accepts.
-const manifestProbeSize = 1024
+// manifestProbeSize bounds the bytes isManifest reads, beyond the dataset
+// ID: enough to hold a manifest's leading fields with their indentation.
+const manifestProbeSize = 256
+
+// maxEscapedLen is the most bytes JSON encodes one byte of a string as
+// (\u00XX).
+const maxEscapedLen = 6
 
 // isManifest reports whether the object at p is a manifest of dataset id:
 // whether it begins with a manifest's leading fields, in the order Manifest
 // declares them, which encoding/json never produces for a map record (it
-// sorts the keys). It reads at most manifestProbeSize bytes, so a large
+// sorts the keys). It reads a bounded prefix, sized to the ID, so a large
 // data object costs one short read. An object removed since it was listed
 // is not one.
 func isManifest(ctx context.Context, store Store, id DatasetID, p string) (bool, error) {
@@ -227,7 +238,8 @@ func isManifest(ctx context.Context, store Store, id DatasetID, p string) (bool,
 		return false, err
 	}
 	defer func() { _ = rc.Close() }()
-	head := make([]byte, manifestProbeSize)
+	// The ID has no length bound, so the probe grows with it.
+	head := make([]byte, manifestProbeSize+maxEscapedLen*len(id))
 	n, err := io.ReadFull(rc, head)
 	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
 		return false, err

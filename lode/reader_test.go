@@ -698,6 +698,12 @@ func TestValidateManifest_PathsNameEveryDirectory(t *testing.T) {
 	incomplete.Staged = ""
 	flatWithSnapshots := flat.convention()
 	flatWithSnapshots.Snapshots = "snapshots"
+	withEquals := complete
+	withEquals.Data = "k=v"
+	duplicate := complete
+	duplicate.Data = complete.Expired
+	pointerName := complete
+	pointerName.Staged = "latest"
 	cases := map[string]struct {
 		paths ManifestPaths
 		valid bool
@@ -707,6 +713,9 @@ func TestValidateManifest_PathsNameEveryDirectory(t *testing.T) {
 		"a missing name":                  {incomplete, false},
 		"flat with a snapshots directory": {flatWithSnapshots, false},
 		"only a manifest name":            {ManifestPaths{Manifest: "manifest.json"}, false},
+		"a name with =":                   {withEquals, false},
+		"a repeated name":                 {duplicate, false},
+		"the pointer's name":              {pointerName, false},
 	}
 	for name, c := range cases {
 		err := missingPaths(&Manifest{FormatVersion: manifestFormatVersion, Paths: c.paths})

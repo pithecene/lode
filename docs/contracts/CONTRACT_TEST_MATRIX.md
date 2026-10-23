@@ -125,7 +125,8 @@ Gaps are recorded with codes that indicate category and priority:
 | A pending first commit is checked against its staged copy without a listing | `TestWrite_PendingFirstCommitIsCheckedWithoutListing` |
 | The filesystem store's pointer lock file is not a foreign object | `TestWrite_PointerLockIsNotAForeignObject` |
 | A manifest that the writer's layout does not persist, recognized by its leading fields under any file name, is a foreign history; another writer's uncommitted data, including a record that names the manifest schema, a tombstone, and its lock file are not | `TestWrite_ForeignManifestsAreAHistoryAndDataIsNot` |
-| A manifest of format version 1.1.0 names every directory and file, and flat paths name no datasets or snapshots directory | `TestValidateManifest_PathsNameEveryDirectory` |
+| A manifest of format version 1.1.0 names every directory and file under the rule for a root's names (one segment without `=`, distinct, not `latest`), and flat paths name no datasets or snapshots directory | `TestValidateManifest_PathsNameEveryDirectory` |
+| A foreign manifest is recognized whatever the length of the dataset ID | `TestWrite_ForeignManifestOfALongDatasetID` |
 | A manifest of format version 1.0.0 rejects a writer or view whose path names are not the defaults | `TestSettings_LegacyManifestsUseTheDefaultPathNames` |
 | Concurrent first writers with different layouts: the loser is classified against the winner | `TestWrite_ConcurrentFirstWritersWithDifferentLayouts` |
 | A lost first commit is `ErrSettingsMismatch` when the winner's settings differ, without retries, and stays a conflict when they match | `TestWrite_LostFirstCommitIsAMismatchWithoutRetries` |

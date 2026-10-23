@@ -254,7 +254,7 @@ func validateNames(cfg *rootConfig) error {
 	if n.flat && (cfg.set["WithDatasetsDir"] || cfg.set["WithSnapshotsDir"]) {
 		return validate.Argument("WithFlatPaths cannot be combined with WithDatasetsDir or WithSnapshotsDir: flat paths omit those directories")
 	}
-	named := []struct{ option, value string }{
+	named := []pathName{
 		{"WithPartitionsDir", n.partitions},
 		{"WithSegmentsDir", n.segments},
 		{"WithManifestFile", n.manifest},
@@ -263,17 +263,32 @@ func validateNames(cfg *rootConfig) error {
 		{"WithStagedDir", n.staged},
 	}
 	if !n.flat {
-		named = append(named, struct{ option, value string }{"WithDatasetsDir", n.datasets}, struct{ option, value string }{"WithSnapshotsDir", n.snapshots})
+		named = append(named, pathName{"WithDatasetsDir", n.datasets}, pathName{"WithSnapshotsDir", n.snapshots})
 	}
-	seen := map[string]string{latestFile: "the latest pointer"}
-	for _, nm := range named {
-		if !storepath.Segment(nm.value) || strings.Contains(nm.value, "=") {
-			return validate.Argument("%s: name %q must be one path segment without \"=\"", nm.option, nm.value)
-		}
-		if other, dup := seen[nm.value]; dup {
-			return validate.Argument("%s: name %q is already used by %s", nm.option, nm.value, other)
-		}
-		seen[nm.value] = nm.option
+	if problem := nameProblem(named); problem != "" {
+		return validate.Argument("%s", problem)
 	}
 	return nil
+}
+
+// pathName is one name of a convention, labeled by the option or manifest
+// field that sets it.
+type pathName struct{ label, value string }
+
+// nameProblem returns why names do not form a convention, or "": each must
+// be one canonical path segment (storepath.Segment) without "=", other than
+// the pointer's name, and distinct from the others. Roots and manifests
+// apply the same rule (CONTRACT_LAYOUT §Path Names).
+func nameProblem(names []pathName) string {
+	seen := map[string]string{latestFile: "the latest pointer"}
+	for _, nm := range names {
+		if !storepath.Segment(nm.value) || strings.Contains(nm.value, "=") {
+			return fmt.Sprintf("%s: name %q must be one path segment without \"=\"", nm.label, nm.value)
+		}
+		if other, dup := seen[nm.value]; dup {
+			return fmt.Sprintf("%s: name %q is already used by %s", nm.label, nm.value, other)
+		}
+		seen[nm.value] = nm.label
+	}
+	return ""
 }
