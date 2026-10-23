@@ -29,18 +29,18 @@ type dataStream struct {
 
 // newStream builds the pipeline for a data file of the given role without
 // starting its Put, so a caller can wrap the compressed side first.
-func (d *dataset) newStream(id DatasetSnapshotID, role string) (*dataStream, error) {
+func (d *writer) newStream(id DatasetSnapshotID, role string) (*dataStream, error) {
 	pr, pw := io.Pipe()
 	count := &countingWriter{w: pw}
 
 	var sink io.Writer = count
 	var hasher HashWriter
-	if d.checksum != nil {
-		hasher = d.checksum.NewHasher()
+	if d.components.checksum != nil {
+		hasher = d.components.checksum.NewHasher()
 		sink = io.MultiWriter(count, hasher)
 	}
 
-	comp, err := d.compressor.Compress(sink)
+	comp, err := d.components.compressor.Compress(sink)
 	if err != nil {
 		_ = pw.Close()
 		return nil, fmt.Errorf("lode: failed to create compressor: %w", err)
@@ -57,7 +57,7 @@ func (d *dataset) newStream(id DatasetSnapshotID, role string) (*dataStream, err
 }
 
 // openStream builds a data stream and starts its Put.
-func (d *dataset) openStream(ctx context.Context, id DatasetSnapshotID, role string) (*dataStream, error) {
+func (d *writer) openStream(ctx context.Context, id DatasetSnapshotID, role string) (*dataStream, error) {
 	s, err := d.newStream(id, role)
 	if err != nil {
 		return nil, err
@@ -145,7 +145,7 @@ type recordStream[T any] struct {
 	timestamps  timestampRange
 }
 
-func openRecordStream[T any](ctx context.Context, d *dataset, id DatasetSnapshotID, codec StreamingCodec[T], timestamped bool) (*recordStream[T], error) {
+func openRecordStream[T any](ctx context.Context, d *writer, id DatasetSnapshotID, codec StreamingCodec[T], timestamped bool) (*recordStream[T], error) {
 	s, err := d.newStream(id, dataFile)
 	if err != nil {
 		return nil, err
@@ -304,7 +304,7 @@ func (cw *countingWriter) Write(p []byte) (n int, err error) {
 
 // streamWriter implements StreamWriter for raw binary streaming writes.
 type streamWriter struct {
-	ds      *dataset
+	ds      *writer
 	ctx     context.Context
 	pending pendingSnapshot
 	stream  *dataStream

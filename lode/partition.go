@@ -51,7 +51,7 @@ func (h *HiveLayout) scheme() (partitionScheme, error) {
 	if h == nil {
 		return partitionScheme{}, validate.Argument("WithLayout: Hive layout must not be nil")
 	}
-	return partitionScheme{name: "hive", keys: h.keys}, validateHiveKeys(h.keys)
+	return partitionScheme{name: hivePartitioner, keys: h.keys}, validateHiveKeys(h.keys)
 }
 
 // By returns the Hive layout with a function that gives a record's
@@ -105,17 +105,26 @@ func validateHiveKeys(keys []string) error {
 // Partitioning (internal)
 // -----------------------------------------------------------------------------
 
-// partitionScheme is the partitioning a manifest records: the partitioner's
-// name and its keys in order.
+// partitioner names a kind of partitioning, as a manifest records it.
+type partitioner string
+
+// The partitioners Lode persists.
+const (
+	noopPartitioner partitioner = "noop"
+	hivePartitioner partitioner = "hive"
+)
+
+// partitionScheme is the partitioning a manifest records: the partitioner
+// and its keys in order.
 type partitionScheme struct {
-	name string
+	name partitioner
 	keys []string
 }
 
 // noopScheme is the scheme without partitions.
-var noopScheme = partitionScheme{name: "noop"}
+var noopScheme = partitionScheme{name: noopPartitioner}
 
-func (p partitionScheme) isNoop() bool { return p.name == noopScheme.name }
+func (p partitionScheme) isNoop() bool { return p.name == noopPartitioner }
 
 // partitionKeyFor returns the function that computes a record's partition
 // path ("k1=v1/k2=v2") under the layout, for records of type T: "" without

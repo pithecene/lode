@@ -35,9 +35,10 @@ type datasetConfig struct {
 	retry      retry.Config
 }
 
-// viewConfig holds a view's custom components, which a view uses for the
-// snapshots whose manifests name them.
-type viewConfig struct {
+// components are the compressor and checksum a handle supplies: a writer's
+// own, which it writes with, or a view's custom ones. Both read the
+// snapshots whose manifests name them (compressorFor, matchChecksum).
+type components struct {
 	compressor Compressor
 	checksum   Checksum
 }
@@ -52,7 +53,7 @@ type DatasetOption interface {
 // custom compressor or checksum, which Lode cannot reconstruct from its
 // name, is passed to it.
 type ViewOption interface {
-	applyView(cfg *viewConfig) error
+	applyView(cfg *components) error
 }
 
 // ComponentOption configures a writer handle or a view.
@@ -69,11 +70,11 @@ func (o datasetOption) applyDataset(cfg *datasetConfig) error { return o(cfg) }
 // componentOption sets a component on a writer handle and on a view.
 type componentOption struct {
 	dataset func(cfg *datasetConfig) error
-	view    func(cfg *viewConfig) error
+	view    func(cfg *components) error
 }
 
 func (o componentOption) applyDataset(cfg *datasetConfig) error { return o.dataset(cfg) }
-func (o componentOption) applyView(cfg *viewConfig) error       { return o.view(cfg) }
+func (o componentOption) applyView(cfg *components) error       { return o.view(cfg) }
 
 // WithLayout sets how a dataset is partitioned: Unpartitioned (the default)
 // or Hive.
@@ -100,7 +101,7 @@ func WithCompressor(c Compressor) ComponentOption {
 			cfg.compressor = c
 			return nil
 		},
-		view: func(cfg *viewConfig) error {
+		view: func(cfg *components) error {
 			if validate.Nil(c) {
 				return validate.Argument("WithCompressor: compressor must not be nil")
 			}
@@ -125,7 +126,7 @@ func WithChecksum(c Checksum) ComponentOption {
 	}
 	return componentOption{
 		dataset: func(cfg *datasetConfig) error { return set(&cfg.checksum) },
-		view:    func(cfg *viewConfig) error { return set(&cfg.checksum) },
+		view:    func(cfg *components) error { return set(&cfg.checksum) },
 	}
 }
 
@@ -197,8 +198,8 @@ func resolveDatasetConfig(opts []DatasetOption) (*datasetConfig, error) {
 }
 
 // resolveViewConfig applies opts.
-func resolveViewConfig(opts []ViewOption) (*viewConfig, error) {
-	cfg := &viewConfig{}
+func resolveViewConfig(opts []ViewOption) (*components, error) {
+	cfg := &components{}
 	for _, opt := range opts {
 		if opt == nil {
 			return nil, validate.Argument("option must not be nil")
@@ -214,25 +215,27 @@ func resolveViewConfig(opts []ViewOption) (*viewConfig, error) {
 // The dataset core
 // -----------------------------------------------------------------------------
 
-// dataset is what every handle of one dataset shares: its paths, its
-// history, its components, and the writer's state. Records, Blobs, and the
-// views wrap it; a view's store refuses writes (readOnlyStore), and a view
-// never calls the writer's methods.
+// dataset is what every handle of one dataset shares, a view's and a
+// writer's: its paths, its history, its codec, and its components. A view
+// holds a dataset only; a writer holds one inside a writer, so the methods
+// that write are not in a view's method set. A view's store also refuses
+// writes (readOnlyStore).
 type dataset struct {
 	id         DatasetID
 	store      Store
 	layout     *pathLayout
-	compressor Compressor // the writer's; nil for a view
-	checksum   Checksum
-	custom     viewConfig // a view's custom components
-	retry      retry.Config
-
-	// codecName and codecDescription are the codec the manifests record;
-	// "" for a blob dataset.
-	codecName, codecDescription string
+	codec      codecIdentity
+	components components
 
 	// history owns the snapshot sequence and its head pointer (internal/history).
 	history history.History[DatasetSnapshotID, Manifest]
+}
+
+// writer is the core of a writer handle: its dataset, its retry policy,
+// and its state across commits.
+type writer struct {
+	*dataset
+	retry retry.Config
 
 	// settled is true once this writer's settings were verified against
 	// the dataset's (checkSettings) or recorded by its own commit.
@@ -242,6 +245,22 @@ type dataset struct {
 	// whose settings checkSettings read; this writer's commit, a child of
 	// it, removes it ("" when there is none).
 	adoptedStaged string
+}
+
+// codecIdentity is the codec a dataset's manifests record: its name and
+// its description. A blob dataset has no codec (blobCodec), which a
+// manifest records as the empty name; a record codec's name is never empty
+// (checkCodec).
+type codecIdentity struct {
+	name, description string
+}
+
+// blobCodec is a blob dataset's codec identity: none.
+var blobCodec = codecIdentity{}
+
+// codecOf is the identity of a record codec.
+func codecOf[T any](c Codec[T]) codecIdentity {
+	return codecIdentity{name: c.Name(), description: c.Describe()}
 }
 
 // datasetKind is the dataset's snapshot grammar for history: paths come from
@@ -325,7 +344,6 @@ func newDataset(id DatasetID, store Store, l *pathLayout) *dataset {
 		id:      id,
 		store:   store,
 		layout:  l,
-		retry:   retry.Default(),
 		history: history.New(store, newDatasetKind(id, l, store), l.latestPointerPath(id), "manifest", historyErrors),
 	}
 }
@@ -372,15 +390,16 @@ func (d *dataset) Snapshots(ctx context.Context) ([]*DatasetSnapshot, error) {
 	return snapshots, nil
 }
 
-// latest returns the head snapshot for a writer, which creates a missing
-// pointer from the scan result.
-func (d *dataset) latest(ctx context.Context) (*DatasetSnapshot, error) {
-	return fromHistory(d.history.Latest(ctx))
+// Latest returns the head snapshot. A view never writes, so it never
+// creates a missing pointer.
+func (d *dataset) Latest(ctx context.Context) (*DatasetSnapshot, error) {
+	return fromHistory(d.history.Head(ctx))
 }
 
-// head returns the head snapshot for a view, which never writes.
-func (d *dataset) head(ctx context.Context) (*DatasetSnapshot, error) {
-	return fromHistory(d.history.Head(ctx))
+// Latest returns the head snapshot for a writer, which creates a missing
+// pointer from the scan result.
+func (d *writer) Latest(ctx context.Context) (*DatasetSnapshot, error) {
+	return fromHistory(d.history.Latest(ctx))
 }
 
 // readFile reads one data file of a snapshot through the compressor its
@@ -412,7 +431,7 @@ func (d *dataset) readBlob(ctx context.Context, id DatasetSnapshotID) ([]byte, e
 	if err != nil {
 		return nil, err
 	}
-	if err := matchCodec(snapshot.Manifest, "", ""); err != nil {
+	if err := matchCodec(snapshot.Manifest, blobCodec); err != nil {
 		return nil, err
 	}
 	if len(snapshot.Files) != 1 {
@@ -437,7 +456,7 @@ func readRecords[T any](ctx context.Context, d *dataset, codec Codec[T], id Data
 	if err != nil {
 		return nil, err
 	}
-	if err := matchCodec(snapshot.Manifest, codec.Name(), codec.Describe()); err != nil {
+	if err := matchCodec(snapshot.Manifest, codecOf(codec)); err != nil {
 		return nil, err
 	}
 	var all []T
@@ -458,12 +477,12 @@ func readRecords[T any](ctx context.Context, d *dataset, codec Codec[T], id Data
 // manifest is legacy, with another codec configuration. It reads the two
 // codec fields directly rather than through recordedSettings, because it
 // runs on every read and needs no other setting.
-func matchCodec(m *Manifest, name, description string) error {
-	if m.Codec != name {
-		return fmt.Errorf("lode: codec mismatch: snapshot %s uses %q, handle has %q: %w", m.SnapshotID, m.Codec, name, ErrSettingsMismatch)
+func matchCodec(m *Manifest, codec codecIdentity) error {
+	if m.Codec != codec.name {
+		return fmt.Errorf("lode: codec mismatch: snapshot %s uses %q, handle has %q: %w", m.SnapshotID, m.Codec, codec.name, ErrSettingsMismatch)
 	}
-	if !legacy(m) && m.CodecDescription != description {
-		return fmt.Errorf("lode: codec description mismatch: snapshot %s records %q, handle has %q: %w", m.SnapshotID, m.CodecDescription, description, ErrSettingsMismatch)
+	if !legacy(m) && m.CodecDescription != codec.description {
+		return fmt.Errorf("lode: codec description mismatch: snapshot %s records %q, handle has %q: %w", m.SnapshotID, m.CodecDescription, codec.description, ErrSettingsMismatch)
 	}
 	return nil
 }
@@ -477,12 +496,11 @@ var bundledCompressors = map[string]func() Compressor{
 }
 
 // compressorFor returns the compressor a snapshot's manifest names: the
-// handle's own or custom one when its name matches, else the bundled one.
+// handle's own (a writer's) or custom one (a view's) when its name matches,
+// else the bundled one.
 func (d *dataset) compressorFor(m *Manifest) (Compressor, error) {
-	for _, c := range []Compressor{d.compressor, d.custom.compressor} {
-		if c != nil && c.Name() == m.Compressor {
-			return c, nil
-		}
+	if c := d.components.compressor; c != nil && c.Name() == m.Compressor {
+		return c, nil
 	}
 	if newCompressor, ok := bundledCompressors[m.Compressor]; ok {
 		return newCompressor(), nil
@@ -506,10 +524,8 @@ func (d *dataset) matchChecksum(m *Manifest) error {
 	if _, bundled := bundledChecksums[name]; name == "" || bundled {
 		return nil
 	}
-	for _, c := range []Checksum{d.checksum, d.custom.checksum} {
-		if c != nil && c.Name() == name {
-			return nil
-		}
+	if c := d.components.checksum; c != nil && c.Name() == name {
+		return nil
 	}
 	return fmt.Errorf("lode: snapshot %s uses checksum %q, which is not bundled; pass it with WithChecksum: %w", m.SnapshotID, name, ErrSettingsMismatch)
 }

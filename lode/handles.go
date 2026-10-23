@@ -34,11 +34,11 @@ func (r *Root) Records[T any](ctx context.Context, id DatasetID, codec Codec[T],
 	if err != nil {
 		return nil, err
 	}
-	d.codecName, d.codecDescription = codec.Name(), codec.Describe()
+	d.codec = codecOf(codec)
 	if err := d.checkAtOpen(ctx); err != nil {
 		return nil, err
 	}
-	return &recordDataset[T]{dataset: d, codec: codec, partitionKey: partitionKey, timestamped: timestampedRecords[T]()}, nil
+	return &recordDataset[T]{writer: d, codec: codec, partitionKey: partitionKey, timestamped: timestampedRecords[T]()}, nil
 }
 
 // Blobs opens the dataset id for writing blobs, one per snapshot. A blob has
@@ -58,11 +58,11 @@ func (r *Root) Blobs(ctx context.Context, id DatasetID, opts ...DatasetOption) (
 	if err := d.checkAtOpen(ctx); err != nil {
 		return nil, err
 	}
-	return &blobDataset{dataset: d}, nil
+	return &blobDataset{writer: d}, nil
 }
 
 // newWriter validates a writer's arguments and assembles its core.
-func (r *Root) newWriter(id DatasetID, opts []DatasetOption) (*dataset, *datasetConfig, error) {
+func (r *Root) newWriter(id DatasetID, opts []DatasetOption) (*writer, *datasetConfig, error) {
 	if err := validateDatasetID(id); err != nil {
 		return nil, nil, err
 	}
@@ -74,15 +74,15 @@ func (r *Root) newWriter(id DatasetID, opts []DatasetOption) (*dataset, *dataset
 	if err != nil {
 		return nil, nil, err
 	}
-	d := newDataset(id, r.store, newPathLayout(r.names, scheme))
-	d.compressor, d.checksum, d.retry = cfg.compressor, cfg.checksum, cfg.retry
+	d := &writer{dataset: newDataset(id, r.store, newPathLayout(r.names, scheme)), retry: cfg.retry}
+	d.components = components{compressor: cfg.compressor, checksum: cfg.checksum}
 	return d, cfg, nil
 }
 
 // checkAtOpen resolves the head and checks the writer's settings against
 // it, so that a misconfigured writer fails when it opens rather than at its
 // first commit. The commit checks again: the head may change in between.
-func (d *dataset) checkAtOpen(ctx context.Context) error {
+func (d *writer) checkAtOpen(ctx context.Context) error {
 	parent, _, err := d.history.Resolve(ctx)
 	if err != nil {
 		return err
@@ -117,14 +117,10 @@ func timestampedRecords[T any]() bool {
 
 // recordDataset implements Records[T].
 type recordDataset[T any] struct {
-	*dataset
+	*writer
 	codec        Codec[T]
 	partitionKey func(T) (string, error)
 	timestamped  bool
-}
-
-func (r *recordDataset[T]) Latest(ctx context.Context) (*DatasetSnapshot, error) {
-	return r.latest(ctx)
 }
 
 func (r *recordDataset[T]) Read(ctx context.Context, id DatasetSnapshotID) ([]T, error) {
@@ -161,7 +157,7 @@ func (r *recordDataset[T]) StreamWrite(ctx context.Context, records iter.Seq2[T,
 	if err != nil {
 		return nil, err
 	}
-	stream, err := openRecordStream(ctx, r.dataset, pending.id, streaming, r.timestamped)
+	stream, err := openRecordStream(ctx, r.writer, pending.id, streaming, r.timestamped)
 	if err != nil {
 		return nil, err
 	}
@@ -181,11 +177,7 @@ func (r *recordDataset[T]) StreamWrite(ctx context.Context, records iter.Seq2[T,
 
 // blobDataset implements Blobs.
 type blobDataset struct {
-	*dataset
-}
-
-func (b *blobDataset) Latest(ctx context.Context) (*DatasetSnapshot, error) {
-	return b.latest(ctx)
+	*writer
 }
 
 func (b *blobDataset) Read(ctx context.Context, id DatasetSnapshotID) ([]byte, error) {
@@ -216,7 +208,7 @@ func (b *blobDataset) StreamWrite(ctx context.Context, metadata any) (StreamWrit
 	if err != nil {
 		return nil, err
 	}
-	return &streamWriter{ds: b.dataset, ctx: ctx, pending: pending, stream: stream}, nil
+	return &streamWriter{ds: b.writer, ctx: ctx, pending: pending, stream: stream}, nil
 }
 
 // -----------------------------------------------------------------------------
@@ -238,7 +230,7 @@ func (r *ReadRoot) Records[T any](ctx context.Context, id DatasetID, codec Codec
 	if err := checkCodec(codec); err != nil {
 		return nil, err
 	}
-	d, err := r.openView(ctx, id, opts, codec.Name(), codec.Describe())
+	d, err := r.openView(ctx, id, opts, codecOf(codec))
 	if err != nil {
 		return nil, err
 	}
@@ -250,7 +242,7 @@ func (r *ReadRoot) Blobs(ctx context.Context, id DatasetID, opts ...ViewOption) 
 	if r.err != nil {
 		return nil, r.err
 	}
-	d, err := r.openView(ctx, id, opts, "", "")
+	d, err := r.openView(ctx, id, opts, blobCodec)
 	if err != nil {
 		return nil, err
 	}
@@ -259,7 +251,7 @@ func (r *ReadRoot) Blobs(ctx context.Context, id DatasetID, opts ...ViewOption) 
 
 // openView resolves a view's layout from the dataset's head and checks the
 // head against the view's codec and the root's names.
-func (r *ReadRoot) openView(ctx context.Context, id DatasetID, opts []ViewOption, codecName, codecDescription string) (*dataset, error) {
+func (r *ReadRoot) openView(ctx context.Context, id DatasetID, opts []ViewOption, codec codecIdentity) (*dataset, error) {
 	if err := validateDatasetID(id); err != nil {
 		return nil, err
 	}
@@ -274,7 +266,7 @@ func (r *ReadRoot) openView(ctx context.Context, id DatasetID, opts []ViewOption
 	if err := validateManifest(head); err != nil {
 		return nil, fmt.Errorf("lode: head of %s: %w", id, err)
 	}
-	if err := matchCodec(head, codecName, codecDescription); err != nil {
+	if err := matchCodec(head, codec); err != nil {
 		return nil, err
 	}
 	recorded, err := recordedSettings(head, r.names.Flat)
@@ -285,14 +277,14 @@ func (r *ReadRoot) openView(ctx context.Context, id DatasetID, opts []ViewOption
 		return nil, fmt.Errorf("lode: path names mismatch: dataset records %#v, root has %#v: %w", have, want, ErrSettingsMismatch)
 	}
 	d := newDataset(id, r.store, newPathLayout(r.names, scheme))
-	d.custom = *cfg
-	d.codecName, d.codecDescription = codecName, codecDescription
+	d.components = *cfg
+	d.codec = codec
 	return d, nil
 }
 
 // hiveGrammar stands for every Hive scheme while a view's layout is not yet
 // known: reading needs only the grammar, not the keys.
-var hiveGrammar = partitionScheme{name: "hive"}
+var hiveGrammar = partitionScheme{name: hivePartitioner}
 
 // resolveViewHead finds the dataset's head manifest without knowing its
 // layout. The pointer names the head but not whether the dataset is
@@ -322,7 +314,7 @@ func resolveViewHead(ctx context.Context, store Store, names ManifestPaths, id D
 		for _, d := range candidates {
 			s, err := load(d)
 			if err == nil {
-				return s.Manifest, partitionScheme{name: s.Partitioner, keys: s.PartitionKeys}, nil
+				return s.Manifest, partitionScheme{name: partitioner(s.Partitioner), keys: s.PartitionKeys}, nil
 			}
 			if !errors.Is(err, ErrNotFound) && !errors.Is(err, ErrNoSnapshots) {
 				return nil, partitionScheme{}, fmt.Errorf("lode: failed to resolve the head of %s: %w", id, err)
@@ -341,10 +333,6 @@ type recordView[T any] struct {
 	codec Codec[T]
 }
 
-func (v *recordView[T]) Latest(ctx context.Context) (*DatasetSnapshot, error) {
-	return v.head(ctx)
-}
-
 func (v *recordView[T]) Read(ctx context.Context, id DatasetSnapshotID) ([]T, error) {
 	return readRecords(ctx, v.dataset, v.codec, id)
 }
@@ -352,10 +340,6 @@ func (v *recordView[T]) Read(ctx context.Context, id DatasetSnapshotID) ([]T, er
 // blobView implements BlobView.
 type blobView struct {
 	*dataset
-}
-
-func (v *blobView) Latest(ctx context.Context) (*DatasetSnapshot, error) {
-	return v.head(ctx)
 }
 
 func (v *blobView) Read(ctx context.Context, id DatasetSnapshotID) ([]byte, error) {

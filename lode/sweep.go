@@ -16,7 +16,7 @@ import (
 // Sweep completes interrupted expiries and reclaims never-committed data
 // (CONTRACT_RETENTION §Unreferenced-Object Sweep). It works from two
 // listings taken up front; the report is never nil.
-func (d *dataset) Sweep(ctx context.Context, req SweepRequest) (*SweepReport, error) {
+func (d *writer) Sweep(ctx context.Context, req SweepRequest) (*SweepReport, error) {
 	report := &SweepReport{}
 	if req.Grace <= 0 {
 		return report, validate.Argument("Sweep grace must be positive, got %s", req.Grace)
@@ -27,7 +27,7 @@ func (d *dataset) Sweep(ctx context.Context, req SweepRequest) (*SweepReport, er
 		return report, err
 	}
 	run := sweepRun{
-		ds: d, inv: inv, dryRun: req.DryRun, cutoff: time.Now().Add(-req.Grace),
+		ds: d.dataset, inv: inv, dryRun: req.DryRun, cutoff: time.Now().Add(-req.Grace),
 		settled: make(map[DatasetSnapshotID]tombstone), cleared: make(map[DatasetSnapshotID]bool),
 		held: d.rejectedTombstoneIDs(inv.invalidTombstones),
 	}
