@@ -196,8 +196,8 @@ manifest records them (CONTRACT_CORE §Manifest Requirements).
 
 ## Read-After-Write Visibility
 
-- A snapshot is visible only after its manifest is persisted.
-- The presence of the manifest signifies that the commit is complete.
+A snapshot is visible once its commit is complete, as CONTRACT_CORE §Head
+Pointer defines it.
 
 ---
 
@@ -252,7 +252,9 @@ commit path. On `ErrSnapshotConflict`, the writer:
 4. Retries the pointer CAS.
 
 Data files are written once; only the manifest and the pointer are retried.
-If all retries are exhausted, `ErrSnapshotConflict` is returned as it would
+The snapshot ID is retained because the data paths already persisted contain
+it; a Volume retry draws a new ID because its block paths do not
+(CONTRACT_VOLUME §Optimistic Concurrency (CAS), V1_API_DECISIONS D10c). If all retries are exhausted, `ErrSnapshotConflict` is returned as it would
 be without retries.
 
 Retry options: `WithRetry(n)`, `WithRetryBaseDelay(d)`,

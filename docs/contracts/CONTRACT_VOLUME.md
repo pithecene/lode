@@ -274,12 +274,8 @@ value returns `lode.ErrInvalidArgument` with the same message.
 - `Latest` on an empty volume MUST return `lode.ErrNoSnapshots`.
 - `Snapshot` for an unknown ID MUST return `lode.ErrNotFound`.
 - An obsolete parent at `Commit` MUST produce `lode.ErrSnapshotConflict`.
-- Before it advances the pointer, Commit MUST persist a staged copy of its
-  manifest at `volumes/<volume_id>/staged/<snapshot_id>.json`. After it
-  persists the canonical manifest, Commit removes the staged copy. When the
-  pointer update fails, Commit removes the staged copy only if the pointer
-  names another snapshot, because a store may report a failure for an
-  update it applied.
+- Commit MUST persist and remove a staged copy of its manifest as
+  CONTRACT_CORE §Head Pointer specifies.
 - When the pointer names a snapshot whose canonical manifest has not been
   persisted (a pending or abandoned commit, CONTRACT_CORE §Head Pointer),
   Commit MUST load that snapshot from its staged copy, adopt it as the
@@ -320,8 +316,8 @@ The snapshot history of a Volume is linear.
 
 Volume detects concurrent commits and returns `ErrSnapshotConflict`.
 
-The mechanism is identical to Dataset CAS (see `CONTRACT_WRITE_API.md`
-§Optimistic Concurrency (CAS)):
+Conflict detection is the same as for a Dataset (see `CONTRACT_WRITE_API.md`
+§Optimistic Concurrency (CAS)); only the snapshot ID of a retry differs:
 - `Commit` records the expected parent when it resolves the parent.
 - The pointer is updated with `CompareAndSwap`.
 - An obsolete parent produces `ErrSnapshotConflict`.
@@ -342,6 +338,10 @@ The mechanism is identical to Dataset CAS (see `CONTRACT_WRITE_API.md`
 3. Resolves the parent again and merges the blocks against the new parent.
 4. Verifies that no blocks overlap in the merged cumulative set.
 5. Retries the pointer CAS with a new snapshot ID.
+
+A Volume retry may draw a new snapshot ID because block paths do not contain
+it (`volumes/<id>/data/<offset>-<length>.bin`); a Dataset retry retains its
+ID because its data paths do (V1_API_DECISIONS D10c).
 
 `ErrOverlappingBlocks` terminates the retry loop immediately, because it is
 not retryable. If `WithRetryObserver(fn)` is configured, `fn` is called once
