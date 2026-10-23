@@ -23,7 +23,7 @@ Based on the full-history audit of the production dataset
 
 - **Holds:** no corruption detected and zero manifest decode failures across 96,478
   snapshots over 8 months on R2; `Manifest` format stable from 2026-02-06
-  until the unreleased format 1.1.0 (D11), which adds three fields and
+  until format 1.1.0 (D11, released in v0.12.0), which adds three fields and
   reads every 1.0.0 manifest.
 - **Blocker, addressed in v0.11.0 and awaiting verification:** one history
   fork under CAS + retry (2026-08-25, §10). The cause is identified: a failed
@@ -228,7 +228,7 @@ partitions, one dataset on R2.
 > **Evidence:** Unreleased: manifest format 1.1.0 (#279, D11) adds `CodecDescription`, `PartitionKeys`, and `Paths`, so that every setting a writer must share is persisted. Every 1.0.0 manifest remains readable. The window restarts when it is released.
 > Date: 2026-10-22 | Observer: @pithecene | Project: lode
 >
-> **Evidence:** Window restarted by v0.12.0 (2026-10-23), which releases format 1.1.0. Every 1.0.0 manifest remains readable: data that v0.11.0 wrote is tested to read, extend, expire, and sweep (`TestCompat_v0_11_0_*`). Earliest pass: 2026-11-20.
+> **Evidence:** Window restarted by v0.12.0 (2026-10-23), which releases format 1.1.0. Every 1.0.0 manifest remains readable: data that v0.11.0 wrote reads back in every dataset and the volume, accepts new commits in the record datasets and the volume, and lists, expires, and sweeps in the Hive dataset (`TestCompat_v0_11_0_*`). Earliest pass: 2026-11-20.
 > Date: 2026-10-23 | Observer: @pithecene | Project: lode
 > Summary: Not met.
 > Issue: —

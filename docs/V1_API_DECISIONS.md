@@ -154,7 +154,7 @@ reads a partition path, including string literals (an opaque type has no
 untyped-constant conversion).
 
 **Status.** Accepted (owner decision, 2026-10-23) and implemented,
-unreleased, as proposed. `ExpireRequest.Partition` remains a string: like
+shipped in v0.12.0, as proposed. `ExpireRequest.Partition` remains a string: like
 `Prefix`, it selects a subtree and accepts a trailing `/`.
 
 ---
@@ -193,7 +193,7 @@ are not broken: the methods they already have satisfy the new interface.
 Quarry references neither the methods nor the sentinel.
 
 **Status.** Accepted (owner decision, 2026-10-23) and implemented,
-unreleased. `SingleProcess` and the store of a read-only root implement
+shipped in v0.12.0. `SingleProcess` and the store of a read-only root implement
 `RangeReader` exactly when the store they wrap does. Where the capability
 is static, it is a type rather than a run-time check: `RangeStore` is a
 `Store` that reads ranges, the built-in constructors and factories return
@@ -219,7 +219,7 @@ keep their package prefix (`s3:`), codecs theirs (`parquet:`).
 **Breaks.** Nothing under `errors.Is`; substring matches on full messages.
 
 **Status.** Accepted (owner decision, 2026-10-23) and implemented,
-unreleased, with the prefix placed where an error originates rather than at
+shipped in v0.12.0, with the prefix placed where an error originates rather than at
 the public boundary. Only the code that creates an error knows its source,
 and a boundary is not visible to a helper that public methods share, so the
 proposed rule could not be checked and would have let the duplicate return.
@@ -248,7 +248,7 @@ or use a real emulator (`examples/s3` already targets LocalStack and MinIO).
 **Breaks.** Any downstream test importing the mock. Quarry does not.
 
 **Status.** Accepted (owner decision, 2026-10-23) and implemented,
-unreleased: the mock is in `lode/s3/mock_test.go`.
+shipped in v0.12.0: the mock is in `lode/s3/mock_test.go`.
 
 ---
 
@@ -494,7 +494,7 @@ snapshots are canonical-only.
 they previously omitted.
 
 **Status.** Accepted (owner decision, 2026-10-23) and implemented,
-unreleased: option 1. Option 2 was rejected because a Dataset retry keeps
+shipped in v0.12.0: option 1. Option 2 was rejected because a Dataset retry keeps
 its snapshot ID (D10c) and partition manifests record their parent, so a
 retry after a conflict would have to replace the partition manifests that
 the failed attempt persisted. An unfiltered listing reports a snapshot
@@ -824,6 +824,5 @@ decision left open:
 - A view matches a custom checksum by name, as it matches a custom
   compressor; reads do not verify checksums.
 
-**Status.** Accepted (owner decision, 2026-10-22) and implemented: the
-persisted format in #279, the surface in the pull request that follows
-it.
+**Status.** Accepted (owner decision, 2026-10-22), implemented, and shipped
+in v0.12.0: the persisted format in #279 and the surface in #280.

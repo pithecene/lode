@@ -76,7 +76,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Dataset IDs**: use an ID of one path segment that does not begin with `.lode-tmp-`.
 - **Tests that used the S3 double**: copy the double from the adapter's tests, or target an emulator such as LocalStack or MinIO.
 - **Error text**: check code that matches message text against the new wording.
-- **No data migration required**: a dataset written by an earlier release opens under the default path names; datasets and a volume written by v0.11.0 are tested to read, extend, expire, and sweep.
+- **No data migration required**: a dataset written by an earlier release opens under the default path names. Data that v0.11.0 wrote is tested: every dataset and the volume read back, the record datasets and the volume accept new commits, and the Hive dataset lists, expires, and sweeps.
 
 ---
 
