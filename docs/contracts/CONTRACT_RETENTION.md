@@ -536,7 +536,8 @@ steps in order:
 
    `Sweep` then loads the canonical manifest, which MUST be valid and name
    the snapshot of this dataset, and creates an unchanged copy of it at the
-   path of every partition that its files name and that holds no copy. The
+   path of every partition that holds one of its own data objects (a FileRef
+   outside them names no partition; §Mixed Snapshots) and no copy. The
    canonical manifest, not the listing, decides the partitions. A copy that
    already exists is left as it is and is not counted. Because an `Expire`
    that selects the snapshot can delete its manifests while `Sweep` creates

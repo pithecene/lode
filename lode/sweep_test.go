@@ -1,6 +1,7 @@
 package lode
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -859,6 +860,33 @@ func TestSweep_Reindex(t *testing.T) {
 // runs, created by an earlier attempt, a lagging listing, or a concurrent
 // expiry.
 func TestSweep_ReindexExistingCopies(t *testing.T) {
+	t.Run("a file outside the snapshot names no partition", func(t *testing.T) {
+		store := NewMemory()
+		ds := newHiveRetention(t, store)
+		snap, copies := unindexed(t, store, ds)
+		foreign := "datasets/events/partitions/run_id=x/event_type=y/segments/" + string(snap.ID) + "-other/data/f"
+		canonical := "datasets/events/segments/" + string(snap.ID) + "/manifest.json"
+		rewriteObject(t, store, canonical, func(s string) string {
+			var m map[string]any
+			if err := json.Unmarshal([]byte(s), &m); err != nil {
+				t.Fatal(err)
+			}
+			m["files"] = append(m["files"].([]any), map[string]any{"path": foreign, "size_bytes": 1})
+			out, err := json.Marshal(m)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return string(out)
+		})
+
+		if _, err := ds.Sweep(t.Context(), SweepRequest{Grace: elapsed}); err != nil {
+			t.Fatal(err)
+		}
+		if exists(t, store, partitionManifest(snap.ID, "x", "y")) || !exists(t, store, copies[0]) {
+			t.Error("want the snapshot's own partitions reindexed and none derived from the foreign file")
+		}
+	})
+
 	t.Run("a copy the listing omits is not reported", func(t *testing.T) {
 		mem := NewMemory()
 		lister := &listInjector{Store: mem}

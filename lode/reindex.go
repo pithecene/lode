@@ -90,7 +90,10 @@ func (r sweepRun) reindexOne(ctx context.Context, id DatasetSnapshotID) (bool, e
 	}
 	// The tombstone check runs even after a failed write: a copy created
 	// before the failure must not outlive an expiry either.
-	persisted, putErr := r.persistMissing(ctx, id, r.ds.allManifestPaths(id, nil, m.Files), data)
+	// Only the snapshot's own data objects name its partitions: a FileRef
+	// outside them (§Mixed Snapshots) never places a copy in this dataset.
+	owned := r.ds.splitFiles(id, m.Files).owned
+	persisted, putErr := r.persistMissing(ctx, id, r.ds.allManifestPaths(id, nil, owned), data)
 	if len(persisted) == 0 || r.dryRun {
 		return len(persisted) > 0, putErr
 	}
