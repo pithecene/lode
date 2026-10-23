@@ -131,8 +131,7 @@ Latest(ctx context.Context) (*DatasetSnapshot, error)
 Snapshot(ctx context.Context, id DatasetSnapshotID) (*DatasetSnapshot, error)
 Snapshots(ctx context.Context) ([]*DatasetSnapshot, error)
 ListPartitions(ctx context.Context, opts PartitionListOptions) ([]PartitionRef, error)
-ListManifests(ctx context.Context, partition string, opts ManifestListOptions) ([]ManifestRef, error)
-// partition is a raw partition path; a PartitionPath type is a v1.0 candidate (docs/V1_API_DECISIONS.md D4).
+ListManifests(ctx context.Context, partition PartitionPath, opts ManifestListOptions) ([]ManifestRef, error)
 GetManifest(ctx context.Context, ref ManifestRef) (*Manifest, error)
 OpenObject(ctx context.Context, obj ObjectRef) (io.ReadCloser, error)
 ReaderAt(ctx context.Context, obj ObjectRef) (io.ReaderAt, error)
@@ -207,6 +206,30 @@ must observe every commit reconciles against `Snapshots`, which enumerates
 canonical manifests (V1_API_DECISIONS D10a). `ListManifests` cannot serve
 that purpose on a Hive layout: until V1_API_DECISIONS D10b is resolved, it
 omits a committed snapshot whose partition manifests were not persisted.
+
+### Partition Paths
+
+A partition path has the type `PartitionPath`, an opaque value that only
+`ParsePartitionPath` and the listings construct (V1_API_DECISIONS D4). It
+is used for the `ListManifests` parameter, `PartitionRef.Path`,
+`ManifestRef.Partition`, and `PartitionListOptions.StartAfter`.
+
+- `ParsePartitionPath` MUST return `ErrInvalidPath` for a path that begins
+  with `/`, contains a backslash, or has an empty, `.`, or `..` segment,
+  including a trailing `/`.
+- The empty string MUST parse to the zero value, which denotes the dataset
+  root (no partition).
+- `String` MUST return the path as it appears in storage keys.
+- A `PartitionPath` MUST encode as text (`MarshalText`) as its string, and
+  `UnmarshalText` MUST parse as `ParsePartitionPath` does, so that encoded
+  listing results and cursors retain their partition.
+- A listing MUST return only canonical partition paths. A manifest whose
+  location or file paths name a partition that is not canonical MUST cause
+  `ErrManifestInvalid`, not a returned or omitted path.
+
+`PartitionListOptions.Prefix` remains a raw string, because a prefix is not
+a path: `day=a/` ends at a segment boundary, whereas `day=a` also matches
+`day=a-b`.
 
 ### Partition Prefix
 

@@ -136,7 +136,7 @@ func run() error {
 	}
 
 	// List manifests
-	manifests, err := view.ListManifests(ctx, "", lode.ManifestListOptions{})
+	manifests, err := view.ListManifests(ctx, lode.PartitionPath{}, lode.ManifestListOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to list manifests: %w", err)
 	}

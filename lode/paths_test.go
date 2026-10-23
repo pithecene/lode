@@ -148,7 +148,7 @@ func TestRootPaths_Flat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if parts, err := view.ListPartitions(t.Context(), PartitionListOptions{}); err != nil || len(parts) != 1 || parts[0].Path != "day=d1" {
+	if parts, err := view.ListPartitions(t.Context(), PartitionListOptions{}); err != nil || len(parts) != 1 || parts[0].Path.String() != "day=d1" {
 		t.Errorf("ListPartitions = %v, %v; want day=d1", parts, err)
 	}
 }

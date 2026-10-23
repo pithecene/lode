@@ -514,6 +514,12 @@ data.
   results in lexicographic order of `Path`, and `ListManifests` results in
   order of `(Partition, ID)`. `StartAfter` resumes strictly after a previous
   result; `Limit` bounds the results, not the store calls.
+- A partition path is a `PartitionPath`, built with `ParsePartitionPath`
+  (which returns `ErrInvalidPath` for a leading `/`, a backslash, or an
+  empty, `.`, or `..` segment) or taken from a listing. The zero value is
+  the dataset root: `ListManifests(ctx, lode.PartitionPath{}, opts)` lists
+  every snapshot. It encodes as text (and therefore in JSON) as its string,
+  and decoding validates it.
 - `PartitionListOptions.Prefix` is a raw path prefix (`day=2026-10` matches
   `day=2026-10-18`) and requires a partitioned dataset (otherwise
   `ErrPartitionPrefixNotSupported` is returned). It must be a canonical
@@ -942,7 +948,7 @@ if errors.Is(err, lode.ErrNoSnapshots) {
 | `ErrNoSnapshots` | The dataset or Volume has no committed snapshots | Writer handles, Volume |
 | `ErrNoManifests` | Storage has objects but no valid manifests | `ListDatasets` |
 | `ErrPathExists` | A write to an existing path (a violation of immutability) | Storage |
-| `ErrInvalidPath` | The key escapes the root or is empty, the prefix is not canonical, or the `ReadRange` bounds are invalid | Storage, listing |
+| `ErrInvalidPath` | The key escapes the root or is empty, the prefix or partition path is not canonical, or the `ReadRange` bounds are invalid | Storage, listing, `ParsePartitionPath` |
 | `ErrInvalidArgument` | A value supplied by the caller cannot be used (a `nil` factory, an invalid dataset ID or path name, metadata that is not a JSON object, an invalid offset, and so on) | Roots, handles, Volume |
 | `ErrDatasetsNotModeled` | Flat paths do not support dataset enumeration | `ListDatasets` |
 | `ErrPartitionPrefixNotSupported` | `Prefix` was specified on a dataset without partitions | `ListPartitions` |

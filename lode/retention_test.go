@@ -1481,14 +1481,14 @@ func TestEnumeration_ToleratesDeletion(t *testing.T) {
 		}
 
 		vanish()
-		refs, err := ds.ListManifests(t.Context(), "", ManifestListOptions{})
+		refs, err := ds.ListManifests(t.Context(), PartitionPath{}, ManifestListOptions{})
 		if err != nil || len(refs) != 1 || refs[0].ID != kept.ID {
 			t.Errorf("ListManifests = %v, %v; want only %s", refs, err, kept.ID)
 		}
 
 		vanish()
 		parts, err := ds.ListPartitions(t.Context(), PartitionListOptions{})
-		if err != nil || len(parts) != 1 || parts[0].Path != "run_id=b/event_type=x" {
+		if err != nil || len(parts) != 1 || parts[0].Path.String() != "run_id=b/event_type=x" {
 			t.Errorf("ListPartitions = %v, %v; want only run_id=b", parts, err)
 		}
 	})

@@ -1,8 +1,12 @@
 package lode
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
+	"io"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -32,7 +36,7 @@ func writeHiveDays(t *testing.T, days ...string) *testReader {
 func refPaths(refs []PartitionRef) []string {
 	out := make([]string, 0, len(refs))
 	for _, r := range refs {
-		out = append(out, r.Path)
+		out = append(out, r.Path.String())
 	}
 	return out
 }
@@ -59,7 +63,7 @@ func TestView_ListPartitions_Order(t *testing.T) {
 		reader := writeHiveDays(t, "2024-01-15", "2024-01-16", "2024-01-17")
 
 		var seen []string
-		cursor := ""
+		var cursor PartitionPath
 		for range 4 { // one more iteration than pages, to hit the empty tail
 			page, err := reader.ListPartitions(t.Context(), "test-ds", PartitionListOptions{Limit: 1, StartAfter: cursor})
 			if err != nil {
@@ -71,7 +75,7 @@ func TestView_ListPartitions_Order(t *testing.T) {
 			if len(page) != 1 {
 				t.Fatalf("page size = %d, want 1", len(page))
 			}
-			seen = append(seen, page[0].Path)
+			seen = append(seen, page[0].Path.String())
 			cursor = page[0].Path
 		}
 		want := []string{"day=2024-01-15", "day=2024-01-16", "day=2024-01-17"}
@@ -85,7 +89,7 @@ func TestView_ListPartitions_Order(t *testing.T) {
 	t.Run("start after exclusive", func(t *testing.T) {
 		reader := writeHiveDays(t, "2024-01-15", "2024-01-17")
 
-		got, err := reader.ListPartitions(t.Context(), "test-ds", PartitionListOptions{StartAfter: "day=2024-01-15"})
+		got, err := reader.ListPartitions(t.Context(), "test-ds", PartitionListOptions{StartAfter: partitionPath(t, "day=2024-01-15")})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -93,7 +97,7 @@ func TestView_ListPartitions_Order(t *testing.T) {
 			t.Fatalf("after exact cursor: %v", refPaths(got))
 		}
 
-		got, err = reader.ListPartitions(t.Context(), "test-ds", PartitionListOptions{StartAfter: "day=2024-01-16"})
+		got, err = reader.ListPartitions(t.Context(), "test-ds", PartitionListOptions{StartAfter: partitionPath(t, "day=2024-01-16")})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -274,8 +278,8 @@ func TestView_ListManifests_Order(t *testing.T) {
 				t.Fatal(err)
 			}
 			want := []ManifestRef{
-				{ID: snapA.ID, Partition: "day=2024-01-10"},
-				{ID: snapB.ID, Partition: "day=2024-01-15"},
+				{ID: snapA.ID, Partition: partitionPath(t, "day=2024-01-10")},
+				{ID: snapB.ID, Partition: partitionPath(t, "day=2024-01-15")},
 			}
 			if len(refs) != len(want) {
 				t.Fatalf("refs = %v, want %v", refs, want)
@@ -357,7 +361,7 @@ func TestView_ListManifests_Order(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			want := ManifestRef{ID: snap.ID, Partition: "day=a"}
+			want := ManifestRef{ID: snap.ID, Partition: partitionPath(t, "day=a")}
 			if len(refs) != 1 || refs[0] != want {
 				t.Fatalf("refs = %v, want [%v]", refs, want)
 			}
@@ -501,4 +505,102 @@ func TestView_ListDatasets_Order(t *testing.T) {
 			t.Errorf("StartAfter ds-ab: got %v, want [ds-b ds-c]", got)
 		}
 	})
+}
+
+// partitionPath parses a partition path that the test states literally.
+func partitionPath(t *testing.T, s string) PartitionPath {
+	t.Helper()
+	p, err := ParsePartitionPath(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func TestPartitionPath_Text(t *testing.T) {
+	opts := PartitionListOptions{StartAfter: partitionPath(t, "day=2024-01-15")}
+	data, err := json.Marshal(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back PartitionListOptions
+	if err := json.Unmarshal(data, &back); err != nil {
+		t.Fatal(err)
+	}
+	if back.StartAfter != opts.StartAfter {
+		t.Errorf("round trip = %q, want %q (encoded %s)", back.StartAfter, opts.StartAfter, data)
+	}
+	var p PartitionPath
+	if err := p.UnmarshalText([]byte("a/../b")); !errors.Is(err, ErrInvalidPath) {
+		t.Errorf("UnmarshalText of a noncanonical path = %v, want ErrInvalidPath", err)
+	}
+}
+
+func TestView_ListPartitions_RejectsNoncanonicalPartitions(t *testing.T) {
+	store := NewMemory()
+	ds, err := Open(Use(store)).Records(t.Context(), "test-ds", JSONL[D](), hive("day"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ds.Write(t.Context(), R(D{"day": "a"}), nil); err != nil {
+		t.Fatal(err)
+	}
+	keys, err := store.List(t.Context(), "datasets/test-ds/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Every manifest copy names its data file under a partition whose segment
+	// contains a backslash, which ParsePartitionPath refuses.
+	for _, k := range keys {
+		if strings.HasSuffix(k, "/manifest.json") {
+			rewriteObject(t, store, k, func(s string) string { return strings.ReplaceAll(s, "day=a/", `day=a\\b/`) })
+		}
+	}
+	_, err = ds.ListPartitions(t.Context(), PartitionListOptions{})
+	if !errors.Is(err, ErrManifestInvalid) || !strings.Contains(err.Error(), "not a canonical path") {
+		t.Errorf("ListPartitions = %v, want ErrManifestInvalid for the noncanonical partition", err)
+	}
+}
+
+// rewriteObject replaces the object at key with edit applied to its
+// content, as corruption outside Lode would.
+func rewriteObject(t *testing.T, store Store, key string, edit func(string) string) {
+	t.Helper()
+	rc, err := store.Get(t.Context(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := io.ReadAll(rc)
+	_ = rc.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Delete(t.Context(), key); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Put(t.Context(), key, bytes.NewReader([]byte(edit(string(data))))); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestParsePartitionPath(t *testing.T) {
+	valid := []string{"", "day=2024-01-15", "source=a/day=d1", "a"}
+	for _, s := range valid {
+		p, err := ParsePartitionPath(s)
+		if err != nil {
+			t.Errorf("ParsePartitionPath(%q) = %v, want nil", s, err)
+		}
+		if p.String() != s {
+			t.Errorf("ParsePartitionPath(%q).String() = %q", s, p.String())
+		}
+	}
+	invalid := []string{"/day=a", "day=a/", "a//b", ".", "a/./b", "..", "a/../b", `a\b`}
+	for _, s := range invalid {
+		if _, err := ParsePartitionPath(s); !errors.Is(err, ErrInvalidPath) {
+			t.Errorf("ParsePartitionPath(%q) = %v, want ErrInvalidPath", s, err)
+		}
+	}
+	if p, _ := ParsePartitionPath(""); p != (PartitionPath{}) {
+		t.Error("the empty path is not the zero value")
+	}
 }

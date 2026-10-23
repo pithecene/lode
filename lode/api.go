@@ -386,7 +386,7 @@ type SnapshotReader interface {
 	// ListManifests returns committed manifests (snapshots), within a
 	// partition when one is given. Returns ErrNotFound if the dataset holds
 	// no manifest.
-	ListManifests(ctx context.Context, partition string, opts ManifestListOptions) ([]ManifestRef, error)
+	ListManifests(ctx context.Context, partition PartitionPath, opts ManifestListOptions) ([]ManifestRef, error)
 
 	// GetManifest loads and validates the manifest a reference names.
 	GetManifest(ctx context.Context, ref ManifestRef) (*Manifest, error)
@@ -768,14 +768,22 @@ type ManifestRef struct {
 
 	// Partition is the partition path where this manifest resides.
 	// For partition-first layouts (e.g., HiveLayout), this is populated during
-	// discovery. Empty for segment-first layouts (e.g., DefaultLayout).
-	Partition string
+	// discovery. The zero value for segment-first layouts (e.g., DefaultLayout).
+	Partition PartitionPath
 }
 
 // PartitionRef references a partition within a dataset.
 type PartitionRef struct {
 	// Path is the partition path (e.g., "day=2024-01-01/source=foo").
-	Path string
+	Path PartitionPath
+}
+
+// PartitionPath is the path of a partition within a dataset, such as
+// "day=2024-01-01/source=foo". Only ParsePartitionPath and the listings
+// build one, so every value is a canonical relative path. The zero value is
+// the dataset root: no partition.
+type PartitionPath struct {
+	path string
 }
 
 // ObjectRef references a data object within a dataset manifest.
@@ -824,8 +832,8 @@ type PartitionListOptions struct {
 
 	// StartAfter resumes listing after this partition path (exclusive).
 	// The Path of the last result from a previous call is a valid cursor.
-	// Empty disables the cursor.
-	StartAfter string
+	// The zero value disables the cursor.
+	StartAfter PartitionPath
 }
 
 // ManifestListOptions controls manifest listing.
