@@ -33,7 +33,7 @@ func (f *failingReader) Read(p []byte) (int, error) {
 	return 0, errReaderBoom
 }
 
-func assertPutAllOrNothing(t *testing.T, store Store) {
+func assertPutAllOrNothing(t *testing.T, store RangeStore) {
 	t.Helper()
 	ctx := t.Context()
 

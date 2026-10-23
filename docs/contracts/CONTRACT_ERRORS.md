@@ -130,8 +130,6 @@ These errors indicate failures in the storage layer.
   - an offset and length whose sum overflows.
 - `ReaderAt` on a handle or view returns `ErrRangeReadNotSupported` for a
   store that does not implement `RangeReader`.
-- `volume.New` returns `ErrInvalidArgument` for a store that does not
-  implement `RangeReader`.
 
 **ErrPathExists Detection by Put Path** (see CONTRACT_STORAGE.md):
 

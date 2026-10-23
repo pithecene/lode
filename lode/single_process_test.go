@@ -20,21 +20,15 @@ func TestSingleProcess_NilStore(t *testing.T) {
 	}
 }
 
-// rangeStore is a store without CompareAndSwap that reads ranges.
-type rangeStore interface {
-	testutil.Store
-	RangeReader
-}
-
 // pausedDelete deletes a path and then waits until release is closed,
 // holding a replacement between its Delete and its Put.
 type pausedDelete struct {
-	rangeStore
+	testutil.Store
 	deleted, release chan struct{}
 }
 
 func (p *pausedDelete) Delete(ctx context.Context, path string) error {
-	if err := p.rangeStore.Delete(ctx, path); err != nil {
+	if err := p.Store.Delete(ctx, path); err != nil {
 		return err
 	}
 	close(p.deleted)
@@ -66,14 +60,22 @@ var replacementReads = []struct {
 		return fmt.Sprintf("%s %v", strings.Join(paths, ","), err)
 	}},
 	{"ReadRange", func(ctx context.Context, s Store) string {
-		data, err := s.(RangeReader).ReadRange(ctx, "ptr/latest", 0, 6) //nolint:forcetypeassert // SingleProcess over a memory store reads ranges
+		ranges, ok := s.(RangeReader)
+		if !ok {
+			return "the store does not read ranges"
+		}
+		data, err := ranges.ReadRange(ctx, "ptr/latest", 0, 6)
 		if err != nil {
 			return err.Error()
 		}
 		return string(data)
 	}},
 	{"ReaderAt", func(ctx context.Context, s Store) string {
-		ra, err := s.(RangeReader).ReaderAt(ctx, "ptr/latest") //nolint:forcetypeassert // SingleProcess over a memory store reads ranges
+		ranges, ok := s.(RangeReader)
+		if !ok {
+			return "the store does not read ranges"
+		}
+		ra, err := ranges.ReaderAt(ctx, "ptr/latest")
 		if err != nil {
 			return err.Error()
 		}
@@ -97,8 +99,8 @@ func TestSingleProcess_ReadsWaitForReplacement(t *testing.T) {
 		t.Run(r.name, func(t *testing.T) {
 			ctx := t.Context()
 			inner := &pausedDelete{
-				rangeStore: testutil.WithoutCAS(NewMemory()).(rangeStore), //nolint:forcetypeassert // WithoutCAS keeps range reads
-				deleted:    make(chan struct{}), release: make(chan struct{}),
+				Store:   testutil.WithoutCAS(NewMemory()),
+				deleted: make(chan struct{}), release: make(chan struct{}),
 			}
 			store := SingleProcess(inner)
 			cw := store.(ConditionalWriter)

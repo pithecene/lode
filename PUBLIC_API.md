@@ -139,7 +139,8 @@ snapshot's manifest names.
 
 `volume.New(id, factory, totalLength, opts...)` creates a sparse byte
 space, addressable by range, with manifest-driven commit semantics. It
-takes a `lode.Factory[lode.Store]`.
+takes a `lode.Factory[lode.RangeStore]`, so a store without range reads does
+not compile there.
 
 A Dataset constructs complete objects before committing; a Volume commits
 data incrementally as sparse byte ranges. A Volume suits a byte object of
@@ -231,7 +232,8 @@ includes a curated set of components:
 - `s3.Factory(client, config)`: S3-compatible storage (see below)
 
 The stores themselves: `NewFS(root)`, `NewMemory()`, `s3.New(client,
-config)`, and `SingleProcess(objectStore)`.
+config)`, and `SingleProcess(objectStore)`. `FS`, `Memory`, and `s3.Factory`
+are factories of `RangeStore`, and `NewFS` and `NewMemory` return one.
 
 **Layouts:**
 - `Unpartitioned()`: no partitions (the default)
@@ -278,9 +280,10 @@ config)`, and `SingleProcess(objectStore)`.
   column
 
 **Range reads:**
-- `RangeReader`: the optional range-read capability of a store, which the
-  stores of `FS`, `Memory`, and `s3.Factory` implement; a store that cannot
-  read ranges does not implement it
+- `RangeReader`: the optional range-read capability of a store; a store
+  that cannot read ranges does not implement it
+- `RangeStore`: a `Store` that is also a `RangeReader`, which the built-in
+  stores and the S3 adapter are
 - `RangeReader.ReadRange(ctx, path, offset, length)`: reads a byte range
   from an object
 - `RangeReader.ReaderAt(ctx, path)`: returns an `io.ReaderAt` for random
@@ -288,8 +291,8 @@ config)`, and `SingleProcess(objectStore)`.
 - `ReaderAt(ctx, obj)` on a dataset handle or view: returns an
   `io.ReaderAt` for a data object, or `ErrRangeReadNotSupported` when the
   store does not implement `RangeReader`
-- `volume.New` returns `ErrInvalidArgument` for a store that does not
-  implement `RangeReader`
+- `volume.New` takes a factory of `RangeStore`, so the requirement is
+  checked when the program compiles
 
 Range reads provide efficient access to columnar formats (Parquet footers),
 block-indexed logs, and partial previews of artifacts.

@@ -22,18 +22,14 @@ import (
 // under controlled failure conditions without relying on timing.
 
 // Store is the method set of lode.Store, restated so this package does not
-// import lode (lode's own tests use it). Any lode.Store satisfies it, and a
-// *FaultStore satisfies lode.Store and lode.RangeReader.
+// import lode (lode's own tests use it). Any lode.RangeStore satisfies it,
+// and a *FaultStore satisfies lode.RangeStore.
 type Store interface {
 	Put(ctx context.Context, path string, r io.Reader) error
 	Get(ctx context.Context, path string) (io.ReadCloser, error)
 	Exists(ctx context.Context, path string) (bool, error)
 	List(ctx context.Context, prefix string) ([]string, error)
 	Delete(ctx context.Context, path string) error
-}
-
-// rangeReader mirrors lode.RangeReader.
-type rangeReader interface {
 	ReadRange(ctx context.Context, path string, offset, length int64) ([]byte, error)
 	ReaderAt(ctx context.Context, path string) (io.ReaderAt, error)
 }
@@ -45,8 +41,7 @@ type conditionalWriter interface {
 
 // FaultStore wraps a Store with fault injection capabilities.
 type FaultStore struct {
-	inner  Store
-	ranges rangeReader // inner's range reads; nil if it has none
+	inner Store
 
 	mu sync.Mutex
 
@@ -86,11 +81,8 @@ type FaultStore struct {
 }
 
 // NewFaultStore creates a fault-injection wrapper around the given store.
-// Its ReadRange and ReaderAt require an inner store that reads ranges, as
-// every built-in store does.
 func NewFaultStore(inner Store) *FaultStore {
-	ranges, _ := inner.(rangeReader)
-	return &FaultStore{inner: inner, ranges: ranges}
+	return &FaultStore{inner: inner}
 }
 
 // --- Fault injection setters ---
@@ -354,12 +346,12 @@ func (f *FaultStore) Delete(ctx context.Context, path string) error {
 
 // ReadRange forwards to the inner store.
 func (f *FaultStore) ReadRange(ctx context.Context, path string, offset, length int64) ([]byte, error) {
-	return f.ranges.ReadRange(ctx, path, offset, length)
+	return f.inner.ReadRange(ctx, path, offset, length)
 }
 
 // ReaderAt forwards to the inner store.
 func (f *FaultStore) ReaderAt(ctx context.Context, path string) (io.ReaderAt, error) {
-	return f.ranges.ReaderAt(ctx, path)
+	return f.inner.ReaderAt(ctx, path)
 }
 
 // CompareAndSwap forwards to the inner store's ConditionalWriter implementation

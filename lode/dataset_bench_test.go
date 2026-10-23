@@ -14,7 +14,7 @@ import (
 // costs 50-100ms, making O(n) store scans per write visible as wall-clock
 // degradation.
 type latencyStore struct {
-	inner   Store
+	inner   RangeStore
 	latency time.Duration
 }
 
@@ -41,11 +41,11 @@ func (s *latencyStore) Delete(ctx context.Context, path string) error {
 }
 
 func (s *latencyStore) ReadRange(ctx context.Context, path string, offset, length int64) ([]byte, error) {
-	return s.inner.(RangeReader).ReadRange(ctx, path, offset, length) //nolint:forcetypeassert // the benchmark wraps a memory store
+	return s.inner.ReadRange(ctx, path, offset, length)
 }
 
 func (s *latencyStore) ReaderAt(ctx context.Context, path string) (io.ReaderAt, error) {
-	return s.inner.(RangeReader).ReaderAt(ctx, path) //nolint:forcetypeassert // the benchmark wraps a memory store
+	return s.inner.ReaderAt(ctx, path)
 }
 
 // CompareAndSwap forwards to the inner store's ConditionalWriter implementation.

@@ -85,7 +85,7 @@ const finalGrace = time.Nanosecond
 
 // verify settles the head with one clean commit, so that the pointer names
 // a committed snapshot, and then runs every check, recording each failure.
-func verify(ctx context.Context, cfg Config, store lode.Store, ledger *Ledger) int {
+func verify(ctx context.Context, cfg Config, store lode.RangeStore, ledger *Ledger) int {
 	ds, err := openDataset(ctx, cfg, store)
 	if err != nil {
 		ledger.violate("verify", "open: %v", err)

@@ -227,7 +227,7 @@ type Volume interface {
 }
 
 // New creates a volume with a fixed total length.
-func New(id ID, storeFactory lode.Factory[lode.Store], totalLength int64, opts ...Option) (Volume, error)
+func New(id ID, storeFactory lode.Factory[lode.RangeStore], totalLength int64, opts ...Option) (Volume, error)
 ```
 
 ### Volume Options
@@ -358,11 +358,11 @@ per retry, before step 1. If all retries are exhausted,
 
 No new type of storage engine is required.
 
-The capabilities of a `Store` that implements `RangeReader` are sufficient:
+The capabilities of a `lode.RangeStore` are sufficient:
 - immutable object writes;
 - `List`, `Exists`, `Get`, and `Delete`;
 - range reads (`RangeReader`, CONTRACT_STORAGE §Range Reads), which `New`
-  checks once and refuses with `ErrInvalidArgument` when absent; and
+  requires through its parameter type; and
 - `CompareAndSwap` (CONTRACT_STORAGE §ConditionalWriter Capability).
 
 Adapters MUST preserve the semantics under which the manifest defines what

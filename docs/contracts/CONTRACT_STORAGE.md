@@ -136,9 +136,17 @@ Adapters MUST document:
 ### Range Reads (RangeReader)
 
 `ReadRange` and `ReaderAt` form the optional `RangeReader` interface
-(V1_API_DECISIONS D5). The built-in stores and the S3 adapter implement it.
-An adapter that cannot read ranges MUST NOT implement it, rather than
-implement methods that only return `ErrRangeReadNotSupported`.
+(V1_API_DECISIONS D5). `RangeStore` is a `Store` that implements it; the
+built-in stores and the S3 adapter are `RangeStore`s, and their
+constructors and factories say so in their types. An adapter that cannot
+read ranges MUST NOT implement it, rather than implement methods that only
+return `ErrRangeReadNotSupported`.
+
+Where a store's capability is static, it is expressed in its type, and a
+requirement for range reads is stated as a `RangeStore` parameter. Only
+code that accepts an arbitrary `Store` discovers the capability when it
+runs, and it MUST do so with a checked type assertion that reports
+`ErrRangeReadNotSupported`, never one that can panic.
 
 ### ReadRange
 - MUST return bytes from `[offset, offset+length)` for the given path.

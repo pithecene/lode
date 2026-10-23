@@ -47,13 +47,13 @@ func writeStream(ctx context.Context, ds lode.Records[any], rows []any) (*lode.D
 // openHandle opens one handle on the run's dataset for a goroutine, as a
 // separate process would, with its own in-memory head and, when faults are
 // enabled, its own faulty store.
-func openHandle(ctx context.Context, cfg Config, base lode.Store, rng *rand.Rand) (lode.Records[any], error) {
+func openHandle(ctx context.Context, cfg Config, base lode.RangeStore, rng *rand.Rand) (lode.Records[any], error) {
 	return openDataset(ctx, cfg, cfg.storeFor(base, rng))
 }
 
 // openDataset opens a handle on the run's dataset over store. Opening reads
 // the head, so an injected fault can fail it.
-func openDataset(ctx context.Context, cfg Config, store lode.Store) (lode.Records[any], error) {
+func openDataset(ctx context.Context, cfg Config, store lode.RangeStore) (lode.Records[any], error) {
 	if err := requireKnown("layout", cfg.Layout, LayoutNames()); err != nil {
 		return nil, err
 	}
@@ -67,7 +67,7 @@ func openDataset(ctx context.Context, cfg Config, store lode.Store) (lode.Record
 // reopen opens a goroutine's handle when it has none. An injected fault, or
 // the end of the run, leaves it without one for the next iteration; any
 // other failure is a violation, and reopen reports false.
-func reopen(ctx context.Context, cfg Config, store lode.Store, rng *rand.Rand, ds *lode.Records[any], who string, ledger *Ledger) bool {
+func reopen(ctx context.Context, cfg Config, store lode.RangeStore, rng *rand.Rand, ds *lode.Records[any], who string, ledger *Ledger) bool {
 	if *ds != nil {
 		return true
 	}
@@ -92,7 +92,7 @@ func reopen(ctx context.Context, cfg Config, store lode.Store, rng *rand.Rand, d
 // leave the head to the largest-ID fallback (CONTRACT_CORE §Head Pointer).
 // A conflict that outlasts the retries is expected under contention; any
 // other error is a violation.
-func writer(ctx context.Context, cfg Config, store lode.Store, index int, until time.Time, ledger *Ledger) {
+func writer(ctx context.Context, cfg Config, store lode.RangeStore, index int, until time.Time, ledger *Ledger) {
 	rng := rand.New(rand.NewPCG(cfg.Seed, uint64(index)+1)) //nolint:gosec // reproducible test randomness, not security
 	writes := layouts[cfg.Layout].writes
 	var ds lode.Records[any]
@@ -125,7 +125,7 @@ func writer(ctx context.Context, cfg Config, store lode.Store, index int, until 
 // reader repeatedly reads the head and a random acknowledged snapshot until
 // ctx ends. A head must be readable in full, and an acknowledged snapshot
 // must hold exactly the rows its writer committed.
-func reader(ctx context.Context, cfg Config, store lode.Store, index int, ledger *Ledger) {
+func reader(ctx context.Context, cfg Config, store lode.RangeStore, index int, ledger *Ledger) {
 	rng := rand.New(rand.NewPCG(cfg.Seed, uint64(1000+index))) //nolint:gosec // reproducible test randomness, not security
 	var ds lode.Records[any]
 	for ctx.Err() == nil {

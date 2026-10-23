@@ -15,7 +15,7 @@ import (
 func TestErrInvalidArgument_Classification(t *testing.T) {
 	ctx := t.Context()
 	factory := memoryFactoryFrom(lode.NewMemory())
-	nilStore := func() (lode.Store, error) { return nil, nil } //nolint:nilnil // the misbehaving factory under test
+	nilStore := func() (lode.RangeStore, error) { return nil, nil } //nolint:nilnil // the misbehaving factory under test
 
 	vol, err := New("vol", factory, 16)
 	if err != nil {
@@ -38,10 +38,6 @@ func TestErrInvalidArgument_Classification(t *testing.T) {
 		{"New nil factory", func() error { _, err := New("v", nil, 1); return err }, "store factory"},
 		{"New empty ID", func() error { _, err := New("", factory, 1); return err }, "volume ID"},
 		{"New non-positive length", func() error { _, err := New("v", factory, 0); return err }, "total length"},
-		{"New store without range reads", func() error {
-			_, err := New("v", memoryFactoryFrom(noRanges{lode.NewMemory()}), 1)
-			return err
-		}, "RangeReader"},
 		{"New nil store", func() error { _, err := New("v", nilStore, 1); return err }, "nil store"},
 		{"WithRetryCount negative", func() error { _, err := New("v", factory, 1, WithRetryCount(-1)); return err }, "WithRetryCount: n must be non-negative"},
 		{"WithRetryBaseDelay zero", func() error { _, err := New("v", factory, 1, WithRetryBaseDelay(0)); return err }, "WithRetryBaseDelay: delay must be positive"},
@@ -93,7 +89,7 @@ func TestErrInvalidArgument_Classification(t *testing.T) {
 // even when the factory would fail, and the factory is not called.
 func TestErrInvalidArgument_BeforeStoreFactory(t *testing.T) {
 	calls := 0
-	failing := func() (lode.Store, error) { calls++; return nil, errors.New("factory down") }
+	failing := func() (lode.RangeStore, error) { calls++; return nil, errors.New("factory down") }
 
 	_, err := New("v", failing, 1, WithRetryCount(-1))
 	if !errors.Is(err, lode.ErrInvalidArgument) {
