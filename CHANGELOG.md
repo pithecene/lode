@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Breaking Changes
 
 - **Every writer must share the dataset's settings**: before its first commit, a writer compares its codec and the codec's description, compressor, checksum, partitioner and Hive keys, and path names with those the dataset's head manifest records, and a writer whose settings differ is rejected with the new `ErrSettingsMismatch`. A dataset whose manifests predate this release has its Hive keys verified against its partition paths on the first write.
-- **The construction and record surface is replaced** (`V1_API_DECISIONS.md` D11): a root opens datasets, records are typed by their codec, blobs have their own handle, and a reader opens a view that takes the layout, codec name, and compressor from the dataset's manifests. Persisted data is unchanged: a dataset written by an earlier release opens under the default path names.
+- **The construction and record surface is replaced**: a root opens datasets, records are typed by their codec, blobs have their own handle, and a reader opens a view that takes the layout, codec name, and compressor from the dataset's manifests. Persisted data is unchanged: a dataset written by an earlier release opens under the default path names.
 
   | Before | After |
   |---|---|
@@ -37,19 +37,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   | `ErrCodecConfigured`, `ErrOptionNotValidForDataset`, `ErrOptionNotValidForDatasetReader` | removed: these misuses no longer compile |
 - **`Codec` gains `Describe`**: a custom codec returns its configuration in a canonical form, or `""` when it has none.
 - **Volume takes the new factory type**: `volume.New` takes a `lode.Factory[lode.RangeStore]`, and Volume metadata is `volume.Metadata`.
-- **Range reads are an optional capability** (`V1_API_DECISIONS.md` D5): `ReadRange` and `ReaderAt` move from `ObjectStore` to the new `RangeReader` interface. An adapter that cannot read ranges omits them instead of returning `ErrRangeReadNotSupported`, and a handle's `ReaderAt` returns that error for such a store. `RangeStore` is a `Store` that reads ranges: `NewFS` and `NewMemory` return one, `FS`, `Memory`, and `s3.Factory` are factories of one, and `volume.New` takes one, so a store without range reads does not compile there. Code that called `ReadRange` on a `Store` it built holds a `RangeStore` instead.
-- **Partition paths are typed** (`V1_API_DECISIONS.md` D4): the `ListManifests` parameter, `PartitionRef.Path`, `ManifestRef.Partition`, and `PartitionListOptions.StartAfter` are a `PartitionPath`, built with `ParsePartitionPath` (which returns `ErrInvalidPath` for a path that is not canonical) or taken from a listing. Pass `lode.PartitionPath{}` where `""` was passed, and call `String()` where a string is needed. A `PartitionPath` encodes as text, and therefore in JSON, as its string, and a listing reports a manifest that names a noncanonical partition as `ErrManifestInvalid`. `PartitionListOptions.Prefix` remains a string.
-- **The S3 test double is no longer exported** (`V1_API_DECISIONS.md` D7): `s3.MockS3Client` and `s3.NewMockS3Client` are compiled only into the adapter's tests. A test that needs an in-memory S3 can copy the double or target an emulator such as LocalStack or MinIO.
+- **Range reads are an optional capability**: `ReadRange` and `ReaderAt` move from `ObjectStore` to the new `RangeReader` interface. An adapter that cannot read ranges omits them instead of returning `ErrRangeReadNotSupported`, and a handle's `ReaderAt` returns that error for such a store. `RangeStore` is a `Store` that reads ranges: `NewFS` and `NewMemory` return one, `FS`, `Memory`, and `s3.Factory` are factories of one, and `volume.New` takes one, so a store without range reads does not compile there. Code that called `ReadRange` on a `Store` it built holds a `RangeStore` instead.
+- **Partition paths are typed**: the `ListManifests` parameter, `PartitionRef.Path`, `ManifestRef.Partition`, and `PartitionListOptions.StartAfter` are a `PartitionPath`, built with `ParsePartitionPath` (which returns `ErrInvalidPath` for a path that is not canonical) or taken from a listing. Pass `lode.PartitionPath{}` where `""` was passed, and call `String()` where a string is needed. A `PartitionPath` encodes as text, and therefore in JSON, as its string, and a listing reports a manifest that names a noncanonical partition as `ErrManifestInvalid`. `PartitionListOptions.Prefix` remains a string.
+- **The S3 test double is no longer exported**: `s3.MockS3Client` and `s3.NewMockS3Client` are compiled only into the adapter's tests. A test that needs an in-memory S3 can copy the double or target an emulator such as LocalStack or MinIO.
 - **A dataset ID must be one path segment**: an ID that is empty, `.` or `..`, contains `/` or a backslash, or begins with `.lode-tmp-` is rejected with `ErrInvalidArgument`. `=` remains permitted.
 
 ### Added
 
-- Manifest format 1.1.0 records `codec_description`, `partition_keys`, and `paths`, so that every setting a writer must share is persisted.
-- Root path options name the directories and files within a dataset's paths: `WithDatasetsDir`, `WithSnapshotsDir`, `WithPartitionsDir`, `WithSegmentsDir`, `WithManifestFile`, `WithDataDir`, `WithExpiredDir`, `WithStagedDir`, and `WithFlatPaths`. A root without them uses the default names.
-- `s3.Factory` returns the factory of an S3 store, for `Open`.
-- `ErrReadOnly`: a write through a read-only root's store.
-- Opening a writer checks its settings against the dataset's head, so a misconfigured writer fails when it opens rather than at its first commit.
-- A dataset's first commit stages its manifest at `<dataset dir>/staged/<snapshot_id>.json` before it advances the pointer and removes it afterward, so that a writer can check its settings against the commit while it is pending.
+- **Manifest format 1.1.0**: the manifest records `codec_description`, `partition_keys`, and `paths`, so that every setting a writer must share is persisted.
+- **Path names**: root options name the directories and files within a dataset's paths: `WithDatasetsDir`, `WithSnapshotsDir`, `WithPartitionsDir`, `WithSegmentsDir`, `WithManifestFile`, `WithDataDir`, `WithExpiredDir`, `WithStagedDir`, and `WithFlatPaths`. A root without them uses the default names.
+- **S3 factory**: `s3.Factory` returns the factory of an S3 store, for `Open`.
+- **`ErrReadOnly`**: reports a write through a read-only root's store.
+- **Settings checked at open**: opening a writer checks its settings against the dataset's head, so a misconfigured writer fails when it opens rather than at its first commit.
+- **Staged first manifest**: a dataset's first commit stages its manifest at `<dataset dir>/staged/<snapshot_id>.json` before it advances the pointer and removes it afterward, so that a writer can check its settings against the commit while it is pending.
 
 ---
 
@@ -61,7 +61,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`Store.Get` must return `ErrNotFound` for a missing path**: Lode now distinguishes an absent object from a failed read. The bundled adapters already comply.
 - **Go 1.27.3 is the minimum Go version**: Go 1.25 no longer receives security fixes.
 - **The module path is `github.com/pithecene/lode`**: it replaces `github.com/pithecene-io/lode`, under which releases up to v0.10.0 remain available.
-- **Volume moved to the experimental package `lode/volume`**: Volume is outside the v1.0 compatibility promise (`V1_API_DECISIONS.md` D9), and its names drop the prefix that the package name supplies.
+- **Volume moved to the experimental package `lode/volume`**: Volume is outside the v1.0 compatibility promise, and its names drop the prefix that the package name supplies.
 
   | Before (`lode`) | After (`volume`) |
   |---|---|
