@@ -61,6 +61,14 @@ var sentinelSets = map[string]string{
 	"internal/history.Errors": "each container passes its sentinels to the shared history",
 }
 
+// lodeBuilders are the standard-library functions that build an error in
+// Lode's own code rather than report one from outside it.
+var lodeBuilders = map[string]string{
+	"fmt.Errorf":  "its message is checked where it is called",
+	"errors.New":  "its message is checked where it is called",
+	"errors.Join": "it joins errors that each carry their own prefix",
+}
+
 // platforms are the operating systems whose files are checked. Checking
 // each on every runner covers every build-constrained file.
 var platforms = []string{"linux", "windows", "plan9"}
@@ -584,6 +592,11 @@ func (a *analysis) selectorOrigin(e *ast.SelectorExpr) origin {
 }
 
 func (a *analysis) callOrigin(call *ast.CallExpr) origin {
+	// An error built here is checked as its own construction and so already
+	// carries its prefix; joining errors adds none of its own.
+	if _, built := lodeBuilders[a.constructor(call)]; built {
+		return fromLode
+	}
 	obj := a.callee(call.Fun)
 	if obj == nil || obj.Pkg() == nil || a.standsOutside(call.Fun) {
 		return fromOutside

@@ -42,5 +42,8 @@ func Cases(name string, errs Errors) []error {
 	_, statErr := os.Stat(name)
 	copied := statErr
 	stat := fmt.Errorf("stat: %w", copied) // violation
-	return []error{errPrefixed, errUnknownPrefix, entered, unnamed, created, bare, classified, unclassified, context, doubled, direct, lodeErr, unlisted, walked, stat}
+	built := fmt.Errorf("lode: built here")
+	rewrapped := fmt.Errorf("context: %w", built)
+	redoubled := fmt.Errorf("lode: context: %w", built) // violation
+	return []error{errPrefixed, errUnknownPrefix, entered, unnamed, created, bare, classified, unclassified, context, doubled, direct, lodeErr, unlisted, walked, stat, rewrapped, redoubled}
 }
