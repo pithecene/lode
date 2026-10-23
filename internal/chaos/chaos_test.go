@@ -42,6 +42,9 @@ func TestChaos(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if *flagWriters < 0 || *flagReaders < 0 {
+		t.Fatalf("chaos: -chaos.writers (%d) and -chaos.readers (%d) must not be negative", *flagWriters, *flagReaders)
+	}
 	if *flagVolume {
 		layouts = append(layouts, "volume")
 	}

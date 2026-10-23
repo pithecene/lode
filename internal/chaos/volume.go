@@ -73,7 +73,7 @@ func (r *run) volumeHandle(who string, rng *rand.Rand) handle[volume.Volume] {
 
 // volumeWriters are the Volume workload's committers.
 func (r *run) volumeWriters() []actor {
-	actors := make([]actor, 0, r.cfg.Writers)
+	var actors []actor
 	for i := range r.cfg.Writers {
 		rng := r.random(uint64(i) + 1)
 		actors = append(actors, &volumeWriter{

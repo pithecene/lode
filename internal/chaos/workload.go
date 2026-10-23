@@ -125,7 +125,7 @@ func (h *handle[H]) drop(err error) {
 // datasetCommitters are the Dataset workload's committers: the writers and,
 // when the run exercises retention, the janitor.
 func (r *run) datasetCommitters() []actor {
-	actors := make([]actor, 0, r.cfg.Writers+1)
+	var actors []actor
 	for i := range r.cfg.Writers {
 		actors = append(actors, r.newWriter(i))
 	}
@@ -191,7 +191,7 @@ func (w *writer) commit(ctx context.Context, ds lode.Records[any], seq int) {
 
 // readers are the Dataset workload's observers.
 func (r *run) readers() []actor {
-	actors := make([]actor, 0, r.cfg.Readers)
+	var actors []actor
 	for i := range r.cfg.Readers {
 		rng := r.random(uint64(1000 + i))
 		actors = append(actors, &reader{run: r, rng: rng, ds: r.datasetHandle(fmt.Sprintf("reader %d", i), rng)})
