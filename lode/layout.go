@@ -9,70 +9,6 @@ import (
 	"github.com/pithecene/lode/internal/storepath"
 )
 
-// layout is everything a dataset handle needs from one path grammar and its
-// partitioning: the root's path names and the dataset's Layout
-// (CONTRACT_LAYOUT.md). It is composed from one interface per concern, so a
-// consumer that needs only one concern holds only that one.
-type layout interface {
-	snapshotPaths
-	partitionPaths
-	tombstonePaths
-	stagedPaths
-	partitioning() partitionScheme
-}
-
-// snapshotPaths is where a dataset's snapshots live: the pointer, every
-// manifest copy and data object, and parsing those paths back.
-type snapshotPaths interface {
-	// snapshotsPrefix covers every manifest of the dataset.
-	snapshotsPrefix(dataset DatasetID) string
-	manifestPath(dataset DatasetID, snapshot DatasetSnapshotID) string
-	manifestPathInPartition(dataset DatasetID, snapshot DatasetSnapshotID, partition string) string
-	dataFilePath(dataset DatasetID, snapshot DatasetSnapshotID, partition, filename string) string
-	latestPointerPath(dataset DatasetID) string
-	// parse reads a path as a manifest or data object of this layout.
-	parse(p string) (snapshotPath, bool)
-	// manifest is parse restricted to manifest paths.
-	manifest(p string) (snapshotPath, bool)
-	// isObjectOf reports whether p is, in canonical form, an object of the
-	// given kind (manifest or data) of this snapshot of this dataset.
-	isObjectOf(dataset DatasetID, snapshot DatasetSnapshotID, kind pathKind, p string) bool
-}
-
-// partitionPaths is how partitions appear in paths; only meaningful when
-// supportsPartitions().
-type partitionPaths interface {
-	supportsPartitions() bool
-	snapshotsPrefixForPartition(dataset DatasetID, partition string) string
-	// partitionsPrefix returns the storage prefix covering every segment whose
-	// partition path starts with partitionPrefix (a raw string prefix, no
-	// key boundary implied).
-	partitionsPrefix(dataset DatasetID, partitionPrefix string) string
-	// extractPartitionPath is the partition of a manifest or data path, ""
-	// when it has none.
-	extractPartitionPath(filePath string) string
-}
-
-// stagedPaths is where a dataset's first commit stages its manifest before
-// it advances the pointer (CONTRACT_CORE §Head Pointer), the convention a
-// manifest records, and which objects under a dataset's directory belong
-// to this layout, so that a writer can detect a history persisted under
-// another layout (CONTRACT_WRITE_API §Settings).
-type stagedPaths interface {
-	stagedManifestPath(dataset DatasetID, snapshot DatasetSnapshotID) string
-	convention() ManifestPaths
-	datasetPrefix(dataset DatasetID) string
-	ownsObject(dataset DatasetID, p string) bool
-	manifestName() string
-}
-
-// tombstonePaths is where Dataset.Expire records an expired snapshot;
-// tombstonesPrefix lists every tombstone of a dataset.
-type tombstonePaths interface {
-	tombstonePath(dataset DatasetID, snapshot DatasetSnapshotID) string
-	tombstonesPrefix(dataset DatasetID) string
-}
-
 // latestFile names every dataset's head pointer. It is not configurable:
 // the pointer is where the writers of a dataset coordinate, and two roots
 // that named it differently would commit independent histories over shared
@@ -281,10 +217,13 @@ func (g pathGrammar) parse(p string) (sp snapshotPath, ok bool) {
 }
 
 // -----------------------------------------------------------------------------
-// The one layout implementation
+// The dataset layout
 // -----------------------------------------------------------------------------
 
-// pathLayout implements layout from a grammar and a partition scheme.
+// pathLayout is everything a dataset handle needs from its paths: one path
+// grammar, from the root's path names, and the dataset's partitioning
+// (CONTRACT_LAYOUT.md). It is the only layout: paths differ by data (the
+// grammar), not by type.
 type pathLayout struct {
 	grammar pathGrammar
 	part    partitionScheme

@@ -121,7 +121,7 @@ func (s selection) selects(id DatasetSnapshotID) bool {
 
 // listPrefix is what to list: the partition subtree when one is set (the
 // trailing "/" makes the match whole-segment), else every snapshot.
-func (s selection) listPrefix(l layout, dataset DatasetID) string {
+func (s selection) listPrefix(l *pathLayout, dataset DatasetID) string {
 	if s.partition == "" {
 		return l.snapshotsPrefix(dataset)
 	}
@@ -132,7 +132,7 @@ func (s selection) listPrefix(l layout, dataset DatasetID) string {
 // data files outside it (CONTRACT_RETENTION §Mixed Snapshots). Callers pass
 // only the snapshot's own data files: a foreign path is never deleted, so
 // it never decides.
-func (s selection) spansOutside(l layout, owned []FileRef) bool {
+func (s selection) spansOutside(l *pathLayout, owned []FileRef) bool {
 	if s.partition == "" {
 		return false
 	}

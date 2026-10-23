@@ -2693,7 +2693,7 @@ func TestDataset_LatestPointer(t *testing.T) {
 		// Verify pointer paths for all three layouts.
 		tests := []struct {
 			name         string
-			layout       layout
+			layout       *pathLayout
 			expectedPath string
 		}{
 			{

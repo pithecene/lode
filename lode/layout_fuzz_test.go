@@ -29,8 +29,8 @@ func flatNames() pathNames {
 
 // fuzzLayouts are the layouts the fuzz targets cover: each partitioning
 // under the default, flat, and custom names.
-func fuzzLayouts(testing.TB) map[string]layout {
-	return map[string]layout{
+func fuzzLayouts(testing.TB) map[string]*pathLayout {
+	return map[string]*pathLayout{
 		"default":     newPathLayout(defaultPathNames(), noopScheme),
 		"hive":        newPathLayout(defaultPathNames(), fuzzHive),
 		"flat":        newPathLayout(flatNames(), noopScheme),

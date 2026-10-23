@@ -190,7 +190,7 @@ func (d *dataset) rejectForeignHistory(ctx context.Context) error {
 // manifest is recognized by its file name, from the listing alone: the
 // layouts' manifest name, or the default name, which every manifest
 // persisted before the names became root options bears.
-func rejectForeignManifest(ctx context.Context, store Store, id DatasetID, layouts ...layout) error {
+func rejectForeignManifest(ctx context.Context, store Store, id DatasetID, layouts ...*pathLayout) error {
 	keys, err := store.List(ctx, layouts[0].datasetPrefix(id))
 	if err != nil {
 		return fmt.Errorf("lode: failed to list the dataset: %w", err)
@@ -204,7 +204,7 @@ func rejectForeignManifest(ctx context.Context, store Store, id DatasetID, layou
 		if !slices.Contains(names, path.Base(k)) {
 			continue
 		}
-		if slices.ContainsFunc(layouts, func(l layout) bool { return l.ownsObject(id, k) }) {
+		if slices.ContainsFunc(layouts, func(l *pathLayout) bool { return l.ownsObject(id, k) }) {
 			continue
 		}
 		return fmt.Errorf("lode: layout mismatch: dataset holds the manifest %s, which the configured layout does not persist: %w", k, ErrSettingsMismatch)
