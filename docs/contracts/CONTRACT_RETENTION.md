@@ -545,7 +545,9 @@ steps in order:
    tombstone before it deletes any manifest (§Order of Operations), so a
    copy created after the expiry deleted the partition manifests is always
    removed. `Reindexed` reports the snapshots for which this run created at
-   least one copy (on a dry run, would create one), oldest first.
+   least one copy that remains (on a dry run, would create one), oldest
+   first, including a snapshot whose repair then fails. Only the copies
+   that the listing omits are written.
 
 Reclamation operates per snapshot (§Unreferenced Object). A settled
 snapshot's objects are all objects under its data prefixes, including any

@@ -29,12 +29,14 @@ func (r sweepRun) reindex(ctx context.Context, report *SweepReport) error {
 		if !r.mayReindex(id) {
 			continue
 		}
+		// A snapshot is reported even when its repair then fails: the copies
+		// it created remain, and a report describes the work completed.
 		reindexed, err := r.reindexOne(ctx, id)
-		if err != nil {
-			return err
-		}
 		if reindexed {
 			report.Reindexed = append(report.Reindexed, id)
+		}
+		if err != nil {
+			return err
 		}
 	}
 	return nil
@@ -72,10 +74,11 @@ func (r sweepRun) indexGap(id DatasetSnapshotID) bool {
 }
 
 // reindexOne copies the canonical manifest of snapshot id, unchanged, to
-// every partition path its files derive that does not hold a copy. The
+// every partition path its files derive that the listing does not show. The
 // canonical manifest, not the listing, decides the partitions. A copy
 // persisted while an expiry recorded the snapshot is removed again, so the
-// repair never restores a manifest that the expiry deleted.
+// repair never restores a manifest that the expiry deleted. It reports
+// whether copies created by this run remain, including when it fails.
 func (r sweepRun) reindexOne(ctx context.Context, id DatasetSnapshotID) (bool, error) {
 	canonical := r.ds.layout.manifestPath(r.ds.id, id)
 	data, m, err := r.ds.readCanonical(ctx, id, canonical)
@@ -85,23 +88,32 @@ func (r sweepRun) reindexOne(ctx context.Context, id DatasetSnapshotID) (bool, e
 	if err != nil {
 		return false, err
 	}
+	persisted, err := r.persistMissing(ctx, id, r.ds.allManifestPaths(id, nil, m.Files), data)
+	if err != nil || len(persisted) == 0 || r.dryRun {
+		return len(persisted) > 0, err
+	}
+	return r.keepUnlessExpired(ctx, id, persisted)
+}
+
+// persistMissing creates a copy of data at each partition path of snapshot
+// id that the listing does not show, and returns the paths it created,
+// those created before a failure included.
+func (r sweepRun) persistMissing(ctx context.Context, id DatasetSnapshotID, paths []string, data []byte) ([]string, error) {
+	canonical := r.ds.layout.manifestPath(r.ds.id, id)
 	var persisted []string
-	for _, p := range r.ds.allManifestPaths(id, nil, m.Files) {
-		if p == canonical {
+	for _, p := range paths {
+		if p == canonical || slices.Contains(r.inv.manifests[id], p) {
 			continue
 		}
 		created, err := r.persistCopy(ctx, p, data)
 		if err != nil {
-			return false, err
+			return persisted, err
 		}
 		if created {
 			persisted = append(persisted, p)
 		}
 	}
-	if len(persisted) == 0 || r.dryRun {
-		return len(persisted) > 0, nil
-	}
-	return r.keepUnlessExpired(ctx, id, persisted)
+	return persisted, nil
 }
 
 // persistCopy creates the manifest copy at p and reports whether this run
@@ -129,11 +141,12 @@ func (r sweepRun) persistCopy(ctx context.Context, p string, data []byte) (bool,
 // tombstone now records the snapshot. An expiry writes its tombstone before
 // it deletes any manifest (CONTRACT_RETENTION §Order of Operations), so a
 // copy persisted after the expiry deleted the partition manifests is seen
-// here and deleted.
+// here and deleted. When the check fails, the copies remain and are
+// reported.
 func (r sweepRun) keepUnlessExpired(ctx context.Context, id DatasetSnapshotID, persisted []string) (bool, error) {
 	absent, err := r.ds.tombstones().absent(ctx, id)
 	if err != nil || absent {
-		return absent, err
+		return true, err
 	}
 	return false, deleteObjects(ctx, r.ds.store, persisted)
 }

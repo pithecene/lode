@@ -776,10 +776,11 @@ func readObject(t *testing.T, store Store, p string) string {
 	return string(data)
 }
 
-func TestSweep_Reindex(t *testing.T) {
-	// A grace shorter than the time since each write: every snapshot is old.
-	const elapsed = time.Nanosecond
+// elapsed is a grace shorter than the time since each write, so that every
+// snapshot the reindexing tests write is past it.
+const elapsed = time.Nanosecond
 
+func TestSweep_Reindex(t *testing.T) {
 	t.Run("restores the partition index from the canonical manifest", func(t *testing.T) {
 		store := NewMemory()
 		ds := newHiveRetention(t, store)
@@ -852,7 +853,12 @@ func TestSweep_Reindex(t *testing.T) {
 			t.Errorf("report = %+v; want the snapshot reported and nothing persisted", report)
 		}
 	})
+}
 
+// TestSweep_ReindexExistingCopies covers copies that exist when the repair
+// runs, created by an earlier attempt, a lagging listing, or a concurrent
+// expiry.
+func TestSweep_ReindexExistingCopies(t *testing.T) {
 	t.Run("a copy the listing omits is not reported", func(t *testing.T) {
 		mem := NewMemory()
 		lister := &listInjector{Store: mem}
@@ -867,6 +873,40 @@ func TestSweep_Reindex(t *testing.T) {
 		}
 		if len(report.Reindexed) != 0 {
 			t.Errorf("Reindexed = %v, want none: the copy was present", report.Reindexed)
+		}
+	})
+
+	t.Run("only the copies the listing omits are written", func(t *testing.T) {
+		fault := testutil.NewFaultStore(NewMemory())
+		ds := newHiveRetention(t, fault)
+		snap, copies := unindexed(t, fault, ds)
+		if err := fault.Put(t.Context(), copies[0], strings.NewReader(readObject(t, fault, "datasets/events/segments/"+string(snap.ID)+"/manifest.json"))); err != nil {
+			t.Fatal(err)
+		}
+		fault.Reset()
+
+		report, err := ds.Sweep(t.Context(), SweepRequest{Grace: elapsed})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(report.Reindexed, []DatasetSnapshotID{snap.ID}) || !slices.Equal(fault.PutCalls(), copies[1:]) {
+			t.Errorf("report = %+v, Puts %v; want only the missing copy %s written", report, fault.PutCalls(), copies[1])
+		}
+	})
+
+	t.Run("a repair that fails partway reports the copies it created", func(t *testing.T) {
+		fault := testutil.NewFaultStore(NewMemory())
+		ds := newHiveRetention(t, fault)
+		snap, copies := unindexed(t, fault, ds)
+		errBoom := errors.New("boom")
+		fault.SetPutError(errBoom, "event_type=b/")
+
+		report, err := ds.Sweep(t.Context(), SweepRequest{Grace: elapsed})
+		if !errors.Is(err, errBoom) {
+			t.Fatalf("Sweep = %v, want the injected failure", err)
+		}
+		if !slices.Equal(report.Reindexed, []DatasetSnapshotID{snap.ID}) || !exists(t, fault, copies[0]) {
+			t.Errorf("report = %+v; want the snapshot reported for the copy %s it created", report, copies[0])
 		}
 	})
 
