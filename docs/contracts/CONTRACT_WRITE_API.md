@@ -252,8 +252,10 @@ commit path. On `ErrSnapshotConflict`, the writer:
 4. Retries the pointer CAS.
 
 Data files are written once; only the manifest and the pointer are retried.
-The snapshot ID is retained because the data paths already persisted contain
-it; a Volume retry draws a new ID because its block paths do not
+The snapshot ID is retained because a Dataset's data paths contain it, so
+any data file the write persisted is valid only under that ID; a write that
+persisted no data file, such as an empty batch, retains it as well. A Volume
+retry draws a new ID because its block paths do not contain it
 (CONTRACT_VOLUME §Optimistic Concurrency (CAS), V1_API_DECISIONS D10c). If all retries are exhausted, `ErrSnapshotConflict` is returned as it would
 be without retries.
 
