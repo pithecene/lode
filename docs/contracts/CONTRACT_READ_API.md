@@ -315,8 +315,7 @@ a **reference layout suitable for new users** (not a canonical one):
 Alternative layouts are valid provided that:
 - manifests remain discoverable through listing;
 - object paths recorded in manifests are accurate and resolvable; and
-- commit semantics (the presence of a manifest denotes visibility) are
-  preserved.
+- the commit protocol of CONTRACT_CORE §Head Pointer is preserved.
 
 The layout abstraction enables efficient prefix listing and pruning on
 particular backends, but a layout may also adopt manifest-driven discovery

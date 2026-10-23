@@ -170,8 +170,8 @@ observes is whole.
 
 - Adapters MUST allow data objects to be written before the manifest is
   committed.
-- Adapters MUST NOT provide any implicit commit signal other than the
-  presence of a manifest.
+- Adapters MUST NOT provide any implicit commit signal beyond the commit
+  protocol of CONTRACT_CORE §Head Pointer.
 - The guarantee against overwriting applies according to the `Put` path
   (see §Put Upload Paths).
 - Adapters MUST allow partial objects to be removed through `Delete`.
