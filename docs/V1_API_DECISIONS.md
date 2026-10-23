@@ -593,8 +593,9 @@ refer to it instead of restating it.
 
 **Status.** Accepted (owner decision, 2026-10-23). CONTRACT_CORE §Head
 Pointer states the order of a commit's operations and when it is complete;
-CONTRACT_WRITE_API, CONTRACT_RETENTION, and CONTRACT_VOLUME refer to it
-instead of restating it.
+CONTRACT_WRITE_API, CONTRACT_STORAGE, CONTRACT_READ_API,
+CONTRACT_RETENTION, and CONTRACT_VOLUME refer to it instead of restating
+it.
 
 ---
 

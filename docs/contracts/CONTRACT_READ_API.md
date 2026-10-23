@@ -276,9 +276,7 @@ A manifest must be readable in a single fetch of a small object.
 
 ## Consistency and Commit Semantics
 
-- Manifests (or explicit commit markers) determine segment visibility.
-- Readers must treat the presence of a manifest as the signal that a commit
-  is complete.
+- When a commit is complete is stated in CONTRACT_CORE §Head Pointer.
 - Listing serves discovery; manifests are authoritative.
 
 ---
