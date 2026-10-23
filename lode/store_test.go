@@ -38,6 +38,16 @@ var storeBackends = []storeBackend{
 	{name: "memory", open: func(*testing.T) Store { return NewMemory() }},
 }
 
+// rangesOf returns a store's range reads, which every built-in store has.
+func rangesOf(t *testing.T, store ObjectStore) RangeReader {
+	t.Helper()
+	ranges, ok := store.(RangeReader)
+	if !ok {
+		t.Fatalf("%T does not implement RangeReader", store)
+	}
+	return ranges
+}
+
 // openFSStore is an FS store over a fresh temporary directory.
 func openFSStore(t *testing.T) Store {
 	t.Helper()
@@ -274,7 +284,7 @@ func TestStore_ReadRange(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			data, err := store.ReadRange(ctx, "test.txt", 6, 5)
+			data, err := rangesOf(t, store).ReadRange(ctx, "test.txt", 6, 5)
 			if err != nil {
 				t.Fatalf("ReadRange failed: %v", err)
 			}
@@ -294,7 +304,7 @@ func TestStore_ReadRange(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			data, err := store.ReadRange(ctx, "test.txt", 3, 100)
+			data, err := rangesOf(t, store).ReadRange(ctx, "test.txt", 3, 100)
 			if err != nil {
 				t.Fatalf("ReadRange failed: %v", err)
 			}
@@ -314,7 +324,7 @@ func TestStore_ReadRange(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			data, err := store.ReadRange(ctx, "test.txt", 100, 10)
+			data, err := rangesOf(t, store).ReadRange(ctx, "test.txt", 100, 10)
 			if err != nil {
 				t.Fatalf("ReadRange failed: %v", err)
 			}
@@ -328,7 +338,7 @@ func TestStore_ReadRange(t *testing.T) {
 		forEachStore(t, func(t *testing.T, store Store) {
 			ctx := t.Context()
 
-			_, err := store.ReadRange(ctx, "nonexistent.txt", 0, 10)
+			_, err := rangesOf(t, store).ReadRange(ctx, "nonexistent.txt", 0, 10)
 			if !errors.Is(err, ErrNotFound) {
 				t.Errorf("expected ErrNotFound, got: %v", err)
 			}
@@ -341,7 +351,7 @@ func TestStore_ReadRange_Bounds(t *testing.T) {
 		forEachStore(t, func(t *testing.T, store Store) {
 			ctx := t.Context()
 
-			_, err := store.ReadRange(ctx, "test.txt", -1, 10)
+			_, err := rangesOf(t, store).ReadRange(ctx, "test.txt", -1, 10)
 			if !errors.Is(err, ErrInvalidPath) {
 				t.Errorf("expected ErrInvalidPath for negative offset, got: %v", err)
 			}
@@ -352,7 +362,7 @@ func TestStore_ReadRange_Bounds(t *testing.T) {
 		forEachStore(t, func(t *testing.T, store Store) {
 			ctx := t.Context()
 
-			_, err := store.ReadRange(ctx, "test.txt", 0, -1)
+			_, err := rangesOf(t, store).ReadRange(ctx, "test.txt", 0, -1)
 			if !errors.Is(err, ErrInvalidPath) {
 				t.Errorf("expected ErrInvalidPath for negative length, got: %v", err)
 			}
@@ -370,7 +380,7 @@ func TestStore_ReadRange_Bounds(t *testing.T) {
 
 			ctx := t.Context()
 
-			_, err := store.ReadRange(ctx, "test.txt", 0, math.MaxInt64)
+			_, err := rangesOf(t, store).ReadRange(ctx, "test.txt", 0, math.MaxInt64)
 			if !errors.Is(err, ErrInvalidPath) {
 				t.Errorf("expected ErrInvalidPath for length overflow, got: %v", err)
 			}
@@ -381,7 +391,7 @@ func TestStore_ReadRange_Bounds(t *testing.T) {
 		forEachStore(t, func(t *testing.T, store Store) {
 			ctx := t.Context()
 
-			_, err := store.ReadRange(ctx, "test.txt", math.MaxInt64-10, 20)
+			_, err := rangesOf(t, store).ReadRange(ctx, "test.txt", math.MaxInt64-10, 20)
 			if !errors.Is(err, ErrInvalidPath) {
 				t.Errorf("expected ErrInvalidPath for offset+length overflow, got: %v", err)
 			}
@@ -402,7 +412,7 @@ func TestStore_ReaderAt(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			ra, err := store.ReaderAt(ctx, "test.txt")
+			ra, err := rangesOf(t, store).ReaderAt(ctx, "test.txt")
 			if err != nil {
 				t.Fatalf("ReaderAt failed: %v", err)
 			}
@@ -426,7 +436,7 @@ func TestStore_ReaderAt(t *testing.T) {
 		forEachStore(t, func(t *testing.T, store Store) {
 			ctx := t.Context()
 
-			_, err := store.ReaderAt(ctx, "nonexistent.txt")
+			_, err := rangesOf(t, store).ReaderAt(ctx, "nonexistent.txt")
 			if !errors.Is(err, ErrNotFound) {
 				t.Errorf("expected ErrNotFound, got: %v", err)
 			}
@@ -449,7 +459,7 @@ var casBackends = append(slices.Clone(storeBackends), storeBackend{
 // test reaches the process lock: testutil.WithoutCAS must hide the memory
 // store's CompareAndSwap, and a store with CAS is returned unchanged.
 func TestSingleProcess_WrapsOnlyStoresWithoutCAS(t *testing.T) {
-	if _, ok := SingleProcess(testutil.WithoutCAS(NewMemory())).(*singleProcessStore); !ok {
+	if _, ok := SingleProcess(testutil.WithoutCAS(NewMemory())).(singleProcessRangeStore); !ok {
 		t.Error("SingleProcess did not wrap a store without CompareAndSwap")
 	}
 	mem := NewMemory()

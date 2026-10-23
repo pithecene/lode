@@ -41,11 +41,11 @@ func (s *latencyStore) Delete(ctx context.Context, path string) error {
 }
 
 func (s *latencyStore) ReadRange(ctx context.Context, path string, offset, length int64) ([]byte, error) {
-	return s.inner.ReadRange(ctx, path, offset, length)
+	return s.inner.(RangeReader).ReadRange(ctx, path, offset, length) //nolint:forcetypeassert // the benchmark wraps a memory store
 }
 
 func (s *latencyStore) ReaderAt(ctx context.Context, path string) (io.ReaderAt, error) {
-	return s.inner.ReaderAt(ctx, path)
+	return s.inner.(RangeReader).ReaderAt(ctx, path) //nolint:forcetypeassert // the benchmark wraps a memory store
 }
 
 // CompareAndSwap forwards to the inner store's ConditionalWriter implementation.

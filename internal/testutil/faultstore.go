@@ -23,16 +23,24 @@ import (
 
 // Store is the method set of lode.Store, restated so this package does not
 // import lode (lode's own tests use it). Any lode.Store satisfies it, and a
-// *FaultStore satisfies lode.Store.
+// *FaultStore satisfies lode.Store and lode.RangeReader.
 type Store interface {
 	Put(ctx context.Context, path string, r io.Reader) error
 	Get(ctx context.Context, path string) (io.ReadCloser, error)
 	Exists(ctx context.Context, path string) (bool, error)
 	List(ctx context.Context, prefix string) ([]string, error)
 	Delete(ctx context.Context, path string) error
+}
+
+// rangeReader mirrors lode.RangeReader.
+type rangeReader interface {
 	ReadRange(ctx context.Context, path string, offset, length int64) ([]byte, error)
 	ReaderAt(ctx context.Context, path string) (io.ReaderAt, error)
 }
+
+// errRangeReadNotSupported is returned for a range read of an inner store
+// that cannot read ranges; tests wrap stores that can.
+var errRangeReadNotSupported = errors.New("testutil: inner store does not read ranges")
 
 // conditionalWriter mirrors lode.ConditionalWriter.
 type conditionalWriter interface {
@@ -346,12 +354,30 @@ func (f *FaultStore) Delete(ctx context.Context, path string) error {
 
 // ReadRange forwards to the inner store.
 func (f *FaultStore) ReadRange(ctx context.Context, path string, offset, length int64) ([]byte, error) {
-	return f.inner.ReadRange(ctx, path, offset, length)
+	return readRange(ctx, f.inner, path, offset, length)
 }
 
 // ReaderAt forwards to the inner store.
 func (f *FaultStore) ReaderAt(ctx context.Context, path string) (io.ReaderAt, error) {
-	return f.inner.ReaderAt(ctx, path)
+	return readerAt(ctx, f.inner, path)
+}
+
+// readRange forwards a range read to inner, which must read ranges.
+func readRange(ctx context.Context, inner Store, path string, offset, length int64) ([]byte, error) {
+	ranges, ok := inner.(rangeReader)
+	if !ok {
+		return nil, errRangeReadNotSupported
+	}
+	return ranges.ReadRange(ctx, path, offset, length)
+}
+
+// readerAt forwards ReaderAt to inner, which must read ranges.
+func readerAt(ctx context.Context, inner Store, path string) (io.ReaderAt, error) {
+	ranges, ok := inner.(rangeReader)
+	if !ok {
+		return nil, errRangeReadNotSupported
+	}
+	return ranges.ReaderAt(ctx, path)
 }
 
 // CompareAndSwap forwards to the inner store's ConditionalWriter implementation

@@ -26,7 +26,7 @@ func assertReadRangeBounds(t *testing.T, store Store) {
 	}
 
 	// offset+length == MaxInt64 does not overflow; it is a valid (empty) range.
-	data, err := store.ReadRange(ctx, "test.txt", math.MaxInt64-10, 10)
+	data, err := rangesOf(t, store).ReadRange(ctx, "test.txt", math.MaxInt64-10, 10)
 	if err != nil {
 		t.Fatalf("exact MaxInt64 bound: unexpected error %v", err)
 	}
@@ -35,13 +35,13 @@ func assertReadRangeBounds(t *testing.T, store Store) {
 	}
 
 	// offset+length == MaxInt64+1 overflows.
-	if _, err := store.ReadRange(ctx, "test.txt", math.MaxInt64-10, 11); !errors.Is(err, ErrInvalidPath) {
+	if _, err := rangesOf(t, store).ReadRange(ctx, "test.txt", math.MaxInt64-10, 11); !errors.Is(err, ErrInvalidPath) {
 		t.Fatalf("one past MaxInt64: got %v, want ErrInvalidPath", err)
 	}
 
 	// length == maxReadRangeLength is the largest accepted length and must
 	// return the available bytes without allocating the requested size.
-	data, err = store.ReadRange(ctx, "test.txt", 0, maxReadRangeLength)
+	data, err = rangesOf(t, store).ReadRange(ctx, "test.txt", 0, maxReadRangeLength)
 	if err != nil {
 		t.Fatalf("max length: unexpected error %v", err)
 	}
@@ -51,7 +51,7 @@ func assertReadRangeBounds(t *testing.T, store Store) {
 
 	// A large valid length past EOF returns the available bytes. Derived from
 	// the platform limit so the case stays valid where int is 32 bits.
-	data, err = store.ReadRange(ctx, "test.txt", 3, maxReadRangeLength/2)
+	data, err = rangesOf(t, store).ReadRange(ctx, "test.txt", 3, maxReadRangeLength/2)
 	if err != nil {
 		t.Fatalf("large length: unexpected error %v", err)
 	}
@@ -60,13 +60,13 @@ func assertReadRangeBounds(t *testing.T, store Store) {
 	}
 
 	// Zero length is valid and empty, not ErrInvalidPath.
-	data, err = store.ReadRange(ctx, "test.txt", 1, 0)
+	data, err = rangesOf(t, store).ReadRange(ctx, "test.txt", 1, 0)
 	if err != nil || len(data) != 0 {
 		t.Fatalf("zero length: got %d bytes, %v; want empty, nil", len(data), err)
 	}
 
 	// offset exactly at EOF is empty, not an error.
-	data, err = store.ReadRange(ctx, "test.txt", int64(len(content)), 1)
+	data, err = rangesOf(t, store).ReadRange(ctx, "test.txt", int64(len(content)), 1)
 	if err != nil {
 		t.Fatalf("offset at EOF: unexpected error %v", err)
 	}
@@ -75,7 +75,7 @@ func assertReadRangeBounds(t *testing.T, store Store) {
 	}
 
 	// Range ending exactly at EOF returns everything requested.
-	data, err = store.ReadRange(ctx, "test.txt", 2, 3)
+	data, err = rangesOf(t, store).ReadRange(ctx, "test.txt", 2, 3)
 	if err != nil {
 		t.Fatalf("range to EOF: unexpected error %v", err)
 	}

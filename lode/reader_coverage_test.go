@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/pithecene/lode/internal/testutil"
 )
 
 // -----------------------------------------------------------------------------
@@ -114,6 +116,42 @@ func TestView_Objects(t *testing.T) {
 		}
 		if string(buf) != "efgh" {
 			t.Errorf("range read mismatch: got %q, want %q", buf, "efgh")
+		}
+	})
+}
+
+// noRanges hides a store's range reads, as a backend without them would.
+type noRanges struct{ Store }
+
+// objectsOnly hides a store's CompareAndSwap and range reads.
+type objectsOnly struct{ ObjectStore }
+
+func TestRangeReader_IsOptional(t *testing.T) {
+	t.Run("ReaderAt without range reads", func(t *testing.T) {
+		store := noRanges{NewMemory()}
+		view, obj := blobViewOf(t, store, []byte("abc"))
+		if _, err := view.ReaderAt(t.Context(), obj); !errors.Is(err, ErrRangeReadNotSupported) {
+			t.Errorf("view ReaderAt = %v, want ErrRangeReadNotSupported", err)
+		}
+		if _, err := blobsOn(t, store, "test-ds").ReaderAt(t.Context(), obj); !errors.Is(err, ErrRangeReadNotSupported) {
+			t.Errorf("writer ReaderAt = %v, want ErrRangeReadNotSupported", err)
+		}
+	})
+
+	t.Run("wrappers read ranges only when the store does", func(t *testing.T) {
+		stores := map[string]struct {
+			store ObjectStore
+			want  bool
+		}{
+			"SingleProcess with range reads":    {SingleProcess(testutil.WithoutCAS(NewMemory())), true},
+			"SingleProcess without range reads": {SingleProcess(objectsOnly{NewMemory()}), false},
+			"read-only with range reads":        {newReadOnlyStore(NewMemory()), true},
+			"read-only without range reads":     {newReadOnlyStore(noRanges{NewMemory()}), false},
+		}
+		for name, c := range stores {
+			if _, got := c.store.(RangeReader); got != c.want {
+				t.Errorf("%s: implements RangeReader = %v, want %v", name, got, c.want)
+			}
 		}
 	})
 }

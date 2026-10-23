@@ -116,7 +116,7 @@ These errors indicate failures in the storage layer.
 |-------|--------|---------|
 | `lode.ErrPathExists` | Storage | An attempt to write to an existing path (a violation of immutability) |
 | `lode.ErrInvalidPath` | Storage, Read API | The key is empty or escapes the root; the partition prefix, or a string passed to `ParsePartitionPath`, is not a canonical relative path; or the `ReadRange` bounds are negative or overflow |
-| `lode.ErrRangeReadNotSupported` | Read API | The store does not support range reads |
+| `lode.ErrRangeReadNotSupported` | Read API | The store does not implement `RangeReader` |
 
 **Behavior**:
 - `Put` returns `ErrPathExists` when it detects an existing path (see the
@@ -128,8 +128,10 @@ These errors indicate failures in the storage layer.
   - a negative offset or length,
   - a length that exceeds the capacity of the platform's `int`, or
   - an offset and length whose sum overflows.
-- `ReaderAt` returns `ErrRangeReadNotSupported` for a store that cannot read
-  ranges.
+- `ReaderAt` on a handle or view returns `ErrRangeReadNotSupported` for a
+  store that does not implement `RangeReader`.
+- `volume.New` returns `ErrInvalidArgument` for a store that does not
+  implement `RangeReader`.
 
 **ErrPathExists Detection by Put Path** (see CONTRACT_STORAGE.md):
 

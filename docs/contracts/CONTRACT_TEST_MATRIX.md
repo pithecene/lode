@@ -276,6 +276,14 @@ Gaps are recorded with codes that indicate category and priority:
 | Concurrent reads | `TestStore_ReaderAt/concurrent_reads` |
 | ErrNotFound | `TestStore_ReaderAt/not_found` |
 
+**Range Reads (RangeReader)**: All covered ✅
+
+| Requirement | Tests |
+|-------------|-------|
+| A handle's or view's `ReaderAt` returns `ErrRangeReadNotSupported` for a store without `RangeReader` | `TestRangeReader_IsOptional/ReaderAt_without_range_reads` |
+| `SingleProcess` and the read-only store implement `RangeReader` exactly when the wrapped store does | `TestRangeReader_IsOptional/wrappers_read_ranges_only_when_the_store_does` |
+| `volume.New` refuses a store without `RangeReader` with `ErrInvalidArgument` | `TestErrInvalidArgument_Classification/New_store_without_range_reads` |
+
 ---
 
 ### CONTRACT_LAYOUT.md — Layout & Components

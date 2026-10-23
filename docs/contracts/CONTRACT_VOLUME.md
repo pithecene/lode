@@ -358,10 +358,11 @@ per retry, before step 1. If all retries are exhausted,
 
 No new type of storage engine is required.
 
-The capabilities that every `Store` provides are sufficient:
+The capabilities of a `Store` that implements `RangeReader` are sufficient:
 - immutable object writes;
 - `List`, `Exists`, `Get`, and `Delete`;
-- range reads; and
+- range reads (`RangeReader`, CONTRACT_STORAGE §Range Reads), which `New`
+  checks once and refuses with `ErrInvalidArgument` when absent; and
 - `CompareAndSwap` (CONTRACT_STORAGE §ConditionalWriter Capability).
 
 Adapters MUST preserve the semantics under which the manifest defines what

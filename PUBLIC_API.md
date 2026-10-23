@@ -278,11 +278,18 @@ config)`, and `SingleProcess(objectStore)`.
   column
 
 **Range reads:**
-- `Store.ReadRange(ctx, path, offset, length)`: reads a byte range from an
-  object
-- `Store.ReaderAt(ctx, path)`: returns an `io.ReaderAt` for random access
+- `RangeReader`: the optional range-read capability of a store, which the
+  stores of `FS`, `Memory`, and `s3.Factory` implement; a store that cannot
+  read ranges does not implement it
+- `RangeReader.ReadRange(ctx, path, offset, length)`: reads a byte range
+  from an object
+- `RangeReader.ReaderAt(ctx, path)`: returns an `io.ReaderAt` for random
+  access
 - `ReaderAt(ctx, obj)` on a dataset handle or view: returns an
-  `io.ReaderAt` for a data object
+  `io.ReaderAt` for a data object, or `ErrRangeReadNotSupported` when the
+  store does not implement `RangeReader`
+- `volume.New` returns `ErrInvalidArgument` for a store that does not
+  implement `RangeReader`
 
 Range reads provide efficient access to columnar formats (Parquet footers),
 block-indexed logs, and partial previews of artifacts.
@@ -955,7 +962,7 @@ if errors.Is(err, lode.ErrNoSnapshots) {
 | `ErrCodecNotStreamable` | `Records.StreamWrite` was called with a codec that does not stream | `Records` |
 | `ErrNilIterator` | A `nil` iterator was supplied to `Records.StreamWrite` | `Records` |
 | `ErrPartitioningNotSupported` | `Records.StreamWrite` was called on a partitioned dataset | `Records` |
-| `ErrRangeReadNotSupported` | The store does not support range reads | Storage |
+| `ErrRangeReadNotSupported` | The store does not implement `RangeReader` | `ReaderAt` on a handle or view |
 | `ErrSnapshotConflict` | Another writer committed after the parent was resolved (CAS) | Writer handles, Volume |
 | `ErrSettingsMismatch` | The handle's codec, codec description, compressor, checksum, layout and partition keys, or path names differ from the dataset's | Writer handles, views |
 | `ErrReadOnly` | A write (`Put`, `Delete`, or `CompareAndSwap`) was attempted through a read-only root's store | Views |

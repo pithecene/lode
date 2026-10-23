@@ -88,7 +88,11 @@ func (r *testReader) ReaderAt(ctx context.Context, obj ObjectRef) (io.ReaderAt, 
 	if r.root.err != nil {
 		return nil, r.root.err
 	}
-	return r.root.store.ReaderAt(ctx, obj.Path)
+	ranges, ok := r.root.store.(RangeReader)
+	if !ok {
+		return nil, ErrRangeReadNotSupported
+	}
+	return ranges.ReaderAt(ctx, obj.Path)
 }
 
 // manifestErr opens a view of dataset test-ds over store and loads ref's

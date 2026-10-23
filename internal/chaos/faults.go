@@ -181,14 +181,22 @@ func (s *faultyStore) ReadRange(ctx context.Context, path string, offset, length
 	if err := s.before(ctx); err != nil {
 		return nil, err
 	}
-	return s.inner.ReadRange(ctx, path, offset, length)
+	ranges, ok := s.inner.(lode.RangeReader)
+	if !ok {
+		return nil, lode.ErrRangeReadNotSupported
+	}
+	return ranges.ReadRange(ctx, path, offset, length)
 }
 
 func (s *faultyStore) ReaderAt(ctx context.Context, path string) (io.ReaderAt, error) {
 	if err := s.before(ctx); err != nil {
 		return nil, err
 	}
-	return s.inner.ReaderAt(ctx, path)
+	ranges, ok := s.inner.(lode.RangeReader)
+	if !ok {
+		return nil, lode.ErrRangeReadNotSupported
+	}
+	return ranges.ReaderAt(ctx, path)
 }
 
 func (s *faultyStore) CompareAndSwap(ctx context.Context, path, expected, replacement string) error {

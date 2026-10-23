@@ -28,6 +28,7 @@ const (
 type volume struct {
 	id          ID
 	store       lode.Store
+	ranges      lode.RangeReader // store, which reads every block
 	totalLength int64
 	checksum    lode.Checksum
 	retry       retry.Config
@@ -130,10 +131,17 @@ func New(id ID, storeFactory lode.Factory[lode.Store], totalLength int64, opts .
 	if store == nil {
 		return nil, validate.Argument("store factory returned nil store")
 	}
+	// Reads are built on range reads, so the capability is checked once,
+	// here, rather than by every ReadAt (V1_API_DECISIONS D5).
+	ranges, ok := store.(lode.RangeReader)
+	if !ok {
+		return nil, validate.Argument("store %T does not implement lode.RangeReader", store)
+	}
 
 	return &volume{
 		id:          id,
 		store:       store,
+		ranges:      ranges,
 		totalLength: totalLength,
 		checksum:    cfg.checksum,
 		retry:       cfg.retry,
@@ -403,7 +411,7 @@ func (v *volume) ReadAt(ctx context.Context, snapshotID SnapshotID, offset, leng
 		readLen := readEnd - readStart
 		storeOffset := readStart - b.Offset
 
-		data, err := v.store.ReadRange(ctx, b.Path, storeOffset, readLen)
+		data, err := v.ranges.ReadRange(ctx, b.Path, storeOffset, readLen)
 		if err != nil {
 			return nil, fmt.Errorf("lode: failed to read block at offset %d: %w", b.Offset, err)
 		}

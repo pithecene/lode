@@ -192,7 +192,9 @@ without range reads, which today constructs and then fails on read. Adapters
 are not broken: the methods they already have satisfy the new interface.
 Quarry references neither the methods nor the sentinel.
 
-**Status.** Open.
+**Status.** Accepted (owner decision, 2026-10-23) and implemented,
+unreleased, as proposed. `SingleProcess` and the store of a read-only root
+implement `RangeReader` exactly when the store they wrap does.
 
 ---
 
