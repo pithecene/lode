@@ -88,11 +88,14 @@ func (r sweepRun) reindexOne(ctx context.Context, id DatasetSnapshotID) (bool, e
 	if err != nil {
 		return false, err
 	}
-	persisted, err := r.persistMissing(ctx, id, r.ds.allManifestPaths(id, nil, m.Files), data)
-	if err != nil || len(persisted) == 0 || r.dryRun {
-		return len(persisted) > 0, err
+	// The tombstone check runs even after a failed write: a copy created
+	// before the failure must not outlive an expiry either.
+	persisted, putErr := r.persistMissing(ctx, id, r.ds.allManifestPaths(id, nil, m.Files), data)
+	if len(persisted) == 0 || r.dryRun {
+		return len(persisted) > 0, putErr
 	}
-	return r.keepUnlessExpired(ctx, id, persisted)
+	kept, err := r.keepUnlessExpired(ctx, id, persisted)
+	return kept, errors.Join(putErr, err)
 }
 
 // persistMissing creates a copy of data at each partition path of snapshot
@@ -141,14 +144,17 @@ func (r sweepRun) persistCopy(ctx context.Context, p string, data []byte) (bool,
 // tombstone now records the snapshot. An expiry writes its tombstone before
 // it deletes any manifest (CONTRACT_RETENTION §Order of Operations), so a
 // copy persisted after the expiry deleted the partition manifests is seen
-// here and deleted. When the check fails, the copies remain and are
-// reported.
+// here and deleted. It reports whether copies may remain: when the check
+// or a deletion fails, they are reported with the error.
 func (r sweepRun) keepUnlessExpired(ctx context.Context, id DatasetSnapshotID, persisted []string) (bool, error) {
 	absent, err := r.ds.tombstones().absent(ctx, id)
 	if err != nil || absent {
 		return true, err
 	}
-	return false, deleteObjects(ctx, r.ds.store, persisted)
+	if err := deleteObjects(ctx, r.ds.store, persisted); err != nil {
+		return true, err
+	}
+	return false, nil
 }
 
 // readCanonical reads the canonical manifest of snapshot id at p and

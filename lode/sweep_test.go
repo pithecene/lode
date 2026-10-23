@@ -893,7 +893,12 @@ func TestSweep_ReindexExistingCopies(t *testing.T) {
 			t.Errorf("report = %+v, Puts %v; want only the missing copy %s written", report, fault.PutCalls(), copies[1])
 		}
 	})
+}
 
+// TestSweep_ReindexFailures covers a repair that a failed write, a
+// concurrent expiry, or both interrupt: Reindexed reports every snapshot
+// whose copies may remain, and no copy outlives an expiry.
+func TestSweep_ReindexFailures(t *testing.T) {
 	t.Run("a repair that fails partway reports the copies it created", func(t *testing.T) {
 		fault := testutil.NewFaultStore(NewMemory())
 		ds := newHiveRetention(t, fault)
@@ -907,6 +912,58 @@ func TestSweep_ReindexExistingCopies(t *testing.T) {
 		}
 		if !slices.Equal(report.Reindexed, []DatasetSnapshotID{snap.ID}) || !exists(t, fault, copies[0]) {
 			t.Errorf("report = %+v; want the snapshot reported for the copy %s it created", report, copies[0])
+		}
+	})
+
+	t.Run("an expiry during a repair that fails partway still removes the copy", func(t *testing.T) {
+		fault := testutil.NewFaultStore(NewMemory())
+		ds := newHiveRetention(t, fault)
+		snap, copies := unindexed(t, fault, ds)
+		errBoom := errors.New("boom")
+		fault.SetPutError(errBoom, "event_type=b/")
+		expired := false
+		fault.SetAfterPut(func(p string, err error) {
+			if p != copies[0] || err != nil || expired {
+				return
+			}
+			expired = true
+			if _, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{snap.ID}}); err != nil {
+				t.Errorf("Expire: %v", err)
+			}
+		})
+
+		report, err := ds.Sweep(t.Context(), SweepRequest{Grace: elapsed})
+		if !errors.Is(err, errBoom) {
+			t.Fatalf("Sweep = %v, want the injected failure", err)
+		}
+		if !expired || len(report.Reindexed) != 0 || exists(t, fault, copies[0]) {
+			t.Errorf("expired %v, report = %+v; want the copy of the expired snapshot removed", expired, report)
+		}
+	})
+
+	t.Run("a copy whose removal fails is reported", func(t *testing.T) {
+		fault := testutil.NewFaultStore(NewMemory())
+		ds := newHiveRetention(t, fault)
+		snap, copies := unindexed(t, fault, ds)
+		errBoom := errors.New("boom")
+		expired := false
+		fault.SetAfterPut(func(p string, err error) {
+			if p != copies[1] || err != nil || expired {
+				return
+			}
+			expired = true
+			if _, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{snap.ID}}); err != nil {
+				t.Errorf("Expire: %v", err)
+			}
+			fault.SetDeleteError(errBoom)
+		})
+
+		report, err := ds.Sweep(t.Context(), SweepRequest{Grace: elapsed})
+		if !errors.Is(err, errBoom) {
+			t.Fatalf("Sweep = %v, want the injected failure", err)
+		}
+		if !expired || !slices.Equal(report.Reindexed, []DatasetSnapshotID{snap.ID}) {
+			t.Errorf("expired %v, report = %+v; want the snapshot reported for the copies left behind", expired, report)
 		}
 	})
 

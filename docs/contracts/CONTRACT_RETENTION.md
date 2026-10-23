@@ -540,12 +540,13 @@ steps in order:
    canonical manifest, not the listing, decides the partitions. A copy that
    already exists is left as it is and is not counted. Because an `Expire`
    that selects the snapshot can delete its manifests while `Sweep` creates
-   them, `Sweep` checks for a tombstone after it creates the copies and, if
-   one now records the snapshot, deletes them again; an expiry writes its
+   them, `Sweep` checks for a tombstone after it creates the copies, even
+   when a later write fails, and, if one now records the snapshot, deletes
+   them again; an expiry writes its
    tombstone before it deletes any manifest (§Order of Operations), so a
    copy created after the expiry deleted the partition manifests is always
    removed. `Reindexed` reports the snapshots for which this run created at
-   least one copy that remains (on a dry run, would create one), oldest
+   least one copy that may remain (on a dry run, would create one), oldest
    first, including a snapshot whose repair then fails. Only the copies
    that the listing omits are written.
 
