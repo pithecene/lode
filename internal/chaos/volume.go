@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"slices"
-	"time"
 
 	"github.com/pithecene/lode/lode"
 	"github.com/pithecene/lode/lode/volume"
@@ -52,55 +51,91 @@ func (c Config) settleBlock() Block {
 	return Block{Offset: int64(c.Writers) * stripe, Length: 1, Writer: -1}
 }
 
-// openVolume opens one handle on the run's volume for a goroutine, with its
-// own in-memory head and, when faults are enabled, its own faulty store.
-func openVolume(cfg Config, base lode.RangeStore, rng *rand.Rand) (volume.Volume, error) {
-	store := cfg.storeFor(base, rng)
+// openVolume opens a handle on the run's volume over store. Opening
+// performs no I/O.
+func (r *run) openVolume(store lode.RangeStore) (volume.Volume, error) {
 	factory := func() (lode.RangeStore, error) { return store, nil }
-	return volume.New(volumeID, factory, cfg.volumeLength(), volume.WithRetryCount(cfg.Retries))
+	return volume.New(volumeID, factory, r.cfg.volumeLength(), volume.WithRetryCount(r.cfg.Retries))
+}
+
+// volumeHandle is the handle an actor holds on the run's volume: its own
+// in-memory head and, when faults are enabled, its own faulty store, whose
+// faults rng decides.
+func (r *run) volumeHandle(who string, rng *rand.Rand) handle[volume.Volume] {
+	return handle[volume.Volume]{
+		who:    who,
+		ledger: r.ledger,
+		open: func(context.Context) (volume.Volume, error) {
+			return r.openVolume(r.storeFor(rng))
+		},
+	}
+}
+
+// volumeWriters are the Volume workload's committers.
+func (r *run) volumeWriters() []actor {
+	actors := make([]actor, 0, r.cfg.Writers)
+	for i := range r.cfg.Writers {
+		rng := r.random(uint64(i) + 1)
+		actors = append(actors, &volumeWriter{
+			run:   r,
+			index: i,
+			rng:   rng,
+			vol:   r.volumeHandle(fmt.Sprintf("volume writer %d", i), rng),
+			next:  int64(i) * stripe,
+			end:   int64(i+1) * stripe,
+		})
+	}
+	return actors
 }
 
 // volumeWriter stages one to three blocks at the next free offsets of its
 // stripe and commits them, until the deadline. A failed commit leaves its
-// blocks staged and unreferenced; the stripe moves past them. As for the
-// Dataset writers, the deadline is checked between commits.
-func volumeWriter(ctx context.Context, cfg Config, store lode.RangeStore, index int, until time.Time, ledger *Ledger) {
-	rng := rand.New(rand.NewPCG(cfg.Seed, uint64(index)+1)) //nolint:gosec // reproducible test randomness, not security
-	next, end := int64(index)*stripe, int64(index+1)*stripe
-	var vol volume.Volume
-	for ctx.Err() == nil && time.Now().Before(until) && next < end-3*maxBlock {
-		if vol == nil {
-			var err error
-			if vol, err = openVolume(cfg, store, rng); err != nil {
-				ledger.violate("open", "volume writer %d: %v", index, err)
-				return
-			}
+// blocks staged and unreferenced; the stripe moves past them.
+type volumeWriter struct {
+	*run
+	index     int
+	rng       *rand.Rand
+	vol       handle[volume.Volume]
+	next, end int64 // the next free offset of the writer's stripe, and its end
+}
+
+func (w *volumeWriter) act(ctx context.Context) {
+	for w.live(ctx) && w.next < w.end-3*maxBlock {
+		vol, next := w.vol.acquire(ctx)
+		if next == halt {
+			return
 		}
-		blocks := drawBlocks(rng, index, &next)
-		snap, err := commitBlocks(ctx, vol, blocks, index)
-		switch {
-		case err == nil:
-			ledger.volumeCommit(snap.ID, blocks)
-		case errors.Is(err, lode.ErrSnapshotConflict):
-			ledger.conflict()
-		case injected(err):
-			ledger.fault()
-			if errors.Is(err, errKilled) {
-				vol = nil
-			}
-		default:
-			ledger.violate("volume-write", "writer %d: %v", index, err)
+		if next == skip {
+			continue
 		}
+		w.commit(ctx, vol)
 	}
 }
 
-// drawBlocks draws one to three consecutive blocks of a writer, starting at
-// next, and moves next past them.
-func drawBlocks(rng *rand.Rand, writer int, next *int64) []Block {
-	blocks := make([]Block, 1+rng.IntN(3))
+// commit stages and commits the next blocks and records the outcome.
+func (w *volumeWriter) commit(ctx context.Context, vol volume.Volume) {
+	blocks := w.draw()
+	snap, err := commitBlocks(ctx, vol, blocks, w.index)
+	switch {
+	case err == nil:
+		w.ledger.volumeCommit(snap.ID, blocks)
+	case errors.Is(err, lode.ErrSnapshotConflict):
+		w.ledger.conflict()
+	case injected(err):
+		w.ledger.fault()
+		w.vol.drop(err)
+	default:
+		w.ledger.violate("volume-write", "writer %d: %v", w.index, err)
+	}
+}
+
+// draw draws one to three consecutive blocks at the next free offset and
+// moves the offset past them.
+func (w *volumeWriter) draw() []Block {
+	blocks := make([]Block, 1+w.rng.IntN(3))
 	for i := range blocks {
-		blocks[i] = Block{Offset: *next, Length: 1 + rng.Int64N(maxBlock), Writer: writer}
-		*next = blocks[i].end()
+		blocks[i] = Block{Offset: w.next, Length: 1 + w.rng.Int64N(maxBlock), Writer: w.index}
+		w.next = blocks[i].end()
 	}
 	return blocks
 }
@@ -143,27 +178,27 @@ var volumeChecks = []check[*volumeVerifier]{
 // history and contents the run left. The settling commit must succeed even
 // after an abandoned commit, whose staged manifest supplies the blocks it
 // merges (CONTRACT_VOLUME §Error Semantics).
-func verifyVolume(ctx context.Context, cfg Config, store lode.RangeStore, ledger *Ledger) int {
-	vol, err := volume.New(volumeID, func() (lode.RangeStore, error) { return store, nil }, cfg.volumeLength(), volume.WithRetryCount(cfg.Retries))
+func (r *run) verifyVolume(ctx context.Context) int {
+	vol, err := r.openVolume(r.store)
 	if err != nil {
-		ledger.violate("verify", "open: %v", err)
+		r.ledger.violate("verify", "open: %v", err)
 		return 0
 	}
-	snap, err := commitBlocks(ctx, vol, []Block{cfg.settleBlock()}, -1)
+	snap, err := commitBlocks(ctx, vol, []Block{r.cfg.settleBlock()}, -1)
 	if err != nil {
-		ledger.violate("verify", "settling commit: %v", err)
+		r.ledger.violate("verify", "settling commit: %v", err)
 		return 0
 	}
-	v, err := newVolumeVerifier(ctx, vol, snap.ID, ledger)
+	v, err := r.newVolumeVerifier(ctx, vol, snap.ID)
 	if err != nil {
-		ledger.violate("verify", "%v", err)
+		r.ledger.violate("verify", "%v", err)
 		return 0
 	}
-	runChecks(ctx, v, volumeChecks, ledger)
+	runChecks(ctx, v, volumeChecks, r.ledger)
 	return v.chain.size()
 }
 
-func newVolumeVerifier(ctx context.Context, vol volume.Volume, settle volume.SnapshotID, ledger *Ledger) (*volumeVerifier, error) {
+func (r *run) newVolumeVerifier(ctx context.Context, vol volume.Volume, settle volume.SnapshotID) (*volumeVerifier, error) {
 	snaps, err := vol.Snapshots(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("chaos: list volume snapshots: %w", err)
@@ -180,7 +215,7 @@ func newVolumeVerifier(ctx context.Context, vol volume.Volume, settle volume.Sna
 	if v.head != nil {
 		v.refs = slices.SortedFunc(slices.Values(v.head.Manifest.Blocks), byOffset)
 	}
-	v.acked, v.blocks = ledger.volumeHistory()
+	v.acked, v.blocks = r.ledger.volumeHistory()
 	return v, nil
 }
 

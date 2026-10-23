@@ -24,42 +24,40 @@ func (c Config) sweepGrace() time.Duration { return c.Duration + time.Minute }
 // a report lists as expired. Like a writer, it holds one handle, which an
 // injected kill discards and the next step reopens.
 type janitor struct {
-	cfg    Config
-	store  lode.RangeStore
-	rng    *rand.Rand
-	ledger *Ledger
-	ds     lode.Records[any] // nil until opened, and after a kill
+	*run
+	rng *rand.Rand
+	ds  handle[lode.Records[any]]
 }
 
 // newJanitor returns the run's janitor, seeded so that a run's retention
 // calls repeat for the same seed.
-func newJanitor(cfg Config, store lode.RangeStore, ledger *Ledger) *janitor {
-	return &janitor{
-		cfg:    cfg,
-		store:  store,
-		rng:    rand.New(rand.NewPCG(cfg.Seed, 2000)), //nolint:gosec // reproducible test randomness, not security
-		ledger: ledger,
-	}
+func (r *run) newJanitor() *janitor {
+	rng := r.random(2000)
+	return &janitor{run: r, rng: rng, ds: r.datasetHandle("janitor", rng)}
 }
 
-// run makes a random retention call, then pauses, until the deadline.
-func (j *janitor) run(ctx context.Context, until time.Time) {
-	for ctx.Err() == nil && time.Now().Before(until) {
-		if !reopen(ctx, j.cfg, j.store, j.rng, &j.ds, "janitor", j.ledger) {
+// act makes a random retention call, then pauses, until the deadline.
+func (j *janitor) act(ctx context.Context) {
+	for j.live(ctx) {
+		ds, next := j.ds.acquire(ctx)
+		if next == halt {
 			return
 		}
-		if j.ds == nil {
+		if next == skip {
 			continue
 		}
 		ops := j.ops()
-		j.observe(ctx, ops[j.rng.IntN(len(ops))](ctx))
+		j.observe(ctx, ops[j.rng.IntN(len(ops))](ctx, ds))
 		pause(ctx, time.Duration(50+j.rng.IntN(200))*time.Millisecond)
 	}
 }
 
+// retentionOp is one retention call the janitor can make through a handle.
+type retentionOp func(ctx context.Context, ds lode.Records[any]) error
+
 // ops are the retention calls the janitor chooses among.
-func (j *janitor) ops() []func(context.Context) error {
-	return []func(context.Context) error{j.expireBefore, j.expireOne, j.sweep}
+func (j *janitor) ops() []retentionOp {
+	return []retentionOp{j.expireBefore, j.expireOne, j.sweep}
 }
 
 // observe classifies a retention call's outcome. A head that is not yet
@@ -70,9 +68,7 @@ func (j *janitor) observe(ctx context.Context, err error) {
 	case err == nil, errors.Is(err, lode.ErrHeadUncommitted), ctx.Err() != nil:
 	case injected(err):
 		j.ledger.fault()
-		if errors.Is(err, errKilled) {
-			j.ds = nil
-		}
+		j.ds.drop(err)
 	default:
 		j.ledger.violate("retention", "%v", err)
 	}
@@ -90,30 +86,30 @@ func pause(ctx context.Context, d time.Duration) {
 
 // expireBefore expires snapshots whose writes began in the first part of
 // the run.
-func (j *janitor) expireBefore(ctx context.Context) error {
-	return j.expire(ctx, lode.ExpireRequest{Before: time.Now().Add(-j.cfg.Duration / 4)})
+func (j *janitor) expireBefore(ctx context.Context, ds lode.Records[any]) error {
+	return j.expire(ctx, ds, lode.ExpireRequest{Before: time.Now().Add(-j.cfg.Duration / 4)})
 }
 
 // expireOne expires one acknowledged snapshot by ID.
-func (j *janitor) expireOne(ctx context.Context) error {
+func (j *janitor) expireOne(ctx context.Context, ds lode.Records[any]) error {
 	c, ok := j.ledger.randomCommit(j.rng)
 	if !ok {
 		return nil
 	}
-	return j.expire(ctx, lode.ExpireRequest{IDs: []lode.DatasetSnapshotID{c.ID}})
+	return j.expire(ctx, ds, lode.ExpireRequest{IDs: []lode.DatasetSnapshotID{c.ID}})
 }
 
 // sweep reclaims what expiries and abandoned writes left, with a grace
 // period that spares every write in progress.
-func (j *janitor) sweep(ctx context.Context) error {
-	_, err := j.ds.Sweep(ctx, lode.SweepRequest{Grace: j.cfg.sweepGrace()})
+func (j *janitor) sweep(ctx context.Context, ds lode.Records[any]) error {
+	_, err := ds.Sweep(ctx, lode.SweepRequest{Grace: j.cfg.sweepGrace()})
 	return err
 }
 
 // expire runs one expiry and records its report, which an expiry returns
 // even when it fails partway.
-func (j *janitor) expire(ctx context.Context, req lode.ExpireRequest) error {
-	report, err := j.ds.Expire(ctx, req)
+func (j *janitor) expire(ctx context.Context, ds lode.Records[any], req lode.ExpireRequest) error {
+	report, err := ds.Expire(ctx, req)
 	j.record(report)
 	return err
 }

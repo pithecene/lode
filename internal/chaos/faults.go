@@ -57,14 +57,14 @@ var faultLevels = map[string]Faults{
 // FaultLevelNames lists the named fault settings in a stable order.
 func FaultLevelNames() []string { return slices.Sorted(maps.Keys(faultLevels)) }
 
-// storeFor returns the store one handle reaches base through: base itself,
-// or, when faults are enabled, a faulty store of its own, seeded from rng so
-// a run's fault decisions repeat for the same seed.
-func (c Config) storeFor(base lode.RangeStore, rng *rand.Rand) lode.RangeStore {
-	if !c.Faults.Enabled() {
-		return base
+// storeFor returns the store one handle reaches the run's store through:
+// that store itself, or, when faults are enabled, a faulty store of its own,
+// seeded from rng so a run's fault decisions repeat for the same seed.
+func (r *run) storeFor(rng *rand.Rand) lode.RangeStore {
+	if !r.cfg.Faults.Enabled() {
+		return r.store
 	}
-	return newFaultyStore(base, c.Faults, rand.New(rand.NewPCG(rng.Uint64(), rng.Uint64()))) //nolint:gosec // reproducible test randomness, not security
+	return newFaultyStore(r.store, r.cfg.Faults, rand.New(rand.NewPCG(rng.Uint64(), rng.Uint64()))) //nolint:gosec // reproducible test randomness, not security
 }
 
 // faultyStore injects faults into one handle's calls to a shared store.
