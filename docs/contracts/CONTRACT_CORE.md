@@ -74,11 +74,13 @@ This section is the only normative statement of the commit protocol. Other
 contracts state their own obligations and refer to it rather than restating
 it (V1_API_DECISIONS D10f).
 
-The `latest` pointer identifies the head. A commit begins with its data
-already persisted (a Dataset writes its data files within the commit, a
-Volume's blocks are staged by `StageWriteAt` before it), advances the
-pointer with `CompareAndSwap`, and then persists its canonical manifest
-followed by its partition manifests, one at a time. The commit is
+The `latest` pointer identifies the head. A write persists its data before
+its commit begins: a Dataset write persists its data files and then
+commits, and a Volume's blocks are persisted by `StageWriteAt` before
+`Commit` is called. A failure while data is persisted precedes the commit
+and leaves the head unchanged. The commit itself resolves its parent,
+advances the pointer with `CompareAndSwap`, and then persists its canonical
+manifest followed by its partition manifests, one at a time. The commit is
 complete when its canonical manifest is persisted; from then on `Latest` and
 `Snapshot` return the snapshot. A snapshot written before canonical
 manifests were introduced has only partition manifests and is committed
