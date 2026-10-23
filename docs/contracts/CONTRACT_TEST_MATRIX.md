@@ -339,6 +339,7 @@ All covered ✅
 | ListPartitions StartAfter / Limit | `TestView_ListPartitions_Order/start_after_pages`, `TestView_ListPartitions_Order/start_after_exclusive` |
 | ListManifests (Partition, ID) order, deterministic partition | `TestView_ListManifests_Order/sorted_and_deterministic_partition`, `TestView_ListManifests_Order/default_layout_sorted_by_ID` |
 | ListManifests StartAfter / Limit | `TestView_ListManifests_Paging/start_after_pages`, `TestView_ListManifests_Paging/limit_boundary` |
+| A partition path parses only when canonical, and the empty path is the dataset root | `TestParsePartitionPath` |
 
 ---
 

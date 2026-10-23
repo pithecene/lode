@@ -37,8 +37,8 @@ Based on the full-history audit of the production dataset
   `CompareAndSwap` of every `Store`, and adds two sentinels (§1, §5); the
   earliest pass of both is 2026-11-19. The unreleased surface of
   `V1_API_DECISIONS.md` D11 replaces the construction and record API and
-  restarts both windows when it is released. D4–D6 and D10b open; D1–D3
-  and D8 decided by D11; D7, D10a, D10c, and D10f accepted.
+  restarts both windows when it is released. D5, D6, and D10b open; D1–D3
+  and D8 decided by D11; D4, D7, D10a, D10c, and D10f accepted.
 - **Not yet met, evidence missing:** native AWS S3 (§6), steady-state snapshot
   reads (§3), checksum-backed corruption checks (no production file carries a
   checksum, §10).
@@ -175,9 +175,9 @@ partitions, one dataset on R2.
 > **Evidence:** D11 accepted (owner decision, 2026-10-22) and implemented, unreleased: the persisted format in #279 and the surface in the pull request that follows it. D11 decides D1–D3, and D8 is accepted as D11 revised it: the names within a dataset's paths are root options, and the default names, the flat paths, and the path grammar are persisted format that no release changes. D4–D7, D10a–D10c, and D10f remain open.
 > Date: 2026-10-22 | Observer: @pithecene | Project: lode
 >
-> **Evidence:** D11 is on `main`, unreleased: the format in #279, the surface in #280, and two refactors in #282 and #283. D10a, D10c, and D10f accepted (owner decision, 2026-10-23); they change contract text only. D7 accepted and implemented: the S3 test double is no longer exported. The 2026-10-20 entry above predates D11: D1–D3 and D8 are no longer open.
+> **Evidence:** D11 is on `main`, unreleased: the format in #279, the surface in #280, and two refactors in #282 and #283. D10a, D10c, and D10f accepted (owner decision, 2026-10-23); they change contract text only. D7 accepted and implemented: the S3 test double is no longer exported. D4 accepted and implemented: partition paths are a `PartitionPath`. The 2026-10-20 entry above predates D11: D1–D3 and D8 are no longer open.
 > Date: 2026-10-23 | Observer: @pithecene | Project: lode
-> Summary: Not met; D4–D6 and D10b open.
+> Summary: Not met; D5, D6, and D10b open.
 > Issue: —
 
 - [ ] `PUBLIC_API.md` matches exported symbols in `lode/api.go` with zero discrepancies

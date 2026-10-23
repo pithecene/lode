@@ -95,18 +95,18 @@ func (d *dataset) ListPartitions(ctx context.Context, opts PartitionListOptions)
 				continue
 			}
 			seen[p] = true
-			partitions = append(partitions, PartitionRef{Path: p})
+			partitions = append(partitions, PartitionRef{Path: PartitionPath{path: p}})
 		}
 	}
 
-	sort.Slice(partitions, func(i, j int) bool { return partitions[i].Path < partitions[j].Path })
-	return cursorWindow(partitions, func(p PartitionRef) bool { return p.Path > opts.StartAfter }, opts.Limit), nil
+	sort.Slice(partitions, func(i, j int) bool { return partitions[i].Path.path < partitions[j].Path.path })
+	return cursorWindow(partitions, func(p PartitionRef) bool { return p.Path.path > opts.StartAfter.path }, opts.Limit), nil
 }
 
 // ListManifests returns the dataset's committed manifests, within a
 // partition when one is given.
-func (d *dataset) ListManifests(ctx context.Context, partition string, opts ManifestListOptions) ([]ManifestRef, error) {
-	listing, err := d.listManifests(ctx, d.layout.snapshotsPrefixForPartition(d.id, partition))
+func (d *dataset) ListManifests(ctx context.Context, partition PartitionPath, opts ManifestListOptions) ([]ManifestRef, error) {
+	listing, err := d.listManifests(ctx, d.layout.snapshotsPrefixForPartition(d.id, partition.path))
 	if err != nil {
 		return nil, err
 	}
@@ -125,11 +125,11 @@ func (d *dataset) ListManifests(ctx context.Context, partition string, opts Mani
 		if err != nil {
 			return nil, err
 		}
-		refs = append(refs, ManifestRef{ID: m.id, Partition: m.partition})
+		refs = append(refs, ManifestRef{ID: m.id, Partition: PartitionPath{path: m.partition}})
 	}
 	// A layout without partitions has no snapshot in any named partition: the
 	// selector matches nothing (the dataset itself was found and validated).
-	if partition != "" && !d.layout.supportsPartitions() {
+	if partition.path != "" && !d.layout.supportsPartitions() {
 		refs = refs[:0]
 	}
 
@@ -204,15 +204,36 @@ func (d *dataset) listManifests(ctx context.Context, prefix string) (manifestLis
 // Empty is valid (no filter); a trailing "/" is valid (names a partition
 // boundary).
 func validPartitionPrefix(prefix string) bool {
-	if prefix == "" {
+	return !strings.HasPrefix(prefix, "/") && validPartitionPath(strings.TrimSuffix(prefix, "/"))
+}
+
+// ParsePartitionPath parses a canonical relative partition path. The empty
+// string parses to the zero value. It returns ErrInvalidPath when the path
+// begins with "/", contains a backslash, or has an empty, "." or ".."
+// segment, which includes a trailing "/".
+func ParsePartitionPath(s string) (PartitionPath, error) {
+	if !validPartitionPath(s) {
+		return PartitionPath{}, fmt.Errorf("lode: partition path %q: %w", s, ErrInvalidPath)
+	}
+	return PartitionPath{path: s}, nil
+}
+
+// String returns the path as it appears in storage keys, or "" for the zero
+// value.
+func (p PartitionPath) String() string { return p.path }
+
+// validPartitionPath reports whether path is a canonical relative partition
+// path (ParsePartitionPath); the empty path is the dataset root.
+func validPartitionPath(path string) bool {
+	if path == "" {
 		return true
 	}
 	// Backslash is a separator for the filesystem store on Windows, so it
 	// could smuggle ".." past a "/"-only split; partition paths never contain it.
-	if strings.HasPrefix(prefix, "/") || strings.ContainsRune(prefix, '\\') {
+	if strings.ContainsRune(path, '\\') {
 		return false
 	}
-	for seg := range strings.SplitSeq(strings.TrimSuffix(prefix, "/"), "/") {
+	for seg := range strings.SplitSeq(path, "/") {
 		if seg == "" || seg == "." || seg == ".." {
 			return false
 		}
@@ -224,7 +245,7 @@ func validPartitionPrefix(prefix string) bool {
 // ManifestListOptions promises and ManifestListOptions.StartAfter resumes in.
 func manifestRefLess(a, b ManifestRef) bool {
 	if a.Partition != b.Partition {
-		return a.Partition < b.Partition
+		return a.Partition.path < b.Partition.path
 	}
 	return a.ID < b.ID
 }
@@ -247,7 +268,7 @@ func cursorWindow[T any](items []T, after func(T) bool, limit int) []T {
 
 // GetManifest loads and validates the manifest a reference names.
 func (d *dataset) GetManifest(ctx context.Context, ref ManifestRef) (*Manifest, error) {
-	return d.loadManifest(ctx, d.layout.manifestPathInPartition(d.id, ref.ID, ref.Partition))
+	return d.loadManifest(ctx, d.layout.manifestPathInPartition(d.id, ref.ID, ref.Partition.path))
 }
 
 // OpenObject returns a reader for a data object of this dataset.

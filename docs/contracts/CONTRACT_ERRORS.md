@@ -115,7 +115,7 @@ These errors indicate failures in the storage layer.
 | Error | Source | Meaning |
 |-------|--------|---------|
 | `lode.ErrPathExists` | Storage | An attempt to write to an existing path (a violation of immutability) |
-| `lode.ErrInvalidPath` | Storage, Read API | The key is empty or escapes the root; the partition prefix is not a canonical relative path; or the `ReadRange` bounds are negative or overflow |
+| `lode.ErrInvalidPath` | Storage, Read API | The key is empty or escapes the root; the partition prefix, or a string passed to `ParsePartitionPath`, is not a canonical relative path; or the `ReadRange` bounds are negative or overflow |
 | `lode.ErrRangeReadNotSupported` | Read API | The store does not support range reads |
 
 **Behavior**:

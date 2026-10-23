@@ -26,7 +26,7 @@ func blobViewOf(t *testing.T, store Store, payload []byte) (BlobView, ObjectRef)
 	if err != nil {
 		t.Fatalf("Blobs view: %v", err)
 	}
-	refs, err := view.ListManifests(t.Context(), "", ManifestListOptions{})
+	refs, err := view.ListManifests(t.Context(), PartitionPath{}, ManifestListOptions{})
 	if err != nil {
 		t.Fatalf("ListManifests: %v", err)
 	}

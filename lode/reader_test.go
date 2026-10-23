@@ -58,11 +58,15 @@ func (r *testReader) ListPartitions(ctx context.Context, id DatasetID, opts Part
 }
 
 func (r *testReader) ListManifests(ctx context.Context, id DatasetID, partition string, opts ManifestListOptions) ([]ManifestRef, error) {
+	path, err := ParsePartitionPath(partition)
+	if err != nil {
+		return nil, err
+	}
 	v, err := r.view(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	return v.ListManifests(ctx, partition, opts)
+	return v.ListManifests(ctx, path, opts)
 }
 
 func (r *testReader) GetManifest(ctx context.Context, id DatasetID, ref ManifestRef) (*Manifest, error) {
@@ -497,7 +501,7 @@ func TestView_ListManifests(t *testing.T) {
 
 		// Every ref must have a non-empty Partition (canonical manifest excluded).
 		for _, ref := range refs {
-			if ref.Partition == "" {
+			if ref.Partition == (PartitionPath{}) {
 				t.Errorf("ManifestRef %s has empty Partition; canonical manifest should be excluded from listing", ref.ID)
 			}
 		}

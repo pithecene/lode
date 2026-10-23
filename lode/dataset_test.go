@@ -199,7 +199,7 @@ func TestRoot_Records_Typed(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(parts) != 2 || parts[0].Path != "source=a/day=d1" || parts[1].Path != "source=b/day=d2" {
+		if len(parts) != 2 || parts[0].Path.String() != "source=a/day=d1" || parts[1].Path.String() != "source=b/day=d2" {
 			t.Errorf("partitions = %v, want source=a/day=d1 and source=b/day=d2", parts)
 		}
 		if !slices.Equal(snap.PartitionKeys, []string{"source", "day"}) {

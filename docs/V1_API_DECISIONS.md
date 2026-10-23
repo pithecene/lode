@@ -153,7 +153,9 @@ of `DatasetReader`.
 reads a partition path, including string literals (an opaque type has no
 untyped-constant conversion).
 
-**Status.** Open. Recommended accept.
+**Status.** Accepted (owner decision, 2026-10-23) and implemented,
+unreleased, as proposed. `ExpireRequest.Partition` remains a string: like
+`Prefix`, it selects a subtree and accepts a trailing `/`.
 
 ---
 
