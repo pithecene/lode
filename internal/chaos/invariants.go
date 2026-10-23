@@ -77,6 +77,7 @@ var datasetChecks = []check[*verifier]{
 	{"history-shape", (*verifier).historyShape},
 	{"parents-explained", (*verifier).parentsExplained},
 	{"contents-match-manifests", (*verifier).contentsMatch},
+	{"listings-cover-history", (*verifier).listingsCover},
 }
 
 // finalGrace is the grace period of the sweep after the run: no write is in

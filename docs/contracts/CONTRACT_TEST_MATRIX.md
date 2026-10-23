@@ -699,6 +699,7 @@ store.
 | `Latest` returns the settling commit; no snapshot has two children (CONTRACT_WRITE_API §Concurrency: linear under CAS); the chain has no more ends than missing parents account for; and, with no missing parent, the chain from the head reaches every snapshot | `history-shape` |
 | A parent without a manifest is an abandoned commit, which no writer was told had committed, or an expired snapshot | `parents-explained` |
 | Every snapshot reads back its manifest's row count, and an acknowledged one its writer's rows | `contents-match-manifests` |
+| An unfiltered `ListManifests` reports every committed snapshot, including one whose partition manifests a fault left unpersisted (CONTRACT_READ_API §Listing Order and Cursors) | `listings-cover-history` |
 | During the run, the head and acknowledged snapshots read back in full | `read-head`, `read-commit` |
 
 After the workload stops, a clean handle makes one settling commit, which
@@ -739,7 +740,8 @@ run, and the run ends with a final `Sweep`.
 | An acknowledged commit without a manifest reads as expired | `acknowledged-commits-persist` |
 | A report never lists its retained head as expired | `head-retained` |
 | Every snapshot a report listed as expired reads as expired | `expired-snapshots-read-as-expired` |
-| After the final sweep, a dry-run `Sweep` finds nothing to settle, delete, or reject as unparseable | `expiries-settled` |
+| After the final sweep, a dry-run `Sweep` finds nothing to settle, reindex, delete, or reject as unparseable | `expiries-settled` |
+| After the final sweep, every committed snapshot is listed under each partition that holds one of its files (CONTRACT_RETENTION §Definition, step 3) | `partition-index-restored` |
 | Every read that failed during the run concerned a snapshot that is now expired | `failed-reads-were-expired` |
 
 With `-chaos.volume`, each writer stages and commits blocks in its own
