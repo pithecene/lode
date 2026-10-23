@@ -429,7 +429,9 @@ therefore not designed here.
 
 **Breaks.** Nothing; it documents an existing limit.
 
-**Status.** Open.
+**Status.** Accepted (owner decision, 2026-10-23): option 1.
+CONTRACT_READ_API §Listing Order and Cursors states that a cursor is a
+position in listing order, not in commit order.
 
 ### D10b — On a Hive layout, listing cannot see a canonical-only snapshot
 
@@ -493,7 +495,9 @@ data is written, whereas a Volume's block paths do not
 
 **Breaks.** Nothing.
 
-**Status.** Open.
+**Status.** Accepted (owner decision, 2026-10-23). CONTRACT_WRITE_API and
+CONTRACT_VOLUME §Optimistic Concurrency (CAS) state the reason, and
+CONTRACT_VOLUME no longer calls the mechanisms identical.
 
 ### D10d — Commits on a store without CAS fall back to Delete+Put without notice
 
@@ -587,7 +591,11 @@ refer to it instead of restating it.
 
 **Breaks.** Nothing.
 
-**Status.** Open.
+**Status.** Accepted (owner decision, 2026-10-23). CONTRACT_CORE §Head
+Pointer states the order of a commit's operations and when it is complete;
+CONTRACT_WRITE_API, CONTRACT_STORAGE, CONTRACT_READ_API,
+CONTRACT_ERRORS, CONTRACT_RETENTION, and CONTRACT_VOLUME refer to it
+instead of restating it.
 
 ---
 

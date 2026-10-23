@@ -161,17 +161,17 @@ Adapters MUST document:
 
 ## Commit Semantics
 
-- Manifests (or explicit commit markers) determine visibility.
-- Writers MUST write data objects before the manifest.
-- Readers MUST treat the presence of a manifest as the signal that a commit
-  is complete.
+The commit protocol, including when a commit is complete, is stated in
+CONTRACT_CORE §Head Pointer. An adapter's obligation is that `Put` makes an
+object visible only once it is complete (§Put), so that a manifest a reader
+observes is whole.
 
 ## Streamed Writes
 
 - Adapters MUST allow data objects to be written before the manifest is
   committed.
-- Adapters MUST NOT provide any implicit commit signal other than the
-  presence of a manifest.
+- Adapters MUST NOT provide any implicit commit signal beyond the commit
+  protocol of CONTRACT_CORE §Head Pointer.
 - The guarantee against overwriting applies according to the `Put` path
   (see §Put Upload Paths).
 - Adapters MUST allow partial objects to be removed through `Delete`.

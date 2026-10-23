@@ -294,10 +294,8 @@ else modifies the pointer (`Latest` only creates a missing pointer).
 Therefore one check before the tombstone is written precludes the race for
 every later step.
 
-The pointer MAY temporarily name a snapshot whose manifest has not been
-persisted, because `history.Advance` writes the pointer before the
-manifests; the commit is then pending (CONTRACT_CORE §Head Pointer). In that
-state, the previous head remains the only readable committed state, and the
+While a commit is pending (CONTRACT_CORE §Head Pointer), the pointer names
+a snapshot whose manifest has not been persisted. In that state, the previous head remains the only readable committed state, and the
 pointer alone does not identify it. Retention therefore MUST NOT proceed
 while the head is uncommitted. If the pointer names an ID without a
 manifest (no canonical manifest and, for data written before canonical
@@ -438,9 +436,8 @@ Two concurrent expiries of the same ID are safe, because every step is
 idempotent and tombstone creation is atomic. With `lode.SingleProcess`,
 that holds for expiries within the process that shares the wrapped store.
 
-A commit writes the pointer, then the canonical manifest, and then its
-partition manifests one at a time (the pointer-before-manifest protocol).
-If a later commit advances the pointer while an earlier commit is still
+A commit persists its partition manifests after the pointer and the
+canonical manifest (CONTRACT_CORE §Head Pointer). If a later commit advances the pointer while an earlier commit is still
 writing partition manifests, an `Expire` that selects the earlier snapshot
 can remove it, and the slower writer can then add a partition manifest
 after the expiry. The tombstone describes that manifest, so the next

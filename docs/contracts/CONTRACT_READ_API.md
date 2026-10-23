@@ -197,6 +197,17 @@ read API imposes its own order:
 - `Limit` bounds the result set, not the number of store calls. Sorting and
   the cursor are applied after enumeration.
 
+A cursor is a position in this order, not in commit order. Within one
+partition, `(Partition, ID)` order is snapshot ID order, and a snapshot ID
+records when its write began (CONTRACT_CORE §Snapshot ID), so a snapshot
+can commit after a snapshot with a larger ID. A consumer that passes its
+last reference as `StartAfter` to read new snapshots therefore MAY skip a
+snapshot permanently. v1.0 offers no cursor over commits; a consumer that
+must observe every commit reconciles against `Snapshots`, which enumerates
+canonical manifests (V1_API_DECISIONS D10a). `ListManifests` cannot serve
+that purpose on a Hive layout: until V1_API_DECISIONS D10b is resolved, it
+omits a committed snapshot whose partition manifests were not persisted.
+
 ### Partition Prefix
 
 `PartitionListOptions.Prefix` is a raw string prefix over partition paths; it
@@ -264,9 +275,7 @@ A manifest must be readable in a single fetch of a small object.
 
 ## Consistency and Commit Semantics
 
-- Manifests (or explicit commit markers) determine segment visibility.
-- Readers must treat the presence of a manifest as the signal that a commit
-  is complete.
+- When a commit is complete is stated in CONTRACT_CORE §Head Pointer.
 - Listing serves discovery; manifests are authoritative.
 
 ---
@@ -306,8 +315,7 @@ a **reference layout suitable for new users** (not a canonical one):
 Alternative layouts are valid provided that:
 - manifests remain discoverable through listing;
 - object paths recorded in manifests are accurate and resolvable; and
-- commit semantics (the presence of a manifest denotes visibility) are
-  preserved.
+- the commit protocol of CONTRACT_CORE §Head Pointer is preserved.
 
 The layout abstraction enables efficient prefix listing and pruning on
 particular backends, but a layout may also adopt manifest-driven discovery

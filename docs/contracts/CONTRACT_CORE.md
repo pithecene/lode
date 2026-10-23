@@ -70,9 +70,23 @@ the *generated form* when it is in either form; a legacy ID sorts before
 every current ID with the same instant.
 
 ### Head Pointer
-The `latest` pointer identifies the head. A commit advances the pointer
-before it persists its manifests. Between those two operations the commit
-is *pending*: the pointer names a snapshot that has no manifest. A pending
+This section is the only normative statement of the commit protocol. Other
+contracts state their own obligations and refer to it rather than restating
+it (V1_API_DECISIONS D10f).
+
+The `latest` pointer identifies the head. A write persists its data before
+its commit begins: a Dataset write persists its data files and then
+commits, and a Volume's blocks are persisted by `StageWriteAt` before
+`Commit` is called. A failure while data is persisted precedes the commit
+and leaves the head unchanged. The commit itself resolves its parent,
+advances the pointer with `CompareAndSwap`, and then persists its canonical
+manifest followed by its partition manifests, one at a time. The commit is
+complete when its canonical manifest is persisted; from then on `Latest` and
+`Snapshot` return the snapshot. A snapshot written before canonical
+manifests were introduced has only partition manifests and is committed
+when any of them is persisted; `Latest`, `Snapshot`, and retention find it
+through them. Between the pointer update and the canonical
+manifest the commit is *pending*: the pointer names a snapshot that has no manifest. A pending
 commit whose writer terminates before persisting the manifest is
 *abandoned*. No persisted state distinguishes a pending commit from an
 abandoned one, so Lode treats every pointer that names a snapshot without a
@@ -97,10 +111,14 @@ manifest as a pending commit:
   treat such a parent as the end of the explainable chain, as they treat an
   expired parent (CONTRACT_RETENTION §Lineage).
 - A Volume commit requires its parent's manifest. It therefore persists a
-  staged copy of its own manifest before it advances the pointer, so the
-  next commit can load the parent even after an abandoned commit; only a
-  parent without either copy makes a Volume commit return
-  `ErrSnapshotConflict` (CONTRACT_VOLUME §Error Semantics).
+  staged copy of its own manifest at
+  `volumes/<volume_id>/staged/<snapshot_id>.json` before it advances the
+  pointer, and removes the copy after it persists the canonical manifest,
+  so the next commit can load the parent even after an abandoned commit.
+  When the pointer update fails, the copy is removed only if the pointer
+  names another snapshot, because a store may report a failure for an
+  update it applied. Only a parent without either copy makes a Volume
+  commit return `ErrSnapshotConflict` (CONTRACT_VOLUME §Error Semantics).
 - A dataset's first commit (one that expects no pointer) persists a staged
   copy of its manifest at `<dataset dir>/staged/<snapshot_id>.json` before it
   advances the pointer, and removes the copy after it persists the canonical
