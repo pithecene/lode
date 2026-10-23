@@ -128,16 +128,8 @@ func (d *dataset) manifest(p *pendingSnapshot, parent DatasetSnapshotID) *Manife
 		RowCount:         p.rowCount,
 		MinTimestamp:     p.timestamps.min,
 		MaxTimestamp:     p.timestamps.max,
-		Codec:            d.codecName,
-		Compressor:       d.compressor.Name(),
-		Partitioner:      d.layout.partitioning().name,
-		PartitionKeys:    slices.Clone(d.layout.partitioning().keys), // a returned manifest must not alias the layout
-		CodecDescription: d.codecDescription,
 	}
-	m.Paths = d.layout.convention()
-	if d.checksum != nil {
-		m.ChecksumAlgorithm = d.checksum.Name()
-	}
+	d.settings().record(m)
 	return m
 }
 

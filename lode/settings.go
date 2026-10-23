@@ -12,32 +12,73 @@ import (
 	"github.com/pithecene/lode/internal/validate"
 )
 
-// datasetSettings are what every writer of a dataset must share: the
-// components and names its manifests record (CONTRACT_WRITE_API §Settings).
-type datasetSettings struct {
+// settings are what every writer of a dataset must share: the components
+// and names its manifests record (CONTRACT_WRITE_API §Settings). A writer
+// has settings, and each manifest records them; the format difference
+// between manifests is resolved once, when a manifest's settings are read
+// (recordedSettings), so no consumer of settings tests the format.
+type settings struct {
 	codec            string
 	codecDescription string
 	compressor       string
 	checksum         string
-	partitioner      string
-	partitionKeys    []string
+	partitioning     partitionScheme
 	paths            ManifestPaths
+
+	// legacy marks settings a manifest of format 1.0.0 recorded: it records
+	// no codec description or partition keys, so those are unknown, not
+	// empty, and its paths are the default names.
+	legacy bool
 }
 
 // settings are this writer's settings, as its manifests record them.
-func (d *dataset) settings() datasetSettings {
-	s := datasetSettings{
+func (d *dataset) settings() settings {
+	s := settings{
 		codec:            d.codecName,
 		codecDescription: d.codecDescription,
 		compressor:       d.compressor.Name(),
-		partitioner:      d.layout.partitioning().name,
-		partitionKeys:    d.layout.partitioning().keys,
+		partitioning:     d.layout.partitioning(),
 		paths:            d.layout.convention(),
 	}
 	if d.checksum != nil {
 		s.checksum = d.checksum.Name()
 	}
 	return s
+}
+
+// record writes s into m, the only place a manifest's settings are set.
+// The partition keys are copied: a returned manifest must not alias the
+// layout.
+func (s settings) record(m *Manifest) {
+	m.Codec, m.CodecDescription = s.codec, s.codecDescription
+	m.Compressor, m.ChecksumAlgorithm = s.compressor, s.checksum
+	m.Partitioner, m.PartitionKeys = s.partitioning.name, slices.Clone(s.partitioning.keys)
+	m.Paths = s.paths
+}
+
+// recordedSettings returns the settings m records, the only place the
+// manifest format is told apart. A legacy manifest records no path names:
+// it was persisted under the default names, flat or not according to where
+// it lies, which is where a layout whose paths are flat exactly when flat
+// found it (V1_API_DECISIONS D11, Paths). A manifest of format 1.1.0 must
+// record its path names.
+func recordedSettings(m *Manifest, flat bool) (settings, error) {
+	if err := missingPaths(m); err != nil {
+		return settings{}, fmt.Errorf("lode: manifest of snapshot %s: %w", m.SnapshotID, err)
+	}
+	s := settings{
+		codec:            m.Codec,
+		codecDescription: m.CodecDescription,
+		compressor:       m.Compressor,
+		checksum:         m.ChecksumAlgorithm,
+		partitioning:     partitionScheme{name: m.Partitioner, keys: m.PartitionKeys},
+		paths:            m.Paths,
+		legacy:           legacy(m),
+	}
+	if s.legacy {
+		s.codecDescription, s.partitioning.keys, s.paths = "", nil, defaultPaths(flat)
+	}
+	return s, nil
 }
 
 // settingComparison is one setting a manifest must share with the writer.
@@ -68,38 +109,25 @@ func missingPaths(m *Manifest) error {
 	return nil
 }
 
-// recordedPaths returns the path names m records. A legacy manifest
-// records none: it was persisted under the default names, flat or not
-// according to where it lies, which is where a layout whose paths are flat
-// exactly when flat found it (V1_API_DECISIONS D11, Paths).
-func recordedPaths(m *Manifest, flat bool) ManifestPaths {
-	if !legacy(m) {
-		return m.Paths
-	}
-	return defaultPaths(flat)
-}
-
-// mismatch returns the first setting of m that differs from s, or nil. A
-// legacy manifest is compared by the settings it records and the default
-// path names; its partition keys are verified separately
+// mismatch returns the first setting of have, the settings a manifest
+// records, that differs from s, or nil. A setting have does not know (a
+// legacy manifest's codec description and partition keys) is not
+// compared; legacy partition keys are verified separately
 // (verifyLegacyKeys).
-func (s datasetSettings) mismatch(m *Manifest) error {
-	if err := missingPaths(m); err != nil {
-		return fmt.Errorf("lode: manifest of snapshot %s: %w", m.SnapshotID, err)
-	}
+func (s settings) mismatch(have settings) error {
 	// %q and %#v quote every string, so distinct key lists and path names
 	// never format alike ("a,b" against "a", "b").
 	comparisons := []settingComparison{
-		{"codec", s.codec, m.Codec},
-		{"compressor", s.compressor, m.Compressor},
-		{"checksum", s.checksum, m.ChecksumAlgorithm},
-		{"partitioner", s.partitioner, m.Partitioner},
-		{"path names", fmt.Sprintf("%#v", s.paths), fmt.Sprintf("%#v", recordedPaths(m, s.paths.Flat))},
+		{"codec", s.codec, have.codec},
+		{"compressor", s.compressor, have.compressor},
+		{"checksum", s.checksum, have.checksum},
+		{"partitioner", s.partitioning.name, have.partitioning.name},
+		{"path names", fmt.Sprintf("%#v", s.paths), fmt.Sprintf("%#v", have.paths)},
 	}
-	if !legacy(m) {
+	if !have.legacy {
 		comparisons = append(comparisons,
-			settingComparison{"codec description", s.codecDescription, m.CodecDescription},
-			settingComparison{"partition keys", fmt.Sprintf("%q", s.partitionKeys), fmt.Sprintf("%q", m.PartitionKeys)},
+			settingComparison{"codec description", s.codecDescription, have.codecDescription},
+			settingComparison{"partition keys", fmt.Sprintf("%q", s.partitioning.keys), fmt.Sprintf("%q", have.partitioning.keys)},
 		)
 	}
 	for _, c := range comparisons {
@@ -129,15 +157,20 @@ func (d *dataset) checkSettings(ctx context.Context, parent DatasetSnapshotID) e
 	if err != nil {
 		return err
 	}
-	if err := d.settings().mismatch(head); err != nil {
+	mine := d.settings()
+	recorded, err := recordedSettings(head, mine.paths.Flat)
+	if err != nil {
 		return err
 	}
-	if legacy(head) && !d.layout.partitioning().isNoop() {
+	if err := mine.mismatch(recorded); err != nil {
+		return err
+	}
+	if recorded.legacy && !mine.partitioning.isNoop() {
 		if err := d.verifyLegacyKeys(ctx, head); err != nil {
 			return err
 		}
 	}
-	d.settled = !legacy(head)
+	d.settled = !recorded.legacy
 	return nil
 }
 

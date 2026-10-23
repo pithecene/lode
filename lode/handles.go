@@ -277,7 +277,11 @@ func (r *ReadRoot) openView(ctx context.Context, id DatasetID, opts []ViewOption
 	if err := matchCodec(head, codecName, codecDescription); err != nil {
 		return nil, err
 	}
-	if want, have := r.names, recordedPaths(head, r.names.Flat); have != want {
+	recorded, err := recordedSettings(head, r.names.Flat)
+	if err != nil {
+		return nil, err
+	}
+	if want, have := r.names, recorded.paths; have != want {
 		return nil, fmt.Errorf("lode: path names mismatch: dataset records %#v, root has %#v: %w", have, want, ErrSettingsMismatch)
 	}
 	d := newDataset(id, r.store, newPathLayout(r.names, scheme))

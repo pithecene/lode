@@ -455,7 +455,9 @@ func readRecords[T any](ctx context.Context, d *dataset, codec Codec[T], id Data
 }
 
 // matchCodec rejects a snapshot written with another codec, or, unless its
-// manifest is legacy, with another codec configuration.
+// manifest is legacy, with another codec configuration. It reads the two
+// codec fields directly rather than through recordedSettings, because it
+// runs on every read and needs no other setting.
 func matchCodec(m *Manifest, name, description string) error {
 	if m.Codec != name {
 		return fmt.Errorf("lode: codec mismatch: snapshot %s uses %q, handle has %q: %w", m.SnapshotID, m.Codec, name, ErrSettingsMismatch)
