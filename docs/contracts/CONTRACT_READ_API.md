@@ -203,9 +203,11 @@ records when its write began (CONTRACT_CORE §Snapshot ID), so a snapshot
 can commit after a snapshot with a larger ID. A consumer that passes its
 last reference as `StartAfter` to read new snapshots therefore MAY skip a
 snapshot permanently. v1.0 offers no cursor over commits; a consumer that
-must observe every commit reconciles against a full listing, which on a
-Hive layout omits a snapshot whose partition manifests were not persisted
-(V1_API_DECISIONS D10a, D10b).
+must observe every commit reconciles against `Snapshots`, which enumerates
+canonical manifests. `ListManifests` cannot serve that purpose on a Hive
+layout: until V1_API_DECISIONS D10b is resolved, it omits a committed
+snapshot whose partition manifests were not persisted (V1_API_DECISIONS
+D10a).
 
 ### Partition Prefix
 
