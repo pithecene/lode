@@ -153,7 +153,7 @@ guide](docs/guides/concepts.md#what-lode-guarantees) gives the details.
 
 ## Status
 
-Lode is at **v0.11.0** and under active development. Its APIs are
+Lode is at **v0.12.0** and under active development. Its APIs are
 stabilizing; the breaking changes still under consideration for v1.0 are
 listed in [`docs/V1_API_DECISIONS.md`](docs/V1_API_DECISIONS.md), and each
 release is described in [`CHANGELOG.md`](CHANGELOG.md).

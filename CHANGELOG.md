@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+---
+
+## [0.12.0] - 2026-10-23
+
 ### Breaking Changes
 
 - **Every writer must share the dataset's settings**: before its first commit, a writer compares its codec and the codec's description, compressor, checksum, partitioner and Hive keys, and path names with those the dataset's head manifest records, and a writer whose settings differ is rejected with the new `ErrSettingsMismatch`. A dataset whose manifests predate this release has its Hive keys verified against its partition paths on the first write.
@@ -32,6 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   | `WithRetryCount` | `WithRetry` |
   | `Option` | `RootOption`, `DatasetOption`, `ViewOption`, and `ComponentOption` (`WithCompressor`, `WithChecksum`) |
   | `Metadata` (`map[string]any`) | any value that encodes as a JSON object, read back with `snap.Metadata.Decode(&v)` |
+  | `R(...)` returns `[]any` | `R(...)` returns `[]D`, the records of a `Records[D]` |
   | `snap.Manifest.Files` | `snap.Files` (`DatasetSnapshot` embeds `*Manifest`) |
   | `ObjectRef.Dataset` | removed: a handle's `OpenObject` reads within its own dataset |
   | `ErrCodecConfigured`, `ErrOptionNotValidForDataset`, `ErrOptionNotValidForDatasetReader` | removed: these misuses no longer compile |
@@ -56,6 +61,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Error messages name their source once**: a message begins with the prefix of the component in which the failure originated, and code that wraps a Lode error adds context without repeating a prefix, so a message no longer reads `lode: failed to write data: lode: …`. The filesystem store reports as `fs:` and the in-memory store as `memory:`, and the messages of `ErrSchemaViolation` and `ErrInvalidFormat` no longer begin with `parquet:`. Matching under `errors.Is` and `errors.As` is unchanged. Code that matches message text may need to change (CONTRACT_ERRORS §Error Messages).
 
+### Fixed
+
+- **Unfiltered Hive listings report every committed snapshot**: `ListManifests` and `ListPartitions` without a partition filter omitted a snapshot that had no partition manifest, either because its writer terminated after the commit was complete or because it had no files. Such a snapshot is now reported through its canonical manifest, under the dataset root. A listing filtered by partition still reflects only the partition manifests that exist.
+
 ### Upgrade Notes
 
 - **Construction and records**: replace each name according to the table under Breaking Changes.
@@ -67,11 +76,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Dataset IDs**: use an ID of one path segment that does not begin with `.lode-tmp-`.
 - **Tests that used the S3 double**: copy the double from the adapter's tests, or target an emulator such as LocalStack or MinIO.
 - **Error text**: check code that matches message text against the new wording.
-- **No data migration required**: a dataset written by an earlier release opens under the default path names.
-
-### Fixed
-
-- **Unfiltered Hive listings report every committed snapshot**: `ListManifests` and `ListPartitions` without a partition filter omitted a snapshot that had no partition manifest, either because its writer terminated after the commit was complete or because it had no files. Such a snapshot is now reported through its canonical manifest, under the dataset root. A listing filtered by partition still reflects only the partition manifests that exist.
+- **No data migration required**: a dataset written by an earlier release opens under the default path names; datasets and a volume written by v0.11.0 are tested to read, extend, expire, and sweep.
 
 ---
 
@@ -432,7 +437,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-[Unreleased]: https://github.com/pithecene/lode/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/pithecene/lode/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/pithecene/lode/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/pithecene/lode/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/pithecene/lode/compare/v0.9.1...v0.10.0
 [0.9.1]: https://github.com/pithecene/lode/compare/v0.9.0...v0.9.1

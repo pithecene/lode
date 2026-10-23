@@ -16,7 +16,7 @@ Stability is proven by **usage and time**, not design review.
 
 ---
 
-## Current Assessment (2026-10-22)
+## Current Assessment (2026-10-23)
 
 Based on the full-history audit of the production dataset
 ([`dogfood_audit_2026-10.md`](dogfood_audit_2026-10.md)):
@@ -32,13 +32,13 @@ Based on the full-history audit of the production dataset
   order. v0.11.0 removes every path to that outcome
   ([#208](https://github.com/pithecene/lode/issues/208)); the criterion
   remains unmet until v0.11.0 is observed in production.
-- **Not yet met, time-gated:** API and sentinel freeze windows reopened by
-  v0.10.0 and again by v0.11.0, which moves Volume out of `lode`, requires
-  `CompareAndSwap` of every `Store`, and adds two sentinels (§1, §5); the
-  earliest pass of both is 2026-11-19. The unreleased surface of
-  `V1_API_DECISIONS.md` D11 replaces the construction and record API and
-  restarts both windows when it is released. No decision is open: D1–D3
-  and D8 decided by D11; D4–D7 and D10a–D10c and D10f accepted.
+- **Not yet met, time-gated:** the API, sentinel, option, and manifest
+  format freeze windows restart with v0.12.0 (2026-10-23), which ships
+  every decision of `V1_API_DECISIONS.md`: the construction and record
+  surface of D11, manifest format 1.1.0, typed partition paths (D4), range
+  reads as an optional capability (D5), the error-message rule (D6), the
+  removal of the S3 test double (D7), and the partition index (D10b). The
+  earliest pass of each window is 2026-11-20 (§1, §2). No decision is open.
 - **Not yet met, evidence missing:** native AWS S3 (§6), steady-state snapshot
   reads (§3), checksum-backed corruption checks (no production file carries a
   checksum, §10).
@@ -148,6 +148,9 @@ partitions, one dataset on R2.
 >
 > **Evidence:** Unreleased: D11 replaces the construction and record surface. `NewDataset`, `NewDatasetReader`, and the store factories give way to `Open`, `OpenReadOnly`, `FS`, `Memory`, and `Use`; records are typed (`Records[T]`, `Codec[T]`), blobs have their own handle (`Blobs`), metadata is any JSON object, and options are typed by target. The window restarts when it is released.
 > Date: 2026-10-22 | Observer: @pithecene | Project: lode, Quarry
+>
+> **Evidence:** Window restarted by v0.12.0 (2026-10-23), which releases the D11 surface and, besides, `PartitionPath` and `ParsePartitionPath` (D4), `RangeReader` and `RangeStore` in place of the range methods of `ObjectStore` (D5), the removal of `s3.MockS3Client` (D7), and `SweepReport.Reindexed` (D10b). A symbol-by-symbol comparison with v0.11.0 finds every removed or changed signature in the changelog. Earliest pass: 2026-11-20.
+> Date: 2026-10-23 | Observer: @pithecene | Project: lode
 > Summary: Not met; window restarts on every API change.
 > Issue: lode#175
 
@@ -161,10 +164,13 @@ partitions, one dataset on R2.
 >
 > **Evidence:** Window restarted by v0.11.0 (2026-10-22), which adds `ErrSnapshotExpired` and `ErrHeadUncommitted` for snapshot expiry. Earliest pass: 2026-11-19.
 > Date: 2026-10-22 | Observer: @pithecene | Project: lode
+>
+> **Evidence:** Window restarted by v0.12.0 (2026-10-23), which adds `ErrSettingsMismatch` and `ErrReadOnly` and removes `ErrCodecConfigured`, `ErrOptionNotValidForDataset`, and `ErrOptionNotValidForDatasetReader` (D11). Earliest pass: 2026-11-20.
+> Date: 2026-10-23 | Observer: @pithecene | Project: lode
 > Summary: Not met.
 > Issue: —
 
-- [ ] Every candidate in `docs/V1_API_DECISIONS.md` is marked accepted (and shipped) or rejected; none is left open
+- [x] Every candidate in `docs/V1_API_DECISIONS.md` is marked accepted (and shipped) or rejected; none is left open
 
 > **Evidence:** D1–D8 all Open. D9 accepted and shipped: Volume is experimental in package `lode/volume`, and `PUBLIC_API.md` / `CONTRACT_VOLUME.md` say so. Dogfooding now bears on D8: `private-A` reads the on-disk path grammar directly (audit F8), so the path-compatibility policy has a real consumer.
 > Date: 2026-10-20 | Observer: @pithecene | Project: lode, private-A
@@ -183,7 +189,10 @@ partitions, one dataset on R2.
 >
 > **Evidence:** D10b accepted (owner decision, 2026-10-23) and implemented, unreleased: the canonical manifest is the commit and the partition manifests are its index. An unfiltered listing reports a snapshot without partition manifests under the empty partition, and `Sweep` restores the index once the snapshot is older than the grace period. The read-only check of the six F6 snapshots remains open; it no longer decides D10b.
 > Date: 2026-10-23 | Observer: @pithecene | Project: lode
-> Summary: Not met; no decision is open, but the accepted decisions are unreleased.
+>
+> **Evidence:** v0.12.0 (2026-10-23) ships every accepted decision: D1–D3, D8, and D11 (the surface and format 1.1.0), D4, D5, D6, D7, and D10b in code, and D10a, D10c, and D10f as contract text. D9 and D10d shipped earlier, and D10e is superseded. None is open or unreleased.
+> Date: 2026-10-23 | Observer: @pithecene | Project: lode
+> Summary: Met with v0.12.0.
 > Issue: —
 
 - [ ] `PUBLIC_API.md` matches exported symbols in `lode/api.go` with zero discrepancies
@@ -202,7 +211,10 @@ partitions, one dataset on R2.
 >
 > **Evidence:** Unreleased: D11 types options by target (`RootOption`, `DatasetOption`, `ViewOption`, `ComponentOption`), removes `WithCodec` and `WithHiveLayout` (the codec is a parameter; `WithLayout` takes `Hive(...)`), renames `WithRetryCount` to `WithRetry`, and adds the path-name options `WithDatasetsDir`, `WithSnapshotsDir`, `WithPartitionsDir`, `WithSegmentsDir`, `WithManifestFile`, `WithDataDir`, `WithExpiredDir`, `WithStagedDir`, and `WithFlatPaths`. The window restarts when it is released.
 > Date: 2026-10-22 | Observer: @pithecene | Project: lode
-> Summary: Not met once D11 is released.
+>
+> **Evidence:** Window restarted by v0.12.0 (2026-10-23), which releases the option surface of D11. Earliest pass: 2026-11-20.
+> Date: 2026-10-23 | Observer: @pithecene | Project: lode
+> Summary: Not met.
 
 ### 2. Manifest Format Freeze
 
@@ -215,7 +227,10 @@ partitions, one dataset on R2.
 >
 > **Evidence:** Unreleased: manifest format 1.1.0 (#279, D11) adds `CodecDescription`, `PartitionKeys`, and `Paths`, so that every setting a writer must share is persisted. Every 1.0.0 manifest remains readable. The window restarts when it is released.
 > Date: 2026-10-22 | Observer: @pithecene | Project: lode
-> Summary: Not met once format 1.1.0 is released.
+>
+> **Evidence:** Window restarted by v0.12.0 (2026-10-23), which releases format 1.1.0. Every 1.0.0 manifest remains readable: data that v0.11.0 wrote is tested to read, extend, expire, and sweep (`TestCompat_v0_11_0_*`). Earliest pass: 2026-11-20.
+> Date: 2026-10-23 | Observer: @pithecene | Project: lode
+> Summary: Not met.
 > Issue: —
 
 - [x] ~~`VolumeManifest` struct fields unchanged for 4+ weeks~~ Reclassified: Volume stability gate (`V1_API_DECISIONS.md` D9)
