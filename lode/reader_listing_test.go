@@ -604,3 +604,115 @@ func TestParsePartitionPath(t *testing.T) {
 		t.Error("the empty path is not the zero value")
 	}
 }
+
+// TestView_ListManifests_CanonicalOnly covers a Hive snapshot whose partition
+// manifests were not all persisted, as when its writer terminates after the
+// canonical manifest (CONTRACT_READ_API §Listing Order and Cursors). The
+// unfiltered listings report it through the canonical manifest; a listing
+// filtered by partition reflects only the partition manifests that exist.
+func TestView_ListManifests_CanonicalOnly(t *testing.T) {
+	store := NewMemory()
+	ds, err := Open(Use(store)).Records(t.Context(), "test-ds", JSONL[D](), hive("day"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	write := func(records ...D) DatasetSnapshotID {
+		t.Helper()
+		snap, err := ds.Write(t.Context(), records, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return snap.ID
+	}
+	indexed := write(D{"day": "a"})
+	bare := write(D{"day": "b"}, D{"day": "c"})
+	partial := write(D{"day": "d"}, D{"day": "e"})
+	unindex := func(id DatasetSnapshotID, days ...string) {
+		t.Helper()
+		for _, day := range days {
+			if err := store.Delete(t.Context(), "datasets/test-ds/partitions/day="+day+"/segments/"+string(id)+"/manifest.json"); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	unindex(bare, "b", "c")
+	unindex(partial, "d")
+	at := func(id DatasetSnapshotID, partition string) ManifestRef {
+		return ManifestRef{ID: id, Partition: PartitionPath{path: partition}}
+	}
+
+	t.Run("unfiltered listing reports each snapshot once", func(t *testing.T) {
+		refs, err := ds.ListManifests(t.Context(), PartitionPath{}, ManifestListOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []ManifestRef{at(bare, ""), at(indexed, "day=a"), at(partial, "day=e")}
+		if !slices.Equal(refs, want) {
+			t.Errorf("ListManifests = %v, want %v", refs, want)
+		}
+	})
+
+	t.Run("canonical reference loads", func(t *testing.T) {
+		m, err := ds.GetManifest(t.Context(), at(bare, ""))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if m.SnapshotID != bare {
+			t.Errorf("GetManifest loaded %s, want %s", m.SnapshotID, bare)
+		}
+	})
+
+	t.Run("partition filter reflects the index", func(t *testing.T) {
+		for _, day := range []string{"b", "d"} {
+			refs, err := ds.ListManifests(t.Context(), PartitionPath{path: "day=" + day}, ManifestListOptions{})
+			if err != nil && !errors.Is(err, ErrNotFound) {
+				t.Fatal(err)
+			}
+			if len(refs) != 0 {
+				t.Errorf("ListManifests(day=%s) = %v, want none: no partition manifest remains there", day, refs)
+			}
+		}
+	})
+
+	t.Run("unfiltered partitions include the canonical manifest's files", func(t *testing.T) {
+		parts, err := ds.ListPartitions(t.Context(), PartitionListOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []string{"day=a", "day=b", "day=c", "day=d", "day=e"}
+		if got := refPaths(parts); !slices.Equal(got, want) {
+			t.Errorf("ListPartitions = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("prefixed partitions reflect the index", func(t *testing.T) {
+		parts, err := ds.ListPartitions(t.Context(), PartitionListOptions{Prefix: "day=b"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(parts) != 0 {
+			t.Errorf("ListPartitions(day=b) = %v, want none", refPaths(parts))
+		}
+	})
+}
+
+// TestView_ListManifests_EmptyHiveSnapshot verifies that a Hive snapshot
+// with no files, which has no partition manifest, is listed under the
+// dataset root rather than omitted.
+func TestView_ListManifests_EmptyHiveSnapshot(t *testing.T) {
+	ds, err := Open(Use(NewMemory())).Records(t.Context(), "test-ds", JSONL[D](), hive("day"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap, err := ds.Write(t.Context(), []D{}, nil) // no records: a snapshot without files
+	if err != nil {
+		t.Fatal(err)
+	}
+	refs, err := ds.ListManifests(t.Context(), PartitionPath{}, ManifestListOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []ManifestRef{{ID: snap.ID}}; !slices.Equal(refs, want) {
+		t.Errorf("ListManifests = %v, want %v", refs, want)
+	}
+}

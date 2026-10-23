@@ -68,6 +68,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Error text**: check code that matches message text against the new wording.
 - **No data migration required**: a dataset written by an earlier release opens under the default path names.
 
+### Fixed
+
+- **Unfiltered Hive listings report every committed snapshot**: `ListManifests` and `ListPartitions` without a partition filter omitted a snapshot that had no partition manifest, either because its writer terminated after the commit was complete or because it had no files. Such a snapshot is now reported through its canonical manifest, under the dataset root. A listing filtered by partition still reflects only the partition manifests that exist.
+
 ---
 
 ## [0.11.0] - 2026-10-22

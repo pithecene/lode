@@ -200,6 +200,15 @@ read API imposes its own order:
   returned `ManifestRef` MUST carry the lexicographically smallest
   partition, so that the same storage state always yields the same
   references.
+- An unfiltered listing on a Hive layout MUST report a committed snapshot
+  that has no partition manifest through its canonical manifest, with the
+  empty partition in its `ManifestRef`, and `ListPartitions` MUST then
+  report the partitions of that manifest's files. Such a snapshot has no
+  files, or its writer terminated before persisting its partition
+  manifests (CONTRACT_CORE §Head Pointer); once one is persisted, the
+  snapshot is reported through it instead. A listing filtered by partition
+  reflects only the partition manifests that exist (CONTRACT_LAYOUT
+  §Layout-Specific Requirements).
 - `StartAfter` resumes strictly after the given cursor in that order. The
   last element of a previous result is always a valid cursor. A cursor that
   matches no element resumes at the next element greater than the cursor.
@@ -213,9 +222,9 @@ can commit after a snapshot with a larger ID. A consumer that passes its
 last reference as `StartAfter` to read new snapshots therefore MAY skip a
 snapshot permanently. v1.0 offers no cursor over commits; a consumer that
 must observe every commit reconciles against `Snapshots`, which enumerates
-canonical manifests (V1_API_DECISIONS D10a). `ListManifests` cannot serve
-that purpose on a Hive layout: until V1_API_DECISIONS D10b is resolved, it
-omits a committed snapshot whose partition manifests were not persisted.
+canonical manifests (V1_API_DECISIONS D10a). A listing filtered by
+partition cannot serve that purpose on a Hive layout, because it omits a
+committed snapshot whose partition manifests were not persisted.
 
 ### Partition Paths
 
