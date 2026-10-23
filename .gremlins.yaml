@@ -22,7 +22,8 @@ unleash:
   # internal/retry) carry logic lode depends on, and gremlins measures
   # coverage per package, so they are gated by their own tests. Excluded:
   # examples, internal/testutil (test doubles, not product code),
-  # internal/chaos (the on-demand stress harness, not product code), and
+  # internal/chaos (the on-demand stress harness, not product code),
+  # testdata (the generator of the compatibility fixtures, its own module), and
   # files built only for Windows. gremlins mutates a file whatever its build
   # constraints, and the nightly run is on Linux, where a Windows-only file
   # is never compiled, so its mutants are reported NOT COVERED although the
@@ -31,6 +32,7 @@ unleash:
     - examples/
     - internal/testutil/
     - internal/chaos/
+    - /testdata/
     - _windows\.go$
   # Baseline (2026-10-20, gremlins v0.6.0, whole module after the history
   # core, retry config and validation errors moved to internal/, produced by

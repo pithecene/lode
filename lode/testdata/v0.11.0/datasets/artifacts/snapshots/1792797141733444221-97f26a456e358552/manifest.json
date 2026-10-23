@@ -1,0 +1,19 @@
+{
+  "schema_name": "lode-manifest",
+  "format_version": "1.0.0",
+  "dataset_id": "artifacts",
+  "snapshot_id": "1792797141733444221-97f26a456e358552",
+  "created_at": "2026-10-23T23:12:21.733821769Z",
+  "metadata": {
+    "batch": 0
+  },
+  "files": [
+    {
+      "path": "datasets/artifacts/snapshots/1792797141733444221-97f26a456e358552/data/blob",
+      "size_bytes": 16
+    }
+  ],
+  "row_count": 1,
+  "compressor": "noop",
+  "partitioner": "noop"
+}

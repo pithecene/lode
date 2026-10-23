@@ -128,6 +128,7 @@ Gaps are recorded with codes that indicate category and priority:
 | A manifest of format version 1.1.0 names every directory and file under the rule for a root's names (one segment without `=`, distinct, not `latest`), and flat paths name no datasets or snapshots directory | `TestValidateManifest_PathsNameEveryDirectory` |
 | A history without a pointer, under the default manifest name, rejects a writer or view with a custom manifest name | `TestWrite_DefaultNamedManifestsWithoutAPointer` |
 | A manifest of format version 1.0.0 rejects a writer or view whose path names are not the defaults | `TestSettings_LegacyManifestsUseTheDefaultPathNames` |
+| Data that v0.11.0 wrote (`lode/testdata/v0.11.0`, from `lode/testdata/compatgen`) is read, listed, extended, expired, and swept under the default names: a Hive and a compressed record dataset, a blob dataset, and a volume; a writer whose compressor differs from the recorded one is rejected | `TestCompat_v0_11_0_HiveRecords`, `TestCompat_v0_11_0_CompressedRecords`, `TestCompat_v0_11_0_Blob`, `volume.TestCompat_v0_11_0` |
 | Concurrent first writers with different layouts: the loser is classified against the winner | `TestWrite_ConcurrentFirstWritersWithDifferentLayouts` |
 | A lost first commit is `ErrSettingsMismatch` when the winner's settings differ, without retries, and stays a conflict when they match | `TestWrite_LostFirstCommitIsAMismatchWithoutRetries` |
 | A manifest of format 1.1.0 without `paths` is invalid for writers and readers | `TestModernManifestWithoutPathsIsInvalid` |
