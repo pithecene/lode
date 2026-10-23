@@ -230,7 +230,8 @@ or use a real emulator (`examples/s3` already targets LocalStack and MinIO).
 
 **Breaks.** Any downstream test importing the mock. Quarry does not.
 
-**Status.** Open. Recommended accept.
+**Status.** Accepted (owner decision, 2026-10-23) and implemented,
+unreleased: the mock is in `lode/s3/mock_test.go`.
 
 ---
 
