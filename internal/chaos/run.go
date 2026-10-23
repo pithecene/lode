@@ -52,7 +52,7 @@ func Run(ctx context.Context, cfg Config, store lode.RangeStore) Report {
 		wg.Go(func() { reader(readCtx, cfg, store, i, ledger) })
 	}
 	if cfg.Retention {
-		wg.Go(func() { janitor(ctx, cfg, store, until, ledger) })
+		wg.Go(func() { newJanitor(cfg, store, ledger).run(ctx, until) })
 	}
 	wg.Wait()
 
