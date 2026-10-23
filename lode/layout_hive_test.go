@@ -17,8 +17,8 @@ import "testing"
 // Dataset names "segments" and "partitions" are reserved-name cases below:
 // the grammar must read them as dataset IDs, not markers.
 
-func hiveForTest(*testing.T) layout {
-	return newPathLayout(defaultPathNames(), partitionScheme{name: "hive", keys: []string{"day"}})
+func hiveForTest(*testing.T) *pathLayout {
+	return newPathLayout(defaultPaths(false), partitionScheme{name: "hive", keys: []string{"day"}})
 }
 
 func TestHiveLayout_Manifests(t *testing.T) {
@@ -134,12 +134,12 @@ func TestHiveLayout_Manifests(t *testing.T) {
 
 // manifestFields is what layout.manifest parses from p: zero fields when p
 // is not a manifest path, so tables can list both cases.
-func manifestFields(l layout, p string) snapshotPath {
+func manifestFields(l *pathLayout, p string) snapshotPath {
 	sp, _ := l.manifest(p)
 	return sp
 }
 
-func isManifestPath(l layout, p string) bool {
+func isManifestPath(l *pathLayout, p string) bool {
 	_, ok := l.manifest(p)
 	return ok
 }

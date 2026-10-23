@@ -13,26 +13,24 @@ var fuzzHive = partitionScheme{name: "hive", keys: []string{"day", "region"}}
 
 // customNames are path names a root could choose, every one of them
 // different from the defaults.
-func customNames() pathNames {
-	return pathNames{
-		datasets: "tables", snapshots: "snaps", partitions: "parts", segments: "segs",
-		manifest: "_m.json", data: "d", expired: "gone", staged: "pending",
+func customNames() ManifestPaths {
+	return ManifestPaths{
+		Datasets: "tables", Snapshots: "snaps", Partitions: "parts", Segments: "segs",
+		Manifest: "_m.json", Data: "d", Expired: "gone", Staged: "pending",
 	}
 }
 
 // flatNames are the default names with flat paths.
-func flatNames() pathNames {
-	n := defaultPathNames()
-	n.flat = true
-	return n
+func flatNames() ManifestPaths {
+	return defaultPaths(true)
 }
 
 // fuzzLayouts are the layouts the fuzz targets cover: each partitioning
 // under the default, flat, and custom names.
-func fuzzLayouts(testing.TB) map[string]layout {
-	return map[string]layout{
-		"default":     newPathLayout(defaultPathNames(), noopScheme),
-		"hive":        newPathLayout(defaultPathNames(), fuzzHive),
+func fuzzLayouts(testing.TB) map[string]*pathLayout {
+	return map[string]*pathLayout{
+		"default":     newPathLayout(defaultPaths(false), noopScheme),
+		"hive":        newPathLayout(defaultPaths(false), fuzzHive),
 		"flat":        newPathLayout(flatNames(), noopScheme),
 		"flat hive":   newPathLayout(flatNames(), fuzzHive),
 		"custom":      newPathLayout(customNames(), noopScheme),
@@ -122,9 +120,9 @@ func isPlainSegment(s string) bool {
 	if s == "" || s == "." || s == ".." || strings.ContainsAny(s, "/\\=") {
 		return false
 	}
-	for _, n := range []pathNames{defaultPathNames(), customNames()} {
+	for _, n := range []ManifestPaths{defaultPaths(false), customNames()} {
 		switch s {
-		case n.datasets, n.snapshots, n.manifest, n.data, n.partitions, n.segments, latestFile, n.expired, n.staged:
+		case n.Datasets, n.Snapshots, n.Manifest, n.Data, n.Partitions, n.Segments, latestFile, n.Expired, n.Staged:
 			return false
 		}
 	}
@@ -139,7 +137,7 @@ func FuzzPartitionPrefix(f *testing.F) {
 	for _, seed := range []string{"day=1", "day=1/", "day=1/region=us", "../other", "day=1/../../x", "/day=1", "a\\b", "", "./day"} {
 		f.Add(seed)
 	}
-	hive := newPathLayout(defaultPathNames(), fuzzHive)
+	hive := newPathLayout(defaultPaths(false), fuzzHive)
 	f.Fuzz(func(t *testing.T, prefix string) {
 		if !validPartitionPrefix(prefix) {
 			return

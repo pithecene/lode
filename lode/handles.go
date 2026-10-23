@@ -277,7 +277,11 @@ func (r *ReadRoot) openView(ctx context.Context, id DatasetID, opts []ViewOption
 	if err := matchCodec(head, codecName, codecDescription); err != nil {
 		return nil, err
 	}
-	if want, have := r.names.convention(), recordedPaths(head, r.names.flat); have != want {
+	recorded, err := recordedSettings(head, r.names.Flat)
+	if err != nil {
+		return nil, err
+	}
+	if want, have := r.names, recorded.paths; have != want {
 		return nil, fmt.Errorf("lode: path names mismatch: dataset records %#v, root has %#v: %w", have, want, ErrSettingsMismatch)
 	}
 	d := newDataset(id, r.store, newPathLayout(r.names, scheme))
@@ -300,7 +304,7 @@ var hiveGrammar = partitionScheme{name: "hive"}
 // manifest and the partitioning it records; ErrSettingsMismatch when the
 // dataset's directory holds a manifest under other path names; ErrNotFound
 // when the dataset has no snapshot.
-func resolveViewHead(ctx context.Context, store Store, names pathNames, id DatasetID) (*Manifest, partitionScheme, error) {
+func resolveViewHead(ctx context.Context, store Store, names ManifestPaths, id DatasetID) (*Manifest, partitionScheme, error) {
 	candidates := []*dataset{
 		newDataset(id, store, newPathLayout(names, noopScheme)),
 		newDataset(id, store, newPathLayout(names, hiveGrammar)),

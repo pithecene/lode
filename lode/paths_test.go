@@ -49,7 +49,7 @@ func TestRootPaths_CustomNames(t *testing.T) {
 	if got := storeKeys(t, store); !slices.Equal(got, want) {
 		t.Errorf("keys = %v, want %v", got, want)
 	}
-	if m := readManifest(t, store, "tables/events/snaps/"+string(snap.ID)+"/_m.json"); m.Paths != customNames().convention() {
+	if m := readManifest(t, store, "tables/events/snaps/"+string(snap.ID)+"/_m.json"); m.Paths != customNames() {
 		t.Errorf("recorded paths = %+v, want the custom names", m.Paths)
 	}
 

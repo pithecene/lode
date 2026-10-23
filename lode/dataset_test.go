@@ -2693,7 +2693,7 @@ func TestDataset_LatestPointer(t *testing.T) {
 		// Verify pointer paths for all three layouts.
 		tests := []struct {
 			name         string
-			layout       layout
+			layout       *pathLayout
 			expectedPath string
 		}{
 			{
@@ -2716,7 +2716,7 @@ func TestDataset_LatestPointer(t *testing.T) {
 			})
 		}
 
-		hl := newPathLayout(defaultPathNames(), partitionScheme{name: "hive", keys: []string{"day"}})
+		hl := newPathLayout(defaultPaths(false), partitionScheme{name: "hive", keys: []string{"day"}})
 		got := hl.latestPointerPath("my-ds")
 		if got != "datasets/my-ds/latest" {
 			t.Errorf("hive: expected %q, got %q", "datasets/my-ds/latest", got)

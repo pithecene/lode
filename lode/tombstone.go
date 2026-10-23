@@ -53,7 +53,7 @@ func (t tombstone) describes(m *Manifest) bool {
 // once and never rewritten or removed.
 type tombstones struct {
 	store   Store
-	paths   tombstonePaths
+	paths   *pathLayout
 	dataset DatasetID
 }
 

@@ -21,9 +21,7 @@ func flatBlobs(t *testing.T, id DatasetID) Blobs {
 
 // flatLayout is the unpartitioned layout under flat names.
 func flatLayout() *pathLayout {
-	names := defaultPathNames()
-	names.flat = true
-	return newPathLayout(names, noopScheme)
+	return newPathLayout(defaultPaths(true), noopScheme)
 }
 
 func TestFlatLayout(t *testing.T) {

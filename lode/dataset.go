@@ -221,7 +221,7 @@ func resolveViewConfig(opts []ViewOption) (*viewConfig, error) {
 type dataset struct {
 	id         DatasetID
 	store      Store
-	layout     layout
+	layout     *pathLayout
 	compressor Compressor // the writer's; nil for a view
 	checksum   Checksum
 	custom     viewConfig // a view's custom components
@@ -248,20 +248,19 @@ type dataset struct {
 // the layout, manifests are read without validation (the reader validates).
 type datasetKind struct {
 	id      DatasetID
-	paths   snapshotPaths
-	staged  stagedPaths
+	paths   *pathLayout
 	store   Store      // checks canonical manifests of tombstoned snapshots
 	expired tombstones // retention's expiries hide snapshots from the scan
 }
 
-func newDatasetKind(id DatasetID, l layout, store Store) datasetKind {
-	return datasetKind{id: id, paths: l, staged: l, store: store, expired: tombstones{store: store, paths: l, dataset: id}}
+func newDatasetKind(id DatasetID, l *pathLayout, store Store) datasetKind {
+	return datasetKind{id: id, paths: l, store: store, expired: tombstones{store: store, paths: l, dataset: id}}
 }
 
 // StagedPath makes a dataset a history.Stager, so that a writer can check
 // its settings against a pending first commit (CONTRACT_CORE §Head Pointer).
 func (k datasetKind) StagedPath(id DatasetSnapshotID) string {
-	return k.staged.stagedManifestPath(k.id, id)
+	return k.paths.stagedManifestPath(k.id, id)
 }
 
 // StagesCommit is true only for a commit that expects no pointer, a
@@ -321,7 +320,7 @@ func fromHistory(s *history.Snapshot[DatasetSnapshotID, Manifest], err error) (*
 }
 
 // newDataset assembles the core of a dataset handle over store.
-func newDataset(id DatasetID, store Store, l layout) *dataset {
+func newDataset(id DatasetID, store Store, l *pathLayout) *dataset {
 	return &dataset{
 		id:      id,
 		store:   store,
@@ -456,7 +455,9 @@ func readRecords[T any](ctx context.Context, d *dataset, codec Codec[T], id Data
 }
 
 // matchCodec rejects a snapshot written with another codec, or, unless its
-// manifest is legacy, with another codec configuration.
+// manifest is legacy, with another codec configuration. It reads the two
+// codec fields directly rather than through recordedSettings, because it
+// runs on every read and needs no other setting.
 func matchCodec(m *Manifest, name, description string) error {
 	if m.Codec != name {
 		return fmt.Errorf("lode: codec mismatch: snapshot %s uses %q, handle has %q: %w", m.SnapshotID, m.Codec, name, ErrSettingsMismatch)

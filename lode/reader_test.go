@@ -691,12 +691,11 @@ func TestView_ListPartitions_SingleManifestLoad(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestValidateManifest_PathsNameEveryDirectory(t *testing.T) {
-	complete := defaultPathNames().convention()
-	flat := defaultPathNames()
-	flat.flat = true
+	complete := defaultPaths(false)
+	flat := defaultPaths(true)
 	incomplete := complete
 	incomplete.Staged = ""
-	flatWithSnapshots := flat.convention()
+	flatWithSnapshots := flat
 	flatWithSnapshots.Snapshots = "snapshots"
 	withEquals := complete
 	withEquals.Data = "k=v"
@@ -709,7 +708,7 @@ func TestValidateManifest_PathsNameEveryDirectory(t *testing.T) {
 		valid bool
 	}{
 		"default names":                   {complete, true},
-		"flat names":                      {flat.convention(), true},
+		"flat names":                      {flat, true},
 		"a missing name":                  {incomplete, false},
 		"flat with a snapshots directory": {flatWithSnapshots, false},
 		"only a manifest name":            {ManifestPaths{Manifest: "manifest.json"}, false},

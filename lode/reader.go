@@ -19,11 +19,11 @@ import (
 // listDatasets returns the IDs of the datasets under a root's datasets
 // directory: those with a manifest of either grammar, unpartitioned or
 // partitioned, under the root's names.
-func listDatasets(ctx context.Context, store ObjectStore, names pathNames, opts DatasetListOptions) ([]DatasetID, error) {
-	if names.flat {
+func listDatasets(ctx context.Context, store ObjectStore, names ManifestPaths, opts DatasetListOptions) ([]DatasetID, error) {
+	if names.Flat {
 		return nil, ErrDatasetsNotModeled
 	}
-	paths, err := store.List(ctx, names.datasets+"/")
+	paths, err := store.List(ctx, names.Datasets+"/")
 	if err != nil {
 		return nil, err
 	}
