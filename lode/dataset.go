@@ -69,11 +69,11 @@ func (o datasetOption) applyDataset(cfg *datasetConfig) error { return o(cfg) }
 // componentOption sets a component on a writer handle and on a view.
 type componentOption struct {
 	dataset func(cfg *datasetConfig)
-	view    func(cfg *viewConfig)
+	view    func(cfg *viewConfig) error
 }
 
 func (o componentOption) applyDataset(cfg *datasetConfig) error { o.dataset(cfg); return nil }
-func (o componentOption) applyView(cfg *viewConfig) error       { o.view(cfg); return nil }
+func (o componentOption) applyView(cfg *viewConfig) error       { return o.view(cfg) }
 
 // WithLayout sets how a dataset is partitioned: Unpartitioned (the default)
 // or Hive.
@@ -94,7 +94,13 @@ func WithLayout(l Layout) DatasetOption {
 func WithCompressor(c Compressor) ComponentOption {
 	return componentOption{
 		dataset: func(cfg *datasetConfig) { cfg.compressor = c },
-		view:    func(cfg *viewConfig) { cfg.compressor = c },
+		view: func(cfg *viewConfig) error {
+			if c == nil {
+				return validate.Argument("WithCompressor: compressor must not be nil")
+			}
+			cfg.compressor = c
+			return nil
+		},
 	}
 }
 
@@ -104,7 +110,7 @@ func WithCompressor(c Compressor) ComponentOption {
 func WithChecksum(c Checksum) ComponentOption {
 	return componentOption{
 		dataset: func(cfg *datasetConfig) { cfg.checksum = c },
-		view:    func(cfg *viewConfig) { cfg.checksum = c },
+		view:    func(cfg *viewConfig) error { cfg.checksum = c; return nil },
 	}
 }
 
@@ -370,6 +376,9 @@ func (d *dataset) readFile(ctx context.Context, m *Manifest, path string, decode
 	if err != nil {
 		return err
 	}
+	if err := d.matchChecksum(m); err != nil {
+		return err
+	}
 	rc, err := d.store.Get(ctx, path)
 	if err != nil {
 		return err
@@ -463,6 +472,30 @@ func (d *dataset) compressorFor(m *Manifest) (Compressor, error) {
 		return newCompressor(), nil
 	}
 	return nil, fmt.Errorf("lode: snapshot %s uses compressor %q, which is not bundled; pass it with WithCompressor: %w", m.SnapshotID, m.Compressor, ErrSettingsMismatch)
+}
+
+// bundledChecksums are the checksums Lode reconstructs from the name a
+// manifest records.
+var bundledChecksums = map[string]func() Checksum{
+	"md5": NewMD5Checksum,
+}
+
+// matchChecksum returns ErrSettingsMismatch when a snapshot's manifest
+// names a checksum that is neither bundled nor this handle's, as
+// compressorFor does for compressors (V1_API_DECISIONS D11, Options).
+// Reads do not verify checksums; the name is matched so that a view states
+// every custom component of the snapshots it reads.
+func (d *dataset) matchChecksum(m *Manifest) error {
+	name := m.ChecksumAlgorithm
+	if _, bundled := bundledChecksums[name]; name == "" || bundled {
+		return nil
+	}
+	for _, c := range []Checksum{d.checksum, d.custom.checksum} {
+		if c != nil && c.Name() == name {
+			return nil
+		}
+	}
+	return fmt.Errorf("lode: snapshot %s uses checksum %q, which is not bundled; pass it with WithChecksum: %w", m.SnapshotID, name, ErrSettingsMismatch)
 }
 
 // validateDatasetID rejects an ID that is not one canonical path segment

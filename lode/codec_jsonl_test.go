@@ -102,3 +102,32 @@ func TestJSONLCodec_RoundTrip(t *testing.T) {
 		}
 	})
 }
+
+// pointerMarshaler encodes through its pointer receiver only, so a codec
+// that encoded a record by address would persist "pointer" in place of the
+// value a stream encoder persists.
+type pointerMarshaler struct{ V int }
+
+func (*pointerMarshaler) MarshalJSON() ([]byte, error) { return []byte(`"pointer"`), nil }
+
+func TestJSONL_EncodesRecordsByValueAsStreamsDo(t *testing.T) {
+	codec := JSONL[pointerMarshaler]()
+	var batch bytes.Buffer
+	if err := codec.Encode(&batch, []pointerMarshaler{{V: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	var stream bytes.Buffer
+	enc, err := codec.(StreamingCodec[pointerMarshaler]).NewStreamEncoder(&stream)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := enc.WriteRecord(pointerMarshaler{V: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := enc.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if batch.String() != stream.String() {
+		t.Errorf("Encode = %q, stream = %q; want one encoding", batch.String(), stream.String())
+	}
+}

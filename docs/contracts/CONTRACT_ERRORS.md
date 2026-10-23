@@ -188,7 +188,7 @@ configuration.
 
 | Error | Source | Meaning |
 |-------|--------|---------|
-| `lode.ErrSettingsMismatch` | `Read` (handles, views) | The snapshot's codec, or, unless its format is 1.0.0, its codec description, differs from the handle's; or its compressor is neither bundled nor passed with `WithCompressor` |
+| `lode.ErrSettingsMismatch` | `Read` (handles, views) | The snapshot's codec, or, unless its format is 1.0.0, its codec description, differs from the handle's; or its compressor is neither bundled nor passed with `WithCompressor`; or its checksum is neither bundled nor passed with `WithChecksum` |
 | `lode.ErrSettingsMismatch` | Opening a view | The head's codec or description, or path names, differ from the view's |
 | `lode.ErrCodecNotStreamable` | `Records.StreamWrite` | The codec is not a `StreamingCodec` |
 | `lode.ErrSettingsMismatch` | Opening a writer, `Write`, `StreamWrite` | The writer's codec, codec description, compressor, checksum, partitioner, partition keys, or path names differ from those the dataset's manifests record; the dataset's directory holds a history persisted under another layout; or the writer's Hive keys cannot be verified against a dataset written before format version 1.1.0 (CONTRACT_WRITE_API §Settings) |

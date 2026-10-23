@@ -37,7 +37,7 @@ func (jsonlCodec[T]) Describe() string { return "" }
 func (jsonlCodec[T]) Encode(w io.Writer, records []T) error {
 	enc := jsonCodec.NewEncoder(w)
 	for i := range records {
-		if err := enc.Encode(&records[i]); err != nil {
+		if err := enc.Encode(records[i]); err != nil {
 			return err
 		}
 	}

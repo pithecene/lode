@@ -23,6 +23,16 @@ func putObject(t *testing.T, store Store, p string) {
 	}
 }
 
+// putManifestObject persists an object that begins as a manifest does, at
+// a path of the caller's choosing.
+func putManifestObject(t *testing.T, store Store, p string) {
+	t.Helper()
+	body := "{\n  \"schema_name\": \"lode-manifest\",\n  \"format_version\": \"1.1.0\"\n}"
+	if err := store.Put(t.Context(), p, strings.NewReader(body)); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func exists(t *testing.T, store Store, p string) bool {
 	t.Helper()
 	ok, err := store.Exists(t.Context(), p)

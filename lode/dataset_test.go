@@ -3278,3 +3278,32 @@ func TestDataset_Write_EmptyBatch(t *testing.T) {
 		})
 	}
 }
+
+// renamedChecksum is MD5 under a name Lode does not bundle, as a custom
+// checksum would be.
+type renamedChecksum struct{ Checksum }
+
+func (renamedChecksum) Name() string { return "custom-md5" }
+
+func TestBlobs_Read_CustomChecksumIsPassedToTheView(t *testing.T) {
+	store := NewMemory()
+	custom := renamedChecksum{NewMD5Checksum()}
+	snap, err := blobsOn(t, store, "test-ds", WithChecksum(custom)).Write(t.Context(), []byte("data"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bare, err := OpenReadOnly(Use(store)).Blobs(t.Context(), "test-ds")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := bare.Read(t.Context(), snap.ID); !errors.Is(err, ErrSettingsMismatch) || !strings.Contains(err.Error(), "custom-md5") {
+		t.Errorf("without it: got %v, want an ErrSettingsMismatch naming the checksum", err)
+	}
+	view, err := OpenReadOnly(Use(store)).Blobs(t.Context(), "test-ds", WithChecksum(custom))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := view.Read(t.Context(), snap.ID); err != nil || string(got) != "data" {
+		t.Errorf("with it: Read = %q, %v; want the blob", got, err)
+	}
+}

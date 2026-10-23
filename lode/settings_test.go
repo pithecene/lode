@@ -502,9 +502,11 @@ func TestWrite_ForeignManifestsAreAHistoryAndDataIsNot(t *testing.T) {
 		"datasets/events/staged/x/manifest.json",
 		"datasets/events/expired/" + id + "/manifest.json",
 		"datasets/events/segments/" + id + "/manifest.json",
+		// A manifest under another file name is recognized by its content.
+		"datasets/events/snapshots/" + id + "/_manifest.json",
 	} {
 		store := NewMemory()
-		putObject(t, store, key)
+		putManifestObject(t, store, key)
 		if _, err := tryWrite(t, store, jsonl, R(D{"a": 1})); !errors.Is(err, ErrSettingsMismatch) {
 			t.Errorf("%s: got %v, want a manifest no layout of this writer persists treated as a foreign history", key, err)
 		}
@@ -636,5 +638,23 @@ func TestWrite_LegacyParentCycleIsUnverifiable(t *testing.T) {
 	_, err = tryWrite(t, store, jsonl, R(D{"day": "d"}), hive("day"))
 	if !errors.Is(err, ErrSettingsMismatch) || !strings.Contains(err.Error(), "repeats") {
 		t.Fatalf("got %v, want a cycle reported as unverifiable", err)
+	}
+}
+
+func TestSettings_LegacyManifestsUseTheDefaultPathNames(t *testing.T) {
+	store := NewMemory()
+	snap, err := tryWrite(t, store, jsonl, R(D{"a": 1}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyHive(t, store, snap) // rewrites the manifest as format 1.0.0
+	if _, err := Open(Use(store), WithDataDir("d")).Records(t.Context(), "events", jsonl); !errors.Is(err, ErrSettingsMismatch) {
+		t.Errorf("writer: got %v, want a root with other names rejected", err)
+	}
+	if _, err := OpenReadOnly(Use(store), WithDataDir("d")).Records(t.Context(), "events", jsonl); !errors.Is(err, ErrSettingsMismatch) {
+		t.Errorf("view: got %v, want a root with other names rejected", err)
+	}
+	if _, err := tryWrite(t, store, jsonl, R(D{"a": 2})); err != nil {
+		t.Errorf("got %v, want a root with the default names accepted", err)
 	}
 }

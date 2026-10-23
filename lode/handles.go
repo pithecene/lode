@@ -273,8 +273,8 @@ func (r *ReadRoot) openView(ctx context.Context, id DatasetID, opts []ViewOption
 	if err := matchCodec(head, codecName, codecDescription); err != nil {
 		return nil, err
 	}
-	if want := r.names.convention(); !legacy(head) && head.Paths != want {
-		return nil, fmt.Errorf("lode: path names mismatch: dataset records %#v, root has %#v: %w", head.Paths, want, ErrSettingsMismatch)
+	if want, have := r.names.convention(), recordedPaths(head, r.names.flat); have != want {
+		return nil, fmt.Errorf("lode: path names mismatch: dataset records %#v, root has %#v: %w", have, want, ErrSettingsMismatch)
 	}
 	d := newDataset(id, r.store, newPathLayout(r.names, scheme))
 	d.custom = *cfg
@@ -293,8 +293,9 @@ var hiveGrammar = partitionScheme{name: "hive"}
 // at most one exists. Without a pointer, or when the pointer names a
 // snapshot whose manifest is not persisted, each grammar's scan selects the
 // head, as Latest does, without creating the pointer. It returns the head's
-// manifest and the partitioning it records; ErrNotFound when the dataset
-// has no snapshot.
+// manifest and the partitioning it records; ErrSettingsMismatch when the
+// dataset's directory holds a manifest under other path names; ErrNotFound
+// when the dataset has no snapshot.
 func resolveViewHead(ctx context.Context, store Store, names pathNames, id DatasetID) (*Manifest, partitionScheme, error) {
 	candidates := []*dataset{
 		newDataset(id, store, newPathLayout(names, noopScheme)),
@@ -319,6 +320,9 @@ func resolveViewHead(ctx context.Context, store Store, names pathNames, id Datas
 				return nil, partitionScheme{}, fmt.Errorf("lode: failed to resolve the head of %s: %w", id, err)
 			}
 		}
+	}
+	if err := rejectForeignManifest(ctx, store, id, candidates[0].layout, candidates[1].layout); err != nil {
+		return nil, partitionScheme{}, err
 	}
 	return nil, partitionScheme{}, fmt.Errorf("lode: dataset %s has no snapshot: %w", id, ErrNotFound)
 }

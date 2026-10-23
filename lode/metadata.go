@@ -25,8 +25,13 @@ func newMetadata(v any) (Metadata, error) {
 	if v == nil {
 		return Metadata{raw: emptyObject}, nil
 	}
+	// A Metadata decoded from JSON holds whatever value it was given, so it
+	// is checked as an encoded value is.
 	if m, ok := v.(Metadata); ok {
-		return m.orEmpty(), nil
+		if m = m.orEmpty(); !m.valid() {
+			return Metadata{}, validate.Argument("metadata must be a JSON object, got %s", m.raw)
+		}
+		return m, nil
 	}
 	data, err := json.Marshal(v)
 	if err != nil {

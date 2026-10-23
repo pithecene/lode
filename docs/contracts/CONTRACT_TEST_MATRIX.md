@@ -124,7 +124,8 @@ Gaps are recorded with codes that indicate category and priority:
 | A Hive key that is not one path segment or contains `=` is `ErrInvalidArgument` | `TestHive_KeysNamePartitionsUnambiguously` |
 | A pending first commit is checked against its staged copy without a listing | `TestWrite_PendingFirstCommitIsCheckedWithoutListing` |
 | The filesystem store's pointer lock file is not a foreign object | `TestWrite_PointerLockIsNotAForeignObject` |
-| A manifest that the writer's layout does not persist is a foreign history; another writer's uncommitted data, a tombstone, and its lock file are not | `TestWrite_ForeignManifestsAreAHistoryAndDataIsNot` |
+| A manifest that the writer's layout does not persist, recognized by its content under any file name, is a foreign history; another writer's uncommitted data, a tombstone, and its lock file are not | `TestWrite_ForeignManifestsAreAHistoryAndDataIsNot` |
+| A manifest of format version 1.0.0 rejects a writer or view whose path names are not the defaults | `TestSettings_LegacyManifestsUseTheDefaultPathNames` |
 | Concurrent first writers with different layouts: the loser is classified against the winner | `TestWrite_ConcurrentFirstWritersWithDifferentLayouts` |
 | A lost first commit is `ErrSettingsMismatch` when the winner's settings differ, without retries, and stays a conflict when they match | `TestWrite_LostFirstCommitIsAMismatchWithoutRetries` |
 | A manifest of format 1.1.0 without `paths` is invalid for writers and readers | `TestModernManifestWithoutPathsIsInvalid` |
@@ -285,7 +286,7 @@ All covered ✅
 | A blob dataset with a partitioned layout rejected | `TestRoot_Blobs/a_partitioned_layout_is_rejected` |
 | Hive keys rejected when empty, not one segment, or containing `=` | `TestHive_KeysNamePartitionsUnambiguously` |
 | Typed records partition with `Hive(...).By`; a `By` for another type, or a partition naming other keys, is rejected | `TestRoot_Records_Typed/Hive_partitions_typed_records_with_By`, `TestRoot_Records_Typed/a_By_function_for_another_record_type_is_rejected`, `TestRoot_Records_Typed/a_partition_naming_other_keys_fails_the_write` |
-| Path names: custom names land at their paths; same names read them; another datasets directory is another dataset; other names conflict or mismatch | `TestRootPaths_CustomNames` |
+| Path names: custom names land at their paths; same names read them; another datasets directory is another dataset; other names are rejected with `ErrSettingsMismatch` | `TestRootPaths_CustomNames` |
 | Path names: invalid, duplicate, `latest`, and flat with a datasets or snapshots directory are rejected | `TestRootPaths_InvalidNames` |
 | Flat paths, partitioned: paths, no dataset listing, views list partitions | `TestRootPaths_Flat` |
 
@@ -299,6 +300,11 @@ All covered ✅
 | Zstd round-trip (StreamWriteRecords) | `TestRecords_StreamWrite_Encoding/with_zstd_compression` |
 | Each snapshot is read with the compressor its manifest names | `TestRecords_Read/each_snapshot_is_read_with_the_compressor_its_manifest_names` |
 | A custom compressor is passed to the view by name | `TestRecords_Read/a_custom_compressor_is_passed_to_the_view` |
+| A custom checksum is passed to the view by name | `TestBlobs_Read_CustomChecksumIsPassedToTheView` |
+| A view rejects a nil compressor with `ErrInvalidArgument` | `TestViews_RejectANilCompressor` |
+| A write of no records persists an empty file list, which a view reads | `TestRecords_AnEmptyWriteRemainsReadable` |
+| Metadata decoded from a JSON value that is not an object is rejected with `ErrInvalidArgument` | `TestWrite_RejectsMetadataDecodedFromANonObject` |
+| The JSONL codec encodes a batch by value, as its stream encoder does | `TestJSONL_EncodesRecordsByValueAsStreamsDo` |
 | A handle with another codec is rejected | `TestRecords_Read/a_handle_with_another_codec_is_rejected` |
 
 ---

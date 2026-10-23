@@ -1,10 +1,11 @@
 package lode
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"path"
+	"io"
 	"slices"
 	"strings"
 
@@ -62,27 +63,40 @@ func missingPaths(m *Manifest) error {
 	return &validate.ManifestError{Field: "paths", Message: "is required from format version 1.1.0"}
 }
 
+// recordedPaths returns the path names m records. A legacy manifest
+// records none: it was persisted under the default names, flat or not
+// according to where it lies, which is where a layout whose paths are flat
+// exactly when flat found it (V1_API_DECISIONS D11, Paths).
+func recordedPaths(m *Manifest, flat bool) ManifestPaths {
+	if !legacy(m) {
+		return m.Paths
+	}
+	names := defaultPathNames()
+	names.flat = flat
+	return names.convention()
+}
+
 // mismatch returns the first setting of m that differs from s, or nil. A
-// legacy manifest is compared by the settings it records; its partition keys
-// are verified separately (verifyLegacyKeys), and its path names are those
-// under which it was found.
+// legacy manifest is compared by the settings it records and the default
+// path names; its partition keys are verified separately
+// (verifyLegacyKeys).
 func (s datasetSettings) mismatch(m *Manifest) error {
 	if err := missingPaths(m); err != nil {
 		return fmt.Errorf("lode: manifest of snapshot %s: %w", m.SnapshotID, err)
 	}
+	// %q and %#v quote every string, so distinct key lists and path names
+	// never format alike ("a,b" against "a", "b").
 	comparisons := []settingComparison{
 		{"codec", s.codec, m.Codec},
 		{"compressor", s.compressor, m.Compressor},
 		{"checksum", s.checksum, m.ChecksumAlgorithm},
 		{"partitioner", s.partitioner, m.Partitioner},
+		{"path names", fmt.Sprintf("%#v", s.paths), fmt.Sprintf("%#v", recordedPaths(m, s.paths.Flat))},
 	}
-	// %q and %#v quote every string, so distinct key lists and path names
-	// never format alike ("a,b" against "a", "b").
 	if !legacy(m) {
 		comparisons = append(comparisons,
 			settingComparison{"codec description", s.codecDescription, m.CodecDescription},
 			settingComparison{"partition keys", fmt.Sprintf("%q", s.partitionKeys), fmt.Sprintf("%q", m.PartitionKeys)},
-			settingComparison{"path names", fmt.Sprintf("%#v", s.paths), fmt.Sprintf("%#v", m.Paths)},
 		)
 	}
 	for _, c := range comparisons {
@@ -143,12 +157,20 @@ func (d *dataset) removeAdoptedStaged(ctx context.Context) {
 // directory holds a manifest this layout does not persist: a history
 // written under another layout, whose manifests the configured layout
 // cannot find. A writer that took the dataset for empty would otherwise
-// begin a second history beside it. Only manifests count: data objects that
-// another writer persisted before its first commit are not a history, and
-// counting them would make two first writers with different layouts reject
-// each other before either commits.
+// begin a second history beside it.
 func (d *dataset) rejectForeignHistory(ctx context.Context) error {
-	keys, err := d.store.List(ctx, d.layout.datasetPrefix(d.id))
+	return rejectForeignManifest(ctx, d.store, d.id, d.layout)
+}
+
+// rejectForeignManifest returns ErrSettingsMismatch when the directory of
+// dataset id holds a manifest that none of layouts persists. Only manifests
+// count: data objects that another writer persisted before its first
+// commit are not a history, and counting them would make two first writers
+// with different layouts reject each other before either commits. A
+// manifest is recognized by its content, because one persisted under
+// other path names may bear any file name.
+func rejectForeignManifest(ctx context.Context, store Store, id DatasetID, layouts ...layout) error {
+	keys, err := store.List(ctx, layouts[0].datasetPrefix(id))
 	if err != nil {
 		return fmt.Errorf("lode: failed to list the dataset: %w", err)
 	}
@@ -157,11 +179,46 @@ func (d *dataset) rejectForeignHistory(ctx context.Context) error {
 		if key, ok := storepath.Key(k); !ok || key != k {
 			continue
 		}
-		if path.Base(k) == d.layout.manifestName() && !d.layout.ownsObject(d.id, k) {
+		if slices.ContainsFunc(layouts, func(l layout) bool { return l.ownsObject(id, k) }) {
+			continue
+		}
+		found, err := isManifest(ctx, store, k)
+		if err != nil {
+			return fmt.Errorf("lode: failed to read %s: %w", k, err)
+		}
+		if found {
 			return fmt.Errorf("lode: layout mismatch: dataset holds the manifest %s, which the configured layout does not persist: %w", k, ErrSettingsMismatch)
 		}
 	}
 	return nil
+}
+
+// manifestPrefix is how every persisted manifest begins once whitespace is
+// removed: Manifest declares its schema name first.
+var manifestPrefix = []byte(`{"schema_name":"` + manifestSchemaName + `"`)
+
+// manifestProbeSize bounds the bytes isManifest reads: enough to hold
+// manifestPrefix with the indentation Lode persists.
+const manifestProbeSize = 128
+
+// isManifest reports whether the object at p begins as a manifest does.
+// It reads at most manifestProbeSize bytes, so a large data object costs
+// one short read. An object removed since it was listed is not one.
+func isManifest(ctx context.Context, store Store, p string) (bool, error) {
+	rc, err := store.Get(ctx, p)
+	if errors.Is(err, ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = rc.Close() }()
+	head := make([]byte, manifestProbeSize)
+	n, err := io.ReadFull(rc, head)
+	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
+		return false, err
+	}
+	return bytes.HasPrefix(bytes.Join(bytes.Fields(head[:n]), nil), manifestPrefix), nil
 }
 
 // settingsManifest is the manifest a writer's settings are checked

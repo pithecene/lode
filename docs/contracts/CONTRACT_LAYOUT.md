@@ -53,12 +53,18 @@ A dataset's paths have two sources (V1_API_DECISIONS D11):
 - The names are part of a dataset's address, as the store is. Each manifest
   records them (CONTRACT_CORE §Manifest Requirements), and a writer or view
   whose names differ from those the dataset's head manifest records MUST be
-  rejected with `ErrSettingsMismatch`.
+  rejected with `ErrSettingsMismatch`. A manifest of format version 1.0.0
+  records no names: it was persisted under the default names, flat or not
+  according to where it lies, and a root with other names MUST be rejected
+  by it.
 - A root whose datasets directory differs addresses another prefix and sees
   another dataset. A root whose other names differ shares the pointer: if
   it finds the manifest the pointer names, the recorded names reject it,
-  and if it does not, a writer returns `ErrSnapshotConflict`, as for a
-  pending commit, and never appends.
+  and if it does not, the dataset's directory holds a manifest that its
+  names do not persist, which rejects a writer and a view with
+  `ErrSettingsMismatch` (CONTRACT_WRITE_API §Settings). Lode recognizes a
+  manifest by its content, because a manifest persisted under other names
+  may bear any file name.
 
 The following rules also apply:
 - The persistence layer defines the logical layout of keys.

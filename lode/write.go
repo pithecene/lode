@@ -47,7 +47,9 @@ func (d *dataset) newPending(metadata any) (pendingSnapshot, error) {
 	if err != nil {
 		return pendingSnapshot{}, err
 	}
-	return pendingSnapshot{id: DatasetSnapshotID(history.NewID()), metadata: m}, nil
+	// Files starts non-nil, so a write of no records persists "files": []
+	// rather than null, which a manifest must not hold.
+	return pendingSnapshot{id: DatasetSnapshotID(history.NewID()), metadata: m, files: []FileRef{}}, nil
 }
 
 // add records a persisted data file and the partition it belongs to.

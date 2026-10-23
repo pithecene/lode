@@ -62,7 +62,10 @@ manifest records them (CONTRACT_CORE §Manifest Requirements).
 - A dataset directory that holds such a manifest, when no manifest is found
   under the writer's layout, contains a history persisted under another
   layout. The writer MUST be rejected with `ErrSettingsMismatch` rather
-  than begin a second history beside it. Data objects are not a history:
+  than begin a second history beside it. A manifest is recognized by its
+  content, which begins with its schema name, because a manifest persisted
+  under other path names may bear any file name. Data objects are not a
+  history:
   another writer persists its data before its first commit, and two first
   writers with different layouts would otherwise reject each other before
   either commits. A dataset under another datasets directory (the flat

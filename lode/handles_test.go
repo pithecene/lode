@@ -1,6 +1,8 @@
 package lode
 
 import (
+	"encoding/json"
+	"errors"
 	"iter"
 	"testing"
 )
@@ -87,4 +89,34 @@ func metadataOf(t testing.TB, m Metadata) D {
 		t.Fatal(err)
 	}
 	return out
+}
+
+func TestRecords_AnEmptyWriteRemainsReadable(t *testing.T) {
+	store := NewMemory()
+	snap, err := recordsOn(t, store, "events").Write(t.Context(), R(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := viewOn(t, store, "events").Read(t.Context(), snap.ID)
+	if err != nil || len(got) != 0 {
+		t.Fatalf("Read = %v, %v; want no records", got, err)
+	}
+}
+
+func TestViews_RejectANilCompressor(t *testing.T) {
+	_, err := OpenReadOnly(Use(NewMemory())).Records(t.Context(), "events", JSONL[D](), WithCompressor(nil))
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("got %v, want ErrInvalidArgument", err)
+	}
+}
+
+func TestWrite_RejectsMetadataDecodedFromANonObject(t *testing.T) {
+	var m Metadata
+	if err := json.Unmarshal([]byte(`[1]`), &m); err != nil {
+		t.Fatal(err)
+	}
+	_, err := recordsOn(t, NewMemory(), "events").Write(t.Context(), R(D{"a": 1}), m)
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("got %v, want ErrInvalidArgument", err)
+	}
 }
