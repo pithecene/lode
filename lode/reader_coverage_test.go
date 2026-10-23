@@ -4,57 +4,51 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"strings"
 	"testing"
+	"time"
 )
 
 // -----------------------------------------------------------------------------
-// DatasetReader.OpenObject and ReaderAt coverage
+// View.OpenObject and ReaderAt coverage
 // -----------------------------------------------------------------------------
 
-func TestDatasetReader_Objects(t *testing.T) {
+// blobView writes payload as one blob of dataset "test-ds" over store and
+// opens a view of it, returning the view and the blob's object reference,
+// discovered through the view's listing.
+func blobViewOf(t *testing.T, store Store, payload []byte) (BlobView, ObjectRef) {
+	t.Helper()
+	snap, err := blobsOn(t, store, "test-ds").Write(t.Context(), payload, nil)
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	view, err := OpenReadOnly(Use(store)).Blobs(t.Context(), "test-ds")
+	if err != nil {
+		t.Fatalf("Blobs view: %v", err)
+	}
+	refs, err := view.ListManifests(t.Context(), "", ManifestListOptions{})
+	if err != nil {
+		t.Fatalf("ListManifests: %v", err)
+	}
+	if len(refs) != 1 {
+		t.Fatalf("expected 1 manifest ref, got %d", len(refs))
+	}
+	manifest, err := view.GetManifest(t.Context(), refs[0])
+	if err != nil {
+		t.Fatalf("GetManifest: %v", err)
+	}
+	if len(manifest.Files) != 1 {
+		t.Fatalf("expected 1 file ref, got %d", len(manifest.Files))
+	}
+	return view, ObjectRef{Manifest: ManifestRef{ID: snap.ID}, Path: manifest.Files[0].Path}
+}
+
+func TestView_Objects(t *testing.T) {
 	t.Run("open object", func(t *testing.T) {
-		store := NewMemory()
 		payload := []byte("hello-open-object")
+		view, obj := blobViewOf(t, NewMemory(), payload)
 
-		// Write a blob via Dataset
-		ds, err := NewDataset("test-ds", NewMemoryFactoryFrom(store))
-		if err != nil {
-			t.Fatalf("NewDataset: %v", err)
-		}
-		snap, err := ds.Write(t.Context(), []any{payload}, Metadata{})
-		if err != nil {
-			t.Fatalf("Write: %v", err)
-		}
-
-		// Create a DatasetReader and discover the manifest
-		reader, err := NewDatasetReader(NewMemoryFactoryFrom(store))
-		if err != nil {
-			t.Fatalf("NewDatasetReader: %v", err)
-		}
-
-		refs, err := reader.ListManifests(t.Context(), "test-ds", "", ManifestListOptions{})
-		if err != nil {
-			t.Fatalf("ListManifests: %v", err)
-		}
-		if len(refs) != 1 {
-			t.Fatalf("expected 1 manifest ref, got %d", len(refs))
-		}
-
-		manifest, err := reader.GetManifest(t.Context(), "test-ds", refs[0])
-		if err != nil {
-			t.Fatalf("GetManifest: %v", err)
-		}
-		if len(manifest.Files) != 1 {
-			t.Fatalf("expected 1 file ref, got %d", len(manifest.Files))
-		}
-
-		obj := ObjectRef{
-			Dataset:  "test-ds",
-			Manifest: ManifestRef{ID: snap.ID},
-			Path:     manifest.Files[0].Path,
-		}
-
-		rc, err := reader.OpenObject(t.Context(), obj)
+		rc, err := view.OpenObject(t.Context(), obj)
 		if err != nil {
 			t.Fatalf("OpenObject: %v", err)
 		}
@@ -70,60 +64,41 @@ func TestDatasetReader_Objects(t *testing.T) {
 	})
 
 	t.Run("open object not found", func(t *testing.T) {
-		reader, err := NewDatasetReader(NewMemoryFactory())
-		if err != nil {
-			t.Fatalf("NewDatasetReader: %v", err)
-		}
-
-		obj := ObjectRef{
-			Dataset:  "no-such-ds",
-			Manifest: ManifestRef{ID: "no-such-snap"},
-			Path:     "no/such/path",
-		}
-
-		_, err = reader.OpenObject(t.Context(), obj)
-		if !errors.Is(err, ErrNotFound) {
+		view, obj := blobViewOf(t, NewMemory(), []byte("x"))
+		missing := idAt(time.Now().Add(time.Hour))
+		obj = ObjectRef{Manifest: ManifestRef{ID: missing}, Path: strings.Replace(obj.Path, string(obj.Manifest.ID), string(missing), 1)}
+		if _, err := view.OpenObject(t.Context(), obj); !errors.Is(err, ErrNotFound) {
 			t.Errorf("expected ErrNotFound, got: %v", err)
 		}
 	})
 
-	t.Run("reader at", func(t *testing.T) {
+	t.Run("objects outside the dataset are refused", func(t *testing.T) {
 		store := NewMemory()
-		payload := []byte("abcdefghijklmnop")
-
-		// Write a blob via Dataset
-		ds, err := NewDataset("test-ds", NewMemoryFactoryFrom(store))
+		other, err := blobsOn(t, store, "other").Write(t.Context(), []byte("secret"), nil)
 		if err != nil {
-			t.Fatalf("NewDataset: %v", err)
+			t.Fatal(err)
 		}
-		snap, err := ds.Write(t.Context(), []any{payload}, Metadata{})
-		if err != nil {
-			t.Fatalf("Write: %v", err)
+		view, obj := blobViewOf(t, store, []byte("x"))
+		refs := map[string]ObjectRef{
+			"another dataset":        {Path: other.Files[0].Path},
+			"a manifest":             {Path: strings.Replace(obj.Path, "data/", "", 1)},
+			"another snapshot's ref": {Manifest: ManifestRef{ID: other.ID}, Path: obj.Path},
+			"an arbitrary key":       {Path: "no/such/path"},
 		}
+		for name, ref := range refs {
+			if _, err := view.OpenObject(t.Context(), ref); !errors.Is(err, ErrInvalidArgument) {
+				t.Errorf("OpenObject %s: got %v, want ErrInvalidArgument", name, err)
+			}
+			if _, err := view.ReaderAt(t.Context(), ref); !errors.Is(err, ErrInvalidArgument) {
+				t.Errorf("ReaderAt %s: got %v, want ErrInvalidArgument", name, err)
+			}
+		}
+	})
 
-		// Create a DatasetReader and discover the file path
-		reader, err := NewDatasetReader(NewMemoryFactoryFrom(store))
-		if err != nil {
-			t.Fatalf("NewDatasetReader: %v", err)
-		}
+	t.Run("reader at", func(t *testing.T) {
+		view, obj := blobViewOf(t, NewMemory(), []byte("abcdefghijklmnop"))
 
-		refs, err := reader.ListManifests(t.Context(), "test-ds", "", ManifestListOptions{})
-		if err != nil {
-			t.Fatalf("ListManifests: %v", err)
-		}
-
-		manifest, err := reader.GetManifest(t.Context(), "test-ds", refs[0])
-		if err != nil {
-			t.Fatalf("GetManifest: %v", err)
-		}
-
-		obj := ObjectRef{
-			Dataset:  "test-ds",
-			Manifest: ManifestRef{ID: snap.ID},
-			Path:     manifest.Files[0].Path,
-		}
-
-		ra, err := reader.ReaderAt(t.Context(), obj)
+		ra, err := view.ReaderAt(t.Context(), obj)
 		if err != nil {
 			t.Fatalf("ReaderAt: %v", err)
 		}

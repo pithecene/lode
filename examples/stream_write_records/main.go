@@ -1,8 +1,9 @@
-// Example: StreamWriteRecords — Streaming Record Writes
+// Example: Records.StreamWrite — Streaming Record Writes
 //
-// This example demonstrates StreamWriteRecords for streaming large record sets:
+// This example demonstrates Records.StreamWrite for streaming large record
+// sets:
 //
-//   - Pull-based iterator pattern (RecordIterator interface)
+//   - A range-over-func iterator (iter.Seq2[T, error]) as the record source
 //   - Single-pass streaming through codec
 //   - Manifest written only on successful completion
 //   - Metadata explicitness requirement
@@ -13,6 +14,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"iter"
 	"log"
 	"os"
 
@@ -37,21 +39,17 @@ func run() error {
 
 	fmt.Printf("Storage root: %s\n\n", tmpDir)
 
-	// Create filesystem store factory
-	storeFactory := lode.NewFSFactory(tmpDir)
+	// Open a root over the filesystem store.
+	root := lode.Open(lode.FS(tmpDir))
 
 	// -------------------------------------------------------------------------
 	// SETUP: Create dataset with streaming-capable codec
 	// -------------------------------------------------------------------------
 	fmt.Println("=== SETUP ===")
 
-	// StreamWriteRecords requires a codec that supports streaming.
-	// JSONL codec supports streaming because it writes records line-by-line.
-	ds, err := lode.NewDataset(
-		"events",
-		storeFactory,
-		lode.WithCodec(lode.NewJSONLCodec()),
-	)
+	// StreamWrite requires a codec that streams (a lode.StreamingCodec).
+	// The JSONL codec streams because it writes records line by line.
+	ds, err := root.Records(ctx, "events", lode.JSONL[lode.D]())
 	if err != nil {
 		return fmt.Errorf("create dataset: %w", err)
 	}
@@ -63,12 +61,12 @@ func run() error {
 	// -------------------------------------------------------------------------
 	fmt.Println("=== STREAM WRITE ===")
 
-	// Create a record iterator
-	// In real usage, this could read from a file, database cursor, or channel
+	// Create a record iterator.
+	// In real usage, this could read from a file, database cursor, or channel.
 	//
 	// Note: []lode.D is used here (instead of lode.R) because the slice backs
 	// the iterator. Per CONTRACT_EXAMPLES.md, []lode.D is appropriate when
-	// records are consumed via iterator rather than passed directly to Write.
+	// records are consumed through an iterator rather than passed to Write.
 	records := []lode.D{
 		{"id": 1, "event": "signup", "user": "alice"},
 		{"id": 2, "event": "login", "user": "alice"},
@@ -76,16 +74,16 @@ func run() error {
 		{"id": 4, "event": "logout", "user": "alice"},
 		{"id": 5, "event": "signup", "user": "bob"},
 	}
-	iter := NewSliceIterator(records)
+	seq := each(records)
 
 	fmt.Printf("Streaming %d records...\n", len(records))
 
-	// StreamWriteRecords:
-	// - Pulls records from iterator one at a time
+	// StreamWrite:
+	// - Ranges over the iterator, one record at a time
 	// - Encodes through codec directly to storage
 	// - Writes manifest only after all records are processed
-	// - Returns error if iterator fails
-	snapshot, err := ds.StreamWriteRecords(ctx, iter, lode.Metadata{
+	// - Returns error if the iterator yields one
+	snapshot, err := ds.StreamWrite(ctx, seq, lode.D{
 		"source":      "stream_write_records_example",
 		"record_type": "user_events",
 	})
@@ -94,10 +92,10 @@ func run() error {
 	}
 
 	fmt.Printf("Created snapshot: %s\n", snapshot.ID)
-	fmt.Printf("Row count: %d\n", snapshot.Manifest.RowCount)
-	fmt.Printf("Codec: %s\n", snapshot.Manifest.Codec)
+	fmt.Printf("Row count: %d\n", snapshot.RowCount)
+	fmt.Printf("Codec: %s\n", snapshot.Codec)
 	fmt.Printf("Files:\n")
-	for _, f := range snapshot.Manifest.Files {
+	for _, f := range snapshot.Files {
 		fmt.Printf("  - %s (%d bytes)\n", f.Path, f.SizeBytes)
 	}
 	fmt.Println()
@@ -122,59 +120,33 @@ func run() error {
 	// KEY POINTS
 	// -------------------------------------------------------------------------
 	fmt.Println("=== KEY POINTS ===")
-	fmt.Println("1. StreamWriteRecords requires a streaming-capable codec (e.g., JSONL)")
-	fmt.Println("2. Records are pulled from iterator one at a time (memory efficient)")
+	fmt.Println("1. StreamWrite requires a streaming-capable codec (e.g., JSONL)")
+	fmt.Println("2. Records are consumed from the iterator one at a time (memory efficient)")
 	fmt.Println("3. Manifest is written only after successful completion")
-	fmt.Println("4. If iterator returns error, no manifest is written (no snapshot)")
-	fmt.Println("5. nil metadata is coalesced to Metadata{} (pass nil or {} for empty)")
+	fmt.Println("4. If the iterator yields an error, no manifest is written (no snapshot)")
+	fmt.Println("5. nil metadata persists as {}")
 	fmt.Println("6. Partitioning is NOT supported (single-pass streaming cannot partition)")
 	fmt.Println()
 
 	fmt.Println("=== SUCCESS ===")
-	fmt.Println("StreamWriteRecords demonstration complete!")
+	fmt.Println("StreamWrite demonstration complete!")
 
 	return nil
 }
 
 // -----------------------------------------------------------------------------
-// SliceIterator — Simple iterator over a slice of records
+// each — an iterator over a slice of records
 // -----------------------------------------------------------------------------
 
-// SliceIterator implements lode.RecordIterator for a slice of records.
-// In production, you might implement this over a database cursor, file reader,
-// or channel to avoid loading all records into memory.
-type SliceIterator struct {
-	records []lode.D
-	index   int
-	err     error
-}
-
-// NewSliceIterator creates an iterator over the given records.
-func NewSliceIterator(records []lode.D) *SliceIterator {
-	return &SliceIterator{
-		records: records,
-		index:   -1,
+// each yields the records of a slice, without an error. In production, an
+// iterator might range over a database cursor, a file reader, or a channel,
+// yielding the source's error to stop the write.
+func each(records []lode.D) iter.Seq2[lode.D, error] {
+	return func(yield func(lode.D, error) bool) {
+		for _, r := range records {
+			if !yield(r, nil) {
+				return
+			}
+		}
 	}
-}
-
-// Next advances to the next record. Returns false when exhausted.
-func (s *SliceIterator) Next() bool {
-	if s.err != nil {
-		return false
-	}
-	s.index++
-	return s.index < len(s.records)
-}
-
-// Record returns the current record. Only valid after Next returns true.
-func (s *SliceIterator) Record() any {
-	if s.index < 0 || s.index >= len(s.records) {
-		return nil
-	}
-	return s.records[s.index]
-}
-
-// Err returns any error encountered during iteration.
-func (s *SliceIterator) Err() error {
-	return s.err
 }

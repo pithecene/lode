@@ -162,6 +162,21 @@ func New(client API, cfg Config) (*Store, error) {
 	}, nil
 }
 
+// Factory returns a factory for a Store over client, for lode.Open: it
+// performs no I/O until a root opens, and New's error is recorded by the
+// root rather than returned here.
+//
+//	root := lode.Open(s3.Factory(client, s3.Config{Bucket: "my-bucket"}))
+func Factory(client API, cfg Config) lode.Factory[lode.Store] {
+	return func() (lode.Store, error) {
+		s, err := New(client, cfg)
+		if err != nil {
+			return nil, err
+		}
+		return s, nil
+	}
+}
+
 // shouldUseAtomicPath returns true if the given size should use the atomic Put path.
 // This is a pure function for routing decisions, testable without large files.
 func shouldUseAtomicPath(size int64) bool {

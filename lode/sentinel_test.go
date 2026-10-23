@@ -13,15 +13,16 @@ func TestSentinelErrors_ErrorMessages(t *testing.T) {
 		{"ErrPathExists", ErrPathExists, "path exists"},
 		{"ErrNoManifests", ErrNoManifests, "no manifests found (storage contains objects)"},
 		{"ErrRangeReadNotSupported", ErrRangeReadNotSupported, "range read not supported"},
-		{"ErrCodecConfigured", ErrCodecConfigured, "StreamWrite requires no codec; use StreamWriteRecords for structured data"},
 		{"ErrCodecNotStreamable", ErrCodecNotStreamable, "codec does not support streaming"},
 		{"ErrNilIterator", ErrNilIterator, "records iterator must be non-nil"},
-		{"ErrPartitioningNotSupported", ErrPartitioningNotSupported, "StreamWriteRecords does not support partitioning; use Write for partitioned data"},
+		{"ErrPartitioningNotSupported", ErrPartitioningNotSupported, "StreamWrite does not support partitioning; use Write for partitioned data"},
 		{"ErrPartitionPrefixNotSupported", ErrPartitionPrefixNotSupported, "partition prefix requires a partition-aware layout"},
 		{"ErrSchemaViolation", ErrSchemaViolation, "parquet: schema violation"},
 		{"ErrInvalidFormat", ErrInvalidFormat, "parquet: invalid format"},
 		{"ErrSnapshotConflict", ErrSnapshotConflict, "snapshot conflict: another writer committed"},
 		{"ErrDatasetsNotModeled", ErrDatasetsNotModeled, "datasets not modeled by this layout"},
+		{"ErrSettingsMismatch", ErrSettingsMismatch, "settings mismatch"},
+		{"ErrReadOnly", ErrReadOnly, "read-only store"},
 	}
 
 	for _, tt := range tests {

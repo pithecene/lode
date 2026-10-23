@@ -78,8 +78,9 @@ func WithParquetCompression(codec ParquetCompression) ParquetOption {
 
 // Error sentinels ErrSchemaViolation and ErrInvalidFormat are defined in api.go.
 
-// parquetCodec implements Codec and StatisticalCodec for Apache Parquet format.
+// parquetCodec implements Codec[D] and StatisticalCodec for Apache Parquet.
 type parquetCodec struct {
+	err          error // an invalid schema, reported by Root.Records
 	schema       ParquetSchema
 	compression  ParquetCompression
 	pqSchema     *parquet.Schema
@@ -111,17 +112,25 @@ func validateSchema(schema ParquetSchema) (map[string]ParquetField, error) {
 	return fieldsByName, nil
 }
 
-// NewParquetCodec creates a Parquet codec with the given schema.
+// Parquet returns a Parquet codec for map records with the given schema.
 //
-// The schema defines the structure of records. All records must conform to this
-// schema during encoding. Fields not in the schema are silently ignored.
+// The schema defines the structure of records. All records must conform to
+// it during encoding; fields not in the schema are ignored. An invalid
+// schema is recorded and returned, matching ErrSchemaViolation, by
+// Root.Records and ReadRoot.Records, and by Encode and Decode, so that the
+// codec can be passed in a chain: root.Records(ctx, id, lode.Parquet(schema)).
 //
-// Returns an error if the schema contains invalid field types.
-//
-// Parquet codec does NOT implement StreamingRecordCodec because Parquet files
-// require a footer that references all row groups. Use Dataset.Write for
-// batched encoding.
-func NewParquetCodec(schema ParquetSchema, opts ...ParquetOption) (Codec, error) {
+// The Parquet codec is not a StreamingCodec, because a Parquet file requires
+// a footer that references all row groups. Use Records.Write.
+func Parquet(schema ParquetSchema, opts ...ParquetOption) Codec[D] {
+	c, err := newParquetCodec(schema, opts...)
+	if err != nil {
+		return &parquetCodec{err: err}
+	}
+	return c
+}
+
+func newParquetCodec(schema ParquetSchema, opts ...ParquetOption) (*parquetCodec, error) {
 	// The codec retains the schema; a later change to the caller's slice
 	// must not change what it encodes or describes.
 	schema.Fields = slices.Clone(schema.Fields)
@@ -157,6 +166,9 @@ func (c *parquetCodec) Name() string {
 	return "parquet"
 }
 
+// configError is the construction error a chain defers to Root.Records.
+func (c *parquetCodec) configError() error { return c.err }
+
 // parquetTypeNames spells each ParquetType in a codec description.
 var parquetTypeNames = [parquetTypeMax]string{
 	ParquetInt32:     "int32",
@@ -180,6 +192,9 @@ type describedField struct {
 // internal compression is omitted: it does not affect which records a file
 // holds or how they decode.
 func (c *parquetCodec) Describe() string {
+	if c.err != nil {
+		return ""
+	}
 	fields := make([]describedField, len(c.schema.Fields))
 	for i, f := range c.schema.Fields {
 		fields[i] = describedField{Name: f.Name, Type: parquetTypeNames[f.Type], Nullable: f.Nullable}
@@ -196,7 +211,10 @@ func (c *parquetCodec) FileStats() *FileStats {
 	return c.lastStats
 }
 
-func (c *parquetCodec) Encode(w io.Writer, records []any) error {
+func (c *parquetCodec) Encode(w io.Writer, records []D) error {
+	if c.err != nil {
+		return c.err
+	}
 	c.lastStats = nil // reset before encoding
 	// Buffer to collect complete parquet file
 	var buf bytes.Buffer
@@ -236,7 +254,10 @@ func (c *parquetCodec) Encode(w io.Writer, records []any) error {
 	return err
 }
 
-func (c *parquetCodec) Decode(r io.Reader) ([]any, error) {
+func (c *parquetCodec) Decode(r io.Reader) ([]D, error) {
+	if c.err != nil {
+		return nil, c.err
+	}
 	// Read all content into buffer (parquet needs seeking)
 	data, err := io.ReadAll(r)
 	if err != nil {
@@ -258,14 +279,14 @@ func (c *parquetCodec) Decode(r io.Reader) ([]any, error) {
 
 	numRows := file.NumRows()
 	if numRows == 0 {
-		return []any{}, nil
+		return []D{}, nil
 	}
 
 	// Read all rows
 	reader := parquet.NewReader(file)
 	defer closer(reader)()
 
-	records := make([]any, 0, numRows)
+	records := make([]D, 0, numRows)
 	rows := make([]parquet.Row, 100)
 	for {
 		n, err := reader.ReadRows(rows)
@@ -306,12 +327,7 @@ func (c *parquetCodec) getFieldByName(name string) ParquetField {
 
 // recordToRow converts a map record to a parquet Row.
 // The row values must be in the same order as the schema fields.
-func (c *parquetCodec) recordToRow(record any, index int) (parquet.Row, error) {
-	m, ok := record.(map[string]any)
-	if !ok {
-		return nil, fmt.Errorf("%w: record %d is not map[string]any", ErrSchemaViolation, index)
-	}
-
+func (c *parquetCodec) recordToRow(m D, index int) (parquet.Row, error) {
 	// Build row in schema field order
 	row := make(parquet.Row, len(c.fieldOrder))
 	for i, fieldName := range c.fieldOrder {
@@ -559,7 +575,7 @@ var orderable = map[ParquetType]bool{
 }
 
 // computeFileStats computes per-column statistics from the input records.
-func computeFileStats(schema ParquetSchema, records []any) *FileStats {
+func computeFileStats(schema ParquetSchema, records []D) *FileStats {
 	columns := make([]ColumnStats, len(schema.Fields))
 	for i, field := range schema.Fields {
 		columns[i] = computeColumnStats(field, records)
@@ -606,14 +622,10 @@ func (a *columnAccumulator) observe(val any) {
 }
 
 // computeColumnStats computes statistics for a single column across all records.
-func computeColumnStats(field ParquetField, records []any) ColumnStats {
+func computeColumnStats(field ParquetField, records []D) ColumnStats {
 	acc := columnAccumulator{field: field}
 
-	for _, record := range records {
-		m, ok := record.(map[string]any)
-		if !ok {
-			continue
-		}
+	for _, m := range records {
 		val, exists := m[field.Name]
 		if !exists {
 			acc.observe(nil)

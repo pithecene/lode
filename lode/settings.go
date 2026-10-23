@@ -27,13 +27,12 @@ type datasetSettings struct {
 // settings are this writer's settings, as its manifests record them.
 func (d *dataset) settings() datasetSettings {
 	s := datasetSettings{
-		compressor:    d.compressor.Name(),
-		partitioner:   d.layout.partitioner().name(),
-		partitionKeys: d.layout.partitioner().keys(),
-		paths:         d.layout.convention(),
-	}
-	if d.codec != nil {
-		s.codec, s.codecDescription = d.codec.Name(), d.codec.Describe()
+		codec:            d.codecName,
+		codecDescription: d.codecDescription,
+		compressor:       d.compressor.Name(),
+		partitioner:      d.layout.partitioning().name,
+		partitionKeys:    d.layout.partitioning().keys,
+		paths:            d.layout.convention(),
 	}
 	if d.checksum != nil {
 		s.checksum = d.checksum.Name()
@@ -57,33 +56,67 @@ const legacyFormatVersion = "1.0.0"
 // missingPaths is the validation error of a manifest of format 1.1.0 or
 // later without the path names it must record.
 func missingPaths(m *Manifest) error {
-	if legacy(m) || m.Paths != (ManifestPaths{}) {
+	if legacy(m) {
 		return nil
 	}
-	return &validate.ManifestError{Field: "paths", Message: "is required from format version 1.1.0"}
+	p := m.Paths
+	if p == (ManifestPaths{}) {
+		return &validate.ManifestError{Field: "paths", Message: "is required from format version 1.1.0"}
+	}
+	if p.Flat && (p.Datasets != "" || p.Snapshots != "") {
+		return &validate.ManifestError{Field: "paths", Message: "of flat paths must not name the datasets or snapshots directory"}
+	}
+	names := []pathName{
+		{"partitions", p.Partitions},
+		{"segments", p.Segments},
+		{"manifest", p.Manifest},
+		{"data", p.Data},
+		{"expired", p.Expired},
+		{"staged", p.Staged},
+	}
+	if !p.Flat {
+		names = append(names, pathName{"datasets", p.Datasets}, pathName{"snapshots", p.Snapshots})
+	}
+	if problem := nameProblem(names); problem != "" {
+		return &validate.ManifestError{Field: "paths", Message: problem}
+	}
+	return nil
+}
+
+// recordedPaths returns the path names m records. A legacy manifest
+// records none: it was persisted under the default names, flat or not
+// according to where it lies, which is where a layout whose paths are flat
+// exactly when flat found it (V1_API_DECISIONS D11, Paths).
+func recordedPaths(m *Manifest, flat bool) ManifestPaths {
+	if !legacy(m) {
+		return m.Paths
+	}
+	names := defaultPathNames()
+	names.flat = flat
+	return names.convention()
 }
 
 // mismatch returns the first setting of m that differs from s, or nil. A
-// legacy manifest is compared by the settings it records; its partition keys
-// are verified separately (verifyLegacyKeys), and its path names are those
-// under which it was found.
+// legacy manifest is compared by the settings it records and the default
+// path names; its partition keys are verified separately
+// (verifyLegacyKeys).
 func (s datasetSettings) mismatch(m *Manifest) error {
 	if err := missingPaths(m); err != nil {
 		return fmt.Errorf("lode: manifest of snapshot %s: %w", m.SnapshotID, err)
 	}
+	// %q and %#v quote every string, so distinct key lists and path names
+	// never format alike ("a,b" against "a", "b").
 	comparisons := []settingComparison{
 		{"codec", s.codec, m.Codec},
 		{"compressor", s.compressor, m.Compressor},
 		{"checksum", s.checksum, m.ChecksumAlgorithm},
 		{"partitioner", s.partitioner, m.Partitioner},
+		{"path names", fmt.Sprintf("%#v", s.paths), fmt.Sprintf("%#v", recordedPaths(m, s.paths.Flat))},
 	}
-	// %q and %#v quote every string, so distinct key lists and path names
-	// never format alike ("a,b" against "a", "b").
 	if !legacy(m) {
 		comparisons = append(comparisons,
 			settingComparison{"codec description", s.codecDescription, m.CodecDescription},
 			settingComparison{"partition keys", fmt.Sprintf("%q", s.partitionKeys), fmt.Sprintf("%q", m.PartitionKeys)},
-			settingComparison{"path names", fmt.Sprintf("%#v", s.paths), fmt.Sprintf("%#v", m.Paths)},
 		)
 	}
 	for _, c := range comparisons {
@@ -116,7 +149,7 @@ func (d *dataset) checkSettings(ctx context.Context, parent DatasetSnapshotID) e
 	if err := d.settings().mismatch(head); err != nil {
 		return err
 	}
-	if legacy(head) && !d.layout.partitioner().isNoop() {
+	if legacy(head) && !d.layout.partitioning().isNoop() {
 		if err := d.verifyLegacyKeys(ctx, head); err != nil {
 			return err
 		}
@@ -144,23 +177,37 @@ func (d *dataset) removeAdoptedStaged(ctx context.Context) {
 // directory holds a manifest this layout does not persist: a history
 // written under another layout, whose manifests the configured layout
 // cannot find. A writer that took the dataset for empty would otherwise
-// begin a second history beside it. Only manifests count: data objects that
-// another writer persisted before its first commit are not a history, and
-// counting them would make two first writers with different layouts reject
-// each other before either commits.
+// begin a second history beside it.
 func (d *dataset) rejectForeignHistory(ctx context.Context) error {
-	keys, err := d.store.List(ctx, d.layout.datasetPrefix(d.id))
+	return rejectForeignManifest(ctx, d.store, d.id, d.layout)
+}
+
+// rejectForeignManifest returns ErrSettingsMismatch when the directory of
+// dataset id holds a manifest that none of layouts persists. Only manifests
+// count: data objects that another writer persisted before its first
+// commit are not a history, and counting them would make two first writers
+// with different layouts reject each other before either commits. A
+// manifest is recognized by its file name, from the listing alone: the
+// layouts' manifest name, or the default name, which every manifest
+// persisted before the names became root options bears.
+func rejectForeignManifest(ctx context.Context, store Store, id DatasetID, layouts ...layout) error {
+	keys, err := store.List(ctx, layouts[0].datasetPrefix(id))
 	if err != nil {
 		return fmt.Errorf("lode: failed to list the dataset: %w", err)
 	}
+	names := []string{layouts[0].manifestName(), defaultPathNames().manifest}
 	for _, k := range keys {
 		// A key no store accepts in this form was not persisted by a layout.
 		if key, ok := storepath.Key(k); !ok || key != k {
 			continue
 		}
-		if path.Base(k) == d.layout.manifestName() && !d.layout.ownsObject(d.id, k) {
-			return fmt.Errorf("lode: layout mismatch: dataset holds the manifest %s, which the configured layout does not persist: %w", k, ErrSettingsMismatch)
+		if !slices.Contains(names, path.Base(k)) {
+			continue
 		}
+		if slices.ContainsFunc(layouts, func(l layout) bool { return l.ownsObject(id, k) }) {
+			continue
+		}
+		return fmt.Errorf("lode: layout mismatch: dataset holds the manifest %s, which the configured layout does not persist: %w", k, ErrSettingsMismatch)
 	}
 	return nil
 }
@@ -207,7 +254,7 @@ func (d *dataset) settingsManifest(ctx context.Context, parent DatasetSnapshotID
 // consistent with it; a chain that ends at a missing or expired parent, or
 // repeats a snapshot, before a snapshot with files cannot be verified.
 func (d *dataset) verifyLegacyKeys(ctx context.Context, head *Manifest) error {
-	want := d.layout.partitioner().keys()
+	want := d.layout.partitioning().keys
 	visited := map[DatasetSnapshotID]bool{}
 	for m := head; ; {
 		if visited[m.SnapshotID] {

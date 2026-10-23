@@ -20,7 +20,7 @@ import (
 func TestRetryOptions_ExactBounds(t *testing.T) {
 	cases := []struct {
 		name    string
-		opt     Option
+		opt     DatasetOption
 		wantErr bool
 	}{
 		{"base delay zero", WithRetryBaseDelay(0), true},
@@ -33,7 +33,7 @@ func TestRetryOptions_ExactBounds(t *testing.T) {
 		{"jitter just below 0", WithRetryJitter(-0.0001), true},
 	}
 	for _, c := range cases {
-		_, err := NewDataset("test-ds", NewMemoryFactory(), c.opt)
+		_, err := Open(Memory()).Blobs(t.Context(), "test-ds", c.opt)
 		if c.wantErr && err == nil {
 			t.Errorf("%s: expected error", c.name)
 		}
@@ -43,19 +43,19 @@ func TestRetryOptions_ExactBounds(t *testing.T) {
 	}
 }
 
-func TestDataset_Write_Commit(t *testing.T) {
+func TestRecords_Write_Commit(t *testing.T) {
 	// Manifest.Files is sorted by Path regardless of partition write order.
 	t.Run("manifest files sorted by path", func(t *testing.T) {
-		ds, err := NewDataset("test-ds", NewMemoryFactory(), WithCodec(NewJSONLCodec()), WithHiveLayout("day"))
+		ds, err := Open(Memory()).Records(t.Context(), "test-ds", JSONL[D](), hive("day"))
 		if err != nil {
 			t.Fatal(err)
 		}
-		snap, err := ds.Write(t.Context(), R(D{"id": 1, "day": "c"}, D{"id": 2, "day": "a"}, D{"id": 3, "day": "b"}), Metadata{})
+		snap, err := ds.Write(t.Context(), R(D{"id": 1, "day": "c"}, D{"id": 2, "day": "a"}, D{"id": 3, "day": "b"}), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		paths := make([]string, 0, len(snap.Manifest.Files))
-		for _, f := range snap.Manifest.Files {
+		paths := make([]string, 0, len(snap.Files))
+		for _, f := range snap.Files {
 			paths = append(paths, f.Path)
 		}
 		if len(paths) != 3 || !sort.StringsAreSorted(paths) {
@@ -67,29 +67,29 @@ func TestDataset_Write_Commit(t *testing.T) {
 	// without scanning when the pointer names an existing manifest.
 	t.Run("cold start valid pointer skips scan", func(t *testing.T) {
 		fs := testutil.NewFaultStore(NewMemory())
-		first, err := NewDataset("test-ds", newFaultStoreFactory(fs), WithCodec(NewJSONLCodec()))
+		first, err := Open(Use(fs)).Records(t.Context(), "test-ds", JSONL[D]())
 		if err != nil {
 			t.Fatal(err)
 		}
-		snap1, err := first.Write(t.Context(), R(D{"id": 1}), Metadata{})
+		snap1, err := first.Write(t.Context(), R(D{"id": 1}), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 
-		second, err := NewDataset("test-ds", newFaultStoreFactory(fs), WithCodec(NewJSONLCodec()))
+		second, err := Open(Use(fs)).Records(t.Context(), "test-ds", JSONL[D]())
 		if err != nil {
 			t.Fatal(err)
 		}
 		before := len(fs.ListCalls())
-		snap2, err := second.Write(t.Context(), R(D{"id": 2}), Metadata{})
+		snap2, err := second.Write(t.Context(), R(D{"id": 2}), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if got := len(fs.ListCalls()) - before; got != 0 {
 			t.Fatalf("cold start with valid pointer issued %d List calls, want 0", got)
 		}
-		if snap2.Manifest.ParentSnapshotID != snap1.ID {
-			t.Fatalf("parent = %s, want %s", snap2.Manifest.ParentSnapshotID, snap1.ID)
+		if snap2.ParentSnapshotID != snap1.ID {
+			t.Fatalf("parent = %s, want %s", snap2.ParentSnapshotID, snap1.ID)
 		}
 	})
 
@@ -109,12 +109,12 @@ func TestDataset_Write_Commit(t *testing.T) {
 		}
 		for _, c := range cases {
 			fs := testutil.NewFaultStore(NewMemory())
-			ds, err := NewDataset("test-ds", newFaultStoreFactory(fs), WithCodec(NewJSONLCodec()))
+			ds, err := Open(Use(fs)).Records(t.Context(), "test-ds", JSONL[D]())
 			if err != nil {
 				t.Fatal(err)
 			}
 			c.inject(fs)
-			if _, err := ds.Write(t.Context(), R(D{"id": 1}), Metadata{}); !errors.Is(err, c.want) {
+			if _, err := ds.Write(t.Context(), R(D{"id": 1}), nil); !errors.Is(err, c.want) {
 				t.Fatalf("%s: got %v, want %v", c.name, err, c.want)
 			}
 			c.clear(fs)

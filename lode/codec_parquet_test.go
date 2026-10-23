@@ -7,11 +7,18 @@ import (
 	"time"
 )
 
+// newParquet returns the Parquet codec and the schema error it records,
+// as the v0 constructor returned them.
+func newParquet(schema ParquetSchema, opts ...ParquetOption) (Codec[D], error) {
+	c := Parquet(schema, opts...)
+	return c, checkCodec(c)
+}
+
 func TestParquetCodec_Construction(t *testing.T) {
 	t.Run("name", func(t *testing.T) {
-		codec, err := NewParquetCodec(ParquetSchema{})
+		codec, err := newParquet(ParquetSchema{})
 		if err != nil {
-			t.Fatalf("NewParquetCodec() error = %v", err)
+			t.Fatalf("newParquet() error = %v", err)
 		}
 		if got := codec.Name(); got != "parquet" {
 			t.Errorf("Name() = %q, want %q", got, "parquet")
@@ -33,14 +40,14 @@ func TestParquetCodec_Construction(t *testing.T) {
 		}
 
 		for _, comp := range compressions {
-			codec, err := NewParquetCodec(schema,
+			codec, err := newParquet(schema,
 				WithParquetCompression(comp),
 			)
 			if err != nil {
-				t.Fatalf("NewParquetCodec() error = %v", err)
+				t.Fatalf("newParquet() error = %v", err)
 			}
 
-			records := []any{
+			records := []D{
 				map[string]any{"id": int64(1)},
 				map[string]any{"id": int64(2)},
 			}
@@ -69,12 +76,12 @@ func TestParquetCodec_Construction(t *testing.T) {
 				{Name: "id", Type: ParquetType(999)}, // invalid type
 			},
 		}
-		_, err := NewParquetCodec(schema)
+		_, err := newParquet(schema)
 		if err == nil {
-			t.Fatal("NewParquetCodec() expected error for invalid field type")
+			t.Fatal("newParquet() expected error for invalid field type")
 		}
 		if !errors.Is(err, ErrSchemaViolation) {
-			t.Errorf("NewParquetCodec() error = %v, want ErrSchemaViolation", err)
+			t.Errorf("newParquet() error = %v, want ErrSchemaViolation", err)
 		}
 	})
 
@@ -84,12 +91,12 @@ func TestParquetCodec_Construction(t *testing.T) {
 				{Name: "", Type: ParquetInt64}, // empty name
 			},
 		}
-		_, err := NewParquetCodec(schema)
+		_, err := newParquet(schema)
 		if err == nil {
-			t.Fatal("NewParquetCodec() expected error for empty field name")
+			t.Fatal("newParquet() expected error for empty field name")
 		}
 		if !errors.Is(err, ErrSchemaViolation) {
-			t.Errorf("NewParquetCodec() error = %v, want ErrSchemaViolation", err)
+			t.Errorf("newParquet() error = %v, want ErrSchemaViolation", err)
 		}
 	})
 
@@ -99,12 +106,12 @@ func TestParquetCodec_Construction(t *testing.T) {
 				{Name: "id", Type: ParquetType(-1)}, // negative type
 			},
 		}
-		_, err := NewParquetCodec(schema)
+		_, err := newParquet(schema)
 		if err == nil {
-			t.Fatal("NewParquetCodec() expected error for negative field type")
+			t.Fatal("newParquet() expected error for negative field type")
 		}
 		if !errors.Is(err, ErrSchemaViolation) {
-			t.Errorf("NewParquetCodec() error = %v, want ErrSchemaViolation", err)
+			t.Errorf("newParquet() error = %v, want ErrSchemaViolation", err)
 		}
 	})
 
@@ -115,12 +122,12 @@ func TestParquetCodec_Construction(t *testing.T) {
 				{Name: "id", Type: ParquetString}, // duplicate name
 			},
 		}
-		_, err := NewParquetCodec(schema)
+		_, err := newParquet(schema)
 		if err == nil {
-			t.Fatal("NewParquetCodec() expected error for duplicate field name")
+			t.Fatal("newParquet() expected error for duplicate field name")
 		}
 		if !errors.Is(err, ErrSchemaViolation) {
-			t.Errorf("NewParquetCodec() error = %v, want ErrSchemaViolation", err)
+			t.Errorf("newParquet() error = %v, want ErrSchemaViolation", err)
 		}
 	})
 }
@@ -135,12 +142,12 @@ func TestParquetCodec_RoundTrip(t *testing.T) {
 				{Name: "active", Type: ParquetBool},
 			},
 		}
-		codec, err := NewParquetCodec(schema)
+		codec, err := newParquet(schema)
 		if err != nil {
-			t.Fatalf("NewParquetCodec() error = %v", err)
+			t.Fatalf("newParquet() error = %v", err)
 		}
 
-		records := []any{
+		records := []D{
 			map[string]any{"id": int64(1), "name": "alice", "score": 95.5, "active": true},
 			map[string]any{"id": int64(2), "name": "bob", "score": 87.3, "active": false},
 		}
@@ -160,7 +167,7 @@ func TestParquetCodec_RoundTrip(t *testing.T) {
 		}
 
 		// Verify first record
-		got := decoded[0].(map[string]any)
+		got := decoded[0]
 		if got["id"] != int64(1) {
 			t.Errorf("record[0].id = %v, want 1", got["id"])
 		}
@@ -186,12 +193,12 @@ func TestParquetCodec_RoundTrip(t *testing.T) {
 				{Name: "timestamp_field", Type: ParquetTimestamp},
 			},
 		}
-		codec, err := NewParquetCodec(schema)
+		codec, err := newParquet(schema)
 		if err != nil {
-			t.Fatalf("NewParquetCodec() error = %v", err)
+			t.Fatalf("newParquet() error = %v", err)
 		}
 
-		records := []any{
+		records := []D{
 			map[string]any{
 				"int32_field":     int32(42),
 				"int64_field":     int64(9999999999),
@@ -218,7 +225,7 @@ func TestParquetCodec_RoundTrip(t *testing.T) {
 			t.Fatalf("Decode() got %d records, want 1", len(decoded))
 		}
 
-		got := decoded[0].(map[string]any)
+		got := decoded[0]
 		if got["int32_field"] != int32(42) {
 			t.Errorf("int32_field = %v (%T), want 42", got["int32_field"], got["int32_field"])
 		}
@@ -239,13 +246,13 @@ func TestParquetCodec_RoundTrip(t *testing.T) {
 				{Name: "id", Type: ParquetInt64},
 			},
 		}
-		codec, err := NewParquetCodec(schema)
+		codec, err := newParquet(schema)
 		if err != nil {
-			t.Fatalf("NewParquetCodec() error = %v", err)
+			t.Fatalf("newParquet() error = %v", err)
 		}
 
 		var buf bytes.Buffer
-		if err := codec.Encode(&buf, []any{}); err != nil {
+		if err := codec.Encode(&buf, []D{}); err != nil {
 			t.Fatalf("Encode() error = %v", err)
 		}
 
@@ -273,12 +280,12 @@ func TestParquetCodec_Nullable(t *testing.T) {
 				{Name: "name", Type: ParquetString, Nullable: true},
 			},
 		}
-		codec, err := NewParquetCodec(schema)
+		codec, err := newParquet(schema)
 		if err != nil {
-			t.Fatalf("NewParquetCodec() error = %v", err)
+			t.Fatalf("newParquet() error = %v", err)
 		}
 
-		records := []any{
+		records := []D{
 			map[string]any{"id": int64(1), "name": "alice"},
 			map[string]any{"id": int64(2), "name": nil},
 			map[string]any{"id": int64(3)}, // missing field treated as nil
@@ -307,12 +314,12 @@ func TestParquetCodec_Nullable(t *testing.T) {
 				{Name: "optional", Type: ParquetString, Nullable: true},
 			},
 		}
-		codec, err := NewParquetCodec(schema)
+		codec, err := newParquet(schema)
 		if err != nil {
-			t.Fatalf("NewParquetCodec() error = %v", err)
+			t.Fatalf("newParquet() error = %v", err)
 		}
 
-		records := []any{
+		records := []D{
 			map[string]any{"id": int64(1), "optional": "present"},
 			map[string]any{"id": int64(2), "optional": nil}, // explicit nil
 			map[string]any{"id": int64(3)},                  // missing key
@@ -333,19 +340,19 @@ func TestParquetCodec_Nullable(t *testing.T) {
 		}
 
 		// Record 0: present value
-		r0 := decoded[0].(map[string]any)
+		r0 := decoded[0]
 		if r0["optional"] != "present" {
 			t.Errorf("record[0].optional = %v, want %q", r0["optional"], "present")
 		}
 
 		// Record 1: explicit nil should decode as nil
-		r1 := decoded[1].(map[string]any)
+		r1 := decoded[1]
 		if r1["optional"] != nil {
 			t.Errorf("record[1].optional = %v, want nil", r1["optional"])
 		}
 
 		// Record 2: missing key should decode as nil
-		r2 := decoded[2].(map[string]any)
+		r2 := decoded[2]
 		if r2["optional"] != nil {
 			t.Errorf("record[2].optional = %v, want nil", r2["optional"])
 		}
@@ -365,13 +372,13 @@ func TestParquetCodec_Nullable(t *testing.T) {
 				{Name: "timestamp_field", Type: ParquetTimestamp, Nullable: true},
 			},
 		}
-		codec, err := NewParquetCodec(schema)
+		codec, err := newParquet(schema)
 		if err != nil {
-			t.Fatalf("NewParquetCodec() error = %v", err)
+			t.Fatalf("newParquet() error = %v", err)
 		}
 
 		// Record with all nil values
-		records := []any{
+		records := []D{
 			map[string]any{
 				"int32_field":     nil,
 				"int64_field":     nil,
@@ -398,7 +405,7 @@ func TestParquetCodec_Nullable(t *testing.T) {
 			t.Fatalf("Decode() got %d records, want 1", len(decoded))
 		}
 
-		r := decoded[0].(map[string]any)
+		r := decoded[0]
 		for _, field := range schema.Fields {
 			if r[field.Name] != nil {
 				t.Errorf("%s = %v, want nil", field.Name, r[field.Name])
@@ -415,12 +422,12 @@ func TestParquetCodec_EncodeErrors(t *testing.T) {
 				{Name: "name", Type: ParquetString}, // required
 			},
 		}
-		codec, err := NewParquetCodec(schema)
+		codec, err := newParquet(schema)
 		if err != nil {
-			t.Fatalf("NewParquetCodec() error = %v", err)
+			t.Fatalf("newParquet() error = %v", err)
 		}
 
-		records := []any{
+		records := []D{
 			map[string]any{"id": int64(1)}, // missing required "name"
 		}
 
@@ -440,12 +447,12 @@ func TestParquetCodec_EncodeErrors(t *testing.T) {
 				{Name: "id", Type: ParquetInt64},
 			},
 		}
-		codec, err := NewParquetCodec(schema)
+		codec, err := newParquet(schema)
 		if err != nil {
-			t.Fatalf("NewParquetCodec() error = %v", err)
+			t.Fatalf("newParquet() error = %v", err)
 		}
 
-		records := []any{
+		records := []D{
 			map[string]any{"id": "not an int"}, // wrong type
 		}
 
@@ -459,44 +466,19 @@ func TestParquetCodec_EncodeErrors(t *testing.T) {
 		}
 	})
 
-	t.Run("not map record", func(t *testing.T) {
-		schema := ParquetSchema{
-			Fields: []ParquetField{
-				{Name: "id", Type: ParquetInt64},
-			},
-		}
-		codec, err := NewParquetCodec(schema)
-		if err != nil {
-			t.Fatalf("NewParquetCodec() error = %v", err)
-		}
-
-		records := []any{
-			"not a map", // invalid record type
-		}
-
-		var buf bytes.Buffer
-		err = codec.Encode(&buf, records)
-		if err == nil {
-			t.Fatal("Encode() expected error for non-map record")
-		}
-		if !errors.Is(err, ErrSchemaViolation) {
-			t.Errorf("Encode() error = %v, want ErrSchemaViolation", err)
-		}
-	})
-
 	t.Run("int32 overflow", func(t *testing.T) {
 		schema := ParquetSchema{
 			Fields: []ParquetField{
 				{Name: "val", Type: ParquetInt32},
 			},
 		}
-		codec, err := NewParquetCodec(schema)
+		codec, err := newParquet(schema)
 		if err != nil {
-			t.Fatalf("NewParquetCodec() error = %v", err)
+			t.Fatalf("newParquet() error = %v", err)
 		}
 
 		// Value exceeds int32 max
-		records := []any{
+		records := []D{
 			map[string]any{"val": float64(3000000000)}, // > 2147483647
 		}
 
@@ -517,12 +499,12 @@ func TestParquetCodec_EncodeErrors(t *testing.T) {
 				{Name: "val", Type: ParquetInt32},
 			},
 		}
-		codec, err := NewParquetCodec(schema)
+		codec, err := newParquet(schema)
 		if err != nil {
-			t.Fatalf("NewParquetCodec() error = %v", err)
+			t.Fatalf("newParquet() error = %v", err)
 		}
 
-		records := []any{
+		records := []D{
 			map[string]any{"val": float64(-3000000000)}, // < -2147483648
 		}
 
@@ -542,14 +524,14 @@ func TestParquetCodec_EncodeErrors(t *testing.T) {
 				{Name: "val", Type: ParquetInt64},
 			},
 		}
-		codec, err := NewParquetCodec(schema)
+		codec, err := newParquet(schema)
 		if err != nil {
-			t.Fatalf("NewParquetCodec() error = %v", err)
+			t.Fatalf("newParquet() error = %v", err)
 		}
 
 		// Value exceeds safe integer range for float64 (2^53)
 		// Use 1e18 which is much larger than 2^53 (≈9e15)
-		records := []any{
+		records := []D{
 			map[string]any{"val": float64(1e18)}, // 1e18 >> 2^53
 		}
 
@@ -569,13 +551,13 @@ func TestParquetCodec_EncodeErrors(t *testing.T) {
 				{Name: "val", Type: ParquetInt32},
 			},
 		}
-		codec, err := NewParquetCodec(schema)
+		codec, err := newParquet(schema)
 		if err != nil {
-			t.Fatalf("NewParquetCodec() error = %v", err)
+			t.Fatalf("newParquet() error = %v", err)
 		}
 
 		// Float64 with fractional part
-		records := []any{
+		records := []D{
 			map[string]any{"val": float64(42.5)}, // not an integer
 		}
 
@@ -595,12 +577,12 @@ func TestParquetCodec_EncodeErrors(t *testing.T) {
 				{Name: "ts", Type: ParquetTimestamp},
 			},
 		}
-		codec, err := NewParquetCodec(schema)
+		codec, err := newParquet(schema)
 		if err != nil {
-			t.Fatalf("NewParquetCodec() error = %v", err)
+			t.Fatalf("newParquet() error = %v", err)
 		}
 
-		records := []any{
+		records := []D{
 			map[string]any{"ts": "not-a-valid-timestamp"},
 		}
 
@@ -622,12 +604,12 @@ func TestParquetCodec_Conversion(t *testing.T) {
 				{Name: "id", Type: ParquetInt64},
 			},
 		}
-		codec, err := NewParquetCodec(schema)
+		codec, err := newParquet(schema)
 		if err != nil {
-			t.Fatalf("NewParquetCodec() error = %v", err)
+			t.Fatalf("newParquet() error = %v", err)
 		}
 
-		records := []any{
+		records := []D{
 			map[string]any{
 				"id":          int64(1),
 				"extra_field": "ignored", // not in schema
@@ -644,7 +626,7 @@ func TestParquetCodec_Conversion(t *testing.T) {
 			t.Fatalf("Decode() error = %v", err)
 		}
 
-		got := decoded[0].(map[string]any)
+		got := decoded[0]
 		if _, exists := got["extra_field"]; exists {
 			t.Error("extra_field should not be in decoded record")
 		}
@@ -661,13 +643,13 @@ func TestParquetCodec_Conversion(t *testing.T) {
 				{Name: "int64_field", Type: ParquetInt64},
 			},
 		}
-		codec, err := NewParquetCodec(schema)
+		codec, err := newParquet(schema)
 		if err != nil {
-			t.Fatalf("NewParquetCodec() error = %v", err)
+			t.Fatalf("newParquet() error = %v", err)
 		}
 
 		// Simulate JSON-decoded numbers (float64)
-		records := []any{
+		records := []D{
 			map[string]any{
 				"int32_field": float64(42),
 				"int64_field": float64(9999999999),
@@ -684,7 +666,7 @@ func TestParquetCodec_Conversion(t *testing.T) {
 			t.Fatalf("Decode() error = %v", err)
 		}
 
-		got := decoded[0].(map[string]any)
+		got := decoded[0]
 		if got["int32_field"] != int32(42) {
 			t.Errorf("int32_field = %v (%T), want int32(42)", got["int32_field"], got["int32_field"])
 		}
@@ -699,13 +681,13 @@ func TestParquetCodec_Conversion(t *testing.T) {
 				{Name: "ts", Type: ParquetTimestamp},
 			},
 		}
-		codec, err := NewParquetCodec(schema)
+		codec, err := newParquet(schema)
 		if err != nil {
-			t.Fatalf("NewParquetCodec() error = %v", err)
+			t.Fatalf("newParquet() error = %v", err)
 		}
 
 		// Timestamp as RFC3339 string
-		records := []any{
+		records := []D{
 			map[string]any{
 				"ts": "2024-01-15T10:30:00Z",
 			},
@@ -721,7 +703,7 @@ func TestParquetCodec_Conversion(t *testing.T) {
 			t.Fatalf("Decode() error = %v", err)
 		}
 
-		got := decoded[0].(map[string]any)
+		got := decoded[0]
 		ts, ok := got["ts"].(time.Time)
 		if !ok {
 			t.Fatalf("ts = %T, want time.Time", got["ts"])
@@ -740,13 +722,13 @@ func TestParquetCodec_Dataset(t *testing.T) {
 				{Name: "value", Type: ParquetString},
 			},
 		}
-		codec, err := NewParquetCodec(schema)
+		codec, err := newParquet(schema)
 		if err != nil {
-			t.Fatalf("NewParquetCodec() error = %v", err)
+			t.Fatalf("newParquet() error = %v", err)
 		}
 
 		// Generate 10k records
-		records := make([]any, 10000)
+		records := make([]D, 10000)
 		for i := range records {
 			records[i] = map[string]any{
 				"id":    int64(i),
@@ -769,11 +751,11 @@ func TestParquetCodec_Dataset(t *testing.T) {
 		}
 
 		// Spot check
-		first := decoded[0].(map[string]any)
+		first := decoded[0]
 		if first["id"] != int64(0) {
 			t.Errorf("first record id = %v, want 0", first["id"])
 		}
-		last := decoded[9999].(map[string]any)
+		last := decoded[9999]
 		if last["id"] != int64(9999) {
 			t.Errorf("last record id = %v, want 9999", last["id"])
 		}
@@ -788,34 +770,34 @@ func TestParquetCodec_Dataset(t *testing.T) {
 				{Name: "name", Type: ParquetString},
 			},
 		}
-		codec, err := NewParquetCodec(schema)
+		codec, err := newParquet(schema)
 		if err != nil {
-			t.Fatalf("NewParquetCodec() error = %v", err)
+			t.Fatalf("newParquet() error = %v", err)
 		}
 
-		ds, err := NewDataset("test-parquet-write", NewMemoryFactory(), WithCodec(codec))
+		ds, err := Open(Memory()).Records(t.Context(), "test-parquet-write", codec)
 		if err != nil {
-			t.Fatalf("NewDataset failed: %v", err)
+			t.Fatalf("Records failed: %v", err)
 		}
 
-		records := []any{
+		records := []D{
 			map[string]any{"id": int64(1), "name": "alice"},
 			map[string]any{"id": int64(2), "name": "bob"},
 		}
 
-		snapshot, err := ds.Write(t.Context(), records, Metadata{"source": "test"})
+		snapshot, err := ds.Write(t.Context(), records, D{"source": "test"})
 		if err != nil {
 			t.Fatalf("Write failed: %v", err)
 		}
 
 		// Verify manifest records codec
-		if snapshot.Manifest.Codec != "parquet" {
-			t.Errorf("Manifest.Codec = %q, want %q", snapshot.Manifest.Codec, "parquet")
+		if snapshot.Codec != "parquet" {
+			t.Errorf("Manifest.Codec = %q, want %q", snapshot.Codec, "parquet")
 		}
 
 		// Verify row count
-		if snapshot.Manifest.RowCount != 2 {
-			t.Errorf("Manifest.RowCount = %d, want 2", snapshot.Manifest.RowCount)
+		if snapshot.RowCount != 2 {
+			t.Errorf("Manifest.RowCount = %d, want 2", snapshot.RowCount)
 		}
 
 		// Read back and verify
@@ -842,38 +824,31 @@ func TestParquetCodec_Dataset(t *testing.T) {
 // Dataset-Level Tests
 // -----------------------------------------------------------------------------
 
-func TestParquetCodec_StreamWriteRecords_ReturnsErrCodecNotStreamable(t *testing.T) {
-	// Per CONTRACT_PARQUET.md: Parquet codec does NOT implement StreamingRecordCodec.
-	// StreamWriteRecords with Parquet codec MUST return ErrCodecNotStreamable.
+func TestParquetCodec_StreamWrite_ReturnsErrCodecNotStreamable(t *testing.T) {
+	// Per CONTRACT_PARQUET.md: the Parquet codec is not a StreamingCodec, so
+	// Records.StreamWrite with it MUST return ErrCodecNotStreamable.
 
 	schema := ParquetSchema{
 		Fields: []ParquetField{
 			{Name: "id", Type: ParquetInt64},
 		},
 	}
-	codec, err := NewParquetCodec(schema)
+	codec, err := newParquet(schema)
 	if err != nil {
-		t.Fatalf("NewParquetCodec() error = %v", err)
+		t.Fatalf("newParquet() error = %v", err)
 	}
 
-	ds, err := NewDataset("test-parquet", NewMemoryFactory(), WithCodec(codec))
+	ds, err := Open(Memory()).Records(t.Context(), "test-parquet", codec)
 	if err != nil {
-		t.Fatalf("NewDataset failed: %v", err)
+		t.Fatalf("Records failed: %v", err)
 	}
 
-	// Create a simple iterator
-	iter := &parquetTestIterator{
-		records: []any{
-			map[string]any{"id": int64(1)},
-		},
-	}
-
-	_, err = ds.StreamWriteRecords(t.Context(), iter, Metadata{})
+	_, err = ds.StreamWrite(t.Context(), seqOf(D{"id": int64(1)}), nil)
 	if err == nil {
-		t.Fatal("StreamWriteRecords should return error for Parquet codec")
+		t.Fatal("StreamWrite should return error for Parquet codec")
 	}
 	if !errors.Is(err, ErrCodecNotStreamable) {
-		t.Errorf("StreamWriteRecords error = %v, want ErrCodecNotStreamable", err)
+		t.Errorf("StreamWrite error = %v, want ErrCodecNotStreamable", err)
 	}
 }
 
@@ -882,11 +857,11 @@ func TestParquetCodec_StreamWriteRecords_ReturnsErrCodecNotStreamable(t *testing
 // -----------------------------------------------------------------------------
 
 func TestParquetCodec_Decode_InvalidFormat(t *testing.T) {
-	codec, err := NewParquetCodec(ParquetSchema{
+	codec, err := newParquet(ParquetSchema{
 		Fields: []ParquetField{{Name: "id", Type: ParquetInt64}},
 	})
 	if err != nil {
-		t.Fatalf("NewParquetCodec() error = %v", err)
+		t.Fatalf("newParquet() error = %v", err)
 	}
 
 	testCases := []struct {
@@ -911,32 +886,6 @@ func TestParquetCodec_Decode_InvalidFormat(t *testing.T) {
 	}
 }
 
-// parquetTestIterator is a simple RecordIterator for Parquet codec tests.
-type parquetTestIterator struct {
-	records []any
-	index   int
-	err     error
-}
-
-func (s *parquetTestIterator) Next() bool {
-	if s.err != nil || s.index >= len(s.records) {
-		return false
-	}
-	s.index++
-	return true
-}
-
-func (s *parquetTestIterator) Record() any {
-	if s.index == 0 || s.index > len(s.records) {
-		return nil
-	}
-	return s.records[s.index-1]
-}
-
-func (s *parquetTestIterator) Err() error {
-	return s.err
-}
-
 // -----------------------------------------------------------------------------
 // FileStats tests
 // -----------------------------------------------------------------------------
@@ -950,12 +899,12 @@ func TestParquetCodec_FileStats(t *testing.T) {
 				{Name: "score", Type: ParquetFloat64},
 			},
 		}
-		codec, err := NewParquetCodec(schema)
+		codec, err := newParquet(schema)
 		if err != nil {
 			t.Fatal(err)
 		}
 
-		records := []any{
+		records := []D{
 			map[string]any{"id": int64(10), "name": "alice", "score": 95.5},
 			map[string]any{"id": int64(1), "name": "bob", "score": 87.3},
 			map[string]any{"id": int64(5), "name": "carol", "score": 99.0},
@@ -1022,12 +971,12 @@ func TestParquetCodec_FileStats(t *testing.T) {
 				{Name: "x", Type: ParquetFloat64},
 			},
 		}
-		codec, err := NewParquetCodec(schema)
+		codec, err := newParquet(schema)
 		if err != nil {
 			t.Fatal(err)
 		}
 
-		records := []any{
+		records := []D{
 			map[string]any{"x": 42.0},
 		}
 
@@ -1055,13 +1004,13 @@ func TestParquetCodec_FileStats(t *testing.T) {
 				{Name: "id", Type: ParquetInt64},
 			},
 		}
-		codec, err := NewParquetCodec(schema)
+		codec, err := newParquet(schema)
 		if err != nil {
 			t.Fatal(err)
 		}
 
 		var buf bytes.Buffer
-		if err := codec.Encode(&buf, []any{}); err != nil {
+		if err := codec.Encode(&buf, []D{}); err != nil {
 			t.Fatal(err)
 		}
 
@@ -1089,12 +1038,12 @@ func TestParquetCodec_FileStats_Nulls(t *testing.T) {
 				{Name: "tag", Type: ParquetString, Nullable: true},
 			},
 		}
-		codec, err := NewParquetCodec(schema)
+		codec, err := newParquet(schema)
 		if err != nil {
 			t.Fatal(err)
 		}
 
-		records := []any{
+		records := []D{
 			map[string]any{"id": int64(1), "tag": "alpha"},
 			map[string]any{"id": int64(2), "tag": nil},
 			map[string]any{"id": int64(3), "tag": "gamma"},
@@ -1124,12 +1073,12 @@ func TestParquetCodec_FileStats_Nulls(t *testing.T) {
 				{Name: "val", Type: ParquetInt64, Nullable: true},
 			},
 		}
-		codec, err := NewParquetCodec(schema)
+		codec, err := newParquet(schema)
 		if err != nil {
 			t.Fatal(err)
 		}
 
-		records := []any{
+		records := []D{
 			map[string]any{"val": nil},
 			map[string]any{"val": nil},
 		}
@@ -1159,12 +1108,12 @@ func TestParquetCodec_FileStats_Nulls(t *testing.T) {
 				{Name: "data", Type: ParquetBytes},
 			},
 		}
-		codec, err := NewParquetCodec(schema)
+		codec, err := newParquet(schema)
 		if err != nil {
 			t.Fatal(err)
 		}
 
-		records := []any{
+		records := []D{
 			map[string]any{"flag": true, "data": []byte("hello")},
 			map[string]any{"flag": false, "data": []byte("world")},
 		}
@@ -1203,7 +1152,7 @@ func TestParquetCodec_FileStats_Timestamps(t *testing.T) {
 			{Name: "ts", Type: ParquetTimestamp},
 		},
 	}
-	codec, err := NewParquetCodec(schema)
+	codec, err := newParquet(schema)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1212,7 +1161,7 @@ func TestParquetCodec_FileStats_Timestamps(t *testing.T) {
 	t2 := time.Date(2024, 6, 15, 12, 0, 0, 0, time.UTC)
 	t3 := time.Date(2024, 3, 10, 8, 0, 0, 0, time.UTC)
 
-	records := []any{
+	records := []D{
 		map[string]any{"ts": t2},
 		map[string]any{"ts": t1},
 		map[string]any{"ts": t3},

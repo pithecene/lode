@@ -104,7 +104,7 @@ snap, err := ds.Latest(ctx) // scans all partitions, returns most recent
 - **Manifest format changes.** Snapshots need partition scope metadata.
   Parent chains are per-partition, so a snapshot's parent is not the
   previous global commit but the previous commit to the same partition.
-- **Reader complexity.** `DatasetReader` must merge across partition
+- **Reader complexity.** A view must merge across partition
   heads to present a unified view. This is read-time coordination that
   Lode explicitly avoids.
 
@@ -274,7 +274,7 @@ Partitions can be lanes, but so can arbitrary string keys.
 **API shape:**
 ```go
 // Explicit lane scoping
-ds, _ := lode.NewDataset("data", factory, lode.WithWriteLane("alpha"))
+ds, _ := lode.Open(factory).Records(ctx, "data", codec, lode.WithWriteLane("alpha"))
 ```
 
 **Strengths:**
@@ -394,8 +394,8 @@ func (d *dataset) partitionPrefixes(m Manifest) []string
 
 ### Phase 2: Rebase Logic
 
-On `ErrSnapshotConflict` inside `Write` / `StreamWrite` /
-`StreamWriteRecords`:
+On `ErrSnapshotConflict` inside `Write` or `StreamWrite` (`Records`,
+`Blobs`):
 
 ```
 loop (up to 3 attempts):

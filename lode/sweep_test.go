@@ -1,10 +1,8 @@
 package lode
 
 import (
-	"context"
 	"errors"
 	"fmt"
-	"io"
 	"slices"
 	"strings"
 	"testing"
@@ -13,78 +11,7 @@ import (
 	"github.com/pithecene/lode/internal/testutil"
 )
 
-func putObject(t *testing.T, store Store, p string) {
-	t.Helper()
-	if err := store.Put(t.Context(), p, strings.NewReader("x")); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func exists(t *testing.T, store Store, p string) bool {
-	t.Helper()
-	ok, err := store.Exists(t.Context(), p)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return ok
-}
-
 const sweepGrace = 24 * time.Hour
-
-// listInjector adds raw keys to listings, as a store that does not
-// normalize its keys might return, hides keys from them, as a lagging
-// listing would, fails one prefix's listing or one path's Get, and records
-// deletes.
-type listInjector struct {
-	Store
-	extra      []string
-	hidden     []string
-	deleted    []string
-	failPrefix string // a listing of exactly this prefix fails
-	failGet    string // a Get of exactly this path fails
-	hideOnce   bool   // hidden applies to the first snapshot listing only, as one that catches up
-	listings   int    // snapshot listings so far
-}
-
-func (l *listInjector) Get(ctx context.Context, p string) (io.ReadCloser, error) {
-	if l.failGet != "" && p == l.failGet {
-		return nil, errGetFailed
-	}
-	return l.Store.Get(ctx, p)
-}
-
-var (
-	errListFailed = errors.New("list failed")
-	errGetFailed  = errors.New("get failed")
-)
-
-func (l *listInjector) List(ctx context.Context, prefix string) ([]string, error) {
-	if l.failPrefix != "" && prefix == l.failPrefix {
-		return nil, errListFailed
-	}
-	keys, err := l.Store.List(ctx, prefix)
-	if !strings.Contains(prefix, "expired/") {
-		l.listings++
-	}
-	if !l.hideOnce || l.listings == 1 {
-		keys = slices.DeleteFunc(keys, func(k string) bool { return slices.Contains(l.hidden, k) })
-	}
-	for _, k := range l.extra {
-		if strings.HasPrefix(k, prefix) {
-			keys = append(keys, k)
-		}
-	}
-	return keys, err
-}
-
-func (l *listInjector) Delete(ctx context.Context, p string) error {
-	l.deleted = append(l.deleted, p)
-	return l.Store.Delete(ctx, p)
-}
-
-func (l *listInjector) CompareAndSwap(ctx context.Context, p, expected, replacement string) error {
-	return l.Store.(ConditionalWriter).CompareAndSwap(ctx, p, expected, replacement)
-}
 
 // -----------------------------------------------------------------------------
 // Requests
@@ -95,6 +22,7 @@ func TestSweep_Request(t *testing.T) {
 		for _, grace := range []time.Duration{0, -time.Second} {
 			fs := testutil.NewFaultStore(NewMemory())
 			ds := newDefaultRetention(t, fs)
+			fs.Reset() // opening the handle read the head
 			report, err := ds.Sweep(t.Context(), SweepRequest{Grace: grace})
 			if !errors.Is(err, ErrInvalidArgument) || report == nil {
 				t.Errorf("Sweep(grace=%s) = %v, %v; want ErrInvalidArgument and a report", grace, report, err)
@@ -114,7 +42,7 @@ func TestSweep_Request(t *testing.T) {
 	})
 
 	t.Run("dry run reports the real run", func(t *testing.T) {
-		setup := func(t *testing.T) (Store, Dataset) {
+		setup := func(t *testing.T) (Store, Records[D]) {
 			store := NewMemory()
 			ds := newDefaultRetention(t, store)
 			first := writeRecord(t, ds, 1)
@@ -301,7 +229,7 @@ func TestSweep_Settle(t *testing.T) {
 		putObject(t, mem, stray)
 
 		hs.onDelete = func(p string) error {
-			if strings.Contains(p, "partitions/") && strings.HasSuffix(p, manifestFile) {
+			if strings.Contains(p, "partitions/") && strings.HasSuffix(p, "manifest.json") {
 				return errors.New("injected")
 			}
 			return nil
@@ -320,8 +248,8 @@ func TestSweep_Settle(t *testing.T) {
 		}
 		// Two recorded data files plus the stray the inventory never listed, all
 		// regardless of grace: the recorded ones are sized, the stray is not.
-		if report.Objects != 3 || report.Bytes != totalBytes(run.Manifest.Files) || report.Unsized != 1 || report.Orphans != 0 {
-			t.Errorf("report = %+v, want 3 objects, %d bytes, 1 unsized, 0 orphans", report, totalBytes(run.Manifest.Files))
+		if report.Objects != 3 || report.Bytes != totalBytes(run.Files) || report.Unsized != 1 || report.Orphans != 0 {
+			t.Errorf("report = %+v, want 3 objects, %d bytes, 1 unsized, 0 orphans", report, totalBytes(run.Files))
 		}
 		assertGone(t, mem, ds, run)
 	})
@@ -349,8 +277,8 @@ func TestSweep_Settle(t *testing.T) {
 		}
 		// Expire already removed every manifest, so nothing is settled this
 		// run; the tombstone still marks the data as reclaimable.
-		if len(report.Settled) != 0 || report.Objects != len(first.Manifest.Files) ||
-			report.Bytes != totalBytes(first.Manifest.Files) || report.Unsized != 0 {
+		if len(report.Settled) != 0 || report.Objects != len(first.Files) ||
+			report.Bytes != totalBytes(first.Files) || report.Unsized != 0 {
 			t.Errorf("report = %+v, want %s's data reclaimed with its recorded sizes", report, first.ID)
 		}
 		assertGone(t, mem, ds, first)
@@ -476,7 +404,7 @@ func TestSweep_Reclaim(t *testing.T) {
 
 	t.Run("a repeated filesystem run is quiet", func(t *testing.T) {
 		dir := t.TempDir()
-		ds, err := NewDataset("events", NewFSFactory(dir), WithCodec(NewJSONLCodec()))
+		ds, err := Open(FS(dir)).Records(t.Context(), "events", JSONL[D]())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -580,11 +508,11 @@ func TestSweep_HeadResolution(t *testing.T) {
 		// partition.
 		var copies []string
 		for _, k := range storeKeys(t, mem) {
-			if strings.Contains(k, string(head.ID)) && strings.HasSuffix(k, manifestFile) {
+			if strings.Contains(k, string(head.ID)) && strings.HasSuffix(k, "manifest.json") {
 				copies = append(copies, k)
 			}
 		}
-		for _, f := range head.Manifest.Files {
+		for _, f := range head.Files {
 			lister.hidden = append(lister.hidden, f.Path) // the stray alone is listed
 		}
 		for _, k := range copies {

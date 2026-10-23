@@ -38,8 +38,8 @@ func run() error {
 
 	fmt.Printf("Storage root: %s\n\n", tmpDir)
 
-	// Create filesystem store factory
-	storeFactory := lode.NewFSFactory(tmpDir)
+	// Open a root over the filesystem store.
+	root := lode.Open(lode.FS(tmpDir))
 
 	// -------------------------------------------------------------------------
 	// SCHEMA: Define Parquet schema with typed fields
@@ -66,25 +66,18 @@ func run() error {
 	}
 	fmt.Println()
 
-	// Create Parquet codec - note error return for schema validation
-	codec, err := lode.NewParquetCodec(schema)
-	if err != nil {
-		return fmt.Errorf("failed to create parquet codec: %w", err)
-	}
+	// Create the Parquet codec for map records. An invalid schema is
+	// recorded and returned when the dataset opens.
+	codec := lode.Parquet(schema)
 
 	// -------------------------------------------------------------------------
 	// WRITE: Create dataset and write data
 	// -------------------------------------------------------------------------
 	fmt.Println("=== WRITE ===")
 
-	// Create dataset with Parquet codec.
-	// Use NoOpCompressor - Parquet handles compression internally (Snappy default).
-	ds, err := lode.NewDataset(
-		"users",
-		storeFactory,
-		lode.WithCodec(codec),
-		lode.WithCompressor(lode.NewNoOpCompressor()),
-	)
+	// Open the dataset with the Parquet codec. The default NoOp compressor
+	// suits it: Parquet compresses internally (Snappy by default).
+	ds, err := root.Records(ctx, "users", codec)
 	if err != nil {
 		return fmt.Errorf("failed to create dataset: %w", err)
 	}
@@ -97,16 +90,16 @@ func run() error {
 		lode.D{"id": int64(3), "name": "charlie", "score": 88.0, "active": false, "created_at": now},
 	)
 
-	snapshot, err := ds.Write(ctx, records, lode.Metadata{"source": "parquet-example"})
+	snapshot, err := ds.Write(ctx, records, lode.D{"source": "parquet-example"})
 	if err != nil {
 		return fmt.Errorf("failed to write: %w", err)
 	}
 
 	fmt.Printf("Created snapshot: %s\n", snapshot.ID)
-	fmt.Printf("Row count: %d\n", snapshot.Manifest.RowCount)
-	fmt.Printf("Codec: %s, Compressor: %s\n", snapshot.Manifest.Codec, snapshot.Manifest.Compressor)
+	fmt.Printf("Row count: %d\n", snapshot.RowCount)
+	fmt.Printf("Codec: %s, Compressor: %s\n", snapshot.Codec, snapshot.Compressor)
 	fmt.Printf("Files:\n")
-	for _, f := range snapshot.Manifest.Files {
+	for _, f := range snapshot.Files {
 		fmt.Printf("  - %s (%d bytes)\n", f.Path, f.SizeBytes)
 	}
 	fmt.Println()
@@ -143,21 +136,20 @@ func run() error {
 	}
 
 	fmt.Printf("Records read back (%d):\n", len(readRecords))
-	for _, r := range readRecords {
-		rec := r.(map[string]any)
+	for _, rec := range readRecords {
 		fmt.Printf("  id=%v name=%v score=%v active=%v created_at=%v\n",
 			rec["id"], rec["name"], rec["score"], rec["active"], rec["created_at"])
 	}
 
 	// Demonstrate type preservation
 	fmt.Println("\nType verification:")
-	first := readRecords[0].(map[string]any)
+	first := readRecords[0]
 	fmt.Printf("  id type: %T (value: %v)\n", first["id"], first["id"])
 	fmt.Printf("  score type: %T (value: %v)\n", first["score"], first["score"])
 	fmt.Printf("  created_at type: %T\n", first["created_at"])
 
 	// Show nullable handling
-	second := readRecords[1].(map[string]any)
+	second := readRecords[1]
 	fmt.Printf("  bob's score (nullable): %v (nil=%v)\n", second["score"], second["score"] == nil)
 
 	fmt.Println("\n=== SUCCESS ===")

@@ -47,14 +47,13 @@ func run() error {
 	fmt.Println("=== SETUP ===")
 
 	// Every Store, FS included, implements ConditionalWriter, so CAS is on.
-	storeFactory := lode.NewFSFactory(tmpDir)
-
-	ds1, err := lode.NewDataset("events", storeFactory, lode.WithCodec(lode.NewJSONLCodec()))
+	// Each writer opens its own root, as two processes would.
+	ds1, err := lode.Open(lode.FS(tmpDir)).Records(ctx, "events", lode.JSONL[lode.D]())
 	if err != nil {
 		return fmt.Errorf("failed to create ds1: %w", err)
 	}
 
-	ds2, err := lode.NewDataset("events", storeFactory, lode.WithCodec(lode.NewJSONLCodec()))
+	ds2, err := lode.Open(lode.FS(tmpDir)).Records(ctx, "events", lode.JSONL[lode.D]())
 	if err != nil {
 		return fmt.Errorf("failed to create ds2: %w", err)
 	}
@@ -66,18 +65,18 @@ func run() error {
 	// -------------------------------------------------------------------------
 	fmt.Println("=== CONCURRENT WRITES (no contention) ===")
 
-	snap1, err := ds1.Write(ctx, lode.R(lode.D{"writer": "ds1", "seq": 1}), lode.Metadata{"step": "first"})
+	snap1, err := ds1.Write(ctx, lode.R(lode.D{"writer": "ds1", "seq": 1}), lode.D{"step": "first"})
 	if err != nil {
 		return fmt.Errorf("ds1 first write failed: %w", err)
 	}
 	fmt.Printf("ds1 wrote snapshot %s\n", snap1.ID)
 
 	// ds2 reads the current pointer from storage, sees snap1, and succeeds.
-	snap2, err := ds2.Write(ctx, lode.R(lode.D{"writer": "ds2", "seq": 1}), lode.Metadata{"step": "second"})
+	snap2, err := ds2.Write(ctx, lode.R(lode.D{"writer": "ds2", "seq": 1}), lode.D{"step": "second"})
 	if err != nil {
 		return fmt.Errorf("ds2 first write failed: %w", err)
 	}
-	fmt.Printf("ds2 wrote snapshot %s (parent: %s)\n\n", snap2.ID, snap2.Manifest.ParentSnapshotID)
+	fmt.Printf("ds2 wrote snapshot %s (parent: %s)\n\n", snap2.ID, snap2.ParentSnapshotID)
 
 	// -------------------------------------------------------------------------
 	// CONFLICT DETECTION: ds1's cached pointer is now stale
@@ -86,7 +85,7 @@ func run() error {
 
 	// ds1's in-memory cache still points to snap1, but ds2 updated the
 	// pointer to snap2. CAS detects the mismatch.
-	_, err = ds1.Write(ctx, lode.R(lode.D{"writer": "ds1", "seq": 2}), lode.Metadata{"step": "conflict"})
+	_, err = ds1.Write(ctx, lode.R(lode.D{"writer": "ds1", "seq": 2}), lode.D{"step": "conflict"})
 	if !errors.Is(err, lode.ErrSnapshotConflict) {
 		return fmt.Errorf("expected ErrSnapshotConflict, got: %w", err)
 	}
@@ -106,11 +105,11 @@ func run() error {
 	}
 	fmt.Printf("ds1 refreshed via Latest(): now at snapshot %s\n", latest.ID)
 
-	snap3, err := ds1.Write(ctx, lode.R(lode.D{"writer": "ds1", "seq": 2}), lode.Metadata{"step": "retry"})
+	snap3, err := ds1.Write(ctx, lode.R(lode.D{"writer": "ds1", "seq": 2}), lode.D{"step": "retry"})
 	if err != nil {
 		return fmt.Errorf("ds1 retry write failed: %w", err)
 	}
-	fmt.Printf("ds1 retry succeeded: snapshot %s (parent: %s)\n\n", snap3.ID, snap3.Manifest.ParentSnapshotID)
+	fmt.Printf("ds1 retry succeeded: snapshot %s (parent: %s)\n\n", snap3.ID, snap3.ParentSnapshotID)
 
 	// -------------------------------------------------------------------------
 	// SUCCESS

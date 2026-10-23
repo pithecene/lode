@@ -20,9 +20,12 @@ import (
 	"context"
 	"io"
 	"time"
-
-	"github.com/pithecene/lode/lode"
 )
+
+// Metadata holds user-defined key-value pairs stored with a volume
+// snapshot. Volume is experimental (V1_API_DECISIONS D9) and keeps the map
+// form that datasets replaced with lode.Metadata (D11).
+type Metadata map[string]any
 
 // ID uniquely identifies a volume.
 type ID string
@@ -66,7 +69,7 @@ type Manifest struct {
 	CreatedAt time.Time `json:"created_at"`
 
 	// Metadata contains user-provided key-value pairs.
-	Metadata lode.Metadata `json:"metadata"`
+	Metadata Metadata `json:"metadata"`
 
 	// TotalLength is the volume's total byte address space.
 	TotalLength int64 `json:"total_length"`
@@ -127,7 +130,7 @@ type Writer interface {
 	// Commit records the provided blocks into a new immutable snapshot.
 	// The resulting manifest is cumulative: it includes all previously committed
 	// blocks plus the new blocks. Commit MUST include at least one new block.
-	Commit(ctx context.Context, blocks []BlockRef, metadata lode.Metadata) (*Snapshot, error)
+	Commit(ctx context.Context, blocks []BlockRef, metadata Metadata) (*Snapshot, error)
 }
 
 // Reader defines the read surface for a volume.

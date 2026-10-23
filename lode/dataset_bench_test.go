@@ -69,9 +69,9 @@ func BenchmarkDataset_SequentialWrites(b *testing.B) {
 		inner:   NewMemory(),
 		latency: 1 * time.Millisecond,
 	}
-	factory := func() (Store, error) { return ls, nil }
+	factory := Use[Store](ls)
 
-	ds, err := NewDataset("bench-ds", factory, WithCodec(NewJSONLCodec()))
+	ds, err := Open(factory).Records(b.Context(), "bench-ds", JSONL[D]())
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -81,7 +81,7 @@ func BenchmarkDataset_SequentialWrites(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		for j := 0; j < writeCount; j++ {
-			if _, err := ds.Write(b.Context(), data, Metadata{}); err != nil {
+			if _, err := ds.Write(b.Context(), data, nil); err != nil {
 				b.Fatal(err)
 			}
 		}
@@ -94,9 +94,9 @@ func BenchmarkDataset_SequentialWrites(b *testing.B) {
 // All subsequent writes resolve the parent via the pointer (Get only).
 func BenchmarkDataset_SequentialWrites_StoreCallCount(b *testing.B) {
 	fs := testutil.NewFaultStore(NewMemory())
-	factory := newFaultStoreFactory(fs)
+	factory := Use(fs)
 
-	ds, err := NewDataset("bench-ds", factory, WithCodec(NewJSONLCodec()))
+	ds, err := Open(factory).Records(b.Context(), "bench-ds", JSONL[D]())
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -109,14 +109,14 @@ func BenchmarkDataset_SequentialWrites_StoreCallCount(b *testing.B) {
 
 		// First write of iteration (may call List on very first iteration
 		// if no pointer exists yet; pointer-based on subsequent iterations).
-		if _, err := ds.Write(b.Context(), data, Metadata{}); err != nil {
+		if _, err := ds.Write(b.Context(), data, nil); err != nil {
 			b.Fatal(err)
 		}
 		firstWriteListCalls := len(fs.ListCalls())
 
 		// Subsequent writes (should NOT call List — pointer always exists)
 		for j := 1; j < 20; j++ {
-			if _, err := ds.Write(b.Context(), data, Metadata{}); err != nil {
+			if _, err := ds.Write(b.Context(), data, nil); err != nil {
 				b.Fatal(err)
 			}
 		}

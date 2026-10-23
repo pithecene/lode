@@ -17,24 +17,37 @@ in Lode.
 
 ## Record Construction Conventions
 
-### Preferred: `lode.R(...)`
+### Preferred: Typed Records
 
-Use `lode.R(...)` in `Write` examples with inline record literals:
+When a record has a known shape, define a struct and let the codec fix the
+handle's record type:
+
+```go
+events, err := root.Records(ctx, "events", lode.JSONL[Event]())
+snapshot, err := events.Write(ctx, []Event{{...}, {...}}, RunInfo{RunID: id})
+```
+
+Partition typed records with `lode.Hive(keys...).By(func(Event) lode.Partition)`.
+
+### Map Records: `lode.R(...)`
+
+Use `lode.R(...)` with `lode.JSONL[lode.D]()` for inline map record literals:
 
 ```go
 records := lode.R(
     lode.D{"id": "1", "name": "alice"},
     lode.D{"id": "2", "name": "bob"},
 )
-snapshot, err := ds.Write(ctx, records, lode.Metadata{})
+snapshot, err := ds.Write(ctx, records, nil)
 ```
 
-**Rationale:** `R(...)` is concise, reads naturally, and constructs `[]any`
-directly.
+**Rationale:** `R(...)` is concise, reads naturally, and constructs the
+`[]lode.D` that `Records[lode.D].Write` takes.
 
 ### Allowed: `[]lode.D` for Iterator Backing
 
-Use `[]lode.D` only when the slice backs a `RecordIterator`:
+Use a `[]lode.D` literal when the slice backs an iterator for
+`Records.StreamWrite`:
 
 ```go
 // []lode.D is appropriate here: it backs the iterator
@@ -42,20 +55,26 @@ records := []lode.D{
     {"id": "1", "name": "alice"},
     {"id": "2", "name": "bob"},
 }
-iter := NewSliceIterator(records)
-snapshot, err := ds.StreamWriteRecords(ctx, iter, lode.Metadata{})
+snapshot, err := ds.StreamWrite(ctx, each(records), nil)
 ```
 
 When using `[]lode.D`, add a brief comment explaining that the slice backs
 the iterator.
 
-### Raw Blobs
+### Blobs
 
-For raw blob writes (without a codec), use `[]any{blobData}`:
+For blobs, open a blob dataset and pass the bytes:
 
 ```go
-snapshot, err := ds.Write(ctx, []any{blobData}, lode.Metadata{})
+blobs, err := root.Blobs(ctx, "artifacts")
+snapshot, err := blobs.Write(ctx, blobData, nil)
 ```
+
+### Metadata
+
+Pass metadata as a struct when its shape is known, and decode it with
+`snapshot.Metadata.Decode(&v)`; pass a `lode.D` for ad hoc keys, or `nil`
+for none.
 
 ---
 
@@ -63,11 +82,12 @@ snapshot, err := ds.Write(ctx, []any{blobData}, lode.Metadata{})
 
 | Variable | Purpose |
 |----------|---------|
+| `root` | A `*lode.Root` (or `readRoot` for a `*lode.ReadRoot`) |
 | `records` | A slice of records for `Write` or for backing an iterator |
-| `iter` | A `RecordIterator` |
-| `metadata` | A metadata map (`lode.Metadata{}`) |
+| `metadata` | A metadata value (a struct, a `lode.D`, or `nil`) |
 | `snapshot` | The snapshot returned by a write operation |
-| `ds` | A Dataset |
+| `ds` | A dataset handle (`Records[T]` or `Blobs`) |
+| `view` | A read-only view (`RecordView[T]` or `BlobView`) |
 | `ctx` | A context |
 
 ---

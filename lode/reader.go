@@ -13,81 +13,30 @@ import (
 )
 
 // -----------------------------------------------------------------------------
-// Reader Configuration
+// Listing (CONTRACT_READ_API.md)
 // -----------------------------------------------------------------------------
 
-// readerConfig holds the resolved configuration for a reader.
-type readerConfig struct {
-	layout layout
-}
-
-// -----------------------------------------------------------------------------
-// Reader Implementation
-// -----------------------------------------------------------------------------
-
-// reader implements the DatasetReader interface.
-type reader struct {
-	store  Store
-	layout layout
-}
-
-// NewDatasetReader creates a DatasetReader with documented defaults.
-//
-// Default behavior:
-//   - Layout: NewDefaultLayout()
-//
-// Use option functions to override defaults:
-//   - WithLayout(l) to use a different layout
-func NewDatasetReader(factory StoreFactory, opts ...Option) (DatasetReader, error) {
-	if factory == nil {
-		return nil, validate.Argument("store factory is required")
-	}
-
-	cfg := &readerConfig{
-		layout: NewDefaultLayout(),
-	}
-
-	for _, opt := range opts {
-		if err := opt.applyReader(cfg); err != nil {
-			return nil, err // option errors carry the lode: prefix
-		}
-	}
-
-	if cfg.layout == nil {
-		return nil, validate.Argument("layout must not be nil")
-	}
-
-	// Arguments are checked before any store work (CONTRACT_ERRORS §5).
-	store, err := factory()
-	if err != nil {
-		return nil, fmt.Errorf("lode: store factory failed: %w", err)
-	}
-	if store == nil {
-		return nil, validate.Argument("store factory returned nil store")
-	}
-
-	return &reader{
-		store:  store,
-		layout: cfg.layout,
-	}, nil
-}
-
-func (r *reader) ListDatasets(ctx context.Context, opts DatasetListOptions) ([]DatasetID, error) {
-	if !r.layout.supportsDatasetEnumeration() {
+// listDatasets returns the IDs of the datasets under a root's datasets
+// directory: those with a manifest of either grammar, unpartitioned or
+// partitioned, under the root's names.
+func listDatasets(ctx context.Context, store ObjectStore, names pathNames, opts DatasetListOptions) ([]DatasetID, error) {
+	if names.flat {
 		return nil, ErrDatasetsNotModeled
 	}
-
-	paths, err := r.store.List(ctx, r.layout.datasetsPrefix())
+	paths, err := store.List(ctx, names.datasets+"/")
 	if err != nil {
 		return nil, err
 	}
 
+	grammars := []pathGrammar{names.grammar(false), names.grammar(true)}
 	seen := make(map[DatasetID]bool)
 	var datasets []DatasetID
 	for _, p := range paths {
-		if sp, ok := r.layout.manifest(p); ok && sp.dataset != "" && !seen[sp.dataset] {
-			seen[sp.dataset] = true
-			datasets = append(datasets, sp.dataset)
+		for _, g := range grammars {
+			if sp, ok := g.parse(p); ok && sp.kind == manifestLeaf && !seen[sp.dataset] {
+				seen[sp.dataset] = true
+				datasets = append(datasets, sp.dataset)
+			}
 		}
 	}
 
@@ -100,26 +49,25 @@ func (r *reader) ListDatasets(ctx context.Context, opts DatasetListOptions) ([]D
 	return cursorWindow(datasets, func(id DatasetID) bool { return id > opts.StartAfter }, opts.Limit), nil
 }
 
-func (r *reader) ListPartitions(ctx context.Context, dataset DatasetID, opts PartitionListOptions) ([]PartitionRef, error) {
-	if err := validateDatasetID(dataset); err != nil {
-		return nil, err
-	}
+// ListPartitions returns the partition paths that the dataset's committed
+// manifests name.
+func (d *dataset) ListPartitions(ctx context.Context, opts PartitionListOptions) ([]PartitionRef, error) {
 	// Malformed before unsupported: a prefix that could escape the dataset is
 	// rejected as such regardless of layout (CONTRACT_READ_API §Partition Prefix).
 	if !validPartitionPrefix(opts.Prefix) {
 		return nil, ErrInvalidPath
 	}
-	if opts.Prefix != "" && !r.layout.supportsPartitions() {
+	if opts.Prefix != "" && !d.layout.supportsPartitions() {
 		return nil, ErrPartitionPrefixNotSupported
 	}
 
 	// Partition-first layouts put every segment under its partition, so a
 	// partition prefix is a storage prefix (CONTRACT_LAYOUT §Layout-Specific Requirements).
-	prefix := r.layout.snapshotsPrefixForPartition(dataset, "")
+	prefix := d.layout.snapshotsPrefixForPartition(d.id, "")
 	if opts.Prefix != "" {
-		prefix = r.layout.partitionsPrefix(dataset, opts.Prefix)
+		prefix = d.layout.partitionsPrefix(d.id, opts.Prefix)
 	}
-	listing, err := r.listManifests(ctx, prefix)
+	listing, err := d.listManifests(ctx, prefix)
 	if err != nil {
 		return nil, err
 	}
@@ -134,7 +82,7 @@ func (r *reader) ListPartitions(ctx context.Context, dataset DatasetID, opts Par
 	seen := make(map[string]bool)
 	var partitions []PartitionRef
 	for _, m := range listing.manifests {
-		manifest, err := r.loadListed(ctx, m)
+		manifest, err := d.loadListed(ctx, m)
 		if errors.Is(err, ErrNotFound) {
 			continue
 		}
@@ -142,7 +90,7 @@ func (r *reader) ListPartitions(ctx context.Context, dataset DatasetID, opts Par
 			return nil, err
 		}
 		for _, f := range manifest.Files {
-			p := r.layout.extractPartitionPath(f.Path)
+			p := d.layout.extractPartitionPath(f.Path)
 			if p == "" || seen[p] || !strings.HasPrefix(p, opts.Prefix) {
 				continue
 			}
@@ -155,11 +103,10 @@ func (r *reader) ListPartitions(ctx context.Context, dataset DatasetID, opts Par
 	return cursorWindow(partitions, func(p PartitionRef) bool { return p.Path > opts.StartAfter }, opts.Limit), nil
 }
 
-func (r *reader) ListManifests(ctx context.Context, dataset DatasetID, partition string, opts ManifestListOptions) ([]ManifestRef, error) {
-	if err := validateDatasetID(dataset); err != nil {
-		return nil, err
-	}
-	listing, err := r.listManifests(ctx, r.layout.snapshotsPrefixForPartition(dataset, partition))
+// ListManifests returns the dataset's committed manifests, within a
+// partition when one is given.
+func (d *dataset) ListManifests(ctx context.Context, partition string, opts ManifestListOptions) ([]ManifestRef, error) {
+	listing, err := d.listManifests(ctx, d.layout.snapshotsPrefixForPartition(d.id, partition))
 	if err != nil {
 		return nil, err
 	}
@@ -171,7 +118,7 @@ func (r *reader) ListManifests(ctx context.Context, dataset DatasetID, partition
 	// smallest-partition one, which the listing order guarantees comes first.
 	refs := make([]ManifestRef, 0, len(listing.manifests))
 	for _, m := range listing.manifests {
-		_, err := r.loadListed(ctx, m)
+		_, err := d.loadListed(ctx, m)
 		if errors.Is(err, ErrNotFound) {
 			continue
 		}
@@ -182,7 +129,7 @@ func (r *reader) ListManifests(ctx context.Context, dataset DatasetID, partition
 	}
 	// A layout without partitions has no snapshot in any named partition: the
 	// selector matches nothing (the dataset itself was found and validated).
-	if partition != "" && !r.layout.supportsPartitions() {
+	if partition != "" && !d.layout.supportsPartitions() {
 		refs = refs[:0]
 	}
 
@@ -214,8 +161,8 @@ type manifestListing struct {
 // prefixes another ("day=a-b/…" sorts before "day=a/…"). Canonical manifests
 // on partition-aware layouts exist only for O(1) lookup by ID and are not
 // listed.
-func (r *reader) listManifests(ctx context.Context, prefix string) (manifestListing, error) {
-	paths, err := r.store.List(ctx, prefix)
+func (d *dataset) listManifests(ctx context.Context, prefix string) (manifestListing, error) {
+	paths, err := d.store.List(ctx, prefix)
 	if err != nil {
 		return manifestListing{}, err
 	}
@@ -223,12 +170,12 @@ func (r *reader) listManifests(ctx context.Context, prefix string) (manifestList
 	var listing manifestListing
 	var all []listedManifest
 	for _, p := range paths {
-		sp, ok := r.layout.manifest(p)
+		sp, ok := d.layout.manifest(p)
 		if !ok {
 			continue
 		}
 		listing.any = true
-		if sp.snapshot == "" || (r.layout.supportsPartitions() && sp.partition == "") {
+		if sp.snapshot == "" || (d.layout.supportsPartitions() && sp.partition == "") {
 			continue
 		}
 		all = append(all, listedManifest{id: sp.snapshot, partition: sp.partition, path: p})
@@ -298,35 +245,56 @@ func cursorWindow[T any](items []T, after func(T) bool, limit int) []T {
 	return items
 }
 
-func (r *reader) GetManifest(ctx context.Context, dataset DatasetID, ref ManifestRef) (*Manifest, error) {
-	if err := validateDatasetID(dataset); err != nil {
+// GetManifest loads and validates the manifest a reference names.
+func (d *dataset) GetManifest(ctx context.Context, ref ManifestRef) (*Manifest, error) {
+	return d.loadManifest(ctx, d.layout.manifestPathInPartition(d.id, ref.ID, ref.Partition))
+}
+
+// OpenObject returns a reader for a data object of this dataset.
+func (d *dataset) OpenObject(ctx context.Context, obj ObjectRef) (io.ReadCloser, error) {
+	if err := d.checkObject(obj); err != nil {
 		return nil, err
 	}
-	manifestPath := r.layout.manifestPathInPartition(dataset, ref.ID, ref.Partition)
-	return r.loadManifest(ctx, manifestPath)
+	return d.store.Get(ctx, obj.Path)
 }
 
-func (r *reader) OpenObject(ctx context.Context, obj ObjectRef) (io.ReadCloser, error) {
-	return r.store.Get(ctx, obj.Path)
+// ReaderAt returns an io.ReaderAt for random access to a data object of
+// this dataset.
+func (d *dataset) ReaderAt(ctx context.Context, obj ObjectRef) (io.ReaderAt, error) {
+	if err := d.checkObject(obj); err != nil {
+		return nil, err
+	}
+	return d.store.ReaderAt(ctx, obj.Path)
 }
 
-func (r *reader) ReaderAt(ctx context.Context, obj ObjectRef) (io.ReaderAt, error) {
-	return r.store.ReaderAt(ctx, obj.Path)
+// checkObject requires obj to name a data object of this dataset and, when
+// it names a snapshot, of that snapshot, so that a handle reads only within
+// its own dataset: ObjectRef carries no dataset, and every dataset of a
+// root shares one store.
+func (d *dataset) checkObject(obj ObjectRef) error {
+	sp, ok := d.layout.parse(obj.Path)
+	if !ok || sp.dataset != d.id || sp.kind != dataLeaf {
+		return validate.Argument("object %q is not a data object of dataset %s", obj.Path, d.id)
+	}
+	if obj.Manifest.ID != "" && sp.snapshot != obj.Manifest.ID {
+		return validate.Argument("object %q is not a data object of snapshot %s", obj.Path, obj.Manifest.ID)
+	}
+	return nil
 }
 
 // loadListed loads and validates a manifest a listing returned. ErrNotFound
 // means it was deleted after the listing: an expiry removed it, which
 // enumeration skips rather than reports (CONTRACT_RETENTION §Lineage).
-func (r *reader) loadListed(ctx context.Context, m listedManifest) (*Manifest, error) {
-	manifest, err := r.loadManifest(ctx, m.path)
+func (d *dataset) loadListed(ctx context.Context, m listedManifest) (*Manifest, error) {
+	manifest, err := d.loadManifest(ctx, m.path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load manifest %s: %w", m.path, err)
 	}
 	return manifest, nil
 }
 
-func (r *reader) loadManifest(ctx context.Context, manifestPath string) (*Manifest, error) {
-	rc, err := r.store.Get(ctx, manifestPath)
+func (d *dataset) loadManifest(ctx context.Context, manifestPath string) (*Manifest, error) {
+	rc, err := d.store.Get(ctx, manifestPath)
 	if err != nil {
 		return nil, err
 	}
@@ -362,7 +330,7 @@ func validateManifest(m *Manifest) error {
 		{Invalid: m.DatasetID == "", Field: "dataset_id", Message: "is required"},
 		{Invalid: m.SnapshotID == "", Field: "snapshot_id", Message: "is required"},
 		{Invalid: m.CreatedAt.IsZero(), Field: "created_at", Message: "is required"},
-		{Invalid: m.Metadata == nil, Field: "metadata", Message: "must not be nil (use empty map for no metadata)"},
+		{Invalid: !m.Metadata.valid(), Field: "metadata", Message: "must be a JSON object (use {} for no metadata)"},
 		{Invalid: m.Files == nil, Field: "files", Message: "must not be nil (use empty slice for no files)"},
 		{Invalid: m.RowCount < 0, Field: "row_count", Message: "must be non-negative"},
 		{Invalid: m.Compressor == "", Field: "compressor", Message: "is required"},

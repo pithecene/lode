@@ -340,16 +340,14 @@ func TestIntegration_Writes(t *testing.T) {
 				store := setupTestBucket(t, backend)
 				ctx := t.Context()
 
-				storeFactory := func() (lode.Store, error) { return store, nil }
-
-				ds, err := lode.NewDataset("cancel-test", storeFactory)
+				ds, err := lode.Open(lode.Use(store)).Blobs(ctx, "cancel-test")
 				if err != nil {
 					t.Fatal(err)
 				}
 
 				cancelCtx, cancel := context.WithCancel(ctx)
 
-				sw, err := ds.StreamWrite(cancelCtx, lode.Metadata{"test": "cancel"})
+				sw, err := ds.StreamWrite(cancelCtx, lode.D{"test": "cancel"})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -391,14 +389,12 @@ func TestIntegration_Writes(t *testing.T) {
 				store := setupTestBucket(t, backend)
 				ctx := t.Context()
 
-				storeFactory := func() (lode.Store, error) { return store, nil }
-
-				ds, err := lode.NewDataset("timeout-test", storeFactory, lode.WithCodec(lode.NewJSONLCodec()))
+				ds, err := lode.Open(lode.Use(store)).Records(ctx, "timeout-test", lode.JSONL[lode.D]())
 				if err != nil {
 					t.Fatal(err)
 				}
 
-				records := make([]any, 100)
+				records := make([]lode.D, 100)
 				for i := range records {
 					records[i] = lode.D{"id": fmt.Sprintf("%d", i), "data": "payload"}
 				}
@@ -408,8 +404,13 @@ func TestIntegration_Writes(t *testing.T) {
 				timeoutCtx, cancel := context.WithTimeout(ctx, 1*time.Millisecond)
 				defer cancel()
 
-				iter := &testRecordIterator{records: records}
-				_, err = ds.StreamWriteRecords(timeoutCtx, iter, lode.Metadata{})
+				_, err = ds.StreamWrite(timeoutCtx, func(yield func(lode.D, error) bool) {
+					for _, r := range records {
+						if !yield(r, nil) {
+							return
+						}
+					}
+				}, nil)
 
 				freshCtx := t.Context()
 				if err == nil {
@@ -417,7 +418,7 @@ func TestIntegration_Writes(t *testing.T) {
 					if snapErr != nil {
 						t.Fatalf("Expected snapshot after successful write: %v", snapErr)
 					}
-					t.Logf("Write completed with %d rows (timeout didn't trigger)", snap.Manifest.RowCount)
+					t.Logf("Write completed with %d rows (timeout didn't trigger)", snap.RowCount)
 				} else {
 					_, snapErr := ds.Latest(freshCtx)
 					if !errors.Is(snapErr, lode.ErrNoSnapshots) {
@@ -427,42 +428,4 @@ func TestIntegration_Writes(t *testing.T) {
 			})
 		}
 	})
-}
-
-// -----------------------------------------------------------------------------
-// Timing Integration Tests
-// -----------------------------------------------------------------------------
-//
-// These tests verify S3 adapter behavior under realistic timing conditions.
-// They complement the deterministic fault-injection tests by exercising
-// real network cancellation and cleanup paths.
-//
-// Key principle: assert on core invariants (no manifest = no visible snapshot),
-// but don't make timing-dependent assertions that could flake due to network latency.
-//
-// Contract reference: CONTRACT_TEST_MATRIX.md (G3-4 residual risk)
-
-// testRecordIterator is a simple iterator for testing.
-type testRecordIterator struct {
-	records []any
-	index   int
-}
-
-func (i *testRecordIterator) Next() bool {
-	if i.index >= len(i.records) {
-		return false
-	}
-	i.index++
-	return true
-}
-
-func (i *testRecordIterator) Record() any {
-	if i.index == 0 || i.index > len(i.records) {
-		return nil
-	}
-	return i.records[i.index-1]
-}
-
-func (i *testRecordIterator) Err() error {
-	return nil
 }

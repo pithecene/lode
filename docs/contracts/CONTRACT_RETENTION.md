@@ -382,7 +382,7 @@ manifest.
 Manifests are deleted **before** data, so that any manifest loaded **after**
 the manifest deletion describes only objects that still exist. This order
 does not protect a reader that loaded the manifest *before* the expiry began
-and retrieves its files afterward: `Dataset.Read` loads the manifest and the
+and retrieves its files afterward: `Read` loads the manifest and the
 files in separate store calls without a lease, so such a read MAY fail with
 `ErrNotFound` on a file. This failure is the documented consequence of
 expiring a snapshot that a reader is concurrently using, in the same class
@@ -424,8 +424,8 @@ Once retention is in use, deletion is a normal event, so enumeration MUST
 tolerate it. A manifest that a listing returned and that is absent when
 loaded (`ErrNotFound`) was expired in the interval, and it MUST be skipped
 rather than reported as a failure. This rule applies to `Snapshots()`, the
-scan behind `Latest()`, and every `DatasetReader` operation that loads
-listed manifests. Any other load error still causes the operation to fail.
+scan behind `Latest()`, and every listing operation of a handle or view
+that loads listed manifests. Any other load error still causes the operation to fail.
 
 ### Concurrency
 
@@ -723,19 +723,18 @@ type SweepRequest struct {
     DryRun bool
 }
 
-Dataset.Expire(ctx context.Context, req ExpireRequest) (*ExpireReport, error)
-Dataset.Sweep(ctx context.Context, req SweepRequest) (*SweepReport, error)
+Expire(ctx context.Context, req ExpireRequest) (*ExpireReport, error)
+Sweep(ctx context.Context, req SweepRequest) (*SweepReport, error)
 ```
 
-Retention is a pair of `Dataset` methods. It requires the dataset's store,
-layout, and pointer, which a `Dataset` already holds, and a separate type
-would duplicate its construction options. `DatasetReader` remains
-read-only.
+Retention is the `Retention` interface, which the writer handles
+(`Records[T]`, `Blobs`) embed. It requires the dataset's store, paths, and
+pointer, which a writer handle already holds. Views remain read-only:
+removal is a write.
 
 Requests are structs, not `Option` values. A dry run is a field visible at
 the call site, so an omitted option can never convert a preview into a
-deletion, and `Option` remains limited to constructors (V1_API_DECISIONS
-D3).
+deletion, and options remain limited to opening (V1_API_DECISIONS D3).
 
 ---
 

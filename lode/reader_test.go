@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"strings"
 	"testing"
@@ -13,11 +14,98 @@ import (
 	"github.com/pithecene/lode/internal/testutil"
 )
 
+// testReader reads a root's datasets as v0's DatasetReader did, by dataset
+// ID: each call opens a view of the dataset, whose layout comes from its
+// head manifest. The listing methods do not depend on a codec, so the view
+// is opened without one; ReadRoot.Records and ReadRoot.Blobs open views the
+// same way and check the codec besides.
+type testReader struct {
+	root *ReadRoot
+}
+
+func newTestReader[S ObjectStore](f Factory[S], opts ...RootOption) (*testReader, error) {
+	return &testReader{root: OpenReadOnly(f, opts...)}, nil
+}
+
+// view opens the view of dataset id.
+func (r *testReader) view(ctx context.Context, id DatasetID) (*dataset, error) {
+	if r.root.err != nil {
+		return nil, r.root.err
+	}
+	if err := validateDatasetID(id); err != nil {
+		return nil, err
+	}
+	head, scheme, err := resolveViewHead(ctx, r.root.store, r.root.names, id)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateManifest(head); err != nil {
+		return nil, err
+	}
+	return newDataset(id, r.root.store, newPathLayout(r.root.names, scheme)), nil
+}
+
+func (r *testReader) ListDatasets(ctx context.Context, opts DatasetListOptions) ([]DatasetID, error) {
+	return r.root.ListDatasets(ctx, opts)
+}
+
+func (r *testReader) ListPartitions(ctx context.Context, id DatasetID, opts PartitionListOptions) ([]PartitionRef, error) {
+	v, err := r.view(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return v.ListPartitions(ctx, opts)
+}
+
+func (r *testReader) ListManifests(ctx context.Context, id DatasetID, partition string, opts ManifestListOptions) ([]ManifestRef, error) {
+	v, err := r.view(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return v.ListManifests(ctx, partition, opts)
+}
+
+func (r *testReader) GetManifest(ctx context.Context, id DatasetID, ref ManifestRef) (*Manifest, error) {
+	v, err := r.view(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return v.GetManifest(ctx, ref)
+}
+
+func (r *testReader) OpenObject(ctx context.Context, obj ObjectRef) (io.ReadCloser, error) {
+	if r.root.err != nil {
+		return nil, r.root.err
+	}
+	return r.root.store.Get(ctx, obj.Path)
+}
+
+func (r *testReader) ReaderAt(ctx context.Context, obj ObjectRef) (io.ReaderAt, error) {
+	if r.root.err != nil {
+		return nil, r.root.err
+	}
+	return r.root.store.ReaderAt(ctx, obj.Path)
+}
+
+// manifestErr opens a view of dataset test-ds over store and loads ref's
+// manifest, returning the first error: a view validates its head's manifest
+// when it opens, and GetManifest validates every manifest it loads. The
+// manifests these tests write record no codec, so the view reads blobs.
+func manifestErr(t *testing.T, store Store, ref ManifestRef) error {
+	t.Helper()
+	view, err := OpenReadOnly(Use(store)).Blobs(t.Context(), "test-ds")
+	if err != nil {
+		return err
+	}
+	_, err = view.GetManifest(t.Context(), ref)
+	return err
+}
+
 // -----------------------------------------------------------------------------
 // G2: Manifest validation tests
 // -----------------------------------------------------------------------------
 
-func TestDatasetReader_GetManifest_InvalidManifest(t *testing.T) {
+func TestView_GetManifest_InvalidManifest(t *testing.T) {
 	t.Run("missing schema name", func(t *testing.T) {
 		ctx := t.Context()
 		store := NewMemory()
@@ -28,7 +116,7 @@ func TestDatasetReader_GetManifest_InvalidManifest(t *testing.T) {
 			DatasetID:     "test-ds",
 			SnapshotID:    "snap-1",
 			CreatedAt:     time.Now().UTC(),
-			Metadata:      Metadata{},
+			Metadata:      emptyMetadata(),
 			Files:         []FileRef{},
 			RowCount:      0,
 			Compressor:    "noop",
@@ -36,12 +124,7 @@ func TestDatasetReader_GetManifest_InvalidManifest(t *testing.T) {
 		}
 		writeManifest(ctx, t, store, manifest)
 
-		reader, err := NewDatasetReader(NewMemoryFactoryFrom(store))
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		_, err = reader.GetManifest(ctx, "test-ds", ManifestRef{ID: "snap-1"})
+		err := manifestErr(t, store, ManifestRef{ID: "snap-1"})
 		if !errors.Is(err, ErrManifestInvalid) {
 			t.Errorf("expected ErrManifestInvalid, got: %v", err)
 		}
@@ -57,7 +140,7 @@ func TestDatasetReader_GetManifest_InvalidManifest(t *testing.T) {
 			DatasetID:   "test-ds",
 			SnapshotID:  "snap-1",
 			CreatedAt:   time.Now().UTC(),
-			Metadata:    Metadata{},
+			Metadata:    emptyMetadata(),
 			Files:       []FileRef{},
 			RowCount:    0,
 			Compressor:  "noop",
@@ -65,12 +148,7 @@ func TestDatasetReader_GetManifest_InvalidManifest(t *testing.T) {
 		}
 		writeManifest(ctx, t, store, manifest)
 
-		reader, err := NewDatasetReader(NewMemoryFactoryFrom(store))
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		_, err = reader.GetManifest(ctx, "test-ds", ManifestRef{ID: "snap-1"})
+		err := manifestErr(t, store, ManifestRef{ID: "snap-1"})
 		if !errors.Is(err, ErrManifestInvalid) {
 			t.Errorf("expected ErrManifestInvalid, got: %v", err)
 		}
@@ -86,20 +164,24 @@ func TestDatasetReader_GetManifest_InvalidManifest(t *testing.T) {
 			DatasetID:     "test-ds",
 			SnapshotID:    "snap-1",
 			CreatedAt:     time.Now().UTC(),
-			Metadata:      nil, // nil not allowed
+			Metadata:      emptyMetadata(),
 			Files:         []FileRef{},
 			RowCount:      0,
 			Compressor:    "noop",
 			Partitioner:   "noop",
 		}
-		writeManifest(ctx, t, store, manifest)
-
-		reader, err := NewDatasetReader(NewMemoryFactoryFrom(store))
+		// Metadata always encodes as an object, so the absent field is
+		// written by hand: a manifest whose metadata is null is invalid.
+		data, err := json.Marshal(manifest)
 		if err != nil {
 			t.Fatal(err)
 		}
+		data = bytes.Replace(data, []byte(`"metadata":{}`), []byte(`"metadata":null`), 1)
+		if err := store.Put(ctx, "datasets/test-ds/snapshots/snap-1/manifest.json", bytes.NewReader(data)); err != nil {
+			t.Fatal(err)
+		}
 
-		_, err = reader.GetManifest(ctx, "test-ds", ManifestRef{ID: "snap-1"})
+		err = manifestErr(t, store, ManifestRef{ID: "snap-1"})
 		if !errors.Is(err, ErrManifestInvalid) {
 			t.Errorf("expected ErrManifestInvalid, got: %v", err)
 		}
@@ -115,7 +197,7 @@ func TestDatasetReader_GetManifest_InvalidManifest(t *testing.T) {
 			// DatasetID missing
 			SnapshotID:  "snap-1",
 			CreatedAt:   time.Now().UTC(),
-			Metadata:    Metadata{},
+			Metadata:    emptyMetadata(),
 			Files:       []FileRef{},
 			RowCount:    0,
 			Compressor:  "noop",
@@ -125,12 +207,7 @@ func TestDatasetReader_GetManifest_InvalidManifest(t *testing.T) {
 		data, _ := json.Marshal(manifest)
 		_ = store.Put(ctx, "datasets/test-ds/snapshots/snap-1/manifest.json", bytes.NewReader(data))
 
-		reader, err := NewDatasetReader(NewMemoryFactoryFrom(store))
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		_, err = reader.GetManifest(ctx, "test-ds", ManifestRef{ID: "snap-1"})
+		err := manifestErr(t, store, ManifestRef{ID: "snap-1"})
 		if !errors.Is(err, ErrManifestInvalid) {
 			t.Errorf("expected ErrManifestInvalid, got: %v", err)
 		}
@@ -146,21 +223,21 @@ func TestDatasetReader_GetManifest_InvalidManifest(t *testing.T) {
 			DatasetID:     "test-ds",
 			// SnapshotID missing
 			CreatedAt:   time.Now().UTC(),
-			Metadata:    Metadata{},
+			Metadata:    emptyMetadata(),
 			Files:       []FileRef{},
 			RowCount:    0,
 			Compressor:  "noop",
 			Partitioner: "noop",
 		}
 		writeManifest(ctx, t, store, manifest)
-
-		reader, err := NewDatasetReader(NewMemoryFactoryFrom(store))
-		if err != nil {
-			t.Fatal(err)
-		}
+		// A valid sibling is the head, so the view opens; the manifest
+		// without an ID is reached by its empty reference.
+		valid := validTestManifest()
+		valid.SnapshotID = "snap-0"
+		writeManifest(ctx, t, store, valid)
 
 		// Use empty ManifestRef since manifest has no ID
-		_, err = reader.GetManifest(ctx, "test-ds", ManifestRef{ID: ""})
+		err := manifestErr(t, store, ManifestRef{ID: ""})
 		if !errors.Is(err, ErrManifestInvalid) {
 			t.Errorf("expected ErrManifestInvalid, got: %v", err)
 		}
@@ -176,7 +253,7 @@ func TestDatasetReader_GetManifest_InvalidManifest(t *testing.T) {
 			DatasetID:     "test-ds",
 			SnapshotID:    "snap-1",
 			// CreatedAt zero value (not set)
-			Metadata:    Metadata{},
+			Metadata:    emptyMetadata(),
 			Files:       []FileRef{},
 			RowCount:    0,
 			Compressor:  "noop",
@@ -184,12 +261,7 @@ func TestDatasetReader_GetManifest_InvalidManifest(t *testing.T) {
 		}
 		writeManifest(ctx, t, store, manifest)
 
-		reader, err := NewDatasetReader(NewMemoryFactoryFrom(store))
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		_, err = reader.GetManifest(ctx, "test-ds", ManifestRef{ID: "snap-1"})
+		err := manifestErr(t, store, ManifestRef{ID: "snap-1"})
 		if !errors.Is(err, ErrManifestInvalid) {
 			t.Errorf("expected ErrManifestInvalid, got: %v", err)
 		}
@@ -205,7 +277,7 @@ func TestDatasetReader_GetManifest_InvalidManifest(t *testing.T) {
 			DatasetID:     "test-ds",
 			SnapshotID:    "snap-1",
 			CreatedAt:     time.Now().UTC(),
-			Metadata:      Metadata{},
+			Metadata:      emptyMetadata(),
 			Files:         nil, // nil not allowed (use empty slice)
 			RowCount:      0,
 			Compressor:    "noop",
@@ -213,12 +285,7 @@ func TestDatasetReader_GetManifest_InvalidManifest(t *testing.T) {
 		}
 		writeManifest(ctx, t, store, manifest)
 
-		reader, err := NewDatasetReader(NewMemoryFactoryFrom(store))
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		_, err = reader.GetManifest(ctx, "test-ds", ManifestRef{ID: "snap-1"})
+		err := manifestErr(t, store, ManifestRef{ID: "snap-1"})
 		if !errors.Is(err, ErrManifestInvalid) {
 			t.Errorf("expected ErrManifestInvalid, got: %v", err)
 		}
@@ -234,7 +301,7 @@ func TestDatasetReader_GetManifest_InvalidManifest(t *testing.T) {
 			DatasetID:     "test-ds",
 			SnapshotID:    "snap-1",
 			CreatedAt:     time.Now().UTC(),
-			Metadata:      Metadata{},
+			Metadata:      emptyMetadata(),
 			Files:         []FileRef{},
 			RowCount:      -1, // negative not allowed
 			Compressor:    "noop",
@@ -242,12 +309,7 @@ func TestDatasetReader_GetManifest_InvalidManifest(t *testing.T) {
 		}
 		writeManifest(ctx, t, store, manifest)
 
-		reader, err := NewDatasetReader(NewMemoryFactoryFrom(store))
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		_, err = reader.GetManifest(ctx, "test-ds", ManifestRef{ID: "snap-1"})
+		err := manifestErr(t, store, ManifestRef{ID: "snap-1"})
 		if !errors.Is(err, ErrManifestInvalid) {
 			t.Errorf("expected ErrManifestInvalid, got: %v", err)
 		}
@@ -263,7 +325,7 @@ func TestDatasetReader_GetManifest_InvalidManifest(t *testing.T) {
 			DatasetID:     "test-ds",
 			SnapshotID:    "snap-1",
 			CreatedAt:     time.Now().UTC(),
-			Metadata:      Metadata{},
+			Metadata:      emptyMetadata(),
 			Files:         []FileRef{},
 			RowCount:      0,
 			// Compressor missing
@@ -271,12 +333,7 @@ func TestDatasetReader_GetManifest_InvalidManifest(t *testing.T) {
 		}
 		writeManifest(ctx, t, store, manifest)
 
-		reader, err := NewDatasetReader(NewMemoryFactoryFrom(store))
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		_, err = reader.GetManifest(ctx, "test-ds", ManifestRef{ID: "snap-1"})
+		err := manifestErr(t, store, ManifestRef{ID: "snap-1"})
 		if !errors.Is(err, ErrManifestInvalid) {
 			t.Errorf("expected ErrManifestInvalid, got: %v", err)
 		}
@@ -292,7 +349,7 @@ func TestDatasetReader_GetManifest_InvalidManifest(t *testing.T) {
 			DatasetID:     "test-ds",
 			SnapshotID:    "snap-1",
 			CreatedAt:     time.Now().UTC(),
-			Metadata:      Metadata{},
+			Metadata:      emptyMetadata(),
 			Files:         []FileRef{},
 			RowCount:      0,
 			Compressor:    "noop",
@@ -300,12 +357,7 @@ func TestDatasetReader_GetManifest_InvalidManifest(t *testing.T) {
 		}
 		writeManifest(ctx, t, store, manifest)
 
-		reader, err := NewDatasetReader(NewMemoryFactoryFrom(store))
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		_, err = reader.GetManifest(ctx, "test-ds", ManifestRef{ID: "snap-1"})
+		err := manifestErr(t, store, ManifestRef{ID: "snap-1"})
 		if !errors.Is(err, ErrManifestInvalid) {
 			t.Errorf("expected ErrManifestInvalid, got: %v", err)
 		}
@@ -321,7 +373,7 @@ func TestDatasetReader_GetManifest_InvalidManifest(t *testing.T) {
 			DatasetID:     "test-ds",
 			SnapshotID:    "snap-1",
 			CreatedAt:     time.Now().UTC(),
-			Metadata:      Metadata{},
+			Metadata:      emptyMetadata(),
 			Files: []FileRef{
 				{Path: "", SizeBytes: 100}, // empty path not allowed
 			},
@@ -331,12 +383,7 @@ func TestDatasetReader_GetManifest_InvalidManifest(t *testing.T) {
 		}
 		writeManifest(ctx, t, store, manifest)
 
-		reader, err := NewDatasetReader(NewMemoryFactoryFrom(store))
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		_, err = reader.GetManifest(ctx, "test-ds", ManifestRef{ID: "snap-1"})
+		err := manifestErr(t, store, ManifestRef{ID: "snap-1"})
 		if !errors.Is(err, ErrManifestInvalid) {
 			t.Errorf("expected ErrManifestInvalid, got: %v", err)
 		}
@@ -352,7 +399,7 @@ func TestDatasetReader_GetManifest_InvalidManifest(t *testing.T) {
 			DatasetID:     "test-ds",
 			SnapshotID:    "snap-1",
 			CreatedAt:     time.Now().UTC(),
-			Metadata:      Metadata{},
+			Metadata:      emptyMetadata(),
 			Files: []FileRef{
 				{Path: "data/file.bin", SizeBytes: -100}, // negative size not allowed
 			},
@@ -362,19 +409,14 @@ func TestDatasetReader_GetManifest_InvalidManifest(t *testing.T) {
 		}
 		writeManifest(ctx, t, store, manifest)
 
-		reader, err := NewDatasetReader(NewMemoryFactoryFrom(store))
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		_, err = reader.GetManifest(ctx, "test-ds", ManifestRef{ID: "snap-1"})
+		err := manifestErr(t, store, ManifestRef{ID: "snap-1"})
 		if !errors.Is(err, ErrManifestInvalid) {
 			t.Errorf("expected ErrManifestInvalid, got: %v", err)
 		}
 	})
 }
 
-func TestDatasetReader_ListManifests(t *testing.T) {
+func TestView_ListManifests(t *testing.T) {
 	t.Run("invalid manifest with partition filter returns error", func(t *testing.T) {
 		ctx := t.Context()
 		store := NewMemory()
@@ -387,7 +429,7 @@ func TestDatasetReader_ListManifests(t *testing.T) {
 		}
 		writeManifest(ctx, t, store, manifest)
 
-		reader, err := NewDatasetReader(NewMemoryFactoryFrom(store))
+		reader, err := newTestReader(Use(store))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -410,7 +452,7 @@ func TestDatasetReader_ListManifests(t *testing.T) {
 		}
 		writeManifest(ctx, t, store, manifest)
 
-		reader, err := NewDatasetReader(NewMemoryFactoryFrom(store))
+		reader, err := newTestReader(Use(store))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -423,16 +465,14 @@ func TestDatasetReader_ListManifests(t *testing.T) {
 		}
 	})
 
-	// TestDatasetReader_ListManifests_HiveLayout_SkipsCanonicalManifest verifies
+	// TestView_ListManifests_HiveLayout_SkipsCanonicalManifest verifies
 	// that ListManifests excludes the canonical manifest written for O(1) Snapshot
 	// lookups. Without this, ManifestRef.Partition would be nondeterministic
 	// (empty vs populated) depending on store listing order.
 	t.Run("hive layout skips canonical manifest", func(t *testing.T) {
 		store := NewMemory()
 
-		ds, err := NewDataset("test-ds", NewMemoryFactoryFrom(store),
-			WithCodec(NewJSONLCodec()),
-			WithHiveLayout("day"))
+		ds, err := Open(Use(store)).Records(t.Context(), "test-ds", JSONL[D](), hive("day"))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -441,11 +481,11 @@ func TestDatasetReader_ListManifests(t *testing.T) {
 			D{"id": 1, "day": "2024-01-15"},
 			D{"id": 2, "day": "2024-01-16"},
 		)
-		if _, err := ds.Write(t.Context(), records, Metadata{}); err != nil {
+		if _, err := ds.Write(t.Context(), records, nil); err != nil {
 			t.Fatal(err)
 		}
 
-		reader, err := NewDatasetReader(NewMemoryFactoryFrom(store), WithHiveLayout("day"))
+		reader, err := newTestReader(Use(store))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -468,7 +508,7 @@ func TestDatasetReader_ListManifests(t *testing.T) {
 // G3: ErrNoManifests test
 // -----------------------------------------------------------------------------
 
-func TestDatasetReader_ListDatasets(t *testing.T) {
+func TestView_ListDatasets(t *testing.T) {
 	t.Run("err no manifests", func(t *testing.T) {
 		ctx := t.Context()
 		store := NewMemory()
@@ -479,7 +519,7 @@ func TestDatasetReader_ListDatasets(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		reader, err := NewDatasetReader(NewMemoryFactoryFrom(store))
+		reader, err := newTestReader(Use(store))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -494,7 +534,7 @@ func TestDatasetReader_ListDatasets(t *testing.T) {
 		ctx := t.Context()
 		store := NewMemory()
 
-		reader, err := NewDatasetReader(NewMemoryFactoryFrom(store))
+		reader, err := newTestReader(Use(store))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -518,7 +558,7 @@ func TestDatasetReader_ListDatasets(t *testing.T) {
 			DatasetID:     "test-ds",
 			SnapshotID:    "snap-1",
 			CreatedAt:     time.Now().UTC(),
-			Metadata:      Metadata{},
+			Metadata:      emptyMetadata(),
 			Files:         []FileRef{},
 			RowCount:      0,
 			Compressor:    "noop",
@@ -526,7 +566,7 @@ func TestDatasetReader_ListDatasets(t *testing.T) {
 		}
 		writeManifest(ctx, t, store, manifest)
 
-		reader, err := NewDatasetReader(NewMemoryFactoryFrom(store))
+		reader, err := newTestReader(Use(store))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -544,7 +584,7 @@ func TestDatasetReader_ListDatasets(t *testing.T) {
 		ctx := t.Context()
 		store := NewMemory()
 
-		reader, err := NewDatasetReader(NewMemoryFactoryFrom(store), WithLayout(NewFlatLayout()))
+		reader, err := newTestReader(Use(store), WithFlatPaths())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -564,7 +604,7 @@ func TestDatasetReader_ListDatasets(t *testing.T) {
 		}
 		defer testutil.RemoveAll(tmpDir)
 
-		reader, err := NewDatasetReader(NewFSFactory(tmpDir))
+		reader, err := newTestReader(FS(tmpDir))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -587,32 +627,32 @@ func TestDatasetReader_ListDatasets(t *testing.T) {
 // G5: Complexity verification tests
 // -----------------------------------------------------------------------------
 
-// TestDatasetReader_ListPartitions_SingleManifestLoad verifies that ListPartitions
+// TestView_ListPartitions_SingleManifestLoad verifies that ListPartitions
 // loads each manifest exactly once (M Gets), not twice (2M Gets via ListManifests + GetManifest).
-func TestDatasetReader_ListPartitions_SingleManifestLoad(t *testing.T) {
+func TestView_ListPartitions_SingleManifestLoad(t *testing.T) {
 	inner := NewMemory()
 	fs := testutil.NewFaultStore(inner)
-	factory := newFaultStoreFactory(fs)
+	factory := Use(fs)
 
 	// Write two snapshots with hive-partitioned data.
-	ds, err := NewDataset("test-ds", factory,
-		WithCodec(NewJSONLCodec()),
-		WithHiveLayout("day"))
+	ds, err := Open(factory).Records(t.Context(), "test-ds", JSONL[D](), hive("day"))
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	records1 := R(D{"id": 1, "day": "2024-01-15"})
-	if _, err := ds.Write(t.Context(), records1, Metadata{}); err != nil {
+	if _, err := ds.Write(t.Context(), records1, nil); err != nil {
 		t.Fatal(err)
 	}
 
 	records2 := R(D{"id": 2, "day": "2024-01-16"})
-	if _, err := ds.Write(t.Context(), records2, Metadata{}); err != nil {
+	if _, err := ds.Write(t.Context(), records2, nil); err != nil {
 		t.Fatal(err)
 	}
 
-	reader, err := NewDatasetReader(factory, WithHiveLayout("day"))
+	// Opening the view reads the head's manifest; the count covers the
+	// listing alone.
+	view, err := OpenReadOnly(factory).Records(t.Context(), "test-ds", JSONL[D]())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -620,7 +660,7 @@ func TestDatasetReader_ListPartitions_SingleManifestLoad(t *testing.T) {
 	// Reset call tracking before the operation under test.
 	fs.Reset()
 
-	partitions, err := reader.ListPartitions(t.Context(), "test-ds", PartitionListOptions{})
+	partitions, err := view.ListPartitions(t.Context(), PartitionListOptions{})
 	if err != nil {
 		t.Fatalf("ListPartitions failed: %v", err)
 	}
@@ -650,21 +690,37 @@ func TestDatasetReader_ListPartitions_SingleManifestLoad(t *testing.T) {
 // Test helpers
 // -----------------------------------------------------------------------------
 
-// NewMemoryFactoryFrom creates a StoreFactory that returns an existing store.
-func NewMemoryFactoryFrom(store Store) StoreFactory {
-	return func() (Store, error) {
-		return store, nil
+func TestValidateManifest_PathsNameEveryDirectory(t *testing.T) {
+	complete := defaultPathNames().convention()
+	flat := defaultPathNames()
+	flat.flat = true
+	incomplete := complete
+	incomplete.Staged = ""
+	flatWithSnapshots := flat.convention()
+	flatWithSnapshots.Snapshots = "snapshots"
+	withEquals := complete
+	withEquals.Data = "k=v"
+	duplicate := complete
+	duplicate.Data = complete.Expired
+	pointerName := complete
+	pointerName.Staged = "latest"
+	cases := map[string]struct {
+		paths ManifestPaths
+		valid bool
+	}{
+		"default names":                   {complete, true},
+		"flat names":                      {flat.convention(), true},
+		"a missing name":                  {incomplete, false},
+		"flat with a snapshots directory": {flatWithSnapshots, false},
+		"only a manifest name":            {ManifestPaths{Manifest: "manifest.json"}, false},
+		"a name with =":                   {withEquals, false},
+		"a repeated name":                 {duplicate, false},
+		"the pointer's name":              {pointerName, false},
 	}
-}
-
-func writeManifest(ctx context.Context, t *testing.T, store Store, m *Manifest) {
-	t.Helper()
-	data, err := json.Marshal(m)
-	if err != nil {
-		t.Fatal(err)
-	}
-	path := "datasets/" + string(m.DatasetID) + "/snapshots/" + string(m.SnapshotID) + "/manifest.json"
-	if err := store.Put(ctx, path, bytes.NewReader(data)); err != nil {
-		t.Fatal(err)
+	for name, c := range cases {
+		err := missingPaths(&Manifest{FormatVersion: manifestFormatVersion, Paths: c.paths})
+		if c.valid != (err == nil) {
+			t.Errorf("%s: got %v, want valid=%v", name, err, c.valid)
+		}
 	}
 }

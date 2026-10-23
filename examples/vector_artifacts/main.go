@@ -33,6 +33,33 @@ func main() {
 	}
 }
 
+// embeddingBatch is the metadata of one batch of embeddings.
+type embeddingBatch struct {
+	Dimension   int    `json:"dimension"`
+	VectorCount int    `json:"vector_count"`
+	DType       string `json:"dtype"`
+	Source      string `json:"source"`
+}
+
+// indexBuild is the metadata of one serialized index: what it was built
+// from, so that it can be rebuilt.
+type indexBuild struct {
+	IndexType        string                   `json:"index_type"`
+	Dimension        int                      `json:"dimension"`
+	VectorCount      int                      `json:"vector_count"`
+	SourceEmbeddings []lode.DatasetSnapshotID `json:"source_embeddings"`
+	FaissVersion     string                   `json:"faiss_version"`
+}
+
+// decodeMetadata decodes a snapshot's metadata into a value of type T.
+func decodeMetadata[T any](snap *lode.DatasetSnapshot) (T, error) {
+	var v T
+	if err := snap.Metadata.Decode(&v); err != nil {
+		return v, fmt.Errorf("decode metadata of %s: %w", snap.ID, err)
+	}
+	return v, nil
+}
+
 func run() error {
 	ctx := context.Background()
 
@@ -45,28 +72,25 @@ func run() error {
 
 	fmt.Printf("Storage root: %s\n\n", tmpDir)
 
-	// Create filesystem store factory
-	storeFactory := lode.NewFSFactory(tmpDir)
+	// Open a root over the filesystem store.
+	root := lode.Open(lode.FS(tmpDir))
 
 	// -------------------------------------------------------------------------
 	// STORE EMBEDDING BATCHES
 	// -------------------------------------------------------------------------
 	fmt.Println("=== STORE EMBEDDING BATCHES ===")
 
-	// Embeddings dataset: raw blob mode (no codec = default bundle).
-	// Each snapshot holds a serialized batch of float32 vectors.
-	embDS, err := lode.NewDataset("embeddings", storeFactory)
+	// Embeddings dataset: a blob dataset. Each snapshot holds a serialized
+	// batch of float32 vectors.
+	embDS, err := root.Blobs(ctx, "embeddings")
 	if err != nil {
 		return fmt.Errorf("create embeddings dataset: %w", err)
 	}
 
 	// Batch 1: 100 vectors, 128 dimensions
 	batch1 := simulateEmbeddings(100, 128)
-	embSnap1, err := embDS.Write(ctx, []any{batch1}, lode.Metadata{
-		"dimension":    128,
-		"vector_count": 100,
-		"dtype":        "float32",
-		"source":       "training-set-part-1",
+	embSnap1, err := embDS.Write(ctx, batch1, embeddingBatch{
+		Dimension: 128, VectorCount: 100, DType: "float32", Source: "training-set-part-1",
 	})
 	if err != nil {
 		return fmt.Errorf("write embedding batch 1: %w", err)
@@ -75,11 +99,8 @@ func run() error {
 
 	// Batch 2: 50 vectors, 128 dimensions
 	batch2 := simulateEmbeddings(50, 128)
-	embSnap2, err := embDS.Write(ctx, []any{batch2}, lode.Metadata{
-		"dimension":    128,
-		"vector_count": 50,
-		"dtype":        "float32",
-		"source":       "training-set-part-2",
+	embSnap2, err := embDS.Write(ctx, batch2, embeddingBatch{
+		Dimension: 128, VectorCount: 50, DType: "float32", Source: "training-set-part-2",
 	})
 	if err != nil {
 		return fmt.Errorf("write embedding batch 2: %w", err)
@@ -91,9 +112,9 @@ func run() error {
 	// -------------------------------------------------------------------------
 	fmt.Println("=== STORE SERIALIZED INDEX ===")
 
-	// Index dataset: raw blob mode. StreamWrite handles large binary payloads
+	// Index dataset: a blob dataset. StreamWrite handles large binary payloads
 	// that should be written in a single pass (e.g., faiss.write_index output).
-	indexDS, err := lode.NewDataset("index", storeFactory)
+	indexDS, err := root.Blobs(ctx, "index")
 	if err != nil {
 		return fmt.Errorf("create index dataset: %w", err)
 	}
@@ -101,12 +122,9 @@ func run() error {
 	// Write first index via StreamWrite (built from batch 1 only).
 	// StreamWrite is preferred for large blobs: data flows directly to the
 	// final object path with no intermediate buffering.
-	sw, err := indexDS.StreamWrite(ctx, lode.Metadata{
-		"index_type":        "IVF1024,Flat",
-		"dimension":         128,
-		"vector_count":      100,
-		"source_embeddings": []any{string(embSnap1.ID)},
-		"faiss_version":     "1.7.4",
+	sw, err := indexDS.StreamWrite(ctx, indexBuild{
+		IndexType: "IVF1024,Flat", Dimension: 128, VectorCount: 100,
+		SourceEmbeddings: []lode.DatasetSnapshotID{embSnap1.ID}, FaissVersion: "1.7.4",
 	})
 	if err != nil {
 		return fmt.Errorf("start stream write for index v1: %w", err)
@@ -123,7 +141,11 @@ func run() error {
 		return fmt.Errorf("commit index v1: %w", err)
 	}
 	fmt.Printf("Index v1: %s (%d bytes)\n", idxSnap1.ID, idxSnap1.Manifest.Files[0].SizeBytes)
-	fmt.Printf("  Built from: %v\n\n", idxSnap1.Manifest.Metadata["source_embeddings"])
+	build1, err := decodeMetadata[indexBuild](idxSnap1)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("  Built from: %v\n\n", build1.SourceEmbeddings)
 
 	// -------------------------------------------------------------------------
 	// LATEST AS ACTIVE POINTER
@@ -136,10 +158,14 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("get active index: %w", err)
 	}
+	activeBuild, err := decodeMetadata[indexBuild](active)
+	if err != nil {
+		return err
+	}
 	fmt.Printf("Active index: %s\n", active.ID)
-	fmt.Printf("  Type: %v\n", active.Manifest.Metadata["index_type"])
-	fmt.Printf("  Vectors: %v\n", active.Manifest.Metadata["vector_count"])
-	fmt.Printf("  FAISS version: %v\n\n", active.Manifest.Metadata["faiss_version"])
+	fmt.Printf("  Type: %s\n", activeBuild.IndexType)
+	fmt.Printf("  Vectors: %d\n", activeBuild.VectorCount)
+	fmt.Printf("  FAISS version: %s\n\n", activeBuild.FaissVersion)
 
 	// -------------------------------------------------------------------------
 	// VERSION PROGRESSION
@@ -147,12 +173,9 @@ func run() error {
 	fmt.Println("=== VERSION PROGRESSION ===")
 
 	// Build a second index from both embedding batches.
-	sw2, err := indexDS.StreamWrite(ctx, lode.Metadata{
-		"index_type":        "IVF1024,Flat",
-		"dimension":         128,
-		"vector_count":      150,
-		"source_embeddings": []any{string(embSnap1.ID), string(embSnap2.ID)},
-		"faiss_version":     "1.7.4",
+	sw2, err := indexDS.StreamWrite(ctx, indexBuild{
+		IndexType: "IVF1024,Flat", Dimension: 128, VectorCount: 150,
+		SourceEmbeddings: []lode.DatasetSnapshotID{embSnap1.ID, embSnap2.ID}, FaissVersion: "1.7.4",
 	})
 	if err != nil {
 		return fmt.Errorf("start stream write for index v2: %w", err)
@@ -175,8 +198,12 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("get active index after v2: %w", err)
 	}
+	active2Build, err := decodeMetadata[indexBuild](active2)
+	if err != nil {
+		return err
+	}
 	fmt.Printf("Active index updated: %s\n", active2.ID)
-	fmt.Printf("  Vectors: %v (was %v)\n\n", active2.Manifest.Metadata["vector_count"], active.Manifest.Metadata["vector_count"])
+	fmt.Printf("  Vectors: %d (was %d)\n\n", active2Build.VectorCount, activeBuild.VectorCount)
 
 	// -------------------------------------------------------------------------
 	// ROLLBACK
@@ -189,15 +216,18 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("get old index snapshot: %w", err)
 	}
+	oldBuild, err := decodeMetadata[indexBuild](oldSnap)
+	if err != nil {
+		return err
+	}
 	fmt.Printf("Previous index: %s\n", oldSnap.ID)
-	fmt.Printf("  Vectors: %v\n", oldSnap.Manifest.Metadata["vector_count"])
+	fmt.Printf("  Vectors: %d\n", oldBuild.VectorCount)
 
 	// Read the old index data back and verify size.
-	oldData, err := indexDS.Read(ctx, idxSnap1.ID)
+	oldBlob, err := indexDS.Read(ctx, idxSnap1.ID)
 	if err != nil {
 		return fmt.Errorf("read old index data: %w", err)
 	}
-	oldBlob := oldData[0].([]byte)
 	fmt.Printf("  Read back: %d bytes (matches original: %v)\n", len(oldBlob), bytes.Equal(oldBlob, indexBlob1))
 
 	// List all index snapshots to show version history.
@@ -217,20 +247,20 @@ func run() error {
 	// embedding snapshot → recover the full provenance chain.
 	fmt.Println("Provenance chain for active index:")
 	fmt.Printf("  Index snapshot: %s\n", active2.ID)
-	fmt.Printf("  Index type: %v\n", active2.Manifest.Metadata["index_type"])
+	fmt.Printf("  Index type: %s\n", active2Build.IndexType)
 
-	sourceIDs, ok := active2.Manifest.Metadata["source_embeddings"].([]any)
-	if !ok {
-		return fmt.Errorf("expected source_embeddings to be []any, got %T", active2.Manifest.Metadata["source_embeddings"])
-	}
-	for i, rawID := range sourceIDs {
-		snapID := lode.DatasetSnapshotID(rawID.(string))
+	// The metadata decodes into its struct, so the source IDs keep their type.
+	for i, snapID := range active2Build.SourceEmbeddings {
 		embSnap, err := embDS.Snapshot(ctx, snapID)
 		if err != nil {
 			return fmt.Errorf("look up embedding snapshot %s: %w", snapID, err)
 		}
+		batch, err := decodeMetadata[embeddingBatch](embSnap)
+		if err != nil {
+			return err
+		}
 		fmt.Printf("  Source embedding %d: %s\n", i+1, embSnap.ID)
-		fmt.Printf("    Vectors: %v, Source: %v\n", embSnap.Manifest.Metadata["vector_count"], embSnap.Manifest.Metadata["source"])
+		fmt.Printf("    Vectors: %d, Source: %s\n", batch.VectorCount, batch.Source)
 	}
 	fmt.Println()
 

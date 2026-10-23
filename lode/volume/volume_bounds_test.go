@@ -74,9 +74,9 @@ func TestFindCoveringBlocks_AdjacentAtCursor(t *testing.T) {
 }
 
 func TestVolume_ReadAt_ExactEndOfAddressSpace(t *testing.T) {
-	vol := newTestVolume(t, "test-vol", lode.NewMemoryFactory(), 20)
+	vol := newTestVolume(t, "test-vol", lode.Memory(), 20)
 	blk := stageBlock(t, vol, 0, bytes.Repeat([]byte("A"), 20))
-	snap := commitBlocks(t, vol, []BlockRef{blk}, lode.Metadata{})
+	snap := commitBlocks(t, vol, []BlockRef{blk}, Metadata{})
 
 	// Last byte is readable.
 	got, err := vol.ReadAt(t.Context(), snap.ID, 19, 1)

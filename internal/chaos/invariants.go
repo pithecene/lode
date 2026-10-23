@@ -14,7 +14,7 @@ import (
 // history, a clean handle to read it through, and what the workload
 // observed. Each invariant is one of its methods.
 type verifier struct {
-	ds          lode.Dataset
+	ds          lode.Records[any]
 	snapshots   map[lode.DatasetSnapshotID]*lode.DatasetSnapshot
 	chain       *chain[lode.DatasetSnapshotID]
 	settle      lode.DatasetSnapshotID // the settling commit
@@ -24,7 +24,7 @@ type verifier struct {
 	failedReads []lode.DatasetSnapshotID
 }
 
-func newVerifier(ctx context.Context, ds lode.Dataset, settle lode.DatasetSnapshotID, ledger *Ledger) (*verifier, error) {
+func newVerifier(ctx context.Context, ds lode.Records[any], settle lode.DatasetSnapshotID, ledger *Ledger) (*verifier, error) {
 	snaps, err := ds.Snapshots(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("chaos: list snapshots: %w", err)
@@ -43,7 +43,7 @@ func newVerifier(ctx context.Context, ds lode.Dataset, settle lode.DatasetSnapsh
 	}
 	for _, s := range snaps {
 		v.snapshots[s.ID] = s
-		v.chain.add(s.ID, s.Manifest.ParentSnapshotID)
+		v.chain.add(s.ID, s.ParentSnapshotID)
 	}
 	for _, c := range ledger.Commits() {
 		v.acked[c.ID] = c
@@ -86,12 +86,12 @@ const finalGrace = time.Nanosecond
 // verify settles the head with one clean commit, so that the pointer names
 // a committed snapshot, and then runs every check, recording each failure.
 func verify(ctx context.Context, cfg Config, store lode.Store, ledger *Ledger) int {
-	ds, err := openDataset(cfg, store)
+	ds, err := openDataset(ctx, cfg, store)
 	if err != nil {
 		ledger.violate("verify", "open: %v", err)
 		return 0
 	}
-	settle, err := ds.Write(ctx, Commit{Writer: -1, Rows: 1, Day: days[0]}.records(), lode.Metadata{"op": "settle"})
+	settle, err := ds.Write(ctx, Commit{Writer: -1, Rows: 1, Day: days[0]}.records(), lode.D{"op": "settle"})
 	if err != nil {
 		ledger.violate("verify", "settling commit: %v", err)
 		return 0
@@ -176,8 +176,8 @@ func (v *verifier) contentsMatch(ctx context.Context) []string {
 		switch c, acked := v.acked[id]; {
 		case err != nil:
 			bad = append(bad, fmt.Sprintf("%s: Read: %v", id, err))
-		case int64(len(rows)) != v.snapshots[id].Manifest.RowCount:
-			bad = append(bad, fmt.Sprintf("%s: %d rows, manifest records %d", id, len(rows), v.snapshots[id].Manifest.RowCount))
+		case int64(len(rows)) != v.snapshots[id].RowCount:
+			bad = append(bad, fmt.Sprintf("%s: %d rows, manifest records %d", id, len(rows), v.snapshots[id].RowCount))
 		case acked && !c.matches(rows):
 			bad = append(bad, fmt.Sprintf("%s: the rows read are not the %d that writer %d committed as seq %d", id, c.Rows, c.Writer, c.Seq))
 		}

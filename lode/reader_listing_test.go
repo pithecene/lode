@@ -10,21 +10,19 @@ import (
 
 // writeHiveDays writes one snapshot per day value into a Hive dataset
 // partitioned by "day" and returns a reader over the same store.
-func writeHiveDays(t *testing.T, days ...string) DatasetReader {
+func writeHiveDays(t *testing.T, days ...string) *testReader {
 	t.Helper()
 	store := NewMemory()
-	ds, err := NewDataset("test-ds", NewMemoryFactoryFrom(store),
-		WithCodec(NewJSONLCodec()),
-		WithHiveLayout("day"))
+	ds, err := Open(Use(store)).Records(t.Context(), "test-ds", JSONL[D](), hive("day"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	for i, day := range days {
-		if _, err := ds.Write(t.Context(), R(D{"id": i, "day": day}), Metadata{}); err != nil {
+		if _, err := ds.Write(t.Context(), R(D{"id": i, "day": day}), nil); err != nil {
 			t.Fatalf("write %s: %v", day, err)
 		}
 	}
-	reader, err := NewDatasetReader(NewMemoryFactoryFrom(store), WithHiveLayout("day"))
+	reader, err := newTestReader(Use(store))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,8 +37,8 @@ func refPaths(refs []PartitionRef) []string {
 	return out
 }
 
-func TestDatasetReader_ListPartitions_Order(t *testing.T) {
-	// TestDatasetReader_ListPartitions_Sorted verifies results are lexicographic
+func TestView_ListPartitions_Order(t *testing.T) {
+	// TestView_ListPartitions_Sorted verifies results are lexicographic
 	// by Path regardless of write or store order (the memory store is map-ordered).
 	t.Run("sorted", func(t *testing.T) {
 		reader := writeHiveDays(t, "2024-01-16", "2024-02-01", "2024-01-15")
@@ -55,7 +53,7 @@ func TestDatasetReader_ListPartitions_Order(t *testing.T) {
 		}
 	})
 
-	// TestDatasetReader_ListPartitions_StartAfter_Pages verifies Limit + StartAfter
+	// TestView_ListPartitions_StartAfter_Pages verifies Limit + StartAfter
 	// walk the full sorted set exactly once, and that a cursor past the end is empty.
 	t.Run("start after pages", func(t *testing.T) {
 		reader := writeHiveDays(t, "2024-01-15", "2024-01-16", "2024-01-17")
@@ -82,7 +80,7 @@ func TestDatasetReader_ListPartitions_Order(t *testing.T) {
 		}
 	})
 
-	// TestDatasetReader_ListPartitions_StartAfter_Exclusive verifies the cursor
+	// TestView_ListPartitions_StartAfter_Exclusive verifies the cursor
 	// itself is not returned and a cursor between keys resumes at the next key.
 	t.Run("start after exclusive", func(t *testing.T) {
 		reader := writeHiveDays(t, "2024-01-15", "2024-01-17")
@@ -105,8 +103,8 @@ func TestDatasetReader_ListPartitions_Order(t *testing.T) {
 	})
 }
 
-func TestDatasetReader_ListPartitions_Prefix(t *testing.T) {
-	// TestDatasetReader_ListPartitions_Prefix verifies a raw path prefix narrows
+func TestView_ListPartitions_Prefix(t *testing.T) {
+	// TestView_ListPartitions_Prefix verifies a raw path prefix narrows
 	// results, including a partial final token (no key boundary implied).
 	t.Run("prefix", func(t *testing.T) {
 		reader := writeHiveDays(t, "2024-01-15", "2024-01-16", "2024-02-01")
@@ -121,14 +119,12 @@ func TestDatasetReader_ListPartitions_Prefix(t *testing.T) {
 		}
 	})
 
-	// TestDatasetReader_ListPartitions_Prefix_ExcludesOtherPartitionsOfSameSnapshot
+	// TestView_ListPartitions_Prefix_ExcludesOtherPartitionsOfSameSnapshot
 	// verifies that when one snapshot spans partitions inside and outside the
 	// prefix, only the inside partitions are returned.
 	t.Run("excludes other partitions of same snapshot", func(t *testing.T) {
 		store := NewMemory()
-		ds, err := NewDataset("test-ds", NewMemoryFactoryFrom(store),
-			WithCodec(NewJSONLCodec()),
-			WithHiveLayout("day"))
+		ds, err := Open(Use(store)).Records(t.Context(), "test-ds", JSONL[D](), hive("day"))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -136,10 +132,10 @@ func TestDatasetReader_ListPartitions_Prefix(t *testing.T) {
 		if _, err := ds.Write(t.Context(), R(
 			D{"id": 1, "day": "2024-01-15"},
 			D{"id": 2, "day": "2024-02-01"},
-		), Metadata{}); err != nil {
+		), nil); err != nil {
 			t.Fatal(err)
 		}
-		reader, err := NewDatasetReader(NewMemoryFactoryFrom(store), WithHiveLayout("day"))
+		reader, err := newTestReader(Use(store))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -154,7 +150,7 @@ func TestDatasetReader_ListPartitions_Prefix(t *testing.T) {
 		}
 	})
 
-	// TestDatasetReader_ListPartitions_Prefix_NoMatch_ReturnsEmpty verifies an
+	// TestView_ListPartitions_Prefix_NoMatch_ReturnsEmpty verifies an
 	// empty subtree is an empty result, not ErrNotFound.
 	t.Run("no match returns empty", func(t *testing.T) {
 		reader := writeHiveDays(t, "2024-01-15")
@@ -168,10 +164,14 @@ func TestDatasetReader_ListPartitions_Prefix(t *testing.T) {
 		}
 	})
 
-	// TestDatasetReader_ListPartitions_Prefix_DefaultLayout_Rejected verifies the
+	// TestView_ListPartitions_Prefix_DefaultLayout_Rejected verifies the
 	// sentinel on a layout without partitions.
 	t.Run("default layout rejected", func(t *testing.T) {
-		reader, err := NewDatasetReader(NewMemoryFactory())
+		store := NewMemory()
+		if _, err := recordsOn(t, store, "test-ds").Write(t.Context(), R(D{"id": 1}), nil); err != nil {
+			t.Fatal(err)
+		}
+		reader, err := newTestReader(Use(store))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -181,22 +181,26 @@ func TestDatasetReader_ListPartitions_Prefix(t *testing.T) {
 		}
 	})
 
-	// TestDatasetReader_ListPartitions_Prefix_RejectsNonCanonical verifies a
+	// TestView_ListPartitions_Prefix_RejectsNonCanonical verifies a
 	// prefix cannot escape the dataset's partitions directory. The prefix is
 	// concatenated under it, so "..", "." and empty segments are rejected before
 	// any store call.
 	t.Run("rejects non canonical", func(t *testing.T) {
 		store := NewMemory()
-		victim, err := NewDataset("victim", NewMemoryFactoryFrom(store),
-			WithCodec(NewJSONLCodec()),
-			WithHiveLayout("day"))
+		victim, err := Open(Use(store)).Records(t.Context(), "victim", JSONL[D](), hive("day"))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := victim.Write(t.Context(), R(D{"id": 1, "day": "2024-01-15"}), Metadata{}); err != nil {
+		if _, err := victim.Write(t.Context(), R(D{"id": 1, "day": "2024-01-15"}), nil); err != nil {
 			t.Fatal(err)
 		}
-		reader, err := NewDatasetReader(NewMemoryFactoryFrom(store), WithHiveLayout("day"))
+		if _, err := recordsOn(t, store, "test-ds", hive("day")).Write(t.Context(), R(D{"id": 2, "day": "2024-01-15"}), nil); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := recordsOn(t, store, "plain-ds").Write(t.Context(), R(D{"id": 3}), nil); err != nil {
+			t.Fatal(err)
+		}
+		reader, err := newTestReader(Use(store))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -226,26 +230,24 @@ func TestDatasetReader_ListPartitions_Prefix(t *testing.T) {
 
 		// Malformed wins over unsupported: a partitionless layout still reports
 		// ErrInvalidPath for an escaping prefix, not ErrPartitionPrefixNotSupported.
-		plain, err := NewDatasetReader(NewMemoryFactoryFrom(store))
+		plain, err := newTestReader(Use(store))
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, err = plain.ListPartitions(t.Context(), "test-ds", PartitionListOptions{Prefix: "../x"})
+		_, err = plain.ListPartitions(t.Context(), "plain-ds", PartitionListOptions{Prefix: "../x"})
 		if !errors.Is(err, ErrInvalidPath) {
 			t.Errorf("default layout, escaping prefix: expected ErrInvalidPath, got %v", err)
 		}
 	})
 }
 
-func TestDatasetReader_ListManifests_Order(t *testing.T) {
-	// TestDatasetReader_ListManifests_SortedAndDeterministicPartition verifies
+func TestView_ListManifests_Order(t *testing.T) {
+	// TestView_ListManifests_SortedAndDeterministicPartition verifies
 	// (Partition, ID) ordering and that a multi-partition snapshot resolves to its
 	// lexicographically smallest partition regardless of store order.
 	t.Run("sorted and deterministic partition", func(t *testing.T) {
 		store := NewMemory()
-		ds, err := NewDataset("test-ds", NewMemoryFactoryFrom(store),
-			WithCodec(NewJSONLCodec()),
-			WithHiveLayout("day"))
+		ds, err := Open(Use(store)).Records(t.Context(), "test-ds", JSONL[D](), hive("day"))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -253,15 +255,15 @@ func TestDatasetReader_ListManifests_Order(t *testing.T) {
 		snapA, err := ds.Write(t.Context(), R(
 			D{"id": 1, "day": "2024-01-20"},
 			D{"id": 2, "day": "2024-01-10"},
-		), Metadata{})
+		), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		snapB, err := ds.Write(t.Context(), R(D{"id": 3, "day": "2024-01-15"}), Metadata{})
+		snapB, err := ds.Write(t.Context(), R(D{"id": 3, "day": "2024-01-15"}), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		reader, err := NewDatasetReader(NewMemoryFactoryFrom(store), WithHiveLayout("day"))
+		reader, err := newTestReader(Use(store))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -286,23 +288,23 @@ func TestDatasetReader_ListManifests_Order(t *testing.T) {
 		}
 	})
 
-	// TestDatasetReader_ListManifests_DefaultLayout_SortedByID verifies ordering on
+	// TestView_ListManifests_DefaultLayout_SortedByID verifies ordering on
 	// a layout without partitions is by snapshot ID.
 	t.Run("default layout sorted by ID", func(t *testing.T) {
 		store := NewMemory()
-		ds, err := NewDataset("test-ds", NewMemoryFactoryFrom(store), WithCodec(NewJSONLCodec()))
+		ds, err := Open(Use(store)).Records(t.Context(), "test-ds", JSONL[D]())
 		if err != nil {
 			t.Fatal(err)
 		}
 		var ids []DatasetSnapshotID
 		for i := range 3 {
-			snap, err := ds.Write(t.Context(), R(D{"id": i}), Metadata{})
+			snap, err := ds.Write(t.Context(), R(D{"id": i}), nil)
 			if err != nil {
 				t.Fatal(err)
 			}
 			ids = append(ids, snap.ID)
 		}
-		reader, err := NewDatasetReader(NewMemoryFactoryFrom(store))
+		reader, err := newTestReader(Use(store))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -329,26 +331,24 @@ func TestDatasetReader_ListManifests_Order(t *testing.T) {
 		_ = ids
 	})
 
-	// TestDatasetReader_ListManifests_SmallestParsedPartition_NotPathOrder covers
+	// TestView_ListManifests_SmallestParsedPartition_NotPathOrder covers
 	// a snapshot spanning partitions where one name prefixes another: "day=a-b/"
 	// sorts before "day=a/" as a storage path ('-' < '/'), but "day=a" is the
 	// smaller partition and is what the contract promises.
 	t.Run("smallest parsed partition not path order", func(t *testing.T) {
 		store := NewMemory()
-		ds, err := NewDataset("test-ds", NewMemoryFactoryFrom(store),
-			WithCodec(NewJSONLCodec()),
-			WithHiveLayout("day"))
+		ds, err := Open(Use(store)).Records(t.Context(), "test-ds", JSONL[D](), hive("day"))
 		if err != nil {
 			t.Fatal(err)
 		}
 		snap, err := ds.Write(t.Context(), R(
 			D{"id": 1, "day": "a-b"},
 			D{"id": 2, "day": "a"},
-		), Metadata{})
+		), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		reader, err := NewDatasetReader(NewMemoryFactoryFrom(store), WithHiveLayout("day"))
+		reader, err := newTestReader(Use(store))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -365,8 +365,8 @@ func TestDatasetReader_ListManifests_Order(t *testing.T) {
 	})
 }
 
-func TestDatasetReader_ListManifests_Paging(t *testing.T) {
-	// TestDatasetReader_ListManifests_StartAfter_Pages verifies Limit + StartAfter
+func TestView_ListManifests_Paging(t *testing.T) {
+	// TestView_ListManifests_StartAfter_Pages verifies Limit + StartAfter
 	// over manifests using the previous page's last ref as the cursor.
 	t.Run("start after pages", func(t *testing.T) {
 		reader := writeHiveDays(t, "2024-01-15", "2024-01-16", "2024-01-17")
@@ -402,7 +402,7 @@ func TestDatasetReader_ListManifests_Paging(t *testing.T) {
 		}
 	})
 
-	// TestDatasetReader_ListManifests_Limit_Boundary verifies Limit returns exactly
+	// TestView_ListManifests_Limit_Boundary verifies Limit returns exactly
 	// Limit results when more exist, and all results when fewer exist.
 	t.Run("limit boundary", func(t *testing.T) {
 		reader := writeHiveDays(t, "2024-01-15", "2024-01-16", "2024-01-17")
@@ -426,7 +426,7 @@ func TestDatasetReader_ListManifests_Paging(t *testing.T) {
 
 // writeDatasets writes one valid manifest per dataset ID into a memory store
 // and returns a reader over it.
-func writeDatasets(t *testing.T, ids ...DatasetID) DatasetReader {
+func writeDatasets(t *testing.T, ids ...DatasetID) *testReader {
 	t.Helper()
 	store := NewMemory()
 	for _, id := range ids {
@@ -434,15 +434,15 @@ func writeDatasets(t *testing.T, ids ...DatasetID) DatasetReader {
 		m.DatasetID = id
 		writeManifest(t.Context(), t, store, m)
 	}
-	reader, err := NewDatasetReader(NewMemoryFactoryFrom(store))
+	reader, err := newTestReader(Use(store))
 	if err != nil {
 		t.Fatal(err)
 	}
 	return reader
 }
 
-func TestDatasetReader_ListDatasets_Order(t *testing.T) {
-	// TestDatasetReader_ListDatasets_Sorted verifies results are lexicographic by
+func TestView_ListDatasets_Order(t *testing.T) {
+	// TestView_ListDatasets_Sorted verifies results are lexicographic by
 	// ID regardless of write or store order.
 	t.Run("sorted", func(t *testing.T) {
 		reader := writeDatasets(t, "ds-b", "ds-c", "ds-a")
@@ -462,7 +462,7 @@ func TestDatasetReader_ListDatasets_Order(t *testing.T) {
 		}
 	})
 
-	// TestDatasetReader_ListDatasets_StartAfter_Pages walks the listing one
+	// TestView_ListDatasets_StartAfter_Pages walks the listing one
 	// dataset at a time using the last result as the cursor.
 	t.Run("start after pages", func(t *testing.T) {
 		reader := writeDatasets(t, "ds-b", "ds-c", "ds-a")

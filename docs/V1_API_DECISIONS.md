@@ -18,9 +18,9 @@ part of the surface lives and what v1.0 promises about it, so it is decided
 here with the rest. D10 comes from the investigation of the history fork
 observed in production; most of its parts change contracts rather than
 signatures, but they define what v1.0 promises about commits and listing.
-D11 proposes the v1.0 construction and record surface, judged at the call
-sites of Quarry and the examples; if accepted, it supersedes D1, D2, D3,
-and D8.
+D11 decides the v1.0 construction and record surface, judged at the call
+sites of Quarry and the examples; it supersedes D1, D2, D3, and the
+fixed-name part of D8.
 
 ---
 
@@ -54,7 +54,8 @@ here as the alternative, not the proposal.
 downstream dataset built without a codec. Quarry writes records through the
 JSONL codec and is unaffected. Mechanical: pass the `[]byte` directly.
 
-**Status.** Open. D11 would supersede it.
+**Status.** Decided by D11 (accepted 2026-10-22): records and blobs are
+separate handles, `Records[T]` and `Blobs`.
 
 ---
 
@@ -83,8 +84,9 @@ classified `ErrInvalidArgument` with a panic.
 removed in the same release; removing either Hive spelling breaks its users;
 `MustHiveLayout` is additive.
 
-**Status.** Open. Decide which Hive spelling survives. D11 would supersede
-it.
+**Status.** Decided by D11 (accepted 2026-10-22): `Layout` is exported,
+with one spelling per layout, `Unpartitioned()` and `Hive(keys...)`, passed
+with `WithLayout`; path topology moved to the root's path options.
 
 ---
 
@@ -111,7 +113,10 @@ per-target methods. Public surface: two sentinels become one.
 **Breaks.** Callers matching the two sentinels by identity. Grep shows
 only Lode's own tests do.
 
-**Status.** Open. D11 would supersede it.
+**Status.** Decided by D11 (accepted 2026-10-22): each option type has one
+target (`RootOption`, `DatasetOption`, `ViewOption`), so an option that
+does not apply does not compile, and the `ErrOptionNotValidFor...`
+sentinels are removed.
 
 ---
 
@@ -259,11 +264,11 @@ Volume written before the boundary moves must stay readable after it.
 
 **Breaks.** Nothing; it forbids a class of future changes.
 
-**Status.** Open. D11 would supersede its fixed-name part for datasets:
-the names become root options, and the default names and the flat paths
-remain obligations of Lode's. The rule for the order, placement, and
-parsing of path segments, the rule for manifest field names, and the rule
-for the Volume grammar stand.
+**Status.** Accepted as revised by D11 (2026-10-22). The names within a
+dataset's paths are root options; the default names and the flat paths,
+the order, placement, and parsing of path segments, the manifest's field
+names, and the Volume grammar are persisted format that no release
+changes (CONTRACT_LAYOUT §Path Names).
 
 ---
 
@@ -755,4 +760,35 @@ whose dataset IDs contain `/` or are not canonical renames them. A caller of
 Every implementer of a custom codec, once: codecs become generic and
 implement `Describe`.
 
-**Status.** Open.
+**Implementation.** The surface as shipped settles the details this
+decision left open:
+- `Root.ListDatasets` and `ReadRoot.ListDatasets` list datasets; the
+  per-dataset listing methods (`ListPartitions`, `ListManifests`,
+  `GetManifest`, `OpenObject`, `ReaderAt`) belong to every handle and view
+  (`SnapshotReader`), and retention (`Expire`, `Sweep`) to the writer
+  handles (`Retention`).
+- `Records.StreamWrite` takes an `iter.Seq2[T, error]`; `Blobs.StreamWrite`
+  returns the `StreamWriter`. `WithRetryCount` is `WithRetry`.
+- `Use(store)` is the factory of a store the caller holds; `Memory()`
+  creates a store per root.
+- `DatasetSnapshot` embeds `*Manifest`, so `snap.Metadata.Decode(&v)`
+  reads as written above.
+- A view's store is wrapped so that a write returns the new `ErrReadOnly`.
+- `Partition` is a map of values by key name, each formatted as Hive
+  partition values always were.
+- Opening a writer checks its settings against the head, so a
+  misconfigured writer fails when it opens; the commit checks again
+  (CONTRACT_WRITE_API §Settings).
+- Lode recognizes another history's manifest by its file name, from a
+  listing alone: the root's manifest name or the default name, which every
+  manifest persisted before the names became root options bears. A root
+  with a custom manifest name thus finds a history that predates the
+  pointer. Recognition by content was considered and declined: an object's
+  content can be learned only by reading it, so the check's cost would
+  grow with the number of objects in the dataset's directory.
+- A view matches a custom checksum by name, as it matches a custom
+  compressor; reads do not verify checksums.
+
+**Status.** Accepted (owner decision, 2026-10-22) and implemented: the
+persisted format in #279, the surface in the pull request that follows
+it.

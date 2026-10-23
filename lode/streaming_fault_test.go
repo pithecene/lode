@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"iter"
 	"slices"
 	"strings"
 	"testing"
@@ -38,11 +39,11 @@ func TestStreamWrite_CommitFailure(t *testing.T) {
 	// failed commit is removed.
 	t.Run("pointer error removes data", func(t *testing.T) {
 		fs := testutil.NewFaultStore(NewMemory())
-		ds, err := NewDataset("test-ds", newFaultStoreFactory(fs))
+		ds, err := Open(Use(fs)).Blobs(t.Context(), "test-ds")
 		if err != nil {
 			t.Fatal(err)
 		}
-		sw, err := ds.StreamWrite(t.Context(), Metadata{})
+		sw, err := ds.StreamWrite(t.Context(), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -62,11 +63,11 @@ func TestStreamWrite_CommitFailure(t *testing.T) {
 	// snapshot is visible; its data must still be readable.
 	t.Run("lost manifest response keeps the snapshot readable", func(t *testing.T) {
 		store := lostManifestResponse{Store: NewMemory()}
-		ds, err := NewDataset("test-ds", NewMemoryFactoryFrom(store))
+		ds, err := Open(Use(store)).Blobs(t.Context(), "test-ds")
 		if err != nil {
 			t.Fatal(err)
 		}
-		sw, err := ds.StreamWrite(t.Context(), Metadata{})
+		sw, err := ds.StreamWrite(t.Context(), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -94,12 +95,12 @@ func TestStreamWrite_Cleanup(t *testing.T) {
 		inner := NewMemory()
 		fs := testutil.NewFaultStore(inner)
 
-		ds, err := NewDataset("test-ds", newFaultStoreFactory(fs))
+		ds, err := Open(Use(fs)).Blobs(t.Context(), "test-ds")
 		if err != nil {
 			t.Fatal(err)
 		}
 
-		sw, err := ds.StreamWrite(t.Context(), Metadata{})
+		sw, err := ds.StreamWrite(t.Context(), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -138,12 +139,12 @@ func TestStreamWrite_Cleanup(t *testing.T) {
 		inner := NewMemory()
 		fs := testutil.NewFaultStore(inner)
 
-		ds, err := NewDataset("test-ds", newFaultStoreFactory(fs))
+		ds, err := Open(Use(fs)).Blobs(t.Context(), "test-ds")
 		if err != nil {
 			t.Fatal(err)
 		}
 
-		sw, err := ds.StreamWrite(t.Context(), Metadata{})
+		sw, err := ds.StreamWrite(t.Context(), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -187,12 +188,12 @@ func TestStreamWrite_Cleanup(t *testing.T) {
 		inner := NewMemory()
 		fs := testutil.NewFaultStore(inner)
 
-		ds, err := NewDataset("test-ds", newFaultStoreFactory(fs))
+		ds, err := Open(Use(fs)).Blobs(t.Context(), "test-ds")
 		if err != nil {
 			t.Fatal(err)
 		}
 
-		sw, err := ds.StreamWrite(t.Context(), Metadata{})
+		sw, err := ds.StreamWrite(t.Context(), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -227,12 +228,12 @@ func TestStreamWrite_Cleanup(t *testing.T) {
 		inner := NewMemory()
 		fs := testutil.NewFaultStore(inner)
 
-		ds, err := NewDataset("test-ds", newFaultStoreFactory(fs))
+		ds, err := Open(Use(fs)).Blobs(t.Context(), "test-ds")
 		if err != nil {
 			t.Fatal(err)
 		}
 
-		sw, err := ds.StreamWrite(t.Context(), Metadata{})
+		sw, err := ds.StreamWrite(t.Context(), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -284,19 +285,15 @@ func TestStreamWriteRecords_Cleanup(t *testing.T) {
 		inner := NewMemory()
 		fs := testutil.NewFaultStore(inner)
 
-		ds, err := NewDataset("test-ds", newFaultStoreFactory(fs), WithCodec(NewJSONLCodec()))
+		ds, err := Open(Use(fs)).Records(t.Context(), "test-ds", JSONL[D]())
 		if err != nil {
 			t.Fatal(err)
 		}
 
 		// Create an iterator that fails after yielding some records
-		iter := &failingIterator{
-			records:   []any{D{"id": "1"}, D{"id": "2"}},
-			failAfter: 1,
-			err:       errors.New("iterator failure"),
-		}
+		iter := failAfterSeq([]D{{"id": "1"}, {"id": "2"}}, 1, errors.New("iterator failure"))
 
-		_, err = ds.StreamWriteRecords(t.Context(), iter, Metadata{})
+		_, err = ds.StreamWrite(t.Context(), iter, nil)
 		if err == nil {
 			t.Fatal("expected error from failing iterator")
 		}
@@ -318,18 +315,18 @@ func TestStreamWriteRecords_Cleanup(t *testing.T) {
 		inner := NewMemory()
 		fs := testutil.NewFaultStore(inner)
 
-		ds, err := NewDataset("test-ds", newFaultStoreFactory(fs), WithCodec(NewJSONLCodec()))
+		ds, err := Open(Use(fs)).Records(t.Context(), "test-ds", JSONL[D]())
 		if err != nil {
 			t.Fatal(err)
 		}
 
 		// Create iterator with records
-		iter := &sliceIterator{records: []any{D{"id": "1"}, D{"id": "2"}}}
+		iter := seqOf(D{"id": "1"}, D{"id": "2"})
 
 		// Inject Put error ONLY for manifest paths (data file Put succeeds)
 		fs.SetPutError(testutil.ErrInjectedPut, "manifest")
 
-		_, err = ds.StreamWriteRecords(t.Context(), iter, Metadata{})
+		_, err = ds.StreamWrite(t.Context(), iter, nil)
 		if err == nil {
 			t.Fatal("expected error from manifest Put failure")
 		}
@@ -365,7 +362,7 @@ func TestStreamWrite_PutFailure(t *testing.T) {
 		inner := NewMemory()
 		fs := testutil.NewFaultStore(inner)
 
-		ds, err := NewDataset("test-ds", newFaultStoreFactory(fs))
+		ds, err := Open(Use(fs)).Blobs(t.Context(), "test-ds")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -374,7 +371,7 @@ func TestStreamWrite_PutFailure(t *testing.T) {
 		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 		defer cancel()
 
-		sw, err := ds.StreamWrite(ctx, Metadata{})
+		sw, err := ds.StreamWrite(ctx, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -449,11 +446,11 @@ func TestStreamWrite_PutFailure(t *testing.T) {
 		fs := testutil.NewFaultStore(NewMemory())
 		fs.SetPutError(testutil.ErrInjectedPut, "/data/")
 
-		ds, err := NewDataset("test-ds", newFaultStoreFactory(fs))
+		ds, err := Open(Use(fs)).Blobs(t.Context(), "test-ds")
 		if err != nil {
 			t.Fatal(err)
 		}
-		sw, err := ds.StreamWrite(t.Context(), Metadata{})
+		sw, err := ds.StreamWrite(t.Context(), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -487,11 +484,11 @@ func TestStreamWrite_PutFailure(t *testing.T) {
 				close(putReturned)
 			}
 		})
-		ds, err := NewDataset("test-ds", newFaultStoreFactory(fs), WithCompressor(NewZstdCompressor()))
+		ds, err := Open(Use(fs)).Blobs(t.Context(), "test-ds", WithCompressor(NewZstdCompressor()))
 		if err != nil {
 			t.Fatal(err)
 		}
-		sw, err := ds.StreamWrite(t.Context(), Metadata{})
+		sw, err := ds.StreamWrite(t.Context(), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -521,11 +518,11 @@ func TestStreamWrite_ErrorPrecedence(t *testing.T) {
 		fs := testutil.NewFaultStore(NewMemory())
 		fs.SetPutError(ErrPathExists, "/data/")
 		gate := afterPutPublished(fs)
-		ds, err := NewDataset("test-ds", newFaultStoreFactory(fs), WithCompressor(closeFailCompressor{NewZstdCompressor()}))
+		ds, err := Open(Use(fs)).Blobs(t.Context(), "test-ds", WithCompressor(closeFailCompressor{NewZstdCompressor()}))
 		if err != nil {
 			t.Fatal(err)
 		}
-		sw, err := ds.StreamWrite(t.Context(), Metadata{})
+		sw, err := ds.StreamWrite(t.Context(), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -536,11 +533,11 @@ func TestStreamWrite_ErrorPrecedence(t *testing.T) {
 		}
 		// Without a Put failure the close error itself surfaces.
 		fs2 := testutil.NewFaultStore(NewMemory())
-		ds2, err := NewDataset("test-ds", newFaultStoreFactory(fs2), WithCompressor(closeFailCompressor{NewZstdCompressor()}))
+		ds2, err := Open(Use(fs2)).Blobs(t.Context(), "test-ds", WithCompressor(closeFailCompressor{NewZstdCompressor()}))
 		if err != nil {
 			t.Fatal(err)
 		}
-		sw2, err := ds2.StreamWrite(t.Context(), Metadata{})
+		sw2, err := ds2.StreamWrite(t.Context(), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -556,7 +553,7 @@ func TestStreamWrite_ErrorPrecedence(t *testing.T) {
 		ctx := t.Context()
 		boom := errors.New("compressor refused")
 		comp := &writeFailCompressor{Compressor: NewNoOpCompressor(), err: boom}
-		ds, err := NewDataset("sticky", NewMemoryFactoryFrom(NewMemory()), WithCompressor(comp))
+		ds, err := Open(Use(NewMemory())).Blobs(t.Context(), "sticky", WithCompressor(comp))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -581,44 +578,6 @@ func TestStreamWrite_ErrorPrecedence(t *testing.T) {
 // -----------------------------------------------------------------------------
 // Test Helpers
 // -----------------------------------------------------------------------------
-
-// failingIterator yields records then fails with an error.
-type failingIterator struct {
-	records   []any
-	failAfter int
-	err       error
-	index     int
-	failed    bool
-}
-
-func (f *failingIterator) Next() bool {
-	if f.failed {
-		return false
-	}
-	if f.index >= len(f.records) {
-		return false
-	}
-	if f.index >= f.failAfter {
-		f.failed = true
-		return false
-	}
-	f.index++
-	return true
-}
-
-func (f *failingIterator) Record() any {
-	if f.index == 0 || f.index > len(f.records) {
-		return nil
-	}
-	return f.records[f.index-1]
-}
-
-func (f *failingIterator) Err() error {
-	if f.failed {
-		return f.err
-	}
-	return nil
-}
 
 // -----------------------------------------------------------------------------
 // Fast Put Failure Tests
@@ -649,14 +608,14 @@ func TestStreamWriteRecords_PutFailure(t *testing.T) {
 		fs := testutil.NewFaultStore(NewMemory())
 		fs.SetPutError(testutil.ErrInjectedPut, "/data/")
 
-		ds, err := NewDataset("test-ds", newFaultStoreFactory(fs), WithCodec(NewJSONLCodec()))
+		ds, err := Open(Use(fs)).Records(t.Context(), "test-ds", JSONL[D]())
 		if err != nil {
 			t.Fatal(err)
 		}
 
-		iter := &sliceIterator{records: []any{D{"id": "1"}, D{"id": "2"}}}
+		iter := seqOf(D{"id": "1"}, D{"id": "2"})
 		err = awaitOrFail(t, func() error {
-			_, werr := ds.StreamWriteRecords(t.Context(), iter, Metadata{})
+			_, werr := ds.StreamWrite(t.Context(), iter, nil)
 			return werr
 		})
 		if !errors.Is(err, testutil.ErrInjectedPut) {
@@ -681,12 +640,12 @@ func TestStreamWriteRecords_PutFailure(t *testing.T) {
 				close(putReturned)
 			}
 		})
-		ds, err := NewDataset("test-ds", newFaultStoreFactory(fs), WithCodec(NewJSONLCodec()), WithCompressor(NewZstdCompressor()))
+		ds, err := Open(Use(fs)).Records(t.Context(), "test-ds", JSONL[D](), WithCompressor(NewZstdCompressor()))
 		if err != nil {
 			t.Fatal(err)
 		}
 		err = awaitOrFail(t, func() error {
-			_, werr := ds.StreamWriteRecords(t.Context(), &endlessAfterIterator{gate: putReturned}, Metadata{})
+			_, werr := ds.StreamWrite(t.Context(), endlessAfter(putReturned), nil)
 			return werr
 		})
 		if !errors.Is(err, ErrPathExists) {
@@ -701,12 +660,12 @@ func TestStreamWriteRecords_PutFailure(t *testing.T) {
 		fs := testutil.NewFaultStore(NewMemory())
 		fs.SetPutError(ErrPathExists, "/data/")
 		gate := afterPutPublished(fs)
-		ds, err := NewDataset("test-ds", newFaultStoreFactory(fs), WithCodec(NewJSONLCodec()), WithCompressor(NewZstdCompressor()))
+		ds, err := Open(Use(fs)).Records(t.Context(), "test-ds", JSONL[D](), WithCompressor(NewZstdCompressor()))
 		if err != nil {
 			t.Fatal(err)
 		}
 		err = awaitOrFail(t, func() error {
-			_, werr := ds.StreamWriteRecords(t.Context(), &failAfterGateIterator{gate: gate}, Metadata{})
+			_, werr := ds.StreamWrite(t.Context(), oneThenGate(gate, errIterator), nil)
 			return werr
 		})
 		if !errors.Is(err, ErrPathExists) {
@@ -715,8 +674,8 @@ func TestStreamWriteRecords_PutFailure(t *testing.T) {
 		assertNoDataDelete(t, fs)
 	})
 
-	// A Put that fails while records.Err() is running is still the reported
-	// error: the Put result is rechecked after Err returns.
+	// A Put that fails while the iterator is producing its error is still
+	// the reported error: the Put result is rechecked after every pull.
 	t.Run("put failure during iterator err takes precedence", func(t *testing.T) {
 		fs := testutil.NewFaultStore(NewMemory())
 		fs.SetPutError(ErrPathExists, "/data/")
@@ -726,7 +685,7 @@ func TestStreamWriteRecords_PutFailure(t *testing.T) {
 				close(putReturned)
 			}
 		})
-		ds, err := NewDataset("test-ds", newFaultStoreFactory(fs), WithCodec(NewJSONLCodec()), WithCompressor(NewZstdCompressor()))
+		ds, err := Open(Use(fs)).Records(t.Context(), "test-ds", JSONL[D](), WithCompressor(NewZstdCompressor()))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -740,7 +699,7 @@ func TestStreamWriteRecords_PutFailure(t *testing.T) {
 			close(gate)
 		}()
 		err = awaitOrFail(t, func() error {
-			_, werr := ds.StreamWriteRecords(t.Context(), &errAfterGateIterator{gate: gate}, Metadata{})
+			_, werr := ds.StreamWrite(t.Context(), oneThenGate(gate, errIterator), nil)
 			return werr
 		})
 		if !errors.Is(err, ErrPathExists) {
@@ -748,16 +707,17 @@ func TestStreamWriteRecords_PutFailure(t *testing.T) {
 		}
 	})
 
-	t.Run("reported without calling blocking err", func(t *testing.T) {
+	// A Put that failed before the iterator ended is reported when it ends.
+	t.Run("reported when the iterator ends after the failure", func(t *testing.T) {
 		fs := testutil.NewFaultStore(NewMemory())
 		fs.SetPutError(ErrPathExists, "/data/")
 		gate := afterPutPublished(fs)
-		ds, err := NewDataset("test-ds", newFaultStoreFactory(fs), WithCodec(NewJSONLCodec()), WithCompressor(NewZstdCompressor()))
+		ds, err := Open(Use(fs)).Records(t.Context(), "test-ds", JSONL[D](), WithCompressor(NewZstdCompressor()))
 		if err != nil {
 			t.Fatal(err)
 		}
 		err = awaitOrFail(t, func() error {
-			_, werr := ds.StreamWriteRecords(t.Context(), &blockingErrIterator{gate: gate}, Metadata{})
+			_, werr := ds.StreamWrite(t.Context(), oneThenGate(gate, nil), nil)
 			return werr
 		})
 		if !errors.Is(err, ErrPathExists) {
@@ -801,11 +761,11 @@ func TestStreamWrite_ForeignObject(t *testing.T) {
 			ctx := t.Context()
 			fs := testutil.NewFaultStore(NewMemory())
 			fs.SetPutError(ErrPathExists, "/data/")
-			ds, err := NewDataset("test-ds", newFaultStoreFactory(fs))
+			ds, err := Open(Use(fs)).Blobs(t.Context(), "test-ds")
 			if err != nil {
 				t.Fatal(err)
 			}
-			sw, err := ds.StreamWrite(t.Context(), Metadata{})
+			sw, err := ds.StreamWrite(t.Context(), nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -836,11 +796,11 @@ func TestStreamWrite_ForeignObject(t *testing.T) {
 				_ = inner.Put(ctx, path, strings.NewReader("foreign"))
 			}
 		})
-		ds, err := NewDataset("test-ds", newFaultStoreFactory(fs))
+		ds, err := Open(Use(fs)).Blobs(t.Context(), "test-ds")
 		if err != nil {
 			t.Fatal(err)
 		}
-		sw, err := ds.StreamWrite(ctx, Metadata{})
+		sw, err := ds.StreamWrite(ctx, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -871,12 +831,12 @@ func TestStreamWriteRecords_ForeignObject(t *testing.T) {
 	t.Run("put path exists does not delete foreign object", func(t *testing.T) {
 		fs := testutil.NewFaultStore(NewMemory())
 		fs.SetPutError(ErrPathExists, "/data/")
-		ds, err := NewDataset("test-ds", newFaultStoreFactory(fs), WithCodec(NewJSONLCodec()))
+		ds, err := Open(Use(fs)).Records(t.Context(), "test-ds", JSONL[D]())
 		if err != nil {
 			t.Fatal(err)
 		}
 		err = awaitOrFail(t, func() error {
-			_, werr := ds.StreamWriteRecords(t.Context(), &sliceIterator{records: []any{D{"id": "1"}}}, Metadata{})
+			_, werr := ds.StreamWrite(t.Context(), seqOf(D{"id": "1"}), nil)
 			return werr
 		})
 		if !errors.Is(err, ErrPathExists) {
@@ -892,12 +852,12 @@ func TestStreamWriteRecords_ForeignObject(t *testing.T) {
 	t.Run("propagated err path exists leaves nothing", func(t *testing.T) {
 		inner := NewMemory()
 		fs := testutil.NewFaultStore(inner)
-		ds, err := NewDataset("test-ds", newFaultStoreFactory(fs), WithCodec(NewJSONLCodec()))
+		ds, err := Open(Use(fs)).Records(t.Context(), "test-ds", JSONL[D]())
 		if err != nil {
 			t.Fatal(err)
 		}
-		iter := &failingIterator{records: []any{D{"id": "1"}, D{"id": "2"}}, failAfter: 1, err: ErrPathExists}
-		_, err = ds.StreamWriteRecords(t.Context(), iter, Metadata{})
+		iter := failAfterSeq([]D{{"id": "1"}, {"id": "2"}}, 1, ErrPathExists)
+		_, err = ds.StreamWrite(t.Context(), iter, nil)
 		if !errors.Is(err, ErrPathExists) {
 			t.Fatalf("got %v, want the propagated ErrPathExists", err)
 		}
@@ -906,77 +866,48 @@ func TestStreamWriteRecords_ForeignObject(t *testing.T) {
 	})
 }
 
-// endlessAfterIterator yields records forever once the gate is closed; before
-// that it yields nothing, so the loop cannot race ahead of the Put failure.
-type endlessAfterIterator struct {
-	gate <-chan struct{}
-	n    int
-}
+// errIterator is the error the test iterators end with.
+var errIterator = errors.New("iterator failure")
 
-func (e *endlessAfterIterator) Next() bool {
-	<-e.gate
-	e.n++
-	return true
-}
-func (e *endlessAfterIterator) Record() any { return D{"id": e.n} }
-func (e *endlessAfterIterator) Err() error  { return nil }
-
-// failAfterGateIterator yields one record, then waits for the gate and ends
-// with its own error.
-type failAfterGateIterator struct {
-	gate <-chan struct{}
-	n    int
-}
-
-func (f *failAfterGateIterator) Next() bool {
-	if f.n == 0 {
-		f.n++
-		return true
+// failAfterSeq yields the first failAfter records, then err.
+func failAfterSeq(records []D, failAfter int, err error) iter.Seq2[D, error] {
+	return func(yield func(D, error) bool) {
+		for _, r := range records[:failAfter] {
+			if !yield(r, nil) {
+				return
+			}
+		}
+		yield(nil, err)
 	}
-	<-f.gate
-	return false
-}
-func (f *failAfterGateIterator) Record() any { return D{"id": f.n} }
-func (f *failAfterGateIterator) Err() error  { return errors.New("iterator failure") }
-
-// errAfterGateIterator yields one record, ends, and makes Err() wait for the
-// gate before reporting its own error — so Put can complete while Err runs.
-type errAfterGateIterator struct {
-	gate <-chan struct{}
-	n    int
 }
 
-func (e *errAfterGateIterator) Next() bool {
-	if e.n == 0 {
-		e.n++
-		return true
+// endlessAfter yields records forever once the gate is closed; before that
+// it yields nothing, so the writer cannot race ahead of the Put failure.
+func endlessAfter(gate <-chan struct{}) iter.Seq2[D, error] {
+	return func(yield func(D, error) bool) {
+		for n := 1; ; n++ {
+			<-gate
+			if !yield(D{"id": n}, nil) {
+				return
+			}
+		}
 	}
-	return false
-}
-func (e *errAfterGateIterator) Record() any { return D{"id": e.n} }
-func (e *errAfterGateIterator) Err() error {
-	<-e.gate
-	return errors.New("iterator failure")
 }
 
-// blockingErrIterator yields one record, ends once the gate opens, and then
-// blocks forever in Err. A Put that has already failed must be reported
-// without ever calling Err.
-type blockingErrIterator struct {
-	gate <-chan struct{}
-	n    int
-}
-
-func (b *blockingErrIterator) Next() bool {
-	if b.n == 0 {
-		b.n++
-		return true
+// oneThenGate yields one record, waits for the gate, and then ends with err
+// (nil ends without an error), so that the Put fails while the iterator is
+// producing its last result.
+func oneThenGate(gate <-chan struct{}, err error) iter.Seq2[D, error] {
+	return func(yield func(D, error) bool) {
+		if !yield(D{"id": 1}, nil) {
+			return
+		}
+		<-gate
+		if err != nil {
+			yield(nil, err)
+		}
 	}
-	<-b.gate
-	return false
 }
-func (b *blockingErrIterator) Record() any { return D{"id": b.n} }
-func (b *blockingErrIterator) Err() error  { select {} }
 
 // afterPutPublished returns a channel closed shortly after the data-path Put
 // has returned, so the test observes the published result, not the hook.

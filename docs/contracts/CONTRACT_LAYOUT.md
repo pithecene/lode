@@ -15,21 +15,57 @@ components that layouts govern: partitioners, compressors, and codecs.
 
 ## Scope
 
-Layout is an **abstraction specific to Datasets**. It does not apply to
-Volume.
-
-Volume uses a fixed internal path scheme defined in `CONTRACT_VOLUME.md`.
-The layout interface, its implementations, and all of its configuration
-options (`WithLayout`, `WithHiveLayout`) apply exclusively to Dataset and
-DatasetReader.
+Path names and layouts are **specific to datasets**. They do not apply to
+Volume, which uses a fixed internal path scheme defined in
+`CONTRACT_VOLUME.md`. The root's path options and `WithLayout` apply
+exclusively to dataset handles and views.
 
 ---
 
 ## Layout Ownership
 
-Layout is the **unified abstraction** that governs:
-- the path topology of datasets, segments, manifests, and objects; and
-- whether and how partition semantics are encoded in paths.
+A dataset's paths have two sources (V1_API_DECISIONS D11):
+- the root's **path names** govern the topology of datasets, snapshots,
+  partitions, segments, manifests, and data objects: the datasets,
+  snapshots, partitions, segments, data, expired, and staged directories
+  and the manifest file are each named by a root option, with documented
+  defaults, and `WithFlatPaths` omits the datasets and snapshots
+  directories; and
+- the dataset's **Layout** governs whether and how partition semantics are
+  encoded in paths: `Unpartitioned()` or `Hive(keys...)`.
+
+### Path Names
+
+- Each name MUST be one canonical path segment (CONTRACT_STORAGE §Put):
+  not empty, `.`, or `..`, without `/` or a backslash, and not beginning
+  with `.lode-tmp-`; it MUST NOT contain `=`, which marks a partition
+  segment.
+- The names a root uses MUST be distinct, and none MAY be `latest`, the
+  pointer's name. The pointer's name is not configurable: it is where the
+  writers of a dataset coordinate, and two names would let two roots commit
+  independent histories over shared snapshot paths.
+- Flat paths omit the datasets and snapshots directories; they MUST NOT be
+  combined with options that name those directories.
+- The default names, and the paths of flat paths, are part of the
+  persisted format: a later release MUST NOT change them (V1_API_DECISIONS
+  D8). The order, placement, and parsing of path segments are likewise
+  fixed for every set of names.
+- The names are part of a dataset's address, as the store is. Each manifest
+  records them (CONTRACT_CORE §Manifest Requirements), and a writer or view
+  whose names differ from those the dataset's head manifest records MUST be
+  rejected with `ErrSettingsMismatch`. A manifest of format version 1.0.0
+  records no names: it was persisted under the default names, flat or not
+  according to where it lies, and a root with other names MUST be rejected
+  by it.
+- A root whose datasets directory differs addresses another prefix and sees
+  another dataset. A root whose other names differ shares the pointer: if
+  it finds the manifest the pointer names, the recorded names reject it,
+  and if it does not, a writer returns `ErrSnapshotConflict`, as for a
+  pending commit, and never appends.
+- Lode recognizes another history's manifest by its file name, from a
+  listing alone: the root's manifest name, or the default name, which
+  every manifest persisted before the names became root options bears
+  (CONTRACT_WRITE_API §Settings).
 
 The following rules also apply:
 - The persistence layer defines the logical layout of keys.

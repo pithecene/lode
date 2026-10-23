@@ -86,19 +86,18 @@ The read path uses the `ObjectStore` methods; commits and retention also use
 
 ### Range-Read Access Paths
 
-The `DatasetReader` façade provides `ReaderAt(ctx, ObjectRef)` for random
-access. Callers that need direct byte-range reads have two options:
+Every dataset handle and view provides `ReaderAt(ctx, ObjectRef)` for
+random access. Callers that need direct byte-range reads have two options:
 
-1. **`DatasetReader.ReaderAt`** returns an `io.ReaderAt` for standard
-   random access, which suits most uses (Parquet footers, block indexes, and
-   similar structures).
+1. **`ReaderAt`** returns an `io.ReaderAt` for standard random access,
+   which suits most uses (Parquet footers, block indexes, and similar
+   structures).
 
 2. **`Store.ReadRange`** reads a byte range directly from the underlying
    store. Callers with access to the `Store` interface can use
    `ReadRange(ctx, path, offset, length)`.
 
-The `DatasetReader` interface deliberately omits a direct `ReadRange`
-method, because `io.ReaderAt` covers most range-read uses and is a standard
+The handles deliberately omit a direct `ReadRange` method, because `io.ReaderAt` covers most range-read uses and is a standard
 Go interface that existing libraries already accept.
 
 ---
@@ -115,28 +114,69 @@ indexes.
 
 ---
 
-## Lode Read API (Facade)
+## Lode Read API (Views)
+
+A view reads one dataset. `ReadRoot.Records(ctx, id, codec, opts...)` and
+`ReadRoot.Blobs(ctx, id, opts...)` open one over any `ObjectStore`; writer
+handles (`Records`, `Blobs`) embed the same read surface. Datasets are
+listed at the root.
 
 ```go
-type ReadAPI interface {
-    ListDatasets(ctx context.Context, opts DatasetListOptions) ([]DatasetID, error)
-    ListPartitions(ctx context.Context, dataset DatasetID, opts PartitionListOptions) ([]PartitionRef, error)
-    ListManifests(ctx context.Context, dataset DatasetID, partition string, opts ManifestListOptions) ([]ManifestRef, error)
-    // partition is a raw partition path; a PartitionPath type is a v1.0 candidate (docs/V1_API_DECISIONS.md D4).
-    GetManifest(ctx context.Context, dataset DatasetID, ref ManifestRef) (Manifest, error)
-    OpenObject(ctx context.Context, obj ObjectRef) (io.ReadCloser, error)
-    ReaderAt(ctx context.Context, obj ObjectRef) (ReaderAt, error)
-}
+// On Root and ReadRoot:
+ListDatasets(ctx context.Context, opts DatasetListOptions) ([]DatasetID, error)
 
-### Read API Error Semantics
+// On every view and writer handle (SnapshotReader):
+ID() DatasetID
+Latest(ctx context.Context) (*DatasetSnapshot, error)
+Snapshot(ctx context.Context, id DatasetSnapshotID) (*DatasetSnapshot, error)
+Snapshots(ctx context.Context) ([]*DatasetSnapshot, error)
+ListPartitions(ctx context.Context, opts PartitionListOptions) ([]PartitionRef, error)
+ListManifests(ctx context.Context, partition string, opts ManifestListOptions) ([]ManifestRef, error)
+// partition is a raw partition path; a PartitionPath type is a v1.0 candidate (docs/V1_API_DECISIONS.md D4).
+GetManifest(ctx context.Context, ref ManifestRef) (*Manifest, error)
+OpenObject(ctx context.Context, obj ObjectRef) (io.ReadCloser, error)
+ReaderAt(ctx context.Context, obj ObjectRef) (io.ReaderAt, error)
+// OpenObject and ReaderAt read only a data object of the handle's dataset
+// (and of obj.Manifest's snapshot, when it names one); any other path
+// returns ErrInvalidArgument.
 
-- `ListDatasets` MUST return a **layout-specific dataset error** when the layout
-  does not model datasets (not a generic "not supported" error).
-- `ListDatasets` MUST return an empty list only when storage is truly empty.
+// RecordView[T]: Read(ctx, id) ([]T, error); BlobView: Read(ctx, id) ([]byte, error)
 ```
 
 This layer understands Lode's layout and semantics but performs **no
 interpretation**.
+
+### Opening a View
+
+- A view MUST resolve the dataset's head without writing: it reads the
+  pointer and the manifest the pointer names, under the snapshots
+  directory and then the segments directory (the pointer does not say which
+  layout wrote it, and at most one exists), and falls back to the scan of
+  `Latest` when the pointer is absent or names no persisted manifest. It
+  MUST NOT create a missing pointer (CONTRACT_CORE §Head Pointer), so it
+  needs no `CompareAndSwap`.
+- A view MUST take the dataset's layout from the head's manifest; it takes
+  no layout option.
+- A dataset without snapshots MUST yield `ErrNotFound` when the view opens.
+- The head's manifest MUST be validated (§Manifests); an invalid one yields
+  `ErrManifestInvalid`.
+- The view's codec MUST match the codec name the head's manifest records,
+  and, unless the manifest's format version is 1.0.0, its description; the
+  root's path names MUST match the manifest's. A mismatch yields
+  `ErrSettingsMismatch`.
+- A view MUST read each snapshot with the compressor that snapshot's
+  manifest names: a bundled compressor reconstructed by name, or a custom
+  one passed with `WithCompressor` whose name matches. A snapshot whose
+  compressor is neither yields `ErrSettingsMismatch` when it is read. A
+  snapshot written with another codec yields `ErrSettingsMismatch` when it
+  is read.
+
+### Read API Error Semantics
+
+- `ListDatasets` MUST return `ErrDatasetsNotModeled` for a root with flat
+  paths, which have no datasets directory (not a generic "not supported"
+  error).
+- `ListDatasets` MUST return an empty list only when storage is truly empty.
 
 ### Listing Order and Cursors
 
@@ -170,7 +210,7 @@ implies no key or value boundary (`day=2026-10` matches `day=2026-10-18`).
   outside it; those partitions MUST NOT appear in the result.
 - An empty result under a prefix means that no partition matches.
   `ErrNotFound` is reserved for the case without a prefix in which the
-  dataset has no manifests at all.
+  dataset has no manifests at all (a view of such a dataset does not open).
 - On layouts without partitions, a non-empty prefix MUST return
   `ErrPartitionPrefixNotSupported`.
 - The prefix MUST be a canonical fragment of a relative partition path, with
@@ -194,8 +234,8 @@ Manifests are immutable and authoritative.
   (omitted otherwise)
 - references to auxiliary indexes (optional)
 
-When no codec is configured, reads MUST return the raw bytes of the object
-that the manifest references.
+A blob dataset's reads (`BlobView.Read`, `Blobs.Read`) MUST return the raw
+bytes of the object that the manifest references.
 
 A manifest must be readable in a single fetch of a small object.
 
@@ -233,20 +273,21 @@ A manifest must be readable in a single fetch of a small object.
 
 ## Layout
 
-Layout is the **authoritative abstraction** for the path topology of reads
-and writes and for partition encoding. It governs:
+A dataset's paths come from two sources (CONTRACT_LAYOUT §Layout
+Ownership): the root's **path names**, which govern the topology (the
+datasets, snapshots, partitions, segments, data, expired, and staged
+directories and the manifest file), and the dataset's **Layout**, which
+governs partitioning (`Unpartitioned` or `Hive` with its keys). Together
+they govern:
 - how manifests are discovered (commit visibility);
-- how segment IDs are parsed from manifest paths;
-- whether datasets are modeled, and how dataset IDs are discovered; and
+- how snapshot IDs are parsed from manifest paths;
+- whether datasets are modeled (flat paths do not), and how dataset IDs are
+  discovered; and
 - whether and how partitions are encoded in object paths.
 
-**Layout is unified**: partition encoding is part of the topology.
-Partitioning by path is not a concern separate from layout.
-
-Implementations MAY compose a layout internally from subcomponents (for
-example, topology and partition encoding), but the **public surface MUST
-remain unified**. Internal composition MUST validate compatibility and
-reject incoherent combinations.
+Implementations compose the two internally and MUST reject incoherent
+combinations (an invalid or duplicate name, flat paths with a datasets
+directory).
 
 The library does **not strictly enforce** a directory topology. Users may
 configure layout strategies through an abstraction layer. The following is

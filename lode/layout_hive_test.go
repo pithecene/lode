@@ -17,13 +17,8 @@ import "testing"
 // Dataset names "segments" and "partitions" are reserved-name cases below:
 // the grammar must read them as dataset IDs, not markers.
 
-func hiveForTest(t *testing.T) layout {
-	t.Helper()
-	l, err := NewHiveLayout("day")
-	if err != nil {
-		t.Fatal(err)
-	}
-	return l
+func hiveForTest(*testing.T) layout {
+	return newPathLayout(defaultPathNames(), partitionScheme{name: "hive", keys: []string{"day"}})
 }
 
 func TestHiveLayout_Manifests(t *testing.T) {

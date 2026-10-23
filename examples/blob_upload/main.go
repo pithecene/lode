@@ -30,6 +30,12 @@ func main() {
 	}
 }
 
+// blobInfo is the metadata the example persists with each blob.
+type blobInfo struct {
+	ContentType string `json:"content_type"`
+	Filename    string `json:"filename"`
+}
+
 func run() error {
 	ctx := context.Background()
 
@@ -42,24 +48,19 @@ func run() error {
 
 	fmt.Printf("Storage root: %s\n\n", tmpDir)
 
-	// Create filesystem store factory
-	storeFactory := lode.NewFSFactory(tmpDir)
+	// Open a root over the filesystem store.
+	root := lode.Open(lode.FS(tmpDir))
 
 	// -------------------------------------------------------------------------
 	// WRITE: Create dataset with default bundle and write raw blob
 	// -------------------------------------------------------------------------
 	fmt.Println("=== WRITE ===")
 
-	// Create dataset with default bundle (no codec = raw blob mode)
-	// Default bundle per PUBLIC_API.md:
-	//   - Layout: DefaultLayout
-	//   - Partitioner: NoOp
-	//   - Compressor: NoOp
-	//   - Codec: none (raw blob storage)
-	ds, err := lode.NewDataset(
-		"artifacts",
-		storeFactory,
-	)
+	// Open a blob dataset: each snapshot holds one blob. Defaults per
+	// PUBLIC_API.md:
+	//   - Layout: lode.Unpartitioned()
+	//   - Compressor: lode.NewNoOpCompressor()
+	ds, err := root.Blobs(ctx, "artifacts")
 	if err != nil {
 		return fmt.Errorf("failed to create dataset: %w", err)
 	}
@@ -69,10 +70,10 @@ func run() error {
 	fmt.Printf("Original blob size: %d bytes\n", len(blobData))
 	fmt.Printf("Original blob content: %q\n", string(blobData[:min(50, len(blobData))]))
 
-	// Write raw blob with explicit metadata (metadata is always required)
-	snapshot, err := ds.Write(ctx, []any{blobData}, lode.Metadata{
-		"content_type": "application/octet-stream",
-		"filename":     "greeting.bin",
+	// Write the blob with typed metadata, persisted as a JSON object
+	snapshot, err := ds.Write(ctx, blobData, blobInfo{
+		ContentType: "application/octet-stream",
+		Filename:    "greeting.bin",
 	})
 	if err != nil {
 		return fmt.Errorf("failed to write blob: %w", err)
@@ -80,12 +81,12 @@ func run() error {
 
 	fmt.Printf("\nCreated snapshot: %s\n", snapshot.ID)
 	fmt.Printf("Manifest details:\n")
-	fmt.Printf("  Row count: %d (always 1 for raw blobs)\n", snapshot.Manifest.RowCount)
-	fmt.Printf("  Codec: %q (empty = no codec)\n", snapshot.Manifest.Codec)
-	fmt.Printf("  Compressor: %s\n", snapshot.Manifest.Compressor)
-	fmt.Printf("  Partitioner: %s\n", snapshot.Manifest.Partitioner)
+	fmt.Printf("  Row count: %d (always 1 for raw blobs)\n", snapshot.RowCount)
+	fmt.Printf("  Codec: %q (empty = no codec)\n", snapshot.Codec)
+	fmt.Printf("  Compressor: %s\n", snapshot.Compressor)
+	fmt.Printf("  Partitioner: %s\n", snapshot.Partitioner)
 	fmt.Printf("  Files:\n")
-	for _, f := range snapshot.Manifest.Files {
+	for _, f := range snapshot.Files {
 		fmt.Printf("    - %s (%d bytes)\n", f.Path, f.SizeBytes)
 	}
 	fmt.Println()
@@ -95,20 +96,10 @@ func run() error {
 	// -------------------------------------------------------------------------
 	fmt.Println("=== READ ===")
 
-	// Read data back from snapshot
-	data, err := ds.Read(ctx, snapshot.ID)
+	// Read returns the snapshot's blob
+	readBlob, err := ds.Read(ctx, snapshot.ID)
 	if err != nil {
 		return fmt.Errorf("failed to read blob: %w", err)
-	}
-
-	// In raw blob mode, Read returns a single []byte element
-	if len(data) != 1 {
-		return fmt.Errorf("expected 1 element, got %d", len(data))
-	}
-
-	readBlob, ok := data[0].([]byte)
-	if !ok {
-		return fmt.Errorf("expected []byte, got %T", data[0])
 	}
 
 	fmt.Printf("Read blob size: %d bytes\n", len(readBlob))
@@ -130,25 +121,29 @@ func run() error {
 		return fmt.Errorf("failed to get latest snapshot: %w", err)
 	}
 
-	fmt.Printf("Metadata from manifest:\n")
-	for k, v := range latest.Manifest.Metadata {
-		fmt.Printf("  %s: %v\n", k, v)
+	// Decode the persisted metadata back into its struct
+	var info blobInfo
+	if err := latest.Metadata.Decode(&info); err != nil {
+		return fmt.Errorf("failed to decode metadata: %w", err)
 	}
+	fmt.Printf("Metadata from manifest:\n")
+	fmt.Printf("  content_type: %s\n", info.ContentType)
+	fmt.Printf("  filename: %s\n", info.Filename)
 
 	// -------------------------------------------------------------------------
 	// STREAM WRITE: Demonstrate streaming write for large blobs
 	// -------------------------------------------------------------------------
 	fmt.Println("\n=== STREAM WRITE ===")
 
-	// Create another dataset for streaming example
-	dsStream, err := lode.NewDataset("artifacts-stream", storeFactory)
+	// Open another blob dataset for the streaming example
+	dsStream, err := root.Blobs(ctx, "artifacts-stream")
 	if err != nil {
 		return fmt.Errorf("failed to create streaming dataset: %w", err)
 	}
 
 	// StreamWrite is for large binary payloads that should be streamed once
 	// Data flows directly to the final object path (no temp files)
-	sw, err := dsStream.StreamWrite(ctx, lode.Metadata{
+	sw, err := dsStream.StreamWrite(ctx, lode.D{
 		"content_type": "application/octet-stream",
 		"description":  "streamed blob",
 	})
@@ -178,24 +173,23 @@ func run() error {
 	}
 
 	fmt.Printf("Created streaming snapshot: %s\n", streamSnap.ID)
-	fmt.Printf("  Row count: %d\n", streamSnap.Manifest.RowCount)
+	fmt.Printf("  Row count: %d\n", streamSnap.RowCount)
 	fmt.Printf("  File size: %d bytes\n", streamSnap.Manifest.Files[0].SizeBytes)
 
 	// Read back and verify
-	streamData, err := dsStream.Read(ctx, streamSnap.ID)
+	streamBlob, err := dsStream.Read(ctx, streamSnap.ID)
 	if err != nil {
 		return fmt.Errorf("failed to read streamed blob: %w", err)
 	}
-	streamBlob := streamData[0].([]byte)
 	fmt.Printf("  Content: %q\n", string(streamBlob))
 
 	fmt.Println("\n=== SUCCESS ===")
 	fmt.Println("Raw blob upload and read complete!")
 	fmt.Println("\nKey points demonstrated:")
-	fmt.Println("  1. Default bundle uses no codec (raw blob storage)")
-	fmt.Println("  2. Write expects single []byte element")
-	fmt.Println("  3. Read returns single []byte element")
-	fmt.Println("  4. Metadata is explicit and required")
+	fmt.Println("  1. A blob dataset stores one blob per snapshot, without a codec")
+	fmt.Println("  2. Write takes the blob as []byte")
+	fmt.Println("  3. Read returns the blob as []byte")
+	fmt.Println("  4. Metadata is explicit, persisted, and decoded into a struct")
 	fmt.Println("  5. RowCount is always 1 for raw blobs")
 	fmt.Println("  6. StreamWrite for large blobs (single-pass, no temp files)")
 	fmt.Println("  7. Commit makes snapshot visible; Abort leaves no snapshot")

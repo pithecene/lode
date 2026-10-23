@@ -49,7 +49,7 @@ form as `DatasetSnapshotID` (CONTRACT_CORE §Snapshot ID).
 A reference to a staged or committed byte block (offset, length, and object
 path). A block is not committed until a snapshot manifest includes it.
 
-Note: `BlockRef` is a Volume concept. The `DatasetReader` API uses
+Note: `BlockRef` is a Volume concept. The dataset read API uses
 `ManifestRef` for dataset manifest locators.
 
 ### Volume Manifest
@@ -199,7 +199,7 @@ type Writer interface {
     // Commit records the provided blocks into a new immutable snapshot.
     // The resulting manifest is cumulative: it includes all previously committed
     // blocks plus the new blocks. Commit MUST include at least one new block.
-    Commit(ctx context.Context, blocks []BlockRef, metadata lode.Metadata) (*Snapshot, error)
+    Commit(ctx context.Context, blocks []BlockRef, metadata Metadata) (*Snapshot, error)
 }
 
 // Reader defines the read surface for a volume.
@@ -227,13 +227,14 @@ type Volume interface {
 }
 
 // New creates a volume with a fixed total length.
-func New(id ID, storeFactory lode.StoreFactory, totalLength int64, opts ...Option) (Volume, error)
+func New(id ID, storeFactory lode.Factory[lode.Store], totalLength int64, opts ...Option) (Volume, error)
 ```
 
 ### Volume Options
 
-Volume has its own `Option` type; Dataset and DatasetReader options are a
-different type and are rejected at compile time. The options are:
+Volume has its own `Option` type; dataset options (`DatasetOption`,
+`ViewOption`, `RootOption`) are different types and are rejected at compile
+time. The options are:
 
 - `WithChecksum(c lode.Checksum)`: integrity checksums on staged blocks
   (disabled by default).
@@ -268,7 +269,7 @@ value returns `lode.ErrInvalidArgument` with the same message.
 - Overlapping blocks at `Commit` MUST produce `volume.ErrOverlappingBlocks`.
 - An empty block list at `Commit` MUST produce an error.
 - `nil` metadata at `Commit` MUST be converted to empty metadata
-  (`lode.Metadata{}`).
+  (`volume.Metadata{}`).
 - Range reads MUST NOT return partial data without an error.
 - `Latest` on an empty volume MUST return `lode.ErrNoSnapshots`.
 - `Snapshot` for an unknown ID MUST return `lode.ErrNotFound`.

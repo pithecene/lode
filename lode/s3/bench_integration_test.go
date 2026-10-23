@@ -78,7 +78,7 @@ func BenchmarkS3_WriteRoundTrip(b *testing.B) {
 	for _, backend := range backends {
 		b.Run(backend.name, func(b *testing.B) {
 			store := setupBenchBucket(b, backend.newClient)
-			factory := func() (lode.Store, error) { return store, nil }
+			root := lode.Open(lode.Use(store))
 
 			records := lode.R(
 				lode.D{"id": "1", "name": "alice"},
@@ -89,12 +89,12 @@ func BenchmarkS3_WriteRoundTrip(b *testing.B) {
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				dsID := lode.DatasetID(fmt.Sprintf("bench-%d-%d", time.Now().UnixNano(), i))
-				ds, err := lode.NewDataset(dsID, factory, lode.WithCodec(lode.NewJSONLCodec()))
+				ds, err := root.Records(b.Context(), dsID, lode.JSONL[lode.D]())
 				if err != nil {
 					b.Fatal(err)
 				}
 
-				snap, err := ds.Write(b.Context(), records, lode.Metadata{"iter": fmt.Sprintf("%d", i)})
+				snap, err := ds.Write(b.Context(), records, lode.D{"iter": fmt.Sprintf("%d", i)})
 				if err != nil {
 					b.Fatalf("Write failed: %v", err)
 				}

@@ -48,22 +48,20 @@ requested operation.
 
 | Error | Source | Meaning |
 |-------|--------|---------|
-| `lode.ErrDatasetsNotModeled` | Read API | The layout does not support dataset enumeration |
-| `lode.ErrPartitionPrefixNotSupported` | Read API | `PartitionListOptions.Prefix` was specified on a layout without partitions |
+| `lode.ErrDatasetsNotModeled` | `ListDatasets` (roots) | Flat paths do not support dataset enumeration |
+| `lode.ErrPartitionPrefixNotSupported` | `ListPartitions` | `PartitionListOptions.Prefix` was specified on a dataset without partitions |
 
 **Behavior**:
-- `ListDatasets` returns `ErrDatasetsNotModeled` when the layout does not
-  support dataset enumeration.
+- `ListDatasets` returns `ErrDatasetsNotModeled` for a root with flat paths.
 - `ListPartitions` returns `ErrPartitionPrefixNotSupported` when `Prefix` is
-  specified and the layout does not model partitions.
+  specified and the dataset is not partitioned.
 - An empty list is returned **only** when storage is actually empty, never
   as a substitute for an unsupported operation.
 
-**Layout-Specific Notes**:
-- `DefaultLayout` supports dataset enumeration (prefix: `datasets/`).
-- `HiveLayout` supports dataset enumeration (prefix: `datasets/`).
-- `FlatLayout` does not support dataset enumeration, because it has no
-  common prefix.
+**Path-Specific Notes**:
+- A root with a datasets directory (`datasets/` by default) supports
+  dataset enumeration, for unpartitioned and Hive datasets alike.
+- A root with flat paths does not, because it has no common prefix.
 
 ---
 
@@ -156,16 +154,21 @@ They are not safe to retry: the call itself must be corrected.
 
 | Error | Source | Meaning |
 |-------|--------|---------|
-| `lode.ErrInvalidArgument` | Constructors | A `nil` store factory, a factory that returned a `nil` store, a dataset ID that is not one path segment (§Dataset IDs), a Hive partition key that is not one path segment or contains `=`, a `nil` layout or compressor, an empty volume ID, a total length that is not positive, an option value out of range (`WithRetry*`), `NewHiveLayout` without keys, or raw blob mode with a partitioning layout |
-| `lode.ErrInvalidArgument` | Dataset | `Write` in raw blob mode without exactly one `[]byte`; `StreamWriteRecords` without a codec |
+| `lode.ErrInvalidArgument` | Roots (`Open`, `OpenReadOnly`), recorded and returned by every root method | A `nil` store factory, a factory that returned a `nil` store, a `nil` root option, or a path name that is invalid, duplicated, or `latest`, or flat paths with a datasets or snapshots directory (CONTRACT_LAYOUT §Path Names) |
+| `lode.ErrInvalidArgument` | Opening a handle or view (`Records`, `Blobs`) | A dataset ID that is not one path segment (§Dataset IDs); a `nil` codec or option; a `nil` layout or compressor; a Hive layout without keys or with a key that is not one path segment or contains `=`; a Hive layout without `By` for records that are not maps, or with a `By` function for another record type; a blob dataset with a partitioned layout; an option value out of range (`WithRetry*`) |
+| `lode.ErrInvalidArgument` | `Write`, `StreamWrite` | Metadata that does not encode as a JSON object |
 | `lode.ErrInvalidArgument` | Volume | A negative offset, a length that is not positive, an empty block, a block or read outside the address space, a block path not produced by the volume, or a commit without a new block |
-| `lode.ErrOptionNotValidForDataset`, `…DatasetReader` | Constructors | An option used with a constructor to which it does not apply (Volume options are a separate type, verified at compile time) |
+
+Each option type has one target (`RootOption`, `DatasetOption`,
+`ViewOption`, and Volume's own `Option`), so an option used where it does
+not apply is a compile error rather than a run-time one.
 
 **Behavior**:
 - Every argument check above MUST return an error matching
   `ErrInvalidArgument` under `errors.Is`, and the message MUST name the
   rejected value.
-- Argument errors are returned before any store call.
+- Argument errors are returned before any store call. A root's argument
+  errors are returned before its factory is called.
 
 #### Dataset IDs
 
@@ -173,8 +176,8 @@ A dataset ID MUST be one canonical path segment: not empty, `.`, or `..`,
 without `/` or a backslash, and not beginning with the reserved prefix
 `.lode-tmp-` (CONTRACT_STORAGE §Put). Lode cleans the paths it builds from
 an ID, so an ID such as `a/../events` would otherwise address the dataset
-`events`. `=` is permitted. Every operation that takes a dataset ID,
-reader methods included, rejects an invalid one before any store call.
+`events`. `=` is permitted. Every operation that takes a dataset ID, the
+views included, rejects an invalid one before any store call.
 
 ---
 
@@ -185,20 +188,21 @@ configuration.
 
 | Error | Source | Meaning |
 |-------|--------|---------|
-| Error | Dataset.Read | The snapshot's codec does not match the dataset's codec |
-| Error | Dataset.Read | The snapshot's compressor does not match the dataset's compressor |
-| `lode.ErrCodecNotStreamable` | Dataset.StreamWriteRecords | The configured codec does not support streaming |
-| `lode.ErrSettingsMismatch` | Dataset.Write, Dataset.StreamWrite, Dataset.StreamWriteRecords | The writer's codec, codec description, compressor, checksum, partitioner, partition keys, or path names differ from those the dataset's manifests record; the dataset's directory holds a history persisted under another layout; or the writer's Hive keys cannot be verified against a dataset written before format version 1.1.0 (CONTRACT_WRITE_API §Settings) |
+| `lode.ErrSettingsMismatch` | `Read` (handles, views) | The snapshot's codec, or, unless its format is 1.0.0, its codec description, differs from the handle's; or its compressor is neither bundled nor passed with `WithCompressor`; or its checksum is neither bundled nor passed with `WithChecksum` |
+| `lode.ErrSettingsMismatch` | Opening a view | The head's codec or description, or path names, differ from the view's |
+| `lode.ErrCodecNotStreamable` | `Records.StreamWrite` | The codec is not a `StreamingCodec` |
+| `lode.ErrSettingsMismatch` | Opening a writer, `Write`, `StreamWrite` | The writer's codec, codec description, compressor, checksum, partitioner, partition keys, or path names differ from those the dataset's manifests record; the dataset's directory holds a history persisted under another layout; or the writer's Hive keys cannot be verified against a dataset written before format version 1.1.0 (CONTRACT_WRITE_API §Settings) |
 
 **Behavior**:
-- `Read` validates the manifest's components against the dataset's
-  configuration before reading.
+- `Read` validates each snapshot's codec against the handle's before
+  reading, and reads it with the compressor its manifest names.
 - A mismatch produces a descriptive error rather than silently corrupt
-  output.
-- `StreamWriteRecords` returns `ErrCodecNotStreamable` if the codec does not
-  implement `StreamingRecordCodec`.
-- A writer returns `ErrSettingsMismatch` before it commits, and the error
-  names the setting that differs. It is not retried.
+  output, and names the setting or component.
+- `Records.StreamWrite` returns `ErrCodecNotStreamable` if the codec is not
+  a `StreamingCodec`.
+- A writer returns `ErrSettingsMismatch` when it opens or before it
+  commits, and the error names the setting that differs. It is not
+  retried.
 
 ---
 
@@ -208,25 +212,24 @@ These errors indicate invalid use of the streaming write APIs.
 
 | Error | Source | Meaning |
 |-------|--------|---------|
-| `lode.ErrCodecConfigured` | Dataset.StreamWrite | `StreamWrite` was called while a codec is configured |
-| `lode.ErrNilIterator` | Dataset.StreamWriteRecords | A `nil` record iterator was supplied |
-| `lode.ErrPartitioningNotSupported` | Dataset.StreamWriteRecords | `StreamWriteRecords` was called with a partitioner other than `noop` |
+| `lode.ErrNilIterator` | `Records.StreamWrite` | A `nil` iterator was supplied |
+| `lode.ErrPartitioningNotSupported` | `Records.StreamWrite` | `Records.StreamWrite` was called on a partitioned layout |
 
 **Behavior**:
-- `StreamWrite` accepts raw binary payloads only; it returns
-  `ErrCodecConfigured` if a codec is configured.
-- Use `StreamWriteRecords` for structured data with streaming codecs.
-- Use `Write` for structured data with codecs that do not stream.
-- `StreamWriteRecords` returns `ErrNilIterator` when the iterator argument
-  is `nil`.
-- `StreamWriteRecords` returns `ErrPartitioningNotSupported` when
-  partitioning is configured.
+- `Blobs.StreamWrite` streams one blob; a blob dataset has no codec, so
+  the v0 error for a stream with a codec no longer exists.
+- Use `Records.StreamWrite` for records with streaming codecs.
+- Use `Records.Write` for records with codecs that do not stream.
+- `Records.StreamWrite` returns `ErrNilIterator` when the iterator is
+  `nil`.
+- `Records.StreamWrite` returns `ErrPartitioningNotSupported` when the
+  layout is partitioned.
 
 **Removal of Partial Objects on Error**:
 - On an abort, or on an error before commit, no manifest is written.
 - Partial data objects may remain in storage; their removal is best-effort.
 - Callers should not rely on the automatic removal of partial objects
-  (`Dataset.Sweep` reclaims them; see `CONTRACT_RETENTION.md`).
+  (`Sweep` reclaims them; see `CONTRACT_RETENTION.md`).
 - A failure to delete a partial object does not create a snapshot.
 
 ---
@@ -306,7 +309,7 @@ optimistic concurrency control.
 
 | Error | Source | Meaning |
 |-------|--------|---------|
-| `lode.ErrSnapshotConflict` | Dataset.Write, Dataset.StreamWrite, Dataset.StreamWriteRecords, Volume.Commit | Another writer committed after the parent was resolved; (for `Volume.Commit`) the parent's manifest has not been persisted; or (for a dataset writer) the pointer names a snapshot whose settings no manifest records (CONTRACT_WRITE_API §Settings) |
+| `lode.ErrSnapshotConflict` | `Write`, `StreamWrite` (`Records`, `Blobs`), Volume.Commit | Another writer committed after the parent was resolved; (for `Volume.Commit`) the parent's manifest has not been persisted; or (for a dataset writer) the pointer names a snapshot whose settings no manifest records (CONTRACT_WRITE_API §Settings) |
 
 **ErrSnapshotConflict Behavior**:
 - The commit's expected parent snapshot ID does not match the current value
@@ -333,11 +336,11 @@ unreferenced objects (`CONTRACT_RETENTION.md`).
 
 | Error | Source | Meaning |
 |-------|--------|---------|
-| `lode.ErrSnapshotExpired` | Dataset.Snapshot, Dataset.Read | The snapshot was expired by `Expire`; the error also matches `ErrNotFound` |
-| `lode.ErrHeadUncommitted` | Dataset.Expire, Dataset.Sweep | The head is not yet committed: the latest pointer names a snapshot whose manifest has not been persisted (`Expire`), or the pointer is absent while snapshots exist (both) |
-| `lode.ErrInvalidArgument` | Dataset.Expire, Dataset.Sweep | An `ExpireRequest` without a selector field; a `SweepRequest.Grace` that is zero or negative |
-| `lode.ErrInvalidPath` | Dataset.Expire | `ExpireRequest.Partition` is not a canonical relative partition path |
-| `lode.ErrPartitionPrefixNotSupported` | Dataset.Expire | `ExpireRequest.Partition` was specified on a layout without partitions |
+| `lode.ErrSnapshotExpired` | `Snapshot`, `Read` (handles, views) | The snapshot was expired by `Expire`; the error also matches `ErrNotFound` |
+| `lode.ErrHeadUncommitted` | `Expire`, `Sweep` | The head is not yet committed: the latest pointer names a snapshot whose manifest has not been persisted (`Expire`), or the pointer is absent while snapshots exist (both) |
+| `lode.ErrInvalidArgument` | `Expire`, `Sweep` | An `ExpireRequest` without a selector field; a `SweepRequest.Grace` that is zero or negative |
+| `lode.ErrInvalidPath` | `Expire` | `ExpireRequest.Partition` is not a canonical relative partition path |
+| `lode.ErrPartitionPrefixNotSupported` | `Expire` | `ExpireRequest.Partition` was specified on a layout without partitions |
 
 **Behavior**:
 - Selecting the head snapshot is not an error: `Expire` retains it and
@@ -364,7 +367,8 @@ unreferenced objects (`CONTRACT_RETENTION.md`).
   again.
 
 ### Non-Retry Errors
-- `ErrDatasetsNotModeled`: reconfigure the reader with a different layout.
+- `ErrDatasetsNotModeled`: list datasets under a root with a datasets
+  directory.
 - `ManifestValidationError`: the data is corrupt; investigate its source.
 - `ErrPathExists`: a logic error in the caller (an attempt to write the same
   path twice). Retention's creation of a tombstone is the exception: there
@@ -408,16 +412,16 @@ All operations provide:
 
 ## Error Flow Examples
 
-### ListDatasets with FlatLayout
+### ListDatasets with Flat Paths
 ```
-ListDatasets(ctx, opts)
-  → Layout.SupportsDatasetEnumeration() == false
+root.ListDatasets(ctx, opts)
+  → the root's names are flat (no datasets directory)
   → return nil, ErrDatasetsNotModeled
 ```
 
 ### GetManifest with Invalid Schema
 ```
-GetManifest(ctx, dataset, ref)
+view.GetManifest(ctx, ref)
   → store.Get(manifestPath)
   → json.Decode() succeeds
   → ValidateManifest() fails (missing SchemaName)
@@ -426,7 +430,7 @@ GetManifest(ctx, dataset, ref)
 
 ### ListManifests with Corrupt Manifest
 ```
-ListManifests(ctx, dataset, partition, opts)
+view.ListManifests(ctx, partition, opts)
   → for each manifest path:
       → loadManifest(path)
       → ValidateManifest() fails

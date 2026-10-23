@@ -2,7 +2,7 @@
 //
 // This example demonstrates the write → list → read flow using the default layout:
 //
-//	datasets/<dataset>/snapshots/<segment>/
+//	datasets/<dataset>/snapshots/<snapshot>/
 //	  manifest.json
 //	  data/filename
 //
@@ -37,24 +37,20 @@ func run() error {
 
 	fmt.Printf("Storage root: %s\n\n", tmpDir)
 
-	// Create filesystem store factory
-	storeFactory := lode.NewFSFactory(tmpDir)
+	// Open a root over the filesystem store. Opening performs no I/O until a
+	// dataset is opened, and a store error is returned there.
+	root := lode.Open(lode.FS(tmpDir))
 
 	// -------------------------------------------------------------------------
 	// WRITE: Create dataset and write data
 	// -------------------------------------------------------------------------
 	fmt.Println("=== WRITE ===")
 
-	// Create dataset with JSONL codec.
-	// Default bundle:
-	//   - Layout: NewDefaultLayout() (flat, no partitions)
-	//   - Compressor: NewNoOpCompressor()
-	//   - Codec: none (we override with JSONL for structured records)
-	ds, err := lode.NewDataset(
-		"events",
-		storeFactory,
-		lode.WithCodec(lode.NewJSONLCodec()),
-	)
+	// Open the dataset for map records encoded as JSON Lines. The record
+	// type, lode.D, comes from the codec. Defaults:
+	//   - Layout: lode.Unpartitioned()
+	//   - Compressor: lode.NewNoOpCompressor()
+	ds, err := root.Records(ctx, "events", lode.JSONL[lode.D]())
 	if err != nil {
 		return fmt.Errorf("failed to create dataset: %w", err)
 	}
@@ -66,14 +62,14 @@ func run() error {
 		lode.D{"id": 3, "event": "logout", "user": "alice"},
 	)
 
-	snapshot, err := ds.Write(ctx, records, lode.Metadata{"source": "example"})
+	snapshot, err := ds.Write(ctx, records, lode.D{"source": "example"})
 	if err != nil {
 		return fmt.Errorf("failed to write: %w", err)
 	}
 
 	fmt.Printf("Created snapshot: %s\n", snapshot.ID)
 	fmt.Printf("Files in manifest:\n")
-	for _, f := range snapshot.Manifest.Files {
+	for _, f := range snapshot.Files {
 		fmt.Printf("  - %s (%d bytes)\n", f.Path, f.SizeBytes)
 	}
 	fmt.Println()
@@ -100,24 +96,28 @@ func run() error {
 	fmt.Println()
 
 	// -------------------------------------------------------------------------
-	// LIST: Discover datasets and manifests using DatasetReader
+	// LIST: Discover datasets and manifests through a read-only view
 	// -------------------------------------------------------------------------
 	fmt.Println("=== LIST ===")
 
-	reader, err := lode.NewDatasetReader(storeFactory)
-	if err != nil {
-		return fmt.Errorf("failed to create reader: %w", err)
-	}
+	// A read-only root never writes, so its store needs no CompareAndSwap.
+	readRoot := lode.OpenReadOnly(lode.FS(tmpDir))
 
 	// List all datasets
-	datasets, err := reader.ListDatasets(ctx, lode.DatasetListOptions{})
+	datasets, err := readRoot.ListDatasets(ctx, lode.DatasetListOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to list datasets: %w", err)
 	}
 	fmt.Printf("Datasets found: %v\n", datasets)
 
+	// A view takes the dataset's layout and compressor from its manifests.
+	view, err := readRoot.Records(ctx, "events", lode.JSONL[lode.D]())
+	if err != nil {
+		return fmt.Errorf("failed to open view: %w", err)
+	}
+
 	// List manifests in the dataset
-	manifests, err := reader.ListManifests(ctx, "events", "", lode.ManifestListOptions{})
+	manifests, err := view.ListManifests(ctx, "", lode.ManifestListOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to list manifests: %w", err)
 	}
@@ -133,7 +133,7 @@ func run() error {
 	fmt.Println("=== READ ===")
 
 	// Get manifest for the first snapshot
-	manifest, err := reader.GetManifest(ctx, "events", manifests[0])
+	manifest, err := view.GetManifest(ctx, manifests[0])
 	if err != nil {
 		return fmt.Errorf("failed to get manifest: %w", err)
 	}
@@ -141,8 +141,8 @@ func run() error {
 	fmt.Printf("Row count: %d\n", manifest.RowCount)
 	fmt.Printf("Codec: %s, Compressor: %s\n", manifest.Codec, manifest.Compressor)
 
-	// Read data through the dataset
-	readRecords, err := ds.Read(ctx, manifests[0].ID)
+	// Read data through the view: the records are []lode.D
+	readRecords, err := view.Read(ctx, manifests[0].ID)
 	if err != nil {
 		return fmt.Errorf("failed to read: %w", err)
 	}

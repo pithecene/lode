@@ -29,8 +29,11 @@ type failingStore struct {
 func (f failingStore) Get(context.Context, string) (io.ReadCloser, error) { return nil, f.err }
 func (f failingStore) List(context.Context, string) ([]string, error)     { return nil, f.err }
 
+// defaultLayout is the unpartitioned layout under the default names.
+func defaultLayout() *pathLayout { return newPathLayout(defaultPathNames(), noopScheme) }
+
 func datasetHistory(store Store) history.History[DatasetSnapshotID, Manifest] {
-	return history.New(store, newDatasetKind("ds", NewDefaultLayout(), store), NewDefaultLayout().latestPointerPath("ds"), "manifest", historyErrors)
+	return history.New(store, newDatasetKind("ds", defaultLayout(), store), defaultLayout().latestPointerPath("ds"), "manifest", historyErrors)
 }
 
 func TestHistory_Refresh(t *testing.T) {
@@ -80,7 +83,7 @@ func TestHistory_Advance_ErrorNamesTheKind(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			store := manifestPutFailStore{Store: NewMemory(), err: boom}
-			h := history.New(store, newDatasetKind("ds", NewDefaultLayout(), store), NewDefaultLayout().latestPointerPath("ds"), c.noun, historyErrors)
+			h := history.New(store, newDatasetKind("ds", defaultLayout(), store), defaultLayout().latestPointerPath("ds"), c.noun, historyErrors)
 			err := h.Advance(t.Context(), "", "s1", &Manifest{}, []string{"datasets/ds/snapshots/s1/manifest.json"})
 			if err == nil || err.Error() != c.want {
 				t.Fatalf("got %v, want %q", err, c.want)

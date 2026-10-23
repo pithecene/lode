@@ -40,16 +40,16 @@ Gaps are recorded with codes that indicate category and priority:
 
 | Field | Test |
 |-------|------|
-| SchemaName | `TestDatasetReader_GetManifest_InvalidManifest/missing_schema_name` |
-| FormatVersion | `TestDatasetReader_GetManifest_InvalidManifest/missing_format_version` |
-| DatasetID | `TestDatasetReader_GetManifest_InvalidManifest/missing_dataset_ID` |
-| SnapshotID | `TestDatasetReader_GetManifest_InvalidManifest/missing_snapshot_ID` |
-| CreatedAt | `TestDatasetReader_GetManifest_InvalidManifest/zero_created_at` |
-| Metadata (non-nil) | `TestDatasetReader_GetManifest_InvalidManifest/nil_metadata` |
-| Files (non-nil) | `TestDatasetReader_GetManifest_InvalidManifest/nil_files` |
-| RowCount (≥0) | `TestDatasetReader_GetManifest_InvalidManifest/negative_row_count` |
-| Compressor | `TestDatasetReader_GetManifest_InvalidManifest/missing_compressor` |
-| Partitioner | `TestDatasetReader_GetManifest_InvalidManifest/missing_partitioner` |
+| SchemaName | `TestView_GetManifest_InvalidManifest/missing_schema_name` |
+| FormatVersion | `TestView_GetManifest_InvalidManifest/missing_format_version` |
+| DatasetID | `TestView_GetManifest_InvalidManifest/missing_dataset_ID` |
+| SnapshotID | `TestView_GetManifest_InvalidManifest/missing_snapshot_ID` |
+| CreatedAt | `TestView_GetManifest_InvalidManifest/zero_created_at` |
+| Metadata (non-nil) | `TestView_GetManifest_InvalidManifest/nil_metadata` |
+| Files (non-nil) | `TestView_GetManifest_InvalidManifest/nil_files` |
+| RowCount (≥0) | `TestView_GetManifest_InvalidManifest/negative_row_count` |
+| Compressor | `TestView_GetManifest_InvalidManifest/missing_compressor` |
+| Partitioner | `TestView_GetManifest_InvalidManifest/missing_partitioner` |
 
 **Manifest Optional Fields**: All covered ✅
 
@@ -82,13 +82,13 @@ Gaps are recorded with codes that indicate category and priority:
 
 **Metadata Rules**: All covered ✅
 
-- `nil` metadata converted to empty metadata: `TestDataset_Write_Metadata/nil_metadata_coalesces_to_empty`, `TestDataset_StreamWrite_Metadata/nil_metadata_coalesces_to_empty`, `TestDataset_StreamWriteRecords_Metadata/nil_metadata_coalesces_to_empty`
+- `nil` metadata converted to empty metadata: `TestDataset_Write_Metadata/nil_metadata_coalesces_to_empty`, `TestBlobs_StreamWrite_Metadata/nil_metadata_coalesces_to_empty`, `TestRecords_StreamWrite_Metadata/nil_metadata_coalesces_to_empty`
 - Empty metadata is valid: `TestDataset_Write_Metadata/empty_metadata_valid_and_persisted`, etc.
 
 **Immutability**: All covered ✅
 
 - Data files are immutable: `TestStore_Put/err_path_exists`, `TestStore_Put/err_path_exists`, `TestStore_Put/err_path_exists`
-- Linear history: `TestDataset_StreamWrite_Lineage/parent_snapshot_linked`, `TestDataset_StreamWriteRecords_Commit/parent_snapshot_linked`
+- Linear history: `TestBlobs_StreamWrite_Lineage/parent_snapshot_linked`, `TestRecords_StreamWrite_Commit/parent_snapshot_linked`
 
 ---
 
@@ -100,9 +100,9 @@ Gaps are recorded with codes that indicate category and priority:
 |-------------|------|
 | Creates snapshot | Multiple write tests |
 | nil metadata coalesced | `TestDataset_Write_Metadata/nil_metadata_coalesces_to_empty` |
-| Parent snapshot linked | `TestDataset_StreamWrite_Lineage/parent_snapshot_linked` |
+| Parent snapshot linked | `TestBlobs_StreamWrite_Lineage/parent_snapshot_linked` |
 | Parent ID resolved O(1) via persistent pointer | `TestDataset_Write_Pointer/latest_pointer_skips_scan` |
-| Raw blob RowCount=1 | `TestDataset_StreamWrite_Commit/success` |
+| Raw blob RowCount=1 | `TestBlobs_StreamWrite_Commit/success` |
 | A write of no records commits a snapshot without data files on every layout | `TestDataset_Write_EmptyBatch` |
 
 **Settings**: All covered ✅
@@ -121,14 +121,17 @@ Gaps are recorded with codes that indicate category and priority:
 | A history persisted under another layout, with or without a pointer, is `ErrSettingsMismatch`, not an empty dataset or a conflict | `TestWrite_LayoutMismatch` |
 | Partition keys compare structurally (`"a,b"` differs from `"a"`, `"b"`) | `TestWrite_PartitionKeysCompareStructurally` |
 | A writer checked against a legacy manifest is checked again after a conflict | `TestWrite_LegacyCheckIsRepeatedAfterAConflict` |
-| A Hive key that is not one path segment or contains `=` is `ErrInvalidArgument` | `TestNewHiveLayout_KeysNamePartitionsUnambiguously` |
+| A Hive key that is not one path segment or contains `=` is `ErrInvalidArgument` | `TestHive_KeysNamePartitionsUnambiguously` |
 | A pending first commit is checked against its staged copy without a listing | `TestWrite_PendingFirstCommitIsCheckedWithoutListing` |
 | The filesystem store's pointer lock file is not a foreign object | `TestWrite_PointerLockIsNotAForeignObject` |
 | A manifest that the writer's layout does not persist is a foreign history; another writer's uncommitted data, a tombstone, and its lock file are not | `TestWrite_ForeignManifestsAreAHistoryAndDataIsNot` |
+| A manifest of format version 1.1.0 names every directory and file under the rule for a root's names (one segment without `=`, distinct, not `latest`), and flat paths name no datasets or snapshots directory | `TestValidateManifest_PathsNameEveryDirectory` |
+| A history without a pointer, under the default manifest name, rejects a writer or view with a custom manifest name | `TestWrite_DefaultNamedManifestsWithoutAPointer` |
+| A manifest of format version 1.0.0 rejects a writer or view whose path names are not the defaults | `TestSettings_LegacyManifestsUseTheDefaultPathNames` |
 | Concurrent first writers with different layouts: the loser is classified against the winner | `TestWrite_ConcurrentFirstWritersWithDifferentLayouts` |
 | A lost first commit is `ErrSettingsMismatch` when the winner's settings differ, without retries, and stays a conflict when they match | `TestWrite_LostFirstCommitIsAMismatchWithoutRetries` |
 | A manifest of format 1.1.0 without `paths` is invalid for writers and readers | `TestModernManifestWithoutPathsIsInvalid` |
-| Reader methods reject a dataset ID that is not one path segment | `TestDatasetReader_RejectsInvalidDatasetIDs` |
+| Reader methods reject a dataset ID that is not one path segment | `TestReadRoot_RejectsInvalidDatasetIDs` |
 | A child commit removes the staged manifest of the pending first commit it adopted | `TestWrite_SettingsOfAPendingFirstCommit/its_staged_copy_records_the_settings` |
 | A returned manifest's partition keys do not alias the layout | `TestWrite_ReturnedManifestDoesNotAliasTheLayout` |
 | Hive keys and a Parquet schema are copied at construction | `TestConfiguration_IsCopiedAtConstruction` |
@@ -138,14 +141,13 @@ Gaps are recorded with codes that indicate category and priority:
 
 | Requirement | Test |
 |-------------|------|
-| nil metadata coalesced | `TestDataset_StreamWrite_Metadata/nil_metadata_coalesces_to_empty` |
-| Commit writes manifest | `TestDataset_StreamWrite_Commit/success` |
-| Snapshot invisible before Commit | `TestDataset_StreamWrite_Visibility/not_visible_before_commit` |
-| Abort → no manifest | `TestDataset_StreamWrite_Abort/no_manifest` |
-| Close without Commit → abort | `TestDataset_StreamWrite_Interrupted/close_without_commit_behaves_as_abort` |
-| Codec configured → error | `TestDataset_StreamWrite_Misuse/with_codec_returns_error` |
-| Parent ID resolved O(1) via persistent pointer | `TestDataset_StreamWrite_Lineage/latest_pointer_skips_scan` |
-| Checksum computed | `TestDataset_StreamWrite_Encoding/with_checksum_records_checksum` |
+| nil metadata coalesced | `TestBlobs_StreamWrite_Metadata/nil_metadata_coalesces_to_empty` |
+| Commit writes manifest | `TestBlobs_StreamWrite_Commit/success` |
+| Snapshot invisible before Commit | `TestBlobs_StreamWrite_Visibility/not_visible_before_commit` |
+| Abort → no manifest | `TestBlobs_StreamWrite_Abort/no_manifest` |
+| Close without Commit → abort | `TestBlobs_StreamWrite_Interrupted/close_without_commit_behaves_as_abort` |
+| Parent ID resolved O(1) via persistent pointer | `TestBlobs_StreamWrite_Lineage/latest_pointer_skips_scan` |
+| Checksum computed | `TestBlobs_StreamWrite_Encoding/with_checksum_records_checksum` |
 | Manifest Put error → data retained (the manifest may have been stored) | `TestStreamWrite_Cleanup/manifest_put_error_retains_data` |
 | Pointer error → data removed | `TestStreamWrite_CommitFailure/pointer_error_removes_data` |
 | Lost manifest response → the visible snapshot stays readable | `TestStreamWrite_CommitFailure/lost_manifest_response_keeps_the_snapshot_readable` |
@@ -155,18 +157,18 @@ Gaps are recorded with codes that indicate category and priority:
 | Fast Put failure → error, no block | `TestStreamWrite_PutFailure/data_put_fails_fast_returns_error` |
 | Blocked Put + cancel → no manifest | `TestStreamWrite_PutFailure/blocked_put_context_cancel_no_manifest` |
 
-**StreamWriteRecords**: All covered ✅
+**Records.StreamWrite**: All covered ✅
 
 | Requirement | Test |
 |-------------|------|
-| nil metadata coalesced | `TestDataset_StreamWriteRecords_Metadata/nil_metadata_coalesces_to_empty` |
-| nil iterator error | `TestDataset_StreamWriteRecords_Rejects/nil_iterator` |
-| Non-streaming codec error | `TestDataset_StreamWriteRecords_Rejects/non_streaming_codec` |
-| Partitioning error | `TestDataset_StreamWriteRecords_Rejects/with_partitioner` |
-| Iterator error → no manifest | `TestDataset_StreamWriteRecords_IteratorError/iterator_error` |
-| RowCount = records consumed | `TestDataset_StreamWriteRecords_Commit/success` |
+| nil metadata coalesced | `TestRecords_StreamWrite_Metadata/nil_metadata_coalesces_to_empty` |
+| nil iterator error | `TestRecords_StreamWrite_Rejects/nil_iterator` |
+| Non-streaming codec error | `TestRecords_StreamWrite_Rejects/non_streaming_codec` |
+| Partitioning error | `TestRecords_StreamWrite_Rejects/with_partitioner` |
+| Iterator error → no manifest | `TestRecords_StreamWrite_IteratorError/iterator_error` |
+| RowCount = records consumed | `TestRecords_StreamWrite_Commit/success` |
 | Iterator error → cleanup attempted | `TestStreamWriteRecords_Cleanup/iterator_error_no_manifest_cleanup_attempted` |
-| Parent ID resolved O(1) via persistent pointer | `TestDataset_StreamWriteRecords_Commit/latest_pointer_skips_scan` |
+| Parent ID resolved O(1) via persistent pointer | `TestRecords_StreamWrite_Commit/latest_pointer_skips_scan` |
 | Manifest Put error → data retained | `TestStreamWriteRecords_Cleanup/manifest_put_error_no_manifest` |
 | Fast Put failure → error, no block | `TestStreamWriteRecords_PutFailure/data_put_fails_fast_returns_error` |
 
@@ -185,7 +187,7 @@ Gaps are recorded with codes that indicate category and priority:
 | StatisticalCodec populates stats | `TestDataset_Write_Stats/parquet_codec_stats_populated` |
 | Non-statistical codec → nil stats | `TestDataset_Write_Stats/JSONL_codec_stats_nil` |
 | Raw blob → nil stats | `TestDataset_Write_Stats/raw_blob_stats_nil` |
-| StreamWriteRecords → nil stats (JSONL) | `TestDataset_StreamWriteRecords_Metadata/stats_nil` |
+| StreamWriteRecords → nil stats (JSONL) | `TestRecords_StreamWrite_Metadata/stats_nil` |
 | Parquet basic types stats | `TestParquetCodec_FileStats/basic_types` |
 | Parquet nullable field stats | `TestParquetCodec_FileStats_Nulls/nullable_fields` |
 | Parquet all-null column stats | `TestParquetCodec_FileStats_Nulls/all_nulls` |
@@ -282,20 +284,36 @@ All covered ✅
 
 | Requirement | Test |
 |-------------|------|
-| nil layout rejected | `TestNewDataset/nil_layout_returns_error`, `TestNewDatasetReader/nil_layout_returns_error` |
-| nil compressor rejected | `TestNewDataset/nil_compressor_returns_error` |
-| Raw blob + partitioner rejected | `TestNewDataset/raw_blob_with_partitioner_returns_error` |
-| Hive layout keys | `TestHiveLayoutOptions/new_hive_layout_with_keys_success` |
+| nil layout and compressor rejected | `TestRoot_Blobs/nil_layout_and_compressor_are_rejected`, `TestErrInvalidArgument_Classification` |
+| A blob dataset with a partitioned layout rejected | `TestRoot_Blobs/a_partitioned_layout_is_rejected` |
+| Hive keys rejected when empty, not one segment, or containing `=` | `TestHive_KeysNamePartitionsUnambiguously` |
+| Typed records partition with `Hive(...).By`; a `By` for another type, or a partition naming other keys, is rejected | `TestRoot_Records_Typed/Hive_partitions_typed_records_with_By`, `TestRoot_Records_Typed/a_By_function_for_another_record_type_is_rejected`, `TestRoot_Records_Typed/a_partition_naming_other_keys_fails_the_write` |
+| Path names: custom names land at their paths; same names read them; another datasets directory is another dataset; other names conflict or are rejected | `TestRootPaths_CustomNames` |
+| Path names: invalid, duplicate, `latest`, and flat with a datasets or snapshots directory are rejected | `TestRootPaths_InvalidNames` |
+| Flat paths, partitioned: paths, no dataset listing, views list partitions | `TestRootPaths_Flat` |
 
 **Compression**: All covered ✅
 
 | Requirement | Test |
 |-------------|------|
-| Gzip round-trip | `TestDataset_StreamWrite_Encoding/with_gzip_compression` |
+| Gzip round-trip | `TestBlobs_StreamWrite_Encoding/with_gzip_compression` |
 | Zstd round-trip (Write) | `TestDataset_Write_Encoding/with_zstd_compression` |
-| Zstd round-trip (StreamWrite) | `TestDataset_StreamWrite_Encoding/with_zstd_compression` |
-| Zstd round-trip (StreamWriteRecords) | `TestDataset_StreamWriteRecords_Encoding/with_zstd_compression` |
-| Compressor mismatch error | `TestDataset_Read/compressor_mismatch_returns_error` |
+| Zstd round-trip (StreamWrite) | `TestBlobs_StreamWrite_Encoding/with_zstd_compression` |
+| Zstd round-trip (StreamWriteRecords) | `TestRecords_StreamWrite_Encoding/with_zstd_compression` |
+| Each snapshot is read with the compressor its manifest names | `TestRecords_Read/each_snapshot_is_read_with_the_compressor_its_manifest_names` |
+| A custom compressor is passed to the view by name | `TestRecords_Read/a_custom_compressor_is_passed_to_the_view` |
+| A custom checksum is passed to the view by name | `TestBlobs_Read_CustomChecksumIsPassedToTheView` |
+| A view rejects a nil compressor with `ErrInvalidArgument` | `TestViews_RejectANilCompressor` |
+| A codec with an empty name, which denotes blobs, is rejected with `ErrInvalidArgument` | `TestHandles_RejectAnUnnamedCodec` |
+| A factory that returns a nil store of a kind other than a pointer is rejected with `ErrInvalidArgument` | `TestRoots_RejectANilMapStore` |
+| `OpenObject` and `ReaderAt` refuse a path that is not a data object of the dataset, or of the snapshot the reference names | `TestView_Objects/objects_outside_the_dataset_are_refused` |
+| A nil or typed-nil codec, compressor, checksum, or Hive layout, the zero Hive layout, and a nil `By` function are rejected with `ErrInvalidArgument` | `TestHandles_RejectNilComponents` |
+| A view's store refuses every write, so a retention method reached by a type assertion returns `ErrReadOnly` and changes nothing | `TestViews_CannotWriteThroughRetention` |
+| JSON `null` empties a reused `Metadata` value | `TestMetadata_NullEmptiesAReusedValue` |
+| A write of no records persists an empty file list, which a view reads | `TestRecords_AnEmptyWriteRemainsReadable` |
+| Metadata decoded from a JSON value that is not an object is rejected with `ErrInvalidArgument` | `TestWrite_RejectsMetadataDecodedFromANonObject` |
+| The JSONL codec encodes a batch by value, as its stream encoder does | `TestJSONL_EncodesRecordsByValueAsStreamsDo` |
+| A handle with another codec is rejected | `TestRecords_Read/a_handle_with_another_codec_is_rejected` |
 
 ---
 
@@ -305,18 +323,22 @@ All covered ✅
 
 | Requirement | Test |
 |-------------|------|
-| ListDatasets layout error | `TestDatasetReader_ListDatasets/flat_layout_returns_err_datasets_not_modeled` |
-| ListDatasets empty storage | `TestDatasetReader_ListDatasets/empty_storage` |
-| ListDatasets order / StartAfter | `TestDatasetReader_ListDatasets_Order/sorted`, `TestDatasetReader_ListDatasets_Order/start_after_pages`, `TestDatasetReader_ListDatasets_Limit_Boundary` |
-| ErrNoManifests | `TestDatasetReader_ListDatasets/err_no_manifests` |
-| Manifest validation errors | Multiple `TestDatasetReader_GetManifest_InvalidManifest_*` tests |
-| ListPartitions lexicographic order | `TestDatasetReader_ListPartitions_Order/sorted` |
-| ListPartitions Prefix (raw prefix, subtree) | `TestDatasetReader_ListPartitions_Prefix/prefix`, `TestDatasetReader_ListPartitions_Prefix/excludes_other_partitions_of_same_snapshot` |
-| ListPartitions Prefix empty subtree | `TestDatasetReader_ListPartitions_Prefix/no_match_returns_empty` |
-| ListPartitions Prefix canonical-only (no dataset escape) | `TestDatasetReader_ListPartitions_Prefix/rejects_non_canonical` |
-| ListPartitions StartAfter / Limit | `TestDatasetReader_ListPartitions_Order/start_after_pages`, `TestDatasetReader_ListPartitions_Order/start_after_exclusive` |
-| ListManifests (Partition, ID) order, deterministic partition | `TestDatasetReader_ListManifests_Order/sorted_and_deterministic_partition`, `TestDatasetReader_ListManifests_Order/default_layout_sorted_by_ID` |
-| ListManifests StartAfter / Limit | `TestDatasetReader_ListManifests_Paging/start_after_pages`, `TestDatasetReader_ListManifests_Paging/limit_boundary` |
+| Roots: a recorded error is returned by every method; the factory is called once | `TestOpen`, `TestOpenReadOnly` |
+| A view reads a store without CompareAndSwap, never creates a missing pointer, is not found for an empty dataset, and rejects another codec | `TestOpenReadOnly/a_store_without_CompareAndSwap_is_readable`, `TestOpenReadOnly/a_view_never_creates_a_missing_pointer`, `TestOpenReadOnly/a_dataset_without_snapshots_is_not_found`, `TestOpenReadOnly/a_view_with_another_codec_is_rejected` |
+| Opening a view returns a failed pointer or head read | `TestDataset_TransientHeadReadErrors/opening_a_view_returns_a_failed_head_load` |
+| Object access through a view | `TestView_Objects` |
+| ListDatasets layout error | `TestView_ListDatasets/flat_layout_returns_err_datasets_not_modeled` |
+| ListDatasets empty storage | `TestView_ListDatasets/empty_storage` |
+| ListDatasets order / StartAfter | `TestView_ListDatasets_Order/sorted`, `TestView_ListDatasets_Order/start_after_pages`, `TestView_ListDatasets_Limit_Boundary` |
+| ErrNoManifests | `TestView_ListDatasets/err_no_manifests` |
+| Manifest validation errors | Multiple `TestView_GetManifest_InvalidManifest_*` tests |
+| ListPartitions lexicographic order | `TestView_ListPartitions_Order/sorted` |
+| ListPartitions Prefix (raw prefix, subtree) | `TestView_ListPartitions_Prefix/prefix`, `TestView_ListPartitions_Prefix/excludes_other_partitions_of_same_snapshot` |
+| ListPartitions Prefix empty subtree | `TestView_ListPartitions_Prefix/no_match_returns_empty` |
+| ListPartitions Prefix canonical-only (no dataset escape) | `TestView_ListPartitions_Prefix/rejects_non_canonical` |
+| ListPartitions StartAfter / Limit | `TestView_ListPartitions_Order/start_after_pages`, `TestView_ListPartitions_Order/start_after_exclusive` |
+| ListManifests (Partition, ID) order, deterministic partition | `TestView_ListManifests_Order/sorted_and_deterministic_partition`, `TestView_ListManifests_Order/default_layout_sorted_by_ID` |
+| ListManifests StartAfter / Limit | `TestView_ListManifests_Paging/start_after_pages`, `TestView_ListManifests_Paging/limit_boundary` |
 
 ---
 
@@ -328,20 +350,20 @@ All error sentinels covered ✅
 |----------|------|
 | ErrNotFound | Multiple tests |
 | ErrNoSnapshots | `TestDataset_EmptyDataset/latest_empty_dataset_returns_err_no_snapshots` |
-| ErrNoManifests | `TestDatasetReader_ListDatasets/err_no_manifests` |
+| ErrNoManifests | `TestView_ListDatasets/err_no_manifests` |
 | ErrPathExists | Multiple store tests |
 | ErrInvalidPath | Multiple store tests |
-| ErrDatasetsNotModeled | `TestDatasetReader_ListDatasets/flat_layout_returns_err_datasets_not_modeled` |
-| ErrPartitionPrefixNotSupported | `TestDatasetReader_ListPartitions_Prefix/default_layout_rejected` |
+| ErrDatasetsNotModeled | `TestView_ListDatasets/flat_layout_returns_err_datasets_not_modeled` |
+| ErrPartitionPrefixNotSupported | `TestView_ListPartitions_Prefix/default_layout_rejected` |
 | ErrManifestInvalid | Multiple validation tests |
 | ErrInvalidArgument | `TestErrInvalidArgument_Classification` |
-| A dataset ID that is not one canonical path segment is `ErrInvalidArgument`; `=` is permitted | `TestNewDataset_DatasetID`, `TestSegment` |
+| A dataset ID that is not one canonical path segment is `ErrInvalidArgument`; `=` is permitted | `TestRoot_DatasetID`, `TestSegment` |
 | ErrSettingsMismatch | `TestWrite_SettingsMismatch` |
-| ErrOptionNotValidFor{Dataset,DatasetReader} | `TestSentinels_Messages`, option applicability tests |
-| ErrCodecConfigured | `TestDataset_StreamWrite_Misuse/with_codec_returns_error` |
-| ErrCodecNotStreamable | `TestDataset_StreamWriteRecords_Rejects/non_streaming_codec` |
-| ErrNilIterator | `TestDataset_StreamWriteRecords_Rejects/nil_iterator` |
-| ErrPartitioningNotSupported | `TestDataset_StreamWriteRecords_Rejects/with_partitioner` |
+| ErrReadOnly | `TestSentinels_Messages`, `TestSentinelErrors_ErrorMessages` |
+| Argument errors precede store work: root options before the factory, dataset arguments and metadata before any store call | `TestErrInvalidArgument_BeforeStoreWork` |
+| ErrCodecNotStreamable | `TestRecords_StreamWrite_Rejects/non_streaming_codec` |
+| ErrNilIterator | `TestRecords_StreamWrite_Rejects/nil_iterator` |
+| ErrPartitioningNotSupported | `TestRecords_StreamWrite_Rejects/with_partitioner` |
 | volume.ErrRangeMissing | `TestVolume_ReadAt/missing_range_returns_err_range_missing`, `TestVolume_ReadAt/gap_at_start_returns_err_range_missing`, `TestVolume_ReadAt/gap_in_middle_returns_err_range_missing` |
 | volume.ErrOverlappingBlocks | `TestVolume_Commit_Overlaps/overlapping_blocks_returns_err_overlapping_blocks`, `TestVolume_Commit_Overlaps/contained_block_overlap`, `TestVolume_Commit_Overlaps/same_start_offset_overlap`, `TestVolume_Commit_Overlaps/overlap_with_existing_rejected`, `TestVolume_Commit_Overlaps/three_block_overlap` |
 | ErrRangeMissing | `TestVolume_ReadAt/missing_range_returns_err_range_missing`, `TestVolume_ReadAt/gap_at_start_returns_err_range_missing`, `TestVolume_ReadAt/gap_in_middle_returns_err_range_missing` |
@@ -514,12 +536,12 @@ resolution.
 | Pointer names a snapshot without a manifest: `Latest` does not replace the pointer | `TestDataset_LatestPointer_PendingCommit`, `TestLatest/stale_pointer_is_left_for_the_next_commit` |
 | Pointer names a snapshot without a manifest: the next Write adopts it as parent | `TestDataset_Write_ParentsOnPendingCommit`, `TestResolve/stale_pointer_is_the_parent` |
 | Parent resolution through the pointer: 1 Get, no manifest check | `TestResolve/pointer_costs_one_Get_and_no_manifest_check` |
-| Pointer read fails with an error other than not-found: `Write` returns the error and does not scan | `TestDataset_TransientHeadReadErrors/Write_returns_a_failed_pointer_read`, `TestResolve/failed_pointer_read_is_returned,_not_scanned` |
+| Pointer read fails with an error other than not-found: `Write` returns the error and does not scan | `TestDataset_TransientHeadReadErrors/opening_a_writer_returns_a_failed_pointer_read`, `TestResolve/failed_pointer_read_is_returned,_not_scanned` |
 | Pointer or head-manifest read fails with an error other than not-found: `Latest` returns the error and does not scan | `TestDataset_TransientHeadReadErrors/Latest_returns_a_failed_head_load`, `TestLatest/failed_pointer_read_is_returned,_not_scanned`, `TestLatest/failed_head_load_is_returned,_not_scanned` |
 | Pointer paths for all layouts | `TestDataset_LatestPointer/all_layouts` |
 | Write: 0 List calls after pointer | `TestDataset_Write_Pointer/latest_pointer_skips_scan` |
-| StreamWrite: 0 List calls | `TestDataset_StreamWrite_Lineage/latest_pointer_skips_scan` |
-| StreamWriteRecords: 0 List calls | `TestDataset_StreamWriteRecords_Commit/latest_pointer_skips_scan` |
+| StreamWrite: 0 List calls | `TestBlobs_StreamWrite_Lineage/latest_pointer_skips_scan` |
+| StreamWriteRecords: 0 List calls | `TestRecords_StreamWrite_Commit/latest_pointer_skips_scan` |
 
 **Dataset — HiveLayout Canonical Manifest**: O(1) `Snapshot(ctx, id)`.
 
@@ -581,7 +603,7 @@ listing.
 
 | Requirement | Test |
 |-------------|------|
-| ListManifests skips canonical for partition layouts | `TestDatasetReader_ListManifests/hive_layout_skips_canonical_manifest` |
+| ListManifests skips canonical for partition layouts | `TestView_ListManifests/hive_layout_skips_canonical_manifest` |
 
 **Benchmarks**:
 
@@ -598,7 +620,7 @@ listing.
 |----|-----------|------------|------|
 | CX-1 | `findCoveringBlocks` sort check | Fixed: sort at load time | `TestVolume_Snapshots/load_snapshot_sorts_blocks_at_load_time` |
 | CX-2 | `ListManifests` validation Gets | Reclassified: inherent cost (CONTRACT_ERRORS.md) | — |
-| CX-3 | `ListPartitions` double deser | Fixed: single-pass (1 List + M Gets) | `TestDatasetReader_ListPartitions_SingleManifestLoad` |
+| CX-3 | `ListPartitions` double deser | Fixed: single-pass (1 List + M Gets) | `TestView_ListPartitions_SingleManifestLoad` |
 | CX-4 | `Snapshot(id)` degraded fallback | Reclassified: documented degraded path | — |
 | CX-5 | `Write` partitioned memory | Reclassified: O(R aliases), not O(3R copies) | — |
 | CX-6 | `Volume.Snapshots` sort checks | Fixed: sort at load time | `TestVolume_Snapshots/load_snapshot_sorts_blocks_at_load_time` |

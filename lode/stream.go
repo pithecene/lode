@@ -5,11 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"iter"
 	"sync"
 )
 
 // -----------------------------------------------------------------------------
-// Streamed staging (StreamWrite, StreamWriteRecords)
+// Streamed staging (Blobs.StreamWrite, Records.StreamWrite)
 // -----------------------------------------------------------------------------
 
 // dataStream streams one data file: bytes pass through the compressor, are
@@ -136,14 +137,15 @@ func (s *dataStream) abort(cause error) {
 
 // recordStream encodes records onto a data stream, counting rows and
 // observing timestamps as they pass.
-type recordStream struct {
+type recordStream[T any] struct {
 	*dataStream
-	encoder    RecordStreamEncoder
-	rows       int64
-	timestamps timestampRange
+	encoder     StreamEncoder[T]
+	timestamped bool
+	rows        int64
+	timestamps  timestampRange
 }
 
-func (d *dataset) openRecordStream(ctx context.Context, id DatasetSnapshotID, codec StreamingRecordCodec) (*recordStream, error) {
+func openRecordStream[T any](ctx context.Context, d *dataset, id DatasetSnapshotID, codec StreamingCodec[T], timestamped bool) (*recordStream[T], error) {
 	s, err := d.newStream(id, dataFile)
 	if err != nil {
 		return nil, err
@@ -155,25 +157,28 @@ func (d *dataset) openRecordStream(ctx context.Context, id DatasetSnapshotID, co
 		return nil, fmt.Errorf("lode: failed to create stream encoder: %w", err)
 	}
 	s.start(ctx, d.store)
-	return &recordStream{dataStream: s, encoder: encoder}, nil
+	return &recordStream[T]{dataStream: s, encoder: encoder, timestamped: timestamped}, nil
 }
 
-// encode drains the iterator onto the stream. The Put is checked before and
-// after every iterator call, which may block, and before accepting each
-// record: a buffering compressor can absorb records without touching the pipe,
-// so a dead Put would otherwise go unnoticed until the iterator ends — which
-// it may never do.
-func (r *recordStream) encode(records RecordIterator) error {
+// encode drains the iterator onto the stream. The Put is checked before the
+// first record, after the iterator produces each result, which may block,
+// and after each record is written: a buffering compressor can absorb
+// records without touching the pipe, so a dead Put would otherwise go
+// unnoticed until the iterator ends — which it may never do. Returning from
+// the loop stops the iterator.
+func (r *recordStream[T]) encode(records iter.Seq2[T, error]) error {
 	if err := r.putFailed(); err != nil {
 		return err
 	}
-	for records.Next() {
+	for record, iterErr := range records {
+		// A Put that failed while the iterator was producing is the root
+		// cause and takes precedence over whatever the iterator reports.
 		if err := r.putFailed(); err != nil {
 			return err
 		}
-		record := records.Record()
-		if err := r.putFailed(); err != nil {
-			return err
+		if iterErr != nil {
+			r.abort(iterErr)
+			return fmt.Errorf("lode: record iterator error: %w", iterErr)
 		}
 		if err := r.write(record); err != nil {
 			return err
@@ -182,35 +187,24 @@ func (r *recordStream) encode(records RecordIterator) error {
 			return err
 		}
 	}
-
-	// A Put that failed while the iterator was finishing is the root cause and
-	// takes precedence over whatever the iterator reports.
-	if err := r.putFailed(); err != nil {
-		return err
-	}
-	iterErr := records.Err()
-	if err := r.putFailed(); err != nil {
-		return err
-	}
-	if iterErr != nil {
-		r.abort(iterErr)
-		return fmt.Errorf("lode: record iterator error: %w", iterErr)
-	}
-	return nil
+	// A Put that failed while the iterator was finishing is reported too.
+	return r.putFailed()
 }
 
-func (r *recordStream) write(record any) error {
+func (r *recordStream[T]) write(record T) error {
 	if err := r.encoder.WriteRecord(record); err != nil {
 		r.abort(err)
 		return fmt.Errorf("lode: failed to write record: %w", err)
 	}
 	r.rows++
-	r.timestamps.observe(record)
+	if r.timestamped {
+		r.timestamps.observe(record)
+	}
 	return nil
 }
 
 // putFailed tears the stream down and reports the Put's failure, if any.
-func (r *recordStream) putFailed() error {
+func (r *recordStream[T]) putFailed() error {
 	err := r.failed()
 	if err == nil {
 		return nil
@@ -222,7 +216,7 @@ func (r *recordStream) putFailed() error {
 // finish closes the encoder (finalizing the format), then the stream. A
 // failing encoder close tears down through the data stream's fail, which
 // closes the compressor and the pipe; the encoder is not closed twice.
-func (r *recordStream) finish() (FileRef, error) {
+func (r *recordStream[T]) finish() (FileRef, error) {
 	if err := r.encoder.Close(); err != nil {
 		return FileRef{}, r.fail("encoder", err, r.comp)
 	}
@@ -236,7 +230,7 @@ func (r *recordStream) finish() (FileRef, error) {
 
 // abort closes the encoder and compressor before failing the pipe. Only
 // encode calls it, so the encoder is always open here.
-func (r *recordStream) abort(cause error) {
+func (r *recordStream[T]) abort(cause error) {
 	_ = r.encoder.Close()
 	_ = r.comp.Close()
 	r.dataStream.abort(cause)

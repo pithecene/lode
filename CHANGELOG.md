@@ -12,12 +12,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Breaking Changes
 
 - **Every writer must share the dataset's settings**: before its first commit, a writer compares its codec and the codec's description, compressor, checksum, partitioner and Hive keys, and path names with those the dataset's head manifest records, and a writer whose settings differ is rejected with the new `ErrSettingsMismatch`. A dataset whose manifests predate this release has its Hive keys verified against its partition paths on the first write.
+- **The construction and record surface is replaced** (`V1_API_DECISIONS.md` D11): a root opens datasets, records are typed by their codec, blobs have their own handle, and a reader opens a view that takes the layout, codec name, and compressor from the dataset's manifests. Persisted data is unchanged: a dataset written by an earlier release opens under the default path names.
+
+  | Before | After |
+  |---|---|
+  | `NewDataset(id, factory, WithCodec(c), ...)` | `Open(factory).Records(ctx, id, c, ...)`, a `Records[T]` |
+  | `NewDataset(id, factory)` (no codec) | `Open(factory).Blobs(ctx, id, ...)`, a `Blobs` |
+  | `NewDatasetReader(factory)` | `OpenReadOnly(factory).Records(ctx, id, c)` or `.Blobs(ctx, id)`, a view |
+  | `ds.Write(ctx, []any{...}, Metadata{...})` | `records.Write(ctx, []T{...}, metadata)`; `blobs.Write(ctx, []byte, metadata)` |
+  | `ds.StreamWriteRecords(ctx, RecordIterator, ...)` | `records.StreamWrite(ctx, iter.Seq2[T, error], ...)` |
+  | `ds.StreamWrite(ctx, ...)` | `blobs.StreamWrite(ctx, ...)` |
+  | `DatasetReader.ListDatasets` | `Root.ListDatasets`, `ReadRoot.ListDatasets` |
+  | `NewFSFactory`, `NewMemoryFactory`, `StoreFactory` | `FS`, `Memory`, `Factory[S]`; `Use(store)` for a store already held |
+  | `NewJSONLCodec()`, `NewParquetCodec(schema, ...)` | `JSONL[T]()`, `Parquet(schema, ...)`; an invalid Parquet schema fails when a handle opens |
+  | `Codec`, `StreamingRecordCodec`, `RecordStreamEncoder` | `Codec[T]`, `StreamingCodec[T]`, `StreamEncoder[T]` |
+  | `StatisticalStreamEncoder` | `StatisticalCodec`, implemented by codecs and by stream encoders |
+  | `NewDefaultLayout()`, `NewHiveLayout(keys...)`, `WithHiveLayout(keys...)` | `WithLayout(Unpartitioned())`, `WithLayout(Hive(keys...).By(fn))` |
+  | `NewFlatLayout()` | `Open(factory, WithFlatPaths())` |
+  | `WithRetryCount` | `WithRetry` |
+  | `Option` | `RootOption`, `DatasetOption`, `ViewOption`, and `ComponentOption` (`WithCompressor`, `WithChecksum`) |
+  | `Metadata` (`map[string]any`) | any value that encodes as a JSON object; read back with `snap.Metadata.Decode(&v)` |
+  | `snap.Manifest.Files` | `snap.Files` (`DatasetSnapshot` embeds `*Manifest`) |
+  | `ObjectRef.Dataset` | removed: a handle's `OpenObject` reads within its own dataset |
+  | `ErrCodecConfigured`, `ErrOptionNotValidForDataset`, `ErrOptionNotValidForDatasetReader` | removed: these misuses no longer compile |
 - **`Codec` gains `Describe`**: a custom codec returns its configuration in a canonical form, or `""` when it has none.
+- **Volume takes the new factory type**: `volume.New` takes a `lode.Factory[lode.Store]`, and Volume metadata is `volume.Metadata`.
 - **A dataset ID must be one path segment**: an ID that is empty, `.` or `..`, contains `/` or a backslash, or begins with `.lode-tmp-` is rejected with `ErrInvalidArgument`. `=` remains permitted.
 
 ### Added
 
 - Manifest format 1.1.0 records `codec_description`, `partition_keys`, and `paths`, so that every setting a writer must share is persisted.
+- Root path options name the directories and files within a dataset's paths: `WithDatasetsDir`, `WithSnapshotsDir`, `WithPartitionsDir`, `WithSegmentsDir`, `WithManifestFile`, `WithDataDir`, `WithExpiredDir`, `WithStagedDir`, and `WithFlatPaths`. A root without them uses the default names.
+- `s3.Factory` returns the factory of an S3 store, for `Open`.
+- `ErrReadOnly`: a write through a read-only root's store.
+- Opening a writer checks its settings against the dataset's head, so a misconfigured writer fails when it opens rather than at its first commit.
 - A dataset's first commit stages its manifest at `<dataset dir>/staged/<snapshot_id>.json` before it advances the pointer and removes it afterward, so that a writer can check its settings against the commit while it is pending.
 
 ---
