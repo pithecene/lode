@@ -379,21 +379,33 @@ func (l *pathLayout) datasetPrefix(dataset DatasetID) string {
 }
 
 // ownsObject reports whether p, an object under the dataset's prefix, is
-// one this layout persists: the pointer or the companion lock file that the
+// one this layout persists: the pointer, a manifest or data object its
+// grammar parses, a staged manifest (staged/<id>.json), or a tombstone
+// (expired/<id>). The pointer and tombstones are written by
+// CompareAndSwap, so each may have the companion lock file that the
 // filesystem store keeps beside it (CONTRACT_STORAGE §Implementation
-// Notes), a manifest or data object its grammar parses, a staged manifest,
-// or a tombstone.
+// Notes).
 func (l *pathLayout) ownsObject(dataset DatasetID, p string) bool {
 	if sp, ok := l.grammar.parse(p); ok && sp.dataset == dataset {
 		return true
 	}
 	pointer := l.latestPointerPath(dataset)
 	stagedPrefix := join(l.grammar.datasetDir(dataset), stagedDir) + "/"
-	staged, isStaged := strings.CutPrefix(p, stagedPrefix)
-	id, isJSON := strings.CutSuffix(staged, ".json")
 	return p == pointer || p == pointer+".lock" ||
-		(isStaged && isJSON && history.IsGeneratedID(DatasetSnapshotID(id))) ||
-		strings.HasPrefix(p, l.tombstonesPrefix(dataset))
+		snapshotLeaf(p, stagedPrefix, ".json") ||
+		snapshotLeaf(p, l.tombstonesPrefix(dataset), "") ||
+		snapshotLeaf(p, l.tombstonesPrefix(dataset), ".lock")
+}
+
+// snapshotLeaf reports whether p is prefix, a generated snapshot ID, and
+// suffix, with nothing else: one object directly under prefix.
+func snapshotLeaf(p, prefix, suffix string) bool {
+	rest, ok := strings.CutPrefix(p, prefix)
+	if !ok {
+		return false
+	}
+	id, ok := strings.CutSuffix(rest, suffix)
+	return ok && history.IsGeneratedID(DatasetSnapshotID(id))
 }
 
 // convention is the names this layout's paths use. A layout without a

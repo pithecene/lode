@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // openOn opens dataset "events" over store with opts.
@@ -492,11 +493,24 @@ func TestWrite_ReturnedManifestDoesNotAliasTheLayout(t *testing.T) {
 }
 
 func TestWrite_UnknownStagedObjectIsForeign(t *testing.T) {
+	for _, key := range []string{
+		"datasets/events/staged/not-a-manifest",
+		"datasets/events/expired/not-a-snapshot",
+		"datasets/events/expired/" + string(idAt(time.Now())) + "/nested",
+	} {
+		store := NewMemory()
+		putObject(t, store, key)
+		_, err := openOn(t, store, WithCodec(NewJSONLCodec())).Write(t.Context(), R(D{"a": 1}), nil)
+		if !errors.Is(err, ErrSettingsMismatch) {
+			t.Errorf("%s: got %v, want an object no layout persists treated as foreign", key, err)
+		}
+	}
 	store := NewMemory()
-	putObject(t, store, "datasets/events/staged/not-a-manifest")
-	_, err := openOn(t, store, WithCodec(NewJSONLCodec())).Write(t.Context(), R(D{"a": 1}), nil)
-	if !errors.Is(err, ErrSettingsMismatch) {
-		t.Fatalf("got %v, want an object no layout stages treated as foreign", err)
+	id := string(idAt(time.Now()))
+	putObject(t, store, "datasets/events/expired/"+id)
+	putObject(t, store, "datasets/events/expired/"+id+".lock")
+	if _, err := openOn(t, store, WithCodec(NewJSONLCodec())).Write(t.Context(), R(D{"a": 1}), nil); err != nil {
+		t.Errorf("got %v, want a tombstone and its lock file accepted", err)
 	}
 }
 

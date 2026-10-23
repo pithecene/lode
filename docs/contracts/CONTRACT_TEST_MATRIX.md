@@ -124,7 +124,7 @@ Gaps are recorded with codes that indicate category and priority:
 | A Hive key that is not one path segment or contains `=` is `ErrInvalidArgument` | `TestNewHiveLayout_KeysNamePartitionsUnambiguously` |
 | A pending first commit is checked against its staged copy without a listing | `TestWrite_PendingFirstCommitIsCheckedWithoutListing` |
 | The filesystem store's pointer lock file is not a foreign object | `TestWrite_PointerLockIsNotAForeignObject` |
-| An object under `staged/` that is not a staged manifest of a generated ID is foreign | `TestWrite_UnknownStagedObjectIsForeign` |
+| An object under `staged/` or `expired/` that is not a staged manifest or tombstone of a generated ID is foreign; a tombstone and its lock file are not | `TestWrite_UnknownStagedObjectIsForeign` |
 | A child commit removes the staged manifest of the pending first commit it adopted | `TestWrite_SettingsOfAPendingFirstCommit/its_staged_copy_records_the_settings` |
 | A returned manifest's partition keys do not alias the layout | `TestWrite_ReturnedManifestDoesNotAliasTheLayout` |
 | Hive keys and a Parquet schema are copied at construction | `TestConfiguration_IsCopiedAtConstruction` |
