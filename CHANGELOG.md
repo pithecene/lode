@@ -53,7 +53,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Error messages name their source once**: a message begins with the prefix of the component in which the failure originated, and code that wraps a Lode error adds context without repeating a prefix, so a message no longer reads `lode: failed to write data: lode: …`. The filesystem store reports as `fs:` and the in-memory store as `memory:`, and the messages of `ErrSchemaViolation` and `ErrInvalidFormat` no longer begin with `parquet:`. Matching under `errors.Is` and `errors.As` is unchanged; code that matches message text may need to change (CONTRACT_ERRORS §Error Messages).
+- **Error messages name their source once**: a message begins with the prefix of the component in which the failure originated, and code that wraps a Lode error adds context without repeating a prefix, so a message no longer reads `lode: failed to write data: lode: …`. The filesystem store reports as `fs:` and the in-memory store as `memory:`, and the messages of `ErrSchemaViolation` and `ErrInvalidFormat` no longer begin with `parquet:`. Matching under `errors.Is` and `errors.As` is unchanged. Code that matches message text may need to change (CONTRACT_ERRORS §Error Messages).
+
+### Upgrade Notes
+
+- **Construction and records**: replace each name according to the table under Breaking Changes.
+- **Writer settings**: open every writer of a dataset with the codec, compressor, checksum, partitioner, Hive keys, and path names that the dataset's head manifest records. A writer with other settings fails with `ErrSettingsMismatch`.
+- **Custom codecs**: implement `Describe`, which returns the codec's configuration in a canonical form, or `""` when the codec has none.
+- **Custom store adapters**: move `ReadRange` and `ReaderAt` to the `RangeReader` interface, or omit them when the backend cannot read ranges.
+- **Volume**: pass a `lode.Factory[lode.RangeStore]` to `volume.New`, and use `volume.Metadata` for Volume metadata.
+- **Partition paths**: pass `lode.PartitionPath{}` where `""` was passed, build a path with `ParsePartitionPath`, and call `String()` where a string is needed.
+- **Dataset IDs**: use an ID of one path segment that does not begin with `.lode-tmp-`.
+- **Tests that used the S3 double**: copy the double from the adapter's tests, or target an emulator such as LocalStack or MinIO.
+- **Error text**: check code that matches message text against the new wording.
+- **No data migration required**: a dataset written by an earlier release opens under the default path names.
 
 ---
 
