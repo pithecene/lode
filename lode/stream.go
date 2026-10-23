@@ -43,7 +43,7 @@ func (d *writer) newStream(id DatasetSnapshotID, role string) (*dataStream, erro
 	comp, err := d.components.compressor.Compress(sink)
 	if err != nil {
 		_ = pw.Close()
-		return nil, fmt.Errorf("lode: failed to create compressor: %w", err)
+		return nil, fmt.Errorf("failed to create compressor: %w", err)
 	}
 	return &dataStream{
 		path:   d.filePath(id, "", role),
@@ -101,7 +101,7 @@ func (s *dataStream) finish() (FileRef, error) {
 	// A failed Put leaves nothing behind (CONTRACT_STORAGE §Put), so there is
 	// nothing for the writer to clean up.
 	if err := s.put.wait(); err != nil {
-		return FileRef{}, fmt.Errorf("lode: failed to write data: %w", err)
+		return FileRef{}, fmt.Errorf("failed to write data: %w", err)
 	}
 
 	ref := FileRef{Path: s.path, SizeBytes: s.count.n}
@@ -121,9 +121,9 @@ func (s *dataStream) fail(step string, err error, upstream ...io.Closer) error {
 	}
 	s.abort(cause)
 	if fromPut {
-		return fmt.Errorf("lode: failed to write data: %w", cause)
+		return fmt.Errorf("failed to write data: %w", cause)
 	}
-	return fmt.Errorf("lode: failed to close %s: %w", step, cause)
+	return fmt.Errorf("failed to close %s: %w", step, cause)
 }
 
 // abort fails the pipe with cause and waits for the Put to return. It never
@@ -154,7 +154,7 @@ func openRecordStream[T any](ctx context.Context, d *writer, id DatasetSnapshotI
 	if err != nil {
 		_ = s.comp.Close()
 		_ = s.pipe.Close()
-		return nil, fmt.Errorf("lode: failed to create stream encoder: %w", err)
+		return nil, fmt.Errorf("failed to create stream encoder: %w", err)
 	}
 	s.start(ctx, d.store)
 	return &recordStream[T]{dataStream: s, encoder: encoder, timestamped: timestamped}, nil
@@ -178,7 +178,7 @@ func (r *recordStream[T]) encode(records iter.Seq2[T, error]) error {
 		}
 		if iterErr != nil {
 			r.abort(iterErr)
-			return fmt.Errorf("lode: record iterator error: %w", iterErr)
+			return fmt.Errorf("record iterator error: %w", iterErr)
 		}
 		if err := r.write(record); err != nil {
 			return err
@@ -194,7 +194,7 @@ func (r *recordStream[T]) encode(records iter.Seq2[T, error]) error {
 func (r *recordStream[T]) write(record T) error {
 	if err := r.encoder.WriteRecord(record); err != nil {
 		r.abort(err)
-		return fmt.Errorf("lode: failed to write record: %w", err)
+		return fmt.Errorf("failed to write record: %w", err)
 	}
 	r.rows++
 	if r.timestamped {
@@ -210,7 +210,7 @@ func (r *recordStream[T]) putFailed() error {
 		return nil
 	}
 	r.abort(err)
-	return fmt.Errorf("lode: failed to write data: %w", err)
+	return fmt.Errorf("failed to write data: %w", err)
 }
 
 // finish closes the encoder (finalizing the format), then the stream. A
@@ -386,7 +386,7 @@ func (sw *streamWriter) Abort(_ context.Context) error {
 	sw.aborted = true
 	sw.mu.Unlock()
 
-	sw.stream.abort(errors.New("stream aborted"))
+	sw.stream.abort(errors.New("lode: stream aborted"))
 	return nil
 }
 

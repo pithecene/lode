@@ -752,11 +752,11 @@ func (errPartitioningNotSupported) Error() string {
 
 type errSchemaViolation struct{}
 
-func (errSchemaViolation) Error() string { return "parquet: schema violation" }
+func (errSchemaViolation) Error() string { return "schema violation" }
 
 type errInvalidFormat struct{}
 
-func (errInvalidFormat) Error() string { return "parquet: invalid format" }
+func (errInvalidFormat) Error() string { return "invalid format" }
 
 type errSnapshotConflict struct{}
 

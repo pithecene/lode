@@ -360,7 +360,7 @@ func (d *dataset) loadManifest(ctx context.Context, manifestPath string) (*Manif
 
 	var manifest Manifest
 	if err := json.NewDecoder(rc).Decode(&manifest); err != nil {
-		return nil, fmt.Errorf("failed to decode manifest: %w", err)
+		return nil, fmt.Errorf("lode: failed to decode manifest: %w", err)
 	}
 
 	if err := validateManifest(&manifest); err != nil {

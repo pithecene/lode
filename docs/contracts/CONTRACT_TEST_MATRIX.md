@@ -381,6 +381,7 @@ All error sentinels covered ✅
 | ErrOverlappingBlocks | `TestVolume_Commit_Overlaps/overlapping_blocks_returns_err_overlapping_blocks`, `TestVolume_Commit_Overlaps/contained_block_overlap`, `TestVolume_Commit_Overlaps/same_start_offset_overlap`, `TestVolume_Commit_Overlaps/overlap_with_existing_rejected`, `TestVolume_Commit_Overlaps/three_block_overlap` |
 | ErrSnapshotExpired | `TestExpire_Selection/by_ID_removes_manifest_and_data`, `TestExpire_Resumption/interrupted_after_the_canonical_delete_is_not_resurrected` |
 | ErrHeadUncommitted | `TestExpire_Head/uncommitted_expires_nothing`, `TestExpire_Head/uncommitted_mid-run_reports_completed_work` |
+| A message names its source once: sentinels carry no prefix, an error that originates in Lode begins with its component's prefix, and a wrapped Lode error gains context only (§Error Messages) | `TestErrorPrefixes`, `TestRuleCatchesEachViolation` |
 
 ---
 

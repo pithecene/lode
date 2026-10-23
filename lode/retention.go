@@ -169,7 +169,7 @@ type expiryListing struct {
 func (d *dataset) expiryListing(ctx context.Context, sel selection) (expiryListing, error) {
 	keys, err := d.store.List(ctx, sel.listPrefix(d.layout, d.id))
 	if err != nil {
-		return expiryListing{}, fmt.Errorf("lode: failed to list snapshots: %w", err)
+		return expiryListing{}, fmt.Errorf("failed to list snapshots: %w", err)
 	}
 	listing := expiryListing{listed: make(map[string]bool, len(keys))}
 	for _, k := range keys {
@@ -385,7 +385,7 @@ func (r expiryRun) retain(ctx context.Context, out expiryOutcome) (expiryOutcome
 
 // errSnapshotGone is a candidate with neither a manifest nor a tombstone
 // left: another run finished it, so this run has nothing to do.
-var errSnapshotGone = errors.New("lode: snapshot already gone")
+var errSnapshotGone = errors.New("snapshot already gone")
 
 // plan finds the tombstone to work from, the one recorded or the one this
 // run would record from the manifest, and checks it against every manifest
@@ -537,7 +537,7 @@ func (d *dataset) loadManifestAt(ctx context.Context, id DatasetSnapshotID, p st
 		err = d.validateCopy(s.Manifest, id)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("lode: failed to load manifest %s: %w", p, err)
+		return nil, fmt.Errorf("failed to load manifest %s: %w", p, err)
 	}
 	return s.Manifest, nil
 }
@@ -622,7 +622,7 @@ func (d *dataset) allManifestPaths(id DatasetSnapshotID, listed []string, files 
 // retention step can be repeated.
 func deleteObject(ctx context.Context, store Store, p string) error {
 	if err := store.Delete(ctx, p); err != nil && !errors.Is(err, ErrNotFound) {
-		return fmt.Errorf("lode: failed to delete %s: %w", p, err)
+		return fmt.Errorf("failed to delete %s: %w", p, err)
 	}
 	return nil
 }

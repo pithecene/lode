@@ -13,5 +13,5 @@ import (
 // processes. It fails rather than lock within the process alone, which
 // would silently stop protecting writers in other processes.
 func lockExclusive(*os.File) (unlock func(), err error) {
-	return nil, fmt.Errorf("lode: the filesystem store has no exclusive file lock on this platform: %w", errors.ErrUnsupported)
+	return nil, fmt.Errorf("the filesystem store has no exclusive file lock on this platform: %w", errors.ErrUnsupported)
 }

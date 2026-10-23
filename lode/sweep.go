@@ -59,7 +59,7 @@ func (d *dataset) sweepInventory(ctx context.Context) (sweepInventory, error) {
 	}
 	keys, err := d.store.List(ctx, d.layout.snapshotsPrefix(d.id))
 	if err != nil {
-		return inv, fmt.Errorf("lode: failed to list snapshots: %w", err)
+		return inv, fmt.Errorf("failed to list snapshots: %w", err)
 	}
 	all := func(DatasetSnapshotID) bool { return true }
 	inv.manifests = make(map[DatasetSnapshotID][]string)
@@ -148,7 +148,7 @@ func (d *dataset) sweepGuard(ctx context.Context, inv sweepInventory) (headGuard
 		return headGuardian{}, nil
 	}
 	if err != nil {
-		return headGuardian{}, fmt.Errorf("lode: failed to resolve head: %w", err)
+		return headGuardian{}, fmt.Errorf("failed to resolve head: %w", err)
 	}
 	// One pointer read decides: the value just read is the one confirmed.
 	err = d.history.ConfirmCommitted(ctx, head)
@@ -246,7 +246,7 @@ func (d *dataset) anyManifest(ctx context.Context, id DatasetSnapshotID, paths [
 	for _, p := range d.manifestCopies(id, paths) {
 		present, err := d.store.Exists(ctx, p)
 		if err != nil {
-			return false, fmt.Errorf("lode: failed to check manifest %s: %w", p, err)
+			return false, fmt.Errorf("failed to check manifest %s: %w", p, err)
 		}
 		if present {
 			return true, nil

@@ -38,7 +38,7 @@ type ManifestError struct {
 }
 
 func (e *ManifestError) Error() string {
-	return fmt.Sprintf("invalid manifest: %s: %s", e.Field, e.Message)
+	return fmt.Sprintf("lode: invalid manifest: %s: %s", e.Field, e.Message)
 }
 
 // Unwrap makes the error match ErrManifestInvalid.

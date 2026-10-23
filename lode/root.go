@@ -73,7 +73,7 @@ func openStore[S ObjectStore](f Factory[S], opts []RootOption) (S, ManifestPaths
 	}
 	store, err := f()
 	if err != nil {
-		return zero, ManifestPaths{}, fmt.Errorf("lode: store factory failed: %w", err)
+		return zero, ManifestPaths{}, fmt.Errorf("store factory failed: %w", err)
 	}
 	if isNilStore(store) {
 		return zero, ManifestPaths{}, validate.Argument("store factory returned nil store")

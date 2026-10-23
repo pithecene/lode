@@ -264,7 +264,7 @@ func (r *ReadRoot) openView(ctx context.Context, id DatasetID, opts []ViewOption
 		return nil, err
 	}
 	if err := validateManifest(head); err != nil {
-		return nil, fmt.Errorf("lode: head of %s: %w", id, err)
+		return nil, fmt.Errorf("head of %s: %w", id, err)
 	}
 	if err := matchCodec(head, codec); err != nil {
 		return nil, err
@@ -317,7 +317,7 @@ func resolveViewHead(ctx context.Context, store Store, names ManifestPaths, id D
 				return s.Manifest, partitionScheme{name: partitioner(s.Partitioner), keys: s.PartitionKeys}, nil
 			}
 			if !errors.Is(err, ErrNotFound) && !errors.Is(err, ErrNoSnapshots) {
-				return nil, partitionScheme{}, fmt.Errorf("lode: failed to resolve the head of %s: %w", id, err)
+				return nil, partitionScheme{}, fmt.Errorf("failed to resolve the head of %s: %w", id, err)
 			}
 		}
 	}

@@ -277,7 +277,7 @@ func (s *Store) putMultipartFromFile(ctx context.Context, fullKey string, file i
 	// The actual atomicity guarantee comes from If-None-Match on CompleteMultipartUpload.
 	exists, err := s.exists(ctx, fullKey)
 	if err != nil {
-		return fmt.Errorf("s3: checking existence: %w", err)
+		return fmt.Errorf("checking existence: %w", err)
 	}
 	if exists {
 		return lode.ErrPathExists
@@ -568,7 +568,7 @@ func (s *Store) putConditional(ctx context.Context, fullKey, replacement string,
 	out, err := s.client.PutObject(ctx, input)
 	if err != nil {
 		s.versions.forget(fullKey)
-		return err
+		return fmt.Errorf("s3: CAS put: %w", err)
 	}
 	if cond.etag == "" {
 		s.versions.forget(fullKey)
@@ -579,7 +579,8 @@ func (s *Store) putConditional(ctx context.Context, fullKey, replacement string,
 }
 
 // mapCASError maps S3 conditional-write refusals to ErrSnapshotConflict,
-// including If-Match on an object that another writer deleted (404).
+// including If-Match on an object that another writer deleted (404). Any
+// other failure is returned as putConditional reported it.
 func (s *Store) mapCASError(err error) error {
 	if err == nil {
 		return nil
@@ -587,7 +588,7 @@ func (s *Store) mapCASError(err error) error {
 	if hasErrorCode(err, slices.Concat(preconditionCodes, conflictCodes, notFoundCodes)...) {
 		return lode.ErrSnapshotConflict
 	}
-	return fmt.Errorf("s3: CAS put: %w", err)
+	return err
 }
 
 // ReadRange reads a byte range from the given path.
@@ -611,7 +612,7 @@ func (s *Store) ReadRange(ctx context.Context, key string, offset, length int64)
 	if length == 0 {
 		exists, err := s.exists(ctx, fullKey)
 		if err != nil {
-			return nil, fmt.Errorf("s3: checking existence: %w", err)
+			return nil, fmt.Errorf("checking existence: %w", err)
 		}
 		if !exists {
 			return nil, lode.ErrNotFound
@@ -734,7 +735,7 @@ func (s *Store) exists(ctx context.Context, fullKey string) (bool, error) {
 		if isNotFound(err) {
 			return false, nil
 		}
-		return false, err
+		return false, fmt.Errorf("s3: head object: %w", err)
 	}
 	return true, nil
 }

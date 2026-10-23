@@ -87,7 +87,7 @@ func (ts tombstones) record(ctx context.Context, t tombstone) error {
 		return ts.matchRecorded(ctx, p, t)
 	}
 	if err != nil {
-		return fmt.Errorf("lode: failed to write tombstone %s: %w", p, err)
+		return fmt.Errorf("failed to write tombstone %s: %w", p, err)
 	}
 	return nil
 }
@@ -115,7 +115,7 @@ func (ts tombstones) list(ctx context.Context) ([]string, error) {
 	prefix := ts.paths.tombstonesPrefix(ts.dataset)
 	keys, err := ts.store.List(ctx, prefix)
 	if err != nil {
-		return nil, fmt.Errorf("lode: failed to list tombstones: %w", err)
+		return nil, fmt.Errorf("failed to list tombstones: %w", err)
 	}
 	return slices.DeleteFunc(keys, func(k string) bool { return !isTombstoneName(k, prefix) }), nil
 }
@@ -137,7 +137,7 @@ func isTombstoneName(key, prefix string) bool {
 // errInvalidTombstone marks a listed tombstone Lode cannot trust: a key
 // that is not canonical, or content that fails validation. It settles
 // nothing (CONTRACT_RETENTION §Definition).
-var errInvalidTombstone = errors.New("lode: invalid tombstone")
+var errInvalidTombstone = errors.New("invalid tombstone")
 
 // recorded reads the tombstone at a listed key. errInvalidTombstone reports
 // one whose key is not canonical or that does not record the snapshot its
@@ -145,7 +145,7 @@ var errInvalidTombstone = errors.New("lode: invalid tombstone")
 func (ts tombstones) recorded(ctx context.Context, key string) (tombstone, error) {
 	id := DatasetSnapshotID(strings.TrimPrefix(key, ts.paths.tombstonesPrefix(ts.dataset)))
 	if !ts.isCanonicalPath(key, id) {
-		return tombstone{}, fmt.Errorf("%w: %s is not a canonical tombstone path", errInvalidTombstone, key)
+		return tombstone{}, fmt.Errorf("lode: %w: %s is not a canonical tombstone path", errInvalidTombstone, key)
 	}
 	data, err := ts.readRaw(ctx, key)
 	if err != nil {
@@ -174,7 +174,7 @@ func (ts tombstones) create(ctx context.Context, p string, data []byte) error {
 // errEmptyTombstone is a zero-length object at a tombstone path. record
 // replaces it (a CAS from "" matches it), so it stands for no tombstone only
 // while a manifest is left to record from.
-var errEmptyTombstone = errors.New("lode: tombstone is empty")
+var errEmptyTombstone = errors.New("tombstone is empty")
 
 // lookup returns the tombstone recorded for id. ErrNotFound means there is
 // none, and errEmptyTombstone reports the zero-length placeholder above.
@@ -190,7 +190,7 @@ func (ts tombstones) lookup(ctx context.Context, id DatasetSnapshotID) (tombston
 		return tombstone{}, err
 	}
 	if len(data) == 0 {
-		return tombstone{}, fmt.Errorf("%w: %s", errEmptyTombstone, p)
+		return tombstone{}, fmt.Errorf("lode: %w: %s", errEmptyTombstone, p)
 	}
 	return validTombstone(p, data, id)
 }
@@ -215,7 +215,7 @@ func validTombstone(p string, data []byte, id DatasetSnapshotID) (tombstone, err
 		}
 	}
 	if err := validateFiles(t.Files); err != nil {
-		return t, fmt.Errorf("lode: tombstone %s has an invalid inventory: %w", p, err)
+		return t, fmt.Errorf("tombstone %s has an invalid inventory: %w", p, err)
 	}
 	return t, nil
 }
@@ -223,7 +223,7 @@ func validTombstone(p string, data []byte, id DatasetSnapshotID) (tombstone, err
 func (ts tombstones) readRaw(ctx context.Context, p string) ([]byte, error) {
 	rc, err := ts.store.Get(ctx, p)
 	if err != nil {
-		return nil, fmt.Errorf("lode: failed to read tombstone %s: %w", p, err)
+		return nil, fmt.Errorf("failed to read tombstone %s: %w", p, err)
 	}
 	defer closer(rc)()
 	data, err := io.ReadAll(rc)
@@ -254,7 +254,7 @@ func (ts tombstones) absent(ctx context.Context, id DatasetSnapshotID) (bool, er
 		return true, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("lode: failed to check tombstone: %w", err)
+		return false, fmt.Errorf("failed to check tombstone: %w", err)
 	}
 	return false, nil
 }

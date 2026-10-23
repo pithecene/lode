@@ -281,7 +281,7 @@ func TestSnapshots(t *testing.T) {
 		s.fail = failOn("list", "", errBoom)
 		h := newTestHistory(s)
 		_, err := h.Snapshots(t.Context())
-		wantMessage(t, err, "lode: failed to list snapshots: boom")
+		wantMessage(t, err, "failed to list snapshots: boom")
 	})
 
 	t.Run("load error names the snapshot", func(t *testing.T) {
@@ -290,7 +290,7 @@ func TestSnapshots(t *testing.T) {
 		s.fail = failOn("get", "", errBoom)
 		h := newTestHistory(s)
 		_, err := h.Snapshots(t.Context())
-		wantMessage(t, err, "lode: failed to load snapshot 1: boom")
+		wantMessage(t, err, "failed to load snapshot 1: boom")
 	})
 }
 
@@ -446,7 +446,7 @@ func TestLatest(t *testing.T) {
 		h := newTestHistory(s)
 		h.remember("1", "1")
 		_, err := h.Latest(t.Context())
-		wantMessage(t, err, "lode: failed to read latest pointer: boom")
+		wantMessage(t, err, "failed to read latest pointer: boom")
 		assertNoScan(t, s)
 		assertForgotten(t, h)
 	})
@@ -459,7 +459,7 @@ func TestLatest(t *testing.T) {
 		h := newTestHistory(s)
 		h.remember("2", "2")
 		_, err := h.Latest(t.Context())
-		wantMessage(t, err, "lode: failed to load latest snapshot: boom")
+		wantMessage(t, err, "failed to load latest snapshot: boom")
 		assertNoScan(t, s)
 		assertForgotten(t, h)
 	})
@@ -487,7 +487,7 @@ func TestLatest(t *testing.T) {
 		s.objects[testKind{}.ManifestPath("1")] = []byte("{")
 		h := newTestHistory(s)
 		_, err := h.Latest(t.Context())
-		wantMessage(t, err, "lode: failed to load latest snapshot: boom")
+		wantMessage(t, err, "failed to load latest snapshot: boom")
 	})
 	t.Run("scan list error surfaces", func(t *testing.T) {
 		s := newMemStore()
@@ -581,7 +581,7 @@ func TestResolve(t *testing.T) {
 		s.fail = failOn("list", "", errBoom)
 		h := newTestHistory(s)
 		_, _, err := h.Resolve(t.Context())
-		wantMessage(t, err, "lode: failed to get latest snapshot: lode: failed to list snapshots: boom")
+		wantMessage(t, err, "failed to get latest snapshot: failed to list snapshots: boom")
 	})
 }
 
@@ -623,7 +623,7 @@ func TestResolveParent(t *testing.T) {
 		h := newTestHistory(s)
 		h.remember("2", "2")
 		_, _, err := h.ResolveParent(t.Context())
-		wantMessage(t, err, "lode: failed to load parent snapshot: boom")
+		wantMessage(t, err, "failed to load parent snapshot: boom")
 	})
 	t.Run("pointer's manifest unreadable", func(t *testing.T) {
 		s := newMemStore()
@@ -632,7 +632,7 @@ func TestResolveParent(t *testing.T) {
 		s.fail = failOn("get", "1/", errBoom)
 		h := newTestHistory(s)
 		_, _, err := h.ResolveParent(t.Context())
-		wantMessage(t, err, "lode: failed to load snapshot: boom")
+		wantMessage(t, err, "failed to load snapshot: boom")
 	})
 	// The blocks of a pending commit cannot be merged until its manifest is
 	// persisted, so the commit conflicts and retries.
@@ -692,7 +692,7 @@ func TestAdvance(t *testing.T) {
 		s.fail = failOn("cas", pointer, errBoom)
 		h := newTestHistory(s)
 		err := h.Advance(t.Context(), "", "5", &manifest{}, paths)
-		wantMessage(t, err, "lode: failed to update latest pointer: boom")
+		wantMessage(t, err, "failed to update latest pointer: boom")
 		if errors.Is(err, ErrManifestUncertain) {
 			t.Fatal("a pointer failure matches ErrManifestUncertain; no manifest was written")
 		}
@@ -705,7 +705,7 @@ func TestAdvance(t *testing.T) {
 		s.fail = failOn("put", "manifest.json", errBoom)
 		h := newTestHistory(s)
 		err := h.Advance(t.Context(), "", "5", &manifest{}, paths)
-		wantMessage(t, err, "lode: failed to write test manifest: boom")
+		wantMessage(t, err, "failed to write test manifest: boom")
 		if !errors.Is(err, ErrManifestUncertain) || !errors.Is(err, errBoom) {
 			t.Fatalf("manifest failure %v must match ErrManifestUncertain and its cause", err)
 		}
@@ -871,7 +871,7 @@ func TestAdvance_Staged(t *testing.T) {
 		s.fail = failOn("put", staged, errBoom)
 		h := newStagingHistory(s)
 		err := h.Advance(t.Context(), "", "5", &manifest{}, paths)
-		wantMessage(t, err, "lode: failed to stage test manifest: boom")
+		wantMessage(t, err, "failed to stage test manifest: boom")
 		if len(s.ops) != 1 || h.head != "" {
 			t.Fatalf("ops = %v, head = %q; want only the staging attempt", s.ops, h.head)
 		}
@@ -1005,7 +1005,7 @@ func TestResolveParent_Staged(t *testing.T) {
 		s.fail = failOn("get", staged, errBoom)
 		h := newStagingHistory(s)
 		_, _, err := h.ResolveParent(t.Context())
-		wantMessage(t, err, "lode: failed to load staged snapshot: boom")
+		wantMessage(t, err, "failed to load staged snapshot: boom")
 	})
 	t.Run("an unreadable canonical manifest after a removed staged copy is returned", func(t *testing.T) {
 		s := pending(t)
@@ -1021,6 +1021,6 @@ func TestResolveParent_Staged(t *testing.T) {
 		}
 		h := newStagingHistory(s)
 		_, _, err := h.ResolveParent(t.Context())
-		wantMessage(t, err, "lode: failed to load snapshot: boom")
+		wantMessage(t, err, "failed to load snapshot: boom")
 	})
 }

@@ -157,7 +157,7 @@ func (h *History[ID, M]) Snapshot(ctx context.Context, id ID) (*Snapshot[ID, M],
 func (h *History[ID, M]) manifests(ctx context.Context) ([]manifestEntry[ID], error) {
 	paths, err := h.store.List(ctx, h.kind.SnapshotsPrefix())
 	if err != nil {
-		return nil, fmt.Errorf("lode: failed to list snapshots: %w", err)
+		return nil, fmt.Errorf("failed to list snapshots: %w", err)
 	}
 	byID := make(map[ID][]string)
 	for _, p := range paths {
@@ -219,7 +219,7 @@ func (h *History[ID, M]) Snapshots(ctx context.Context) ([]*Snapshot[ID, M], err
 			continue
 		}
 		if err != nil {
-			return nil, fmt.Errorf("lode: failed to load snapshot %s: %w", e.id, err)
+			return nil, fmt.Errorf("failed to load snapshot %s: %w", e.id, err)
 		}
 		out = append(out, s)
 	}
@@ -262,7 +262,7 @@ func (h *History[ID, M]) scan(ctx context.Context) (*Snapshot[ID, M], error) {
 			continue
 		}
 		if err != nil {
-			return nil, fmt.Errorf("lode: failed to load latest snapshot: %w", err)
+			return nil, fmt.Errorf("failed to load latest snapshot: %w", err)
 		}
 		return s, nil
 	}
@@ -306,7 +306,7 @@ func (q *newestFirst[ID]) Pop() any {
 func (h *History[ID, M]) ReadPointer(ctx context.Context) (ID, error) {
 	rc, err := h.store.Get(ctx, h.pointerPath)
 	if err != nil {
-		return "", fmt.Errorf("lode: failed to read latest pointer: %w", err)
+		return "", fmt.Errorf("failed to read latest pointer: %w", err)
 	}
 	defer func() { _ = rc.Close() }() // read-only stream
 	data, err := io.ReadAll(rc)
@@ -331,7 +331,7 @@ func (h *History[ID, M]) CommittedHead(ctx context.Context, known ID) (ID, error
 		return "", h.pointerless(ctx)
 	}
 	if err != nil {
-		return "", fmt.Errorf("lode: failed to resolve head: %w", err)
+		return "", fmt.Errorf("failed to resolve head: %w", err)
 	}
 	if id == known {
 		return id, nil
@@ -351,7 +351,7 @@ func (h *History[ID, M]) ConfirmCommitted(ctx context.Context, id ID) error {
 	}
 	committed, err := h.hasManifest(ctx, id)
 	if err != nil {
-		return fmt.Errorf("lode: failed to resolve head: %w", err)
+		return fmt.Errorf("failed to resolve head: %w", err)
 	}
 	if !committed {
 		return fmt.Errorf("lode: latest pointer names %s: %w", id, h.errs.HeadUncommitted)
@@ -449,7 +449,7 @@ func (h *History[ID, M]) resolveHead(ctx context.Context) (s *Snapshot[ID, M], p
 			return s, false, nil
 		}
 		if !errors.Is(loadErr, h.errs.NotFound) {
-			err = fmt.Errorf("lode: failed to load latest snapshot: %w", loadErr)
+			err = fmt.Errorf("failed to load latest snapshot: %w", loadErr)
 		}
 	}
 	// The pointer confirms no loadable head, so the remembered head may be
@@ -505,9 +505,9 @@ func (h *History[ID, M]) ResolveParent(ctx context.Context) (parent *Snapshot[ID
 		case err == nil:
 			return parent, expected, nil
 		case !errors.Is(err, h.errs.NotFound) && fromMemory:
-			return nil, "", fmt.Errorf("lode: failed to load parent snapshot: %w", err)
+			return nil, "", fmt.Errorf("failed to load parent snapshot: %w", err)
 		case !errors.Is(err, h.errs.NotFound):
-			return nil, "", fmt.Errorf("lode: failed to load snapshot: %w", err)
+			return nil, "", fmt.Errorf("failed to load snapshot: %w", err)
 		case !fromMemory:
 			return h.stagedParent(ctx, id, expected)
 		}
@@ -532,14 +532,14 @@ func (h *History[ID, M]) stagedParent(ctx context.Context, id ID, expected strin
 		return staged, expected, nil
 	}
 	if !errors.Is(err, h.errs.NotFound) {
-		return nil, "", fmt.Errorf("lode: failed to load staged snapshot: %w", err)
+		return nil, "", fmt.Errorf("failed to load staged snapshot: %w", err)
 	}
 	canonical, err := h.Snapshot(ctx, id)
 	if errors.Is(err, h.errs.NotFound) {
 		return nil, "", h.unmerged(id)
 	}
 	if err != nil {
-		return nil, "", fmt.Errorf("lode: failed to load snapshot: %w", err)
+		return nil, "", fmt.Errorf("failed to load snapshot: %w", err)
 	}
 	return canonical, expected, nil
 }
@@ -577,7 +577,7 @@ func (h *History[ID, M]) resolve(ctx context.Context) (id ID, scanned *Snapshot[
 		return "", nil, observed, nil
 	}
 	if err != nil {
-		return "", nil, "", fmt.Errorf("lode: failed to get latest snapshot: %w", err)
+		return "", nil, "", fmt.Errorf("failed to get latest snapshot: %w", err)
 	}
 	return s.ID, s, observed, nil
 }
@@ -612,15 +612,15 @@ func (h *History[ID, M]) Advance(ctx context.Context, expected string, id ID, ma
 	}
 	staged := h.stagedPath(id, expected)
 	if err := h.stage(ctx, staged, data); err != nil {
-		return fmt.Errorf("lode: failed to stage %s: %w", h.noun, err)
+		return fmt.Errorf("failed to stage %s: %w", h.noun, err)
 	}
 	if err := h.writePointer(ctx, expected, id); err != nil {
 		h.discardStaged(ctx, id, staged)
-		return fmt.Errorf("lode: failed to update latest pointer: %w", err)
+		return fmt.Errorf("failed to update latest pointer: %w", err)
 	}
 	for _, p := range paths {
 		if err := h.store.Put(ctx, p, bytes.NewReader(data)); err != nil {
-			return manifestUncertain{fmt.Errorf("lode: failed to write %s: %w", h.noun, err)}
+			return manifestUncertain{fmt.Errorf("failed to write %s: %w", h.noun, err)}
 		}
 	}
 	h.unstage(ctx, staged)

@@ -387,6 +387,47 @@ unreferenced objects (`CONTRACT_RETENTION.md`).
 
 ---
 
+## Error Messages
+
+Callers classify errors with `errors.Is` and `errors.As`, never by their
+messages. A message is written for people, and it names the component in
+which the failure originated with a source prefix.
+
+| Prefix | Component |
+|--------|-----------|
+| `lode:` | Datasets, Volumes, retention, and every other part of package `lode` and its internal packages that the rows below do not name |
+| `fs:` | The filesystem store (`NewFS`, `FS`) |
+| `memory:` | The in-memory store (`NewMemory`, `Memory`) |
+| `s3:` | The S3 adapter (`lode/s3`) |
+| `jsonl:` | The JSON Lines codec |
+| `parquet:` | The Parquet codec |
+
+**Rules**:
+1. A sentinel MUST NOT carry a prefix. It is matched rather than read, and
+   the message that contains it supplies the prefix.
+2. An error that originates in Lode MUST begin with the prefix of its
+   component. An error originates where it is created, where a sentinel is
+   first wrapped with detail, or where an error from code outside Lode (the
+   operating system, the AWS SDK, an encoding library, or a caller's reader)
+   is first wrapped.
+3. Code that wraps an error returned by another part of Lode MUST add
+   context without a prefix. That error already names its source, and only
+   the code that creates an error knows its source.
+
+A message therefore names its source once, after the context that the
+callers added: `failed to write data file: fs: put: open …: permission
+denied`. An error returned by a custom store or codec is the caller's own;
+Lode adds context to it and no prefix.
+
+**Enforcement**: the test in `internal/errprefix` type-checks every package
+under `lode/` and `internal/` and fails on any call to `fmt.Errorf` or
+`errors.New` that breaks these rules. A function that Lode declares but
+that stands for code outside Lode, such as the filesystem store's
+`openRead`, is listed in that test with its reason. The test does not
+detect an error from outside Lode that is returned without being wrapped.
+
+---
+
 ## Immutability Invariants
 
 Errors MUST NOT imply:

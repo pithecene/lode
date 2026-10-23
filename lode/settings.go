@@ -64,7 +64,7 @@ func (s settings) record(m *Manifest) {
 // record its path names.
 func recordedSettings(m *Manifest, flat bool) (settings, error) {
 	if err := missingPaths(m); err != nil {
-		return settings{}, fmt.Errorf("lode: manifest of snapshot %s: %w", m.SnapshotID, err)
+		return settings{}, fmt.Errorf("manifest of snapshot %s: %w", m.SnapshotID, err)
 	}
 	s := settings{
 		codec:            m.Codec,
@@ -209,7 +209,7 @@ func (d *writer) rejectForeignHistory(ctx context.Context) error {
 func rejectForeignManifest(ctx context.Context, store Store, id DatasetID, layouts ...*pathLayout) error {
 	keys, err := store.List(ctx, layouts[0].datasetPrefix(id))
 	if err != nil {
-		return fmt.Errorf("lode: failed to list the dataset: %w", err)
+		return fmt.Errorf("failed to list the dataset: %w", err)
 	}
 	names := []string{layouts[0].manifestName(), defaultPaths(false).Manifest}
 	for _, k := range keys {
@@ -254,7 +254,7 @@ func (d *writer) settingsManifest(ctx context.Context, parent DatasetSnapshotID)
 			return s.Manifest, nil
 		}
 		if !errors.Is(err, ErrNotFound) && !errors.Is(err, ErrNoSnapshots) {
-			return nil, fmt.Errorf("lode: failed to load the head's settings: %w", err)
+			return nil, fmt.Errorf("failed to load the head's settings: %w", err)
 		}
 	}
 	if err := d.rejectForeignHistory(ctx); err != nil {
