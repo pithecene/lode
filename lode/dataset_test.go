@@ -2291,7 +2291,8 @@ func (r *timestampedRecord) Timestamp() time.Time {
 // testCodec is a simple codec for testing.
 type testCodec struct{}
 
-func (c *testCodec) Name() string { return "test-codec" }
+func (c *testCodec) Name() string     { return "test-codec" }
+func (c *testCodec) Describe() string { return "" }
 
 func (c *testCodec) Encode(_ io.Writer, _ []any) error {
 	return nil

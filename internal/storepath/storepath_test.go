@@ -89,3 +89,16 @@ func TestKeyAndPrefix_RejectBackslash(t *testing.T) {
 		}
 	}
 }
+
+func TestSegment(t *testing.T) {
+	for _, s := range []string{"events", "tenant=acme", "a.b", "..a"} {
+		if !Segment(s) {
+			t.Errorf("Segment(%q) rejected", s)
+		}
+	}
+	for _, s := range []string{"", ".", "..", "a/b", `a\b`, ReservedPrefix + "x"} {
+		if Segment(s) {
+			t.Errorf("Segment(%q) accepted", s)
+		}
+	}
+}

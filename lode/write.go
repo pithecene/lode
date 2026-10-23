@@ -68,10 +68,14 @@ func (d *dataset) commit(ctx context.Context, p *pendingSnapshot) (*DatasetSnaps
 		if err != nil {
 			return err
 		}
+		if err := d.checkSettings(ctx, parent); err != nil {
+			return err
+		}
 		manifest = d.manifest(p, parent)
 		return d.history.Advance(ctx, expected, p.id, manifest, d.manifestPaths(p.id, p.partitions))
 	})
 	if err != nil {
+		err = d.classifyConflict(ctx, err)
 		// Once a manifest write has been attempted, the snapshot may be
 		// visible (a Put whose response was lost still stores the object),
 		// so its data stays; if the commit did fail, Sweep reclaims it.
@@ -80,7 +84,31 @@ func (d *dataset) commit(ctx context.Context, p *pendingSnapshot) (*DatasetSnaps
 		}
 		return nil, err
 	}
+	d.settled = true // the dataset's head now records this writer's settings
+	d.removeAdoptedStaged(ctx)
 	return &DatasetSnapshot{ID: p.id, Manifest: manifest}, nil
+}
+
+// classifyConflict reports a conflict that a writer never checked against a
+// manifest (it lost a first commit, or every retry) as ErrSettingsMismatch
+// when the winner's settings differ, regardless of the retry budget: a
+// retry could never succeed (CONTRACT_WRITE_API §Settings). Any other
+// conflict, or a refresh that fails, is returned as it was.
+func (d *dataset) classifyConflict(ctx context.Context, err error) error {
+	if d.settled || !errors.Is(err, ErrSnapshotConflict) {
+		return err
+	}
+	if d.history.Refresh(ctx) != nil {
+		return err
+	}
+	parent, _, resolveErr := d.history.Resolve(ctx)
+	if resolveErr != nil || parent == "" {
+		return err
+	}
+	if mismatch := d.checkSettings(ctx, parent); errors.Is(mismatch, ErrSettingsMismatch) {
+		return mismatch
+	}
+	return err
 }
 
 // manifest describes a pending snapshot under the given parent.
@@ -100,9 +128,14 @@ func (d *dataset) manifest(p *pendingSnapshot, parent DatasetSnapshotID) *Manife
 		Codec:            p.codec,
 		Compressor:       d.compressor.Name(),
 		Partitioner:      d.layout.partitioner().name(),
+		PartitionKeys:    slices.Clone(d.layout.partitioner().keys()), // a returned manifest must not alias the layout
 	}
+	m.Paths = d.layout.convention()
 	if d.checksum != nil {
 		m.ChecksumAlgorithm = d.checksum.Name()
+	}
+	if d.codec != nil {
+		m.CodecDescription = d.codec.Describe()
 	}
 	return m
 }

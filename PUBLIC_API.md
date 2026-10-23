@@ -894,6 +894,7 @@ if errors.Is(err, lode.ErrNoSnapshots) {
 | `ErrPartitioningNotSupported` | `StreamWriteRecords` was called with partitioning | Dataset |
 | `ErrRangeReadNotSupported` | The store does not support range reads | Storage |
 | `ErrSnapshotConflict` | Another writer committed after the parent was resolved (CAS) | Dataset, Volume |
+| `ErrSettingsMismatch` | The writer's codec, codec description, compressor, checksum, layout and partition keys, or path names differ from the dataset's | Dataset |
 | `ErrSnapshotExpired` | The snapshot was removed by `Expire`; the error also matches `ErrNotFound` | Dataset |
 | `ErrHeadUncommitted` | The latest pointer names a snapshot whose manifest has not been persisted, or is absent while snapshots exist | Dataset.Expire, Dataset.Sweep (absent pointer only) |
 | `ErrSchemaViolation` | A record does not conform to the Parquet schema | Parquet codec |
@@ -919,6 +920,8 @@ manifest). It also returns the shared sentinels above where they apply.
 **Not to be retried (configuration or logic errors):**
 - `ErrDatasetsNotModeled`: reconfigure with a different layout.
 - `ErrInvalidArgument`: correct the call; the message names the value.
+- `ErrSettingsMismatch`: configure the writer as the dataset is; the message
+  names the setting.
 - `ErrManifestInvalid`: the data is corrupt; investigate its source.
 - `ErrPathExists`: a logic error (an attempt to write the same path twice).
 - A component mismatch: reconfigure the dataset or read a snapshot with

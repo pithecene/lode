@@ -2,10 +2,12 @@ package lode
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"math"
+	"slices"
 	"time"
 
 	"github.com/parquet-go/parquet-go"
@@ -120,6 +122,9 @@ func validateSchema(schema ParquetSchema) (map[string]ParquetField, error) {
 // require a footer that references all row groups. Use Dataset.Write for
 // batched encoding.
 func NewParquetCodec(schema ParquetSchema, opts ...ParquetOption) (Codec, error) {
+	// The codec retains the schema; a later change to the caller's slice
+	// must not change what it encodes or describes.
+	schema.Fields = slices.Clone(schema.Fields)
 	fieldsByName, err := validateSchema(schema)
 	if err != nil {
 		return nil, err
@@ -150,6 +155,40 @@ func NewParquetCodec(schema ParquetSchema, opts ...ParquetOption) (Codec, error)
 
 func (c *parquetCodec) Name() string {
 	return "parquet"
+}
+
+// parquetTypeNames spells each ParquetType in a codec description.
+var parquetTypeNames = [parquetTypeMax]string{
+	ParquetInt32:     "int32",
+	ParquetInt64:     "int64",
+	ParquetFloat32:   "float32",
+	ParquetFloat64:   "float64",
+	ParquetString:    "string",
+	ParquetBool:      "bool",
+	ParquetBytes:     "bytes",
+	ParquetTimestamp: "timestamp",
+}
+
+// describedField is one schema field in a codec description.
+type describedField struct {
+	Name     string `json:"name"`
+	Type     string `json:"type"`
+	Nullable bool   `json:"nullable"`
+}
+
+// Describe returns the schema as JSON, its fields in schema order. The
+// internal compression is omitted: it does not affect which records a file
+// holds or how they decode.
+func (c *parquetCodec) Describe() string {
+	fields := make([]describedField, len(c.schema.Fields))
+	for i, f := range c.schema.Fields {
+		fields[i] = describedField{Name: f.Name, Type: parquetTypeNames[f.Type], Nullable: f.Nullable}
+	}
+	// Strings and bools always encode, so Marshal cannot fail here.
+	data, _ := json.Marshal(struct { //nolint:errchkjson // a struct of strings and bools always encodes
+		Fields []describedField `json:"fields"`
+	}{fields})
+	return string(data)
 }
 
 // FileStats returns statistics accumulated during the most recent Encode call.

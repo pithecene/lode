@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/pithecene/lode/internal/history"
 	"github.com/pithecene/lode/internal/storepath"
 	"github.com/pithecene/lode/internal/validate"
 )
@@ -19,6 +20,7 @@ type layout interface {
 	partitionPaths
 	datasetPaths
 	tombstonePaths
+	stagedPaths
 	partitioner() partitioner
 }
 
@@ -60,6 +62,19 @@ type datasetPaths interface {
 	datasetsPrefix() string
 }
 
+// stagedPaths is where a dataset's first commit stages its manifest before
+// it advances the pointer (CONTRACT_CORE §Head Pointer), the convention a
+// manifest records, and which objects under a dataset's directory belong
+// to this layout, so that a writer can detect a history persisted under
+// another layout (CONTRACT_WRITE_API §Settings).
+type stagedPaths interface {
+	stagedManifestPath(dataset DatasetID, snapshot DatasetSnapshotID) string
+	convention() ManifestPaths
+	datasetPrefix(dataset DatasetID) string
+	ownsObject(dataset DatasetID, p string) bool
+	manifestName() string
+}
+
 // tombstonePaths is where Dataset.Expire records an expired snapshot;
 // tombstonesPrefix lists every tombstone of a dataset.
 type tombstonePaths interface {
@@ -77,6 +92,7 @@ const (
 	segmentsDir   = "segments"
 	latestFile    = "latest"
 	tombstonesDir = "expired"
+	stagedDir     = "staged"
 )
 
 // -----------------------------------------------------------------------------
@@ -278,6 +294,11 @@ func NewHiveLayout(keys ...string) (layout, error) {
 	if len(keys) == 0 {
 		return nil, validate.Argument("NewHiveLayout requires at least one partition key; use NewDefaultLayout for unpartitioned data")
 	}
+	for _, key := range keys {
+		if !storepath.Segment(key) || strings.Contains(key, "=") {
+			return nil, validate.Argument("NewHiveLayout: partition key %q must be one path segment without \"=\", so that a partition path names its keys unambiguously", key)
+		}
+	}
 	return &pathLayout{
 		grammar: pathGrammar{root: datasetsDir, snapshotDir: segmentsDir, partitioned: true},
 		part:    newHivePartitioner(keys...),
@@ -345,6 +366,64 @@ func (l *pathLayout) dataFilePath(dataset DatasetID, snapshot DatasetSnapshotID,
 
 func (l *pathLayout) latestPointerPath(dataset DatasetID) string {
 	return join(l.grammar.root, string(dataset), latestFile)
+}
+
+// stagedManifestPath lies beside the dataset's tombstones, where no grammar
+// parses a manifest, so a staged copy is never listed as a snapshot.
+func (l *pathLayout) stagedManifestPath(dataset DatasetID, snapshot DatasetSnapshotID) string {
+	return join(l.grammar.datasetDir(dataset), stagedDir, string(snapshot)+".json")
+}
+
+// manifestName is the file name of every manifest of this layout.
+func (l *pathLayout) manifestName() string { return manifestFile }
+
+// datasetPrefix covers every object of the dataset.
+func (l *pathLayout) datasetPrefix(dataset DatasetID) string {
+	return l.grammar.datasetDir(dataset) + "/"
+}
+
+// ownsObject reports whether p, an object under the dataset's prefix, is
+// one this layout persists: the pointer, a manifest or data object its
+// grammar parses, a staged manifest (staged/<id>.json), or a tombstone
+// (expired/<id>). The pointer and tombstones are written by
+// CompareAndSwap, so each may have the companion lock file that the
+// filesystem store keeps beside it (CONTRACT_STORAGE §Implementation
+// Notes).
+func (l *pathLayout) ownsObject(dataset DatasetID, p string) bool {
+	if sp, ok := l.grammar.parse(p); ok && sp.dataset == dataset {
+		return true
+	}
+	pointer := l.latestPointerPath(dataset)
+	stagedPrefix := join(l.grammar.datasetDir(dataset), stagedDir) + "/"
+	return p == pointer || p == pointer+".lock" ||
+		snapshotLeaf(p, stagedPrefix, ".json") ||
+		snapshotLeaf(p, l.tombstonesPrefix(dataset), "") ||
+		snapshotLeaf(p, l.tombstonesPrefix(dataset), ".lock")
+}
+
+// snapshotLeaf reports whether p is prefix, a generated snapshot ID, and
+// suffix, with nothing else: one object directly under prefix.
+func snapshotLeaf(p, prefix, suffix string) bool {
+	rest, ok := strings.CutPrefix(p, prefix)
+	if !ok {
+		return false
+	}
+	id, ok := strings.CutSuffix(rest, suffix)
+	return ok && history.IsGeneratedID(DatasetSnapshotID(id))
+}
+
+// convention is the names this layout's paths use. A layout without a
+// datasets directory has the flat paths.
+func (l *pathLayout) convention() ManifestPaths {
+	p := ManifestPaths{
+		Datasets: datasetsDir, Snapshots: snapshotsDir, Partitions: partitionsDir,
+		Segments: segmentsDir, Manifest: manifestFile, Data: dataDir,
+		Expired: tombstonesDir, Staged: stagedDir,
+	}
+	if l.grammar.root == "" {
+		p.Datasets, p.Snapshots, p.Flat = "", "", true
+	}
+	return p
 }
 
 func (l *pathLayout) tombstonePath(dataset DatasetID, snapshot DatasetSnapshotID) string {

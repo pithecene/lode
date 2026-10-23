@@ -39,6 +39,58 @@ It is authoritative for any `Dataset` implementation.
 - When no codec is configured, each write represents a single data unit, and
   the row or event count MUST be `1`.
 
+### Settings
+
+Every writer of a dataset MUST share the dataset's settings: the codec name
+and description (`Codec.Describe`), the compressor, the checksum
+algorithm, the partitioner and its keys, and the path names, as the
+manifest records them (CONTRACT_CORE §Manifest Requirements).
+
+- Before its first commit, a writer MUST compare its settings with one
+  manifest, found in this order: the manifest of the snapshot that the
+  pointer names; that snapshot's staged copy (CONTRACT_CORE §Head Pointer);
+  and, when the pointer is absent or names neither, the newest manifest, as
+  `Latest` selects it. With no pointer and no manifest, the dataset is
+  empty, and the commit records the writer's settings, unless its
+  directory holds a manifest that the writer's layout does not persist.
+- A dataset directory that holds such a manifest, when no manifest is found
+  under the writer's layout, contains a history persisted under another
+  layout. The writer MUST be rejected with `ErrSettingsMismatch` rather
+  than begin a second history beside it. Data objects are not a history:
+  another writer persists its data before its first commit, and two first
+  writers with different layouts would otherwise reject each other before
+  either commits. A dataset under another datasets directory (the flat
+  layout's `<id>` rather than `datasets/<id>`) is another dataset
+  (V1_API_DECISIONS D11).
+- A writer whose settings differ MUST be rejected with
+  `ErrSettingsMismatch` and MUST NOT commit. The rejection is not retried.
+- A pointer that names a snapshot with neither a manifest nor a staged copy,
+  in a dataset with no other manifest, belongs to a first commit whose
+  settings are unknown. The writer MUST return `ErrSnapshotConflict` rather
+  than commit unchecked settings; only a first commit persisted before
+  format version 1.1.0, or a pointer edited by hand, produces that state.
+- Two first commits with conflicting settings are serialized by the
+  pointer's `CompareAndSwap`: the losing writer is checked against the
+  winner's manifest after it refreshes the head, and is rejected. A writer
+  never checked against a manifest whose commit ends in a conflict is
+  classified this way whatever its retry budget: the conflict is returned
+  only when the winner's settings match.
+- A writer checks until a check against a manifest of format version
+  1.1.0, or its own commit, settles it. Every writer is checked, so every
+  later snapshot records the same settings. A check against an earlier
+  manifest compares fewer settings, so a writer checks again after a
+  conflict.
+- A manifest written before format version 1.1.0 records no partition keys.
+  For such a dataset with a Hive partitioner, the writer's keys MUST be
+  verified, by name and in order, against the partition path of the first
+  snapshot with files, found by following parents from the head. A chain
+  without files back to its root is consistent with any keys; a chain that
+  ends at a missing or expired parent, or repeats a snapshot, before a
+  snapshot with files cannot be verified, and the write MUST be rejected
+  with `ErrSettingsMismatch`.
+  Lode MUST NOT infer keys from partition paths: the writer states them,
+  and Lode verifies them.
+
 ### StreamWrite Semantics
 
 - `StreamWrite(ctx, metadata)` MUST convert `nil` metadata to empty metadata
@@ -279,7 +331,10 @@ Implementations MUST use the following error sentinels where applicable:
 - `ErrPartitioningNotSupported` when `StreamWriteRecords` is used with a
   partitioner other than `noop`
 - `ErrSnapshotConflict` when another writer committed after the parent was
-  resolved
+  resolved, or when the pointer names a snapshot whose settings no
+  manifest records (§Settings)
+- `ErrSettingsMismatch` when the writer's settings differ from the
+  dataset's (§Settings)
 
 Streaming-specific error taxonomy and handling guidance are defined in
 `CONTRACT_ERRORS.md`.
@@ -303,6 +358,21 @@ and a glossary of variables.
 
 Parent resolution MUST NOT use List when a valid pointer exists.
 
+### Settings Check
+
+The check runs once per writer, before its first commit:
+- Against the manifest that the pointer names: **1 Get**.
+- While a first commit is pending: **2 Gets** (the canonical manifest, then
+  the staged copy).
+- When neither exists: the scan of `Latest`, **O(N) through List**, and
+  1 List of the dataset's directory.
+- Against an empty dataset: **1 List** of the dataset's directory, to
+  detect a history persisted under another layout.
+- Against a dataset written before format version 1.1.0 with a Hive
+  partitioner: **1 Get per snapshot** followed from the head to the first
+  snapshot with files, once per dataset, because the first commit after it
+  records the keys.
+
 ### Write Operations
 
 | Operation | Store Calls (warm) | Memory |
@@ -311,6 +381,9 @@ Parent resolution MUST NOT use List when a valid pointer exists.
 | `Write` (P partitions) | 2P + 3 | O(R + encoded) |
 | `StreamWrite` | 4 fixed | O(1) streaming |
 | `StreamWriteRecords` | 4 fixed | O(1) streaming |
+
+A dataset's first commit adds **1 Put and 1 Delete** for its staged
+manifest (CONTRACT_CORE §Head Pointer).
 
 A commit may incur **one additional read**: `CompareAndSwap` reads the current pointer before the
 conditional write when it cannot otherwise establish the precondition. The

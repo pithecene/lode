@@ -51,6 +51,9 @@ func (k volumeKind) ManifestPath(id SnapshotID) string { return volumeManifestPa
 // writer terminated before persisting it (CONTRACT_VOLUME §Error Semantics).
 func (k volumeKind) StagedPath(id SnapshotID) string { return volumeStagedManifestPath(k.id, id) }
 
+// StagesCommit is true: every Volume commit is merged by the next.
+func (volumeKind) StagesCommit(string) bool { return true }
+
 func (k volumeKind) ParseManifest(p string) (SnapshotID, bool) {
 	if !strings.HasSuffix(p, "manifest.json") {
 		return "", false

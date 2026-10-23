@@ -156,7 +156,7 @@ They are not safe to retry: the call itself must be corrected.
 
 | Error | Source | Meaning |
 |-------|--------|---------|
-| `lode.ErrInvalidArgument` | Constructors | A `nil` store factory, a factory that returned a `nil` store, a `nil` layout or compressor, an empty volume ID, a total length that is not positive, an option value out of range (`WithRetry*`), `NewHiveLayout` without keys, or raw blob mode with a partitioning layout |
+| `lode.ErrInvalidArgument` | Constructors | A `nil` store factory, a factory that returned a `nil` store, a dataset ID that is not one path segment (§Dataset IDs), a Hive partition key that is not one path segment or contains `=`, a `nil` layout or compressor, an empty volume ID, a total length that is not positive, an option value out of range (`WithRetry*`), `NewHiveLayout` without keys, or raw blob mode with a partitioning layout |
 | `lode.ErrInvalidArgument` | Dataset | `Write` in raw blob mode without exactly one `[]byte`; `StreamWriteRecords` without a codec |
 | `lode.ErrInvalidArgument` | Volume | A negative offset, a length that is not positive, an empty block, a block or read outside the address space, a block path not produced by the volume, or a commit without a new block |
 | `lode.ErrOptionNotValidForDataset`, `…DatasetReader` | Constructors | An option used with a constructor to which it does not apply (Volume options are a separate type, verified at compile time) |
@@ -166,6 +166,15 @@ They are not safe to retry: the call itself must be corrected.
   `ErrInvalidArgument` under `errors.Is`, and the message MUST name the
   rejected value.
 - Argument errors are returned before any store call.
+
+#### Dataset IDs
+
+A dataset ID MUST be one canonical path segment: not empty, `.`, or `..`,
+without `/` or a backslash, and not beginning with the reserved prefix
+`.lode-tmp-` (CONTRACT_STORAGE §Put). Lode cleans the paths it builds from
+an ID, so an ID such as `a/../events` would otherwise address the dataset
+`events`. `=` is permitted. Every operation that takes a dataset ID,
+reader methods included, rejects an invalid one before any store call.
 
 ---
 
@@ -179,6 +188,7 @@ configuration.
 | Error | Dataset.Read | The snapshot's codec does not match the dataset's codec |
 | Error | Dataset.Read | The snapshot's compressor does not match the dataset's compressor |
 | `lode.ErrCodecNotStreamable` | Dataset.StreamWriteRecords | The configured codec does not support streaming |
+| `lode.ErrSettingsMismatch` | Dataset.Write, Dataset.StreamWrite, Dataset.StreamWriteRecords | The writer's codec, codec description, compressor, checksum, partitioner, partition keys, or path names differ from those the dataset's manifests record; the dataset's directory holds a history persisted under another layout; or the writer's Hive keys cannot be verified against a dataset written before format version 1.1.0 (CONTRACT_WRITE_API §Settings) |
 
 **Behavior**:
 - `Read` validates the manifest's components against the dataset's
@@ -187,6 +197,8 @@ configuration.
   output.
 - `StreamWriteRecords` returns `ErrCodecNotStreamable` if the codec does not
   implement `StreamingRecordCodec`.
+- A writer returns `ErrSettingsMismatch` before it commits, and the error
+  names the setting that differs. It is not retried.
 
 ---
 
@@ -294,7 +306,7 @@ optimistic concurrency control.
 
 | Error | Source | Meaning |
 |-------|--------|---------|
-| `lode.ErrSnapshotConflict` | Dataset.Write, Dataset.StreamWrite, Dataset.StreamWriteRecords, Volume.Commit | Another writer committed after the parent was resolved, or (for `Volume.Commit`) the parent's manifest has not been persisted |
+| `lode.ErrSnapshotConflict` | Dataset.Write, Dataset.StreamWrite, Dataset.StreamWriteRecords, Volume.Commit | Another writer committed after the parent was resolved; (for `Volume.Commit`) the parent's manifest has not been persisted; or (for a dataset writer) the pointer names a snapshot whose settings no manifest records (CONTRACT_WRITE_API §Settings) |
 
 **ErrSnapshotConflict Behavior**:
 - The commit's expected parent snapshot ID does not match the current value
@@ -363,6 +375,7 @@ unreferenced objects (`CONTRACT_RETENTION.md`).
   ranges).
 - A component mismatch: reconfigure the dataset or read a snapshot with
   matching components.
+- `ErrSettingsMismatch`: configure the writer as the dataset is.
 
 ### Fatal Errors
 - No panic is part of the public contract; invalid configuration and invalid

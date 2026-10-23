@@ -97,6 +97,16 @@ manifest as a pending commit:
   next commit can load the parent even after an abandoned commit; only a
   parent without either copy makes a Volume commit return
   `ErrSnapshotConflict` (CONTRACT_VOLUME §Error Semantics).
+- A dataset's first commit (one that expects no pointer) persists a staged
+  copy of its manifest at `<dataset dir>/staged/<snapshot_id>.json` before it
+  advances the pointer, and removes the copy after it persists the canonical
+  manifest, so that a writer can check its settings against the commit
+  while it is pending (CONTRACT_WRITE_API §Settings). Later commits stage
+  nothing: the dataset then has a manifest to check against. When the
+  pointer update fails, the copy is removed only if the pointer names
+  another snapshot, as for a Volume. When the first commit is abandoned, the
+  commit that adopts it as its parent, having read its settings from the
+  staged copy, removes the copy after it commits.
 - Parent resolution selects the largest snapshot ID only when the pointer
   is missing or does not contain a snapshot ID.
 - "Missing" means that the store reported the object as not found. When a
@@ -136,6 +146,24 @@ Optional fields:
 - the codec name (omitted when no codec is configured)
 - per-file statistics (present when the codec reports them through
   `StatisticalCodec`; omitted otherwise)
+
+Settings fields (format version 1.1.0 and later):
+- `codec_description`: the codec's configuration as `Codec.Describe`
+  returns it, omitted when it is empty
+- `partition_keys`: the Hive partition keys in order, omitted for a layout
+  without partitions
+- `paths`: the names within the dataset's paths (`datasets`, `snapshots`,
+  `partitions`, `segments`, `manifest`, `data`, `expired`, and `staged`),
+  with `flat` true and the datasets and snapshots directories omitted for
+  flat paths
+
+With the codec, compressor, partitioner, and checksum names, these fields
+record every setting a writer must share with the dataset
+(CONTRACT_WRITE_API §Settings). The format version, not the presence of a
+field, decides which fields a manifest records: a manifest of format
+version 1.0.0 was written before these fields existed and is read as using
+the names under which it was found, and a manifest of format version 1.1.0
+or later without `paths` is invalid.
 
 ### Per-File Statistics
 

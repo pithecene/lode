@@ -33,6 +33,9 @@ func (j *jsonlCodec) Name() string {
 	return "jsonl"
 }
 
+// Describe returns "": JSONL has no configuration.
+func (j *jsonlCodec) Describe() string { return "" }
+
 func (j *jsonlCodec) Encode(w io.Writer, records []any) error {
 	enc := jsonCodec.NewEncoder(w)
 	for _, record := range records {

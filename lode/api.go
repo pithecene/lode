@@ -106,6 +106,34 @@ type Manifest struct {
 	// ChecksumAlgorithm records the checksum algorithm used (e.g., "md5").
 	// Omitted when no checksum is configured.
 	ChecksumAlgorithm string `json:"checksum_algorithm,omitempty"`
+
+	// CodecDescription records the codec's configuration as Codec.Describe
+	// returns it. Omitted when the codec describes none or no codec is
+	// configured.
+	CodecDescription string `json:"codec_description,omitempty"`
+
+	// PartitionKeys records the Hive partition keys, in order. Omitted for a
+	// layout without partitions.
+	PartitionKeys []string `json:"partition_keys,omitempty"`
+
+	// Paths records the names within the dataset's paths. Zero (absent)
+	// in a manifest written before format version 1.1.0.
+	Paths ManifestPaths `json:"paths,omitzero"`
+}
+
+// ManifestPaths records the names within a dataset's paths, so that writers
+// using another convention are detected (CONTRACT_CORE §Manifest). Flat
+// paths have no datasets or snapshots directory, and those fields are empty.
+type ManifestPaths struct {
+	Datasets   string `json:"datasets,omitempty"`
+	Snapshots  string `json:"snapshots,omitempty"`
+	Partitions string `json:"partitions"`
+	Segments   string `json:"segments"`
+	Manifest   string `json:"manifest"`
+	Data       string `json:"data"`
+	Expired    string `json:"expired"`
+	Staged     string `json:"staged"`
+	Flat       bool   `json:"flat,omitempty"`
 }
 
 // FileRef describes a single data file within a snapshot.
@@ -241,6 +269,13 @@ type StoreFactory func() (Store, error)
 type Codec interface {
 	// Name returns the codec identifier (for example, "jsonl" or "parquet").
 	Name() string
+
+	// Describe returns the codec's configuration in a deterministic,
+	// canonical form, so that equal configurations yield equal descriptions;
+	// "" for a codec without configuration. A writer whose codec's
+	// description differs from the one a dataset's manifests record is
+	// rejected with ErrSettingsMismatch.
+	Describe() string
 
 	// Encode writes records to the given writer.
 	Encode(w io.Writer, records []any) error
@@ -615,6 +650,13 @@ var (
 	// creates a missing one.
 	ErrHeadUncommitted error = errHeadUncommitted{}
 
+	// ErrSettingsMismatch indicates a writer whose settings (codec and its
+	// description, compressor, checksum, layout and partition keys, or path
+	// names) differ from those the dataset's head manifest records, or whose
+	// Hive keys cannot be verified against an existing dataset. Not
+	// retry-safe; configure the writer as the dataset is.
+	ErrSettingsMismatch error = errSettingsMismatch{}
+
 	// ErrManifestInvalid indicates a manifest failed validation.
 	ErrManifestInvalid error = validate.ErrManifestInvalid
 
@@ -638,6 +680,10 @@ func (errSnapshotExpired) Error() string { return "snapshot expired" }
 // Is makes an expired snapshot also a missing one, so callers matching
 // ErrNotFound keep working.
 func (errSnapshotExpired) Is(target error) bool { return target == ErrNotFound }
+
+type errSettingsMismatch struct{}
+
+func (errSettingsMismatch) Error() string { return "settings mismatch" }
 
 type errHeadUncommitted struct{}
 
