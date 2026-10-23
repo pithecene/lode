@@ -476,30 +476,16 @@ var bundledCompressors = map[string]func() Compressor{
 	"zstd": NewZstdCompressor,
 }
 
-// namedComponent is a component a manifest records by name.
-type namedComponent interface{ Name() string }
-
-// componentNamed returns the component a manifest names: one the handle
-// holds (its own, or a view's custom one) when its name matches, else the
-// bundled one; false when neither has the name. Compressors and checksums
-// are resolved alike (V1_API_DECISIONS D11, Options).
-func componentNamed[C namedComponent](name string, held []C, bundled map[string]func() C) (C, bool) {
-	for _, c := range held {
-		if any(c) != nil && c.Name() == name {
-			return c, true
+// compressorFor returns the compressor a snapshot's manifest names: the
+// handle's own or custom one when its name matches, else the bundled one.
+func (d *dataset) compressorFor(m *Manifest) (Compressor, error) {
+	for _, c := range []Compressor{d.compressor, d.custom.compressor} {
+		if c != nil && c.Name() == m.Compressor {
+			return c, nil
 		}
 	}
-	if build, ok := bundled[name]; ok {
-		return build(), true
-	}
-	var none C
-	return none, false
-}
-
-// compressorFor returns the compressor a snapshot's manifest names.
-func (d *dataset) compressorFor(m *Manifest) (Compressor, error) {
-	if c, ok := componentNamed(m.Compressor, []Compressor{d.compressor, d.custom.compressor}, bundledCompressors); ok {
-		return c, nil
+	if newCompressor, ok := bundledCompressors[m.Compressor]; ok {
+		return newCompressor(), nil
 	}
 	return nil, fmt.Errorf("lode: snapshot %s uses compressor %q, which is not bundled; pass it with WithCompressor: %w", m.SnapshotID, m.Compressor, ErrSettingsMismatch)
 }
@@ -517,11 +503,13 @@ var bundledChecksums = map[string]func() Checksum{
 // every custom component of the snapshots it reads.
 func (d *dataset) matchChecksum(m *Manifest) error {
 	name := m.ChecksumAlgorithm
-	if name == "" {
+	if _, bundled := bundledChecksums[name]; name == "" || bundled {
 		return nil
 	}
-	if _, ok := componentNamed(name, []Checksum{d.checksum, d.custom.checksum}, bundledChecksums); ok {
-		return nil
+	for _, c := range []Checksum{d.checksum, d.custom.checksum} {
+		if c != nil && c.Name() == name {
+			return nil
+		}
 	}
 	return fmt.Errorf("lode: snapshot %s uses checksum %q, which is not bundled; pass it with WithChecksum: %w", m.SnapshotID, name, ErrSettingsMismatch)
 }
