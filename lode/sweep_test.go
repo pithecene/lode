@@ -1,8 +1,10 @@
 package lode
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"slices"
 	"strings"
 	"testing"
@@ -731,5 +733,289 @@ func TestSweep_RejectedTombstone(t *testing.T) {
 			t.Errorf("report = %+v, want the head kept and its contradicted tombstone reported", report)
 		}
 		assertPresent(t, ds, head)
+	})
+}
+
+// -----------------------------------------------------------------------------
+// Reindexing
+// -----------------------------------------------------------------------------
+
+// partitionManifest is where a Hive snapshot of newHiveRetention keeps its
+// manifest copy for one run and event type.
+func partitionManifest(id DatasetSnapshotID, run, eventType string) string {
+	return "datasets/events/partitions/run_id=" + run + "/event_type=" + eventType + "/segments/" + string(id) + "/manifest.json"
+}
+
+// unindexed commits a snapshot of run r1 across event types a and b, behind
+// a later head, and deletes its partition manifests, as a writer that
+// terminates after its canonical manifest leaves it.
+func unindexed(t *testing.T, store Store, ds Records[D]) (*DatasetSnapshot, []string) {
+	t.Helper()
+	snap := writeRun(t, ds, "r1", "a", "b")
+	writeRun(t, ds, "r2", "a")
+	copies := []string{partitionManifest(snap.ID, "r1", "a"), partitionManifest(snap.ID, "r1", "b")}
+	for _, p := range copies {
+		if err := store.Delete(t.Context(), p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return snap, copies
+}
+
+// readObject returns the content of the object at p.
+func readObject(t *testing.T, store Store, p string) string {
+	t.Helper()
+	rc, err := store.Get(t.Context(), p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rc.Close() }()
+	data, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
+// elapsed is a grace shorter than the time since each write, so that every
+// snapshot the reindexing tests write is past it.
+const elapsed = time.Nanosecond
+
+func TestSweep_Reindex(t *testing.T) {
+	t.Run("restores the partition index from the canonical manifest", func(t *testing.T) {
+		store := NewMemory()
+		ds := newHiveRetention(t, store)
+		snap, copies := unindexed(t, store, ds)
+
+		report, err := ds.Sweep(t.Context(), SweepRequest{Grace: elapsed})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(report.Reindexed, []DatasetSnapshotID{snap.ID}) {
+			t.Errorf("Reindexed = %v, want [%s]", report.Reindexed, snap.ID)
+		}
+		canonical := readObject(t, store, "datasets/events/segments/"+string(snap.ID)+"/manifest.json")
+		for _, p := range copies {
+			if got := readObject(t, store, p); got != canonical {
+				t.Errorf("copy %s differs from the canonical manifest", p)
+			}
+		}
+		partition, err := ParsePartitionPath("run_id=r1/event_type=b")
+		if err != nil {
+			t.Fatal(err)
+		}
+		refs, err := ds.ListManifests(t.Context(), partition, ManifestListOptions{})
+		if err != nil || len(refs) != 1 || refs[0].ID != snap.ID {
+			t.Errorf("ListManifests(%s) = %v, %v; want the reindexed snapshot", partition, refs, err)
+		}
+	})
+
+	t.Run("a complete index costs no store call", func(t *testing.T) {
+		fault := testutil.NewFaultStore(NewMemory())
+		ds := newHiveRetention(t, fault)
+		snap := writeRun(t, ds, "r1", "a", "b")
+		writeRun(t, ds, "r2", "a")
+		fault.Reset()
+
+		report, err := ds.Sweep(t.Context(), SweepRequest{Grace: elapsed})
+		if err != nil {
+			t.Fatal(err)
+		}
+		canonical := "datasets/events/segments/" + string(snap.ID) + "/manifest.json"
+		if len(report.Reindexed) != 0 || slices.Contains(fault.GetCalls(), canonical) || len(fault.PutCalls()) != 0 {
+			t.Errorf("report = %+v, Gets %v, Puts %v; want no reindexing and no call for it", report, fault.GetCalls(), fault.PutCalls())
+		}
+	})
+
+	t.Run("a snapshot within the grace period is left to its writer", func(t *testing.T) {
+		store := NewMemory()
+		ds := newHiveRetention(t, store)
+		_, copies := unindexed(t, store, ds)
+
+		report, err := ds.Sweep(t.Context(), SweepRequest{Grace: sweepGrace})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(report.Reindexed) != 0 || exists(t, store, copies[0]) {
+			t.Errorf("report = %+v; want nothing persisted within the grace period", report)
+		}
+	})
+
+	t.Run("a dry run reports without persisting", func(t *testing.T) {
+		store := NewMemory()
+		ds := newHiveRetention(t, store)
+		snap, copies := unindexed(t, store, ds)
+
+		report, err := ds.Sweep(t.Context(), SweepRequest{Grace: elapsed, DryRun: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(report.Reindexed, []DatasetSnapshotID{snap.ID}) || exists(t, store, copies[0]) || exists(t, store, copies[1]) {
+			t.Errorf("report = %+v; want the snapshot reported and nothing persisted", report)
+		}
+	})
+}
+
+// TestSweep_ReindexExistingCopies covers copies that exist when the repair
+// runs, created by an earlier attempt, a lagging listing, or a concurrent
+// expiry.
+func TestSweep_ReindexExistingCopies(t *testing.T) {
+	t.Run("a file outside the snapshot names no partition", func(t *testing.T) {
+		store := NewMemory()
+		ds := newHiveRetention(t, store)
+		snap, copies := unindexed(t, store, ds)
+		foreign := "datasets/events/partitions/run_id=x/event_type=y/segments/" + string(snap.ID) + "-other/data/f"
+		canonical := "datasets/events/segments/" + string(snap.ID) + "/manifest.json"
+		rewriteObject(t, store, canonical, func(s string) string {
+			var m map[string]any
+			if err := json.Unmarshal([]byte(s), &m); err != nil {
+				t.Fatal(err)
+			}
+			m["files"] = append(m["files"].([]any), map[string]any{"path": foreign, "size_bytes": 1})
+			out, err := json.Marshal(m)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return string(out)
+		})
+
+		if _, err := ds.Sweep(t.Context(), SweepRequest{Grace: elapsed}); err != nil {
+			t.Fatal(err)
+		}
+		if exists(t, store, partitionManifest(snap.ID, "x", "y")) || !exists(t, store, copies[0]) {
+			t.Error("want the snapshot's own partitions reindexed and none derived from the foreign file")
+		}
+	})
+
+	t.Run("a copy the listing omits is not reported", func(t *testing.T) {
+		mem := NewMemory()
+		lister := &listInjector{Store: mem}
+		ds := newHiveRetention(t, lister)
+		snap := writeRun(t, ds, "r1", "a")
+		writeRun(t, ds, "r2", "a")
+		lister.hidden = []string{partitionManifest(snap.ID, "r1", "a")}
+
+		report, err := ds.Sweep(t.Context(), SweepRequest{Grace: elapsed})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(report.Reindexed) != 0 {
+			t.Errorf("Reindexed = %v, want none: the copy was present", report.Reindexed)
+		}
+	})
+
+	t.Run("only the copies the listing omits are written", func(t *testing.T) {
+		fault := testutil.NewFaultStore(NewMemory())
+		ds := newHiveRetention(t, fault)
+		snap, copies := unindexed(t, fault, ds)
+		if err := fault.Put(t.Context(), copies[0], strings.NewReader(readObject(t, fault, "datasets/events/segments/"+string(snap.ID)+"/manifest.json"))); err != nil {
+			t.Fatal(err)
+		}
+		fault.Reset()
+
+		report, err := ds.Sweep(t.Context(), SweepRequest{Grace: elapsed})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(report.Reindexed, []DatasetSnapshotID{snap.ID}) || !slices.Equal(fault.PutCalls(), copies[1:]) {
+			t.Errorf("report = %+v, Puts %v; want only the missing copy %s written", report, fault.PutCalls(), copies[1])
+		}
+	})
+}
+
+// TestSweep_ReindexFailures covers a repair that a failed write, a
+// concurrent expiry, or both interrupt: Reindexed reports every snapshot
+// whose copies may remain, and no copy outlives an expiry.
+func TestSweep_ReindexFailures(t *testing.T) {
+	t.Run("a repair that fails partway reports the copies it created", func(t *testing.T) {
+		fault := testutil.NewFaultStore(NewMemory())
+		ds := newHiveRetention(t, fault)
+		snap, copies := unindexed(t, fault, ds)
+		errBoom := errors.New("boom")
+		fault.SetPutError(errBoom, "event_type=b/")
+
+		report, err := ds.Sweep(t.Context(), SweepRequest{Grace: elapsed})
+		if !errors.Is(err, errBoom) {
+			t.Fatalf("Sweep = %v, want the injected failure", err)
+		}
+		if !slices.Equal(report.Reindexed, []DatasetSnapshotID{snap.ID}) || !exists(t, fault, copies[0]) {
+			t.Errorf("report = %+v; want the snapshot reported for the copy %s it created", report, copies[0])
+		}
+	})
+
+	t.Run("an expiry during a repair that fails partway still removes the copy", func(t *testing.T) {
+		fault := testutil.NewFaultStore(NewMemory())
+		ds := newHiveRetention(t, fault)
+		snap, copies := unindexed(t, fault, ds)
+		errBoom := errors.New("boom")
+		fault.SetPutError(errBoom, "event_type=b/")
+		expired := false
+		fault.SetAfterPut(func(p string, err error) {
+			if p != copies[0] || err != nil || expired {
+				return
+			}
+			expired = true
+			if _, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{snap.ID}}); err != nil {
+				t.Errorf("Expire: %v", err)
+			}
+		})
+
+		report, err := ds.Sweep(t.Context(), SweepRequest{Grace: elapsed})
+		if !errors.Is(err, errBoom) {
+			t.Fatalf("Sweep = %v, want the injected failure", err)
+		}
+		if !expired || len(report.Reindexed) != 0 || exists(t, fault, copies[0]) {
+			t.Errorf("expired %v, report = %+v; want the copy of the expired snapshot removed", expired, report)
+		}
+	})
+
+	t.Run("a copy whose removal fails is reported", func(t *testing.T) {
+		fault := testutil.NewFaultStore(NewMemory())
+		ds := newHiveRetention(t, fault)
+		snap, copies := unindexed(t, fault, ds)
+		errBoom := errors.New("boom")
+		expired := false
+		fault.SetAfterPut(func(p string, err error) {
+			if p != copies[1] || err != nil || expired {
+				return
+			}
+			expired = true
+			if _, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{snap.ID}}); err != nil {
+				t.Errorf("Expire: %v", err)
+			}
+			fault.SetDeleteError(errBoom)
+		})
+
+		report, err := ds.Sweep(t.Context(), SweepRequest{Grace: elapsed})
+		if !errors.Is(err, errBoom) {
+			t.Fatalf("Sweep = %v, want the injected failure", err)
+		}
+		if !expired || !slices.Equal(report.Reindexed, []DatasetSnapshotID{snap.ID}) {
+			t.Errorf("expired %v, report = %+v; want the snapshot reported for the copies left behind", expired, report)
+		}
+	})
+
+	t.Run("an expiry during the repair removes the copy again", func(t *testing.T) {
+		fault := testutil.NewFaultStore(NewMemory())
+		ds := newHiveRetention(t, fault)
+		snap, copies := unindexed(t, fault, ds)
+		expired := false
+		fault.SetBeforePut(func(p string) {
+			if p != copies[0] || expired {
+				return
+			}
+			expired = true
+			if _, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{snap.ID}}); err != nil {
+				t.Errorf("Expire: %v", err)
+			}
+		})
+
+		report, err := ds.Sweep(t.Context(), SweepRequest{Grace: elapsed})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !expired || len(report.Reindexed) != 0 || exists(t, fault, copies[0]) || exists(t, fault, copies[1]) {
+			t.Errorf("expired %v, report = %+v; want no copy of the expired snapshot left", expired, report)
+		}
 	})
 }

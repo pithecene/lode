@@ -493,7 +493,16 @@ snapshots are canonical-only.
 **Breaks.** Nothing for callers; unfiltered listings may report snapshots
 they previously omitted.
 
-**Status.** Open.
+**Status.** Accepted (owner decision, 2026-10-23) and implemented,
+unreleased: option 1. Option 2 was rejected because a Dataset retry keeps
+its snapshot ID (D10c) and partition manifests record their parent, so a
+retry after a conflict would have to replace the partition manifests that
+the failed attempt persisted. An unfiltered listing reports a snapshot
+without partition manifests under the empty partition, and `Sweep` restores
+the index of such a snapshot once it is older than the grace period,
+reporting it in `SweepReport.Reindexed`. The choice does not depend on F6:
+the gap it closes exists whatever caused F6, which the read-only check
+still has to establish.
 
 ### D10c — Dataset and Volume retries differ in snapshot ID
 

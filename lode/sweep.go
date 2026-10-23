@@ -13,7 +13,8 @@ import (
 	"github.com/pithecene/lode/internal/validate"
 )
 
-// Sweep completes interrupted expiries and reclaims never-committed data
+// Sweep completes interrupted expiries, restores the partition index of
+// interrupted commits, and reclaims never-committed data
 // (CONTRACT_RETENTION §Unreferenced-Object Sweep). It works from two
 // listings taken up front; the report is never nil.
 func (d *writer) Sweep(ctx context.Context, req SweepRequest) (*SweepReport, error) {
@@ -34,7 +35,10 @@ func (d *writer) Sweep(ctx context.Context, req SweepRequest) (*SweepReport, err
 	if err := run.settle(ctx, report); err != nil {
 		return report, err
 	}
-	return report, run.reclaim(ctx, report)
+	if err := run.reclaim(ctx, report); err != nil {
+		return report, err
+	}
+	return report, run.reindex(ctx, report)
 }
 
 // -----------------------------------------------------------------------------
