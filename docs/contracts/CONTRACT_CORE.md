@@ -80,7 +80,10 @@ Volume's blocks are staged by `StageWriteAt` before it), advances the
 pointer with `CompareAndSwap`, and then persists its canonical manifest
 followed by its partition manifests, one at a time. The commit is
 complete when its canonical manifest is persisted; from then on `Latest` and
-`Snapshot` return the snapshot. Between the pointer update and the canonical
+`Snapshot` return the snapshot. A snapshot written before canonical
+manifests were introduced has only partition manifests and is committed
+when any of them is persisted; `Latest`, `Snapshot`, and retention find it
+through them. Between the pointer update and the canonical
 manifest the commit is *pending*: the pointer names a snapshot that has no manifest. A pending
 commit whose writer terminates before persisting the manifest is
 *abandoned*. No persisted state distinguishes a pending commit from an
