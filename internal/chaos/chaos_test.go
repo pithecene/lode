@@ -42,6 +42,9 @@ func TestChaos(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if *flagWriters < 0 || *flagReaders < 0 {
+		t.Fatalf("chaos: -chaos.writers (%d) and -chaos.readers (%d) must not be negative", *flagWriters, *flagReaders)
+	}
 	if *flagVolume {
 		layouts = append(layouts, "volume")
 	}
@@ -49,11 +52,12 @@ func TestChaos(t *testing.T) {
 		for _, layout := range layouts {
 			for _, level := range levels {
 				t.Run(backend+"/"+layout+"/"+level, func(t *testing.T) {
-					runOne(t, backend, level, Config{
+					tr := trial{backendName: backend, level: level, cfg: Config{
 						Seed: seed, Duration: *flagDuration, Writers: *flagWriters, Readers: *flagReaders,
 						Layout: layout, Retries: *flagRetries, Faults: faults[level], Retention: *flagRetain,
 						Volume: layout == "volume",
-					})
+					}}
+					tr.run(t)
 				})
 			}
 		}
@@ -88,38 +92,41 @@ func selection(backends, layouts, levels []string) (map[string]Faults, error) {
 	return faults, nil
 }
 
-func runOne(t *testing.T, backendName, level string, cfg Config) {
+// trial is one configuration of TestChaos: the backend it runs on and the
+// measurements taken around its run.
+type trial struct {
+	backendName, level string
+	cfg                Config
+	baseline           MemoryBaseline
+	backend            Backend
+	commits            int // set once the run ends
+}
+
+// name identifies the trial in heap profile file names.
+func (tr *trial) name() string { return tr.backendName + "-" + tr.cfg.Layout + "-" + tr.level }
+
+// run opens the backend, runs the harness on it, and reports the result.
+// The teardown runs whatever the outcome.
+func (tr *trial) run(t *testing.T) {
 	t.Helper()
-	runID := fmt.Sprintf("%d-%s", time.Now().UnixNano(), cfg.Layout)
-	baseline := TakeMemoryBaseline()
-	backend, err := OpenBackend(t.Context(), backendName, t.TempDir(), runID)
+	runID := fmt.Sprintf("%d-%s", time.Now().UnixNano(), tr.cfg.Layout)
+	tr.baseline = TakeMemoryBaseline()
+	backend, err := OpenBackend(t.Context(), tr.backendName, t.TempDir(), runID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Cleanups run last first: the backend is released, then the heap is
-	// measured, and then the goroutines are counted.
-	t.Cleanup(func() {
-		if err := baseline.GoroutinesReleased(backend.Lingering); err != nil {
-			t.Error(err)
-		}
-	})
-	var commits int // set once the run ends
-	t.Cleanup(func() { checkMemory(t, backend, baseline, commits, backendName+"-"+cfg.Layout+"-"+level) })
-	t.Cleanup(func() {
-		if err := backend.Release(context.WithoutCancel(t.Context())); err != nil {
-			t.Errorf("release the %s backend: %v", backendName, err)
-		}
-	})
+	tr.backend = backend
+	t.Cleanup(func() { tr.teardown(t) })
 	// The filesystem store has no file lock on platforms such as Plan 9, where
 	// every commit would fail; such a backend is skipped, not reported.
 	const probe = "chaos-probe/cas"
-	if err := backend.Store.CompareAndSwap(t.Context(), probe, "", "probe"); errors.Is(err, errors.ErrUnsupported) {
-		t.Skipf("the %s store does not support CompareAndSwap here: %v", backendName, err)
+	if err := tr.backend.Store.CompareAndSwap(t.Context(), probe, "", "probe"); errors.Is(err, errors.ErrUnsupported) {
+		t.Skipf("the %s store does not support CompareAndSwap here: %v", tr.backendName, err)
 	}
-	_ = backend.Store.Delete(t.Context(), probe) // best-effort: the probe is not part of any dataset
+	_ = tr.backend.Store.Delete(t.Context(), probe) // best-effort: the probe is not part of any dataset
 
-	report := Run(t.Context(), cfg, backend.Store)
-	commits = report.Commits
+	report := Run(t.Context(), tr.cfg, tr.backend.Store)
+	tr.commits = report.Commits
 	t.Logf("seed %d: %d commits, %d conflicts after retries, %d injected failures, %d reads, %d expired, %d snapshots persisted",
 		report.Seed, report.Commits, report.Conflicts, report.Faults, report.Reads, report.Expired, report.Snapshots)
 	for _, v := range report.Violations {
@@ -127,10 +134,23 @@ func runOne(t *testing.T, backendName, level string, cfg Config) {
 	}
 	if len(report.Violations) > 0 {
 		t.Logf("repeat with: go test ./internal/chaos -run 'TestChaos/%s/%s/%s' -chaos -chaos.seed=%d -chaos.backends=%s -chaos.layouts='%s' -chaos.faults=%s -chaos.retention=%t -chaos.volume=%t -chaos.writers=%d -chaos.readers=%d -chaos.retries=%d -chaos.duration=%s",
-			backendName, cfg.Layout, level, cfg.Seed, backendName, *flagLayouts, level, cfg.Retention, *flagVolume, cfg.Writers, cfg.Readers, cfg.Retries, cfg.Duration)
+			tr.backendName, tr.cfg.Layout, tr.level, tr.cfg.Seed, tr.backendName, *flagLayouts, tr.level, tr.cfg.Retention, *flagVolume, tr.cfg.Writers, tr.cfg.Readers, tr.cfg.Retries, tr.cfg.Duration)
 	}
 	if report.Commits == 0 {
 		t.Errorf("no commit succeeded; the run exercised nothing")
+	}
+}
+
+// teardown releases the backend, then measures the heap, and then counts
+// the goroutines, in that order: the heap and goroutine checks must see
+// the backend released.
+func (tr *trial) teardown(t *testing.T) {
+	if err := tr.backend.Release(context.WithoutCancel(t.Context())); err != nil {
+		t.Errorf("release the %s backend: %v", tr.backendName, err)
+	}
+	tr.checkMemory(t)
+	if err := tr.baseline.GoroutinesReleased(tr.backend.Lingering); err != nil {
+		t.Error(err)
 	}
 }
 
@@ -139,22 +159,22 @@ func runOne(t *testing.T, backendName, level string, cfg Config) {
 // retain no more heap than its commits allow. It runs after the backend's
 // release; the store stays reachable through backend, so its own bounded
 // state counts. A skipped configuration ran nothing to measure.
-func checkMemory(t *testing.T, backend Backend, baseline MemoryBaseline, commits int, name string) {
+func (tr *trial) checkMemory(t *testing.T) {
 	t.Helper()
 	if t.Skipped() {
 		return
 	}
 	if dir := *flagMemProf; dir != "" {
-		if err := WriteHeapProfile(dir, name+".heap"); err != nil {
+		if err := WriteHeapProfile(dir, tr.name()+".heap"); err != nil {
 			t.Error(err)
 		}
 	}
-	if backend.RetainsData {
+	if tr.backend.RetainsData {
 		return
 	}
-	retained, err := baseline.RetainedHeap(commits)
-	runtime.KeepAlive(backend.Store) // the store's own state must count
-	t.Logf("the run retains %d bytes of heap after %d acknowledged commits", retained, commits)
+	retained, err := tr.baseline.RetainedHeap(tr.commits)
+	runtime.KeepAlive(tr.backend.Store) // the store's own state must count
+	t.Logf("the run retains %d bytes of heap after %d acknowledged commits", retained, tr.commits)
 	if err != nil {
 		t.Error(err)
 	}

@@ -3,6 +3,7 @@ package chaos
 import (
 	"context"
 	"fmt"
+	"math/rand/v2"
 	"slices"
 	"sync"
 	"time"
@@ -36,43 +37,77 @@ type Config struct {
 // the history it left. The report lists every violation observed during
 // the run and by the final checks.
 func Run(ctx context.Context, cfg Config, store lode.RangeStore) Report {
-	if cfg.Volume {
-		return runVolume(ctx, cfg, store)
-	}
-	ledger := &Ledger{}
-	until := time.Now().Add(cfg.Duration)
-	readCtx, stop := context.WithDeadline(ctx, until)
+	r := &run{cfg: cfg, store: store, ledger: &Ledger{}, until: time.Now().Add(cfg.Duration)}
+	return r.drive(ctx, r.workload())
+}
+
+// run is one execution of the harness: what every actor and check of it
+// shares.
+type run struct {
+	cfg    Config
+	store  lode.RangeStore // the backend's store, without faults
+	ledger *Ledger
+	until  time.Time // the deadline of the workload
+}
+
+// actor is one goroutine of a workload: a writer, a reader, or the janitor.
+type actor interface {
+	act(ctx context.Context)
+}
+
+// workload is what a run drives and then checks. Committers run until the
+// deadline, which they check between commits and never by cancelling one:
+// a commit cancelled between its pointer update and its manifest write is
+// abandoned, which the contract permits but which would leave the head to
+// the largest-ID fallback (CONTRACT_CORE §Head Pointer). Observers only
+// read, so the deadline cancels them. verify returns the number of
+// snapshots persisted.
+type workload struct {
+	committers func(r *run) []actor
+	observers  func(r *run) []actor
+	verify     func(r *run, ctx context.Context) int
+}
+
+// workloads are the workloads a run can drive, by Config.Volume.
+var workloads = map[bool]workload{
+	false: {committers: (*run).datasetCommitters, observers: (*run).readers, verify: (*run).verifyDataset},
+	true:  {committers: (*run).volumeWriters, observers: (*run).noActors, verify: (*run).verifyVolume},
+}
+
+func (r *run) workload() workload { return workloads[r.cfg.Volume] }
+
+// drive runs the workload's actors to the deadline, waits for every one,
+// and then verifies the history they left.
+func (r *run) drive(ctx context.Context, w workload) Report {
+	observing, stop := context.WithDeadline(ctx, r.until)
 	defer stop()
 
 	var wg sync.WaitGroup
-	for i := range cfg.Writers {
-		wg.Go(func() { writer(ctx, cfg, store, i, until, ledger) })
+	start := func(ctx context.Context, actors []actor) {
+		for _, a := range actors {
+			wg.Go(func() { a.act(ctx) })
+		}
 	}
-	for i := range cfg.Readers {
-		wg.Go(func() { reader(readCtx, cfg, store, i, ledger) })
-	}
-	if cfg.Retention {
-		wg.Go(func() { janitor(ctx, cfg, store, until, ledger) })
-	}
+	start(ctx, w.committers(r))
+	start(observing, w.observers(r))
 	wg.Wait()
 
-	snapshots := verify(ctx, cfg, store, ledger)
-	return ledger.report(cfg.Seed, snapshots)
+	return r.ledger.report(r.cfg.Seed, w.verify(r, ctx))
 }
 
-// runVolume drives concurrent Volume writers for cfg.Duration and then
-// verifies the volume's history and contents.
-func runVolume(ctx context.Context, cfg Config, store lode.RangeStore) Report {
-	ledger := &Ledger{}
-	until := time.Now().Add(cfg.Duration)
-	var wg sync.WaitGroup
-	for i := range cfg.Writers {
-		wg.Go(func() { volumeWriter(ctx, cfg, store, i, until, ledger) })
-	}
-	wg.Wait()
-	snapshots := verifyVolume(ctx, cfg, store, ledger)
-	return ledger.report(cfg.Seed, snapshots)
+// live reports whether a committer may begin another step: the run has not
+// been cancelled and the deadline has not passed.
+func (r *run) live(ctx context.Context) bool {
+	return ctx.Err() == nil && time.Now().Before(r.until)
 }
+
+// random returns the random source of one stream of the run's choices, so
+// that a seed reproduces every actor's choices.
+func (r *run) random(stream uint64) *rand.Rand {
+	return rand.New(rand.NewPCG(r.cfg.Seed, stream)) //nolint:gosec // reproducible test randomness, not security
+}
+
+func (r *run) noActors() []actor { return nil }
 
 // requireKnown fails unless name is one of the known names of its kind.
 func requireKnown(kind, name string, known []string) error {

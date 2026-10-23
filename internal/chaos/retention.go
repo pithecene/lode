@@ -21,29 +21,56 @@ func (c Config) sweepGrace() time.Duration { return c.Duration + time.Minute }
 
 // janitor runs retention concurrently with the writers until the deadline:
 // expiries by instant and by ID, and sweeps. It records every snapshot that
-// a report lists as expired.
-func janitor(ctx context.Context, cfg Config, store lode.RangeStore, until time.Time, ledger *Ledger) {
-	rng := rand.New(rand.NewPCG(cfg.Seed, 2000)) //nolint:gosec // reproducible test randomness, not security
-	var ds lode.Records[any]
-	for ctx.Err() == nil && time.Now().Before(until) {
-		if !reopen(ctx, cfg, store, rng, &ds, "janitor", ledger) {
+// a report lists as expired. Like a writer, it holds one handle, which an
+// injected kill discards and the next step reopens.
+type janitor struct {
+	*run
+	rng *rand.Rand
+	ds  handle[lode.Records[any]]
+}
+
+// newJanitor returns the run's janitor, seeded so that a run's retention
+// calls repeat for the same seed.
+func (r *run) newJanitor() *janitor {
+	rng := r.random(2000)
+	return &janitor{run: r, rng: rng, ds: r.datasetHandle("janitor", rng)}
+}
+
+// act makes a random retention call, then pauses, until the deadline.
+func (j *janitor) act(ctx context.Context) {
+	for j.live(ctx) {
+		ds, next := j.ds.acquire(ctx)
+		if next == halt {
 			return
 		}
-		if ds == nil {
+		if next == skip {
 			continue
 		}
-		err := retentionOps[rng.IntN(len(retentionOps))](ctx, ds, rng, cfg, ledger)
-		switch {
-		case err == nil, errors.Is(err, lode.ErrHeadUncommitted), ctx.Err() != nil:
-		case injected(err):
-			ledger.fault()
-			if errors.Is(err, errKilled) {
-				ds = nil
-			}
-		default:
-			ledger.violate("retention", "%v", err)
-		}
-		pause(ctx, time.Duration(50+rng.IntN(200))*time.Millisecond)
+		ops := j.ops()
+		j.observe(ctx, ops[j.rng.IntN(len(ops))](ctx, ds))
+		pause(ctx, time.Duration(50+j.rng.IntN(200))*time.Millisecond)
+	}
+}
+
+// retentionOp is one retention call the janitor can make through a handle.
+type retentionOp func(ctx context.Context, ds lode.Records[any]) error
+
+// ops are the retention calls the janitor chooses among.
+func (j *janitor) ops() []retentionOp {
+	return []retentionOp{j.expireBefore, j.expireOne, j.sweep}
+}
+
+// observe classifies a retention call's outcome. A head that is not yet
+// committed, and the end of the run, are expected; an injected failure is
+// counted, and a kill discards the handle; any other error is a violation.
+func (j *janitor) observe(ctx context.Context, err error) {
+	switch {
+	case err == nil, errors.Is(err, lode.ErrHeadUncommitted), ctx.Err() != nil:
+	case injected(err):
+		j.ledger.fault()
+		j.ds.drop(err)
+	default:
+		j.ledger.violate("retention", "%v", err)
 	}
 }
 
@@ -57,44 +84,45 @@ func pause(ctx context.Context, d time.Duration) {
 	}
 }
 
-// retentionOp is one retention call the janitor can make.
-type retentionOp func(ctx context.Context, ds lode.Records[any], rng *rand.Rand, cfg Config, ledger *Ledger) error
-
-var retentionOps = []retentionOp{expireBefore, expireOne, sweep}
-
 // expireBefore expires snapshots whose writes began in the first part of
 // the run.
-func expireBefore(ctx context.Context, ds lode.Records[any], _ *rand.Rand, cfg Config, ledger *Ledger) error {
-	report, err := ds.Expire(ctx, lode.ExpireRequest{Before: time.Now().Add(-cfg.Duration / 4)})
-	recordExpiry(report, ledger)
-	return err
+func (j *janitor) expireBefore(ctx context.Context, ds lode.Records[any]) error {
+	return j.expire(ctx, ds, lode.ExpireRequest{Before: time.Now().Add(-j.cfg.Duration / 4)})
 }
 
 // expireOne expires one acknowledged snapshot by ID.
-func expireOne(ctx context.Context, ds lode.Records[any], rng *rand.Rand, _ Config, ledger *Ledger) error {
-	c, ok := ledger.randomCommit(rng)
+func (j *janitor) expireOne(ctx context.Context, ds lode.Records[any]) error {
+	c, ok := j.ledger.randomCommit(j.rng)
 	if !ok {
 		return nil
 	}
-	report, err := ds.Expire(ctx, lode.ExpireRequest{IDs: []lode.DatasetSnapshotID{c.ID}})
-	recordExpiry(report, ledger)
+	return j.expire(ctx, ds, lode.ExpireRequest{IDs: []lode.DatasetSnapshotID{c.ID}})
+}
+
+// sweep reclaims what expiries and abandoned writes left, with a grace
+// period that spares every write in progress.
+func (j *janitor) sweep(ctx context.Context, ds lode.Records[any]) error {
+	_, err := ds.Sweep(ctx, lode.SweepRequest{Grace: j.cfg.sweepGrace()})
 	return err
 }
 
-func sweep(ctx context.Context, ds lode.Records[any], _ *rand.Rand, cfg Config, _ *Ledger) error {
-	_, err := ds.Sweep(ctx, lode.SweepRequest{Grace: cfg.sweepGrace()})
+// expire runs one expiry and records its report, which an expiry returns
+// even when it fails partway.
+func (j *janitor) expire(ctx context.Context, ds lode.Records[any], req lode.ExpireRequest) error {
+	report, err := ds.Expire(ctx, req)
+	j.record(report)
 	return err
 }
 
-// recordExpiry notes what a report expired and checks the one promise a
-// report makes on its own: the head it retained is not among the expired.
-func recordExpiry(report *lode.ExpireReport, ledger *Ledger) {
+// record notes what a report expired and checks the one promise a report
+// makes on its own: the head it retained is not among the expired.
+func (j *janitor) record(report *lode.ExpireReport) {
 	if report == nil {
 		return
 	}
-	ledger.expire(report.Expired...)
+	j.ledger.expire(report.Expired...)
 	if report.RetainedHead != "" && slices.Contains(report.Expired, report.RetainedHead) {
-		ledger.violate("head-retained", "Expire reported %s both as the retained head and as expired", report.RetainedHead)
+		j.ledger.violate("head-retained", "Expire reported %s both as the retained head and as expired", report.RetainedHead)
 	}
 }
 

@@ -65,10 +65,10 @@ var backends = map[string]openBackend{
 		return Backend{Store: store, Release: keep}, err
 	},
 	"localstack": func(ctx context.Context, _, runID string) (Backend, error) {
-		return dockerS3(ctx, "http://localhost:4566", "test", "test", runID)
+		return dockerS3(ctx, dockerEndpoint("http://localhost:4566", "test"), runID)
 	},
 	"rustfs": func(ctx context.Context, _, runID string) (Backend, error) {
-		return dockerS3(ctx, "http://localhost:9000", "rustfsadmin", "rustfsadmin", runID)
+		return dockerS3(ctx, dockerEndpoint("http://localhost:9000", "rustfsadmin"), runID)
 	},
 	"s3": func(ctx context.Context, _, runID string) (Backend, error) {
 		return s3FromEnv(ctx, runID)
@@ -105,26 +105,66 @@ func idleHTTPConnection(stack string) bool {
 	return slices.ContainsFunc(pooledConnectionFrames, func(frame string) bool { return strings.Contains(stack, frame) })
 }
 
+// s3Endpoint is how the harness reaches an S3-compatible service.
+type s3Endpoint struct {
+	url         string // empty for AWS S3
+	region      string
+	key, secret string
+	pathStyle   bool
+}
+
+// dockerEndpoint is a local service of lode/s3/docker-compose.yaml, whose
+// access key and secret are the same.
+func dockerEndpoint(url, credential string) s3Endpoint {
+	return s3Endpoint{url: url, region: "us-east-1", key: credential, secret: credential, pathStyle: true}
+}
+
+// client builds an S3 client for the endpoint.
+func (e s3Endpoint) client(ctx context.Context) (*awss3.Client, error) {
+	cfg, err := config.LoadDefaultConfig(ctx,
+		config.WithRegion(e.region),
+		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(e.key, e.secret, "")),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("chaos: load S3 configuration: %w", err)
+	}
+	return awss3.NewFromConfig(cfg, func(o *awss3.Options) {
+		if e.url != "" {
+			o.BaseEndpoint = aws.String(e.url)
+		}
+		o.UsePathStyle = e.pathStyle
+	}), nil
+}
+
+// s3Area is the part of a bucket a run owns: the whole bucket (an empty
+// prefix), which release removes, or the objects under a prefix.
+type s3Area struct {
+	client *awss3.Client
+	bucket string
+	prefix string
+}
+
+// backend is the run's store over the area, released by emptying it.
+func (a s3Area) backend() (Backend, error) {
+	store, err := s3.New(a.client, s3.Config{Bucket: a.bucket, Prefix: a.prefix})
+	if err != nil {
+		return Backend{}, err
+	}
+	return Backend{Store: store, Release: a.empty, Lingering: idleHTTPConnection}, nil
+}
+
 // dockerS3 creates a bucket for the run on a local S3-compatible service and
 // removes the bucket's objects and the bucket on release.
-func dockerS3(ctx context.Context, endpoint, key, secret, runID string) (Backend, error) {
-	client, err := s3Client(ctx, endpoint, "us-east-1", key, secret, true)
+func dockerS3(ctx context.Context, endpoint s3Endpoint, runID string) (Backend, error) {
+	client, err := endpoint.client(ctx)
 	if err != nil {
 		return Backend{}, err
 	}
-	bucket := "lode-chaos-" + runID
-	if _, err := client.CreateBucket(ctx, &awss3.CreateBucketInput{Bucket: aws.String(bucket)}); err != nil {
-		return Backend{}, fmt.Errorf("chaos: create bucket %s at %s: %w", bucket, endpoint, err)
+	area := s3Area{client: client, bucket: "lode-chaos-" + runID}
+	if _, err := client.CreateBucket(ctx, &awss3.CreateBucketInput{Bucket: aws.String(area.bucket)}); err != nil {
+		return Backend{}, fmt.Errorf("chaos: create bucket %s at %s: %w", area.bucket, endpoint.url, err)
 	}
-	store, err := s3.New(client, s3.Config{Bucket: bucket})
-	if err != nil {
-		return Backend{}, err
-	}
-	return Backend{
-		Store:     store,
-		Release:   func(ctx context.Context) error { return emptyBucket(ctx, client, bucket, "") },
-		Lingering: idleHTTPConnection,
-	}, nil
+	return area.backend()
 }
 
 // s3FromEnv opens an existing bucket on any S3-compatible store (AWS S3,
@@ -147,38 +187,31 @@ func s3FromEnv(ctx context.Context, runID string) (Backend, error) {
 	case region == "":
 		region = "auto"
 	}
-	client, err := s3Client(ctx, endpoint, region, key, secret, os.Getenv("CHAOS_S3_PATH_STYLE") == "1")
+	endpointConfig := s3Endpoint{url: endpoint, region: region, key: key, secret: secret, pathStyle: os.Getenv("CHAOS_S3_PATH_STYLE") == "1"}
+	client, err := endpointConfig.client(ctx)
 	if err != nil {
 		return Backend{}, err
 	}
-	if err := refuseVersioned(ctx, client, bucket); err != nil {
+	area := s3Area{client: client, bucket: bucket, prefix: "lode-chaos/" + runID + "/"}
+	if err := area.refuseVersioned(ctx); err != nil {
 		return Backend{}, err
 	}
-	prefix := "lode-chaos/" + runID + "/"
-	store, err := s3.New(client, s3.Config{Bucket: bucket, Prefix: prefix})
-	if err != nil {
-		return Backend{}, err
-	}
-	return Backend{
-		Store:     store,
-		Release:   func(ctx context.Context) error { return emptyBucket(ctx, client, bucket, prefix) },
-		Lingering: idleHTTPConnection,
-	}, nil
+	return area.backend()
 }
 
 // refuseVersioned fails for a bucket with versioning enabled or suspended.
 // A store that does not implement GetBucketVersioning (Cloudflare R2) has no
 // object versioning, so its bucket is unversioned.
-func refuseVersioned(ctx context.Context, client *awss3.Client, bucket string) error {
-	out, err := client.GetBucketVersioning(ctx, &awss3.GetBucketVersioningInput{Bucket: aws.String(bucket)})
+func (a s3Area) refuseVersioned(ctx context.Context) error {
+	out, err := a.client.GetBucketVersioning(ctx, &awss3.GetBucketVersioningInput{Bucket: aws.String(a.bucket)})
 	if notImplemented(err) {
 		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("chaos: read versioning of bucket %s: %w", bucket, err)
+		return fmt.Errorf("chaos: read versioning of bucket %s: %w", a.bucket, err)
 	}
 	if out.Status != "" {
-		return fmt.Errorf("chaos: bucket %s has versioning %s; use an unversioned bucket so runs can be removed", bucket, out.Status)
+		return fmt.Errorf("chaos: bucket %s has versioning %s; use an unversioned bucket so runs can be removed", a.bucket, out.Status)
 	}
 	return nil
 }
@@ -190,42 +223,26 @@ func notImplemented(err error) bool {
 	return errors.As(err, &apiErr) && apiErr.ErrorCode() == "NotImplemented"
 }
 
-func s3Client(ctx context.Context, endpoint, region, key, secret string, pathStyle bool) (*awss3.Client, error) {
-	cfg, err := config.LoadDefaultConfig(ctx,
-		config.WithRegion(region),
-		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(key, secret, "")),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("chaos: load S3 configuration: %w", err)
-	}
-	return awss3.NewFromConfig(cfg, func(o *awss3.Options) {
-		if endpoint != "" {
-			o.BaseEndpoint = aws.String(endpoint)
-		}
-		o.UsePathStyle = pathStyle
-	}), nil
-}
-
-// emptyBucket deletes every object under prefix and, when prefix is empty,
-// the bucket itself. It runs after the checks and returns every failure, so
-// that residue left in a bucket is reported rather than ignored.
-func emptyBucket(ctx context.Context, client *awss3.Client, bucket, prefix string) error {
+// empty deletes every object of the area and, when the area is the whole
+// bucket, the bucket itself. It runs after the checks and returns every
+// failure, so that residue left in a bucket is reported rather than ignored.
+func (a s3Area) empty(ctx context.Context) error {
 	var errs []error
-	pages := awss3.NewListObjectsV2Paginator(client, &awss3.ListObjectsV2Input{Bucket: aws.String(bucket), Prefix: aws.String(prefix)})
+	pages := awss3.NewListObjectsV2Paginator(a.client, &awss3.ListObjectsV2Input{Bucket: aws.String(a.bucket), Prefix: aws.String(a.prefix)})
 	for pages.HasMorePages() {
 		page, err := pages.NextPage(ctx)
 		if err != nil {
-			return fmt.Errorf("chaos: list bucket %s for removal: %w", bucket, err)
+			return fmt.Errorf("chaos: list bucket %s for removal: %w", a.bucket, err)
 		}
 		for _, obj := range page.Contents {
-			if _, err := client.DeleteObject(ctx, &awss3.DeleteObjectInput{Bucket: aws.String(bucket), Key: obj.Key}); err != nil {
-				errs = append(errs, fmt.Errorf("chaos: delete %s from bucket %s: %w", aws.ToString(obj.Key), bucket, err))
+			if _, err := a.client.DeleteObject(ctx, &awss3.DeleteObjectInput{Bucket: aws.String(a.bucket), Key: obj.Key}); err != nil {
+				errs = append(errs, fmt.Errorf("chaos: delete %s from bucket %s: %w", aws.ToString(obj.Key), a.bucket, err))
 			}
 		}
 	}
-	if prefix == "" && len(errs) == 0 {
-		if _, err := client.DeleteBucket(ctx, &awss3.DeleteBucketInput{Bucket: aws.String(bucket)}); err != nil {
-			errs = append(errs, fmt.Errorf("chaos: delete bucket %s: %w", bucket, err))
+	if a.prefix == "" && len(errs) == 0 {
+		if _, err := a.client.DeleteBucket(ctx, &awss3.DeleteBucketInput{Bucket: aws.String(a.bucket)}); err != nil {
+			errs = append(errs, fmt.Errorf("chaos: delete bucket %s: %w", a.bucket, err))
 		}
 	}
 	return errors.Join(errs...)

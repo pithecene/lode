@@ -24,7 +24,7 @@ type verifier struct {
 	failedReads []lode.DatasetSnapshotID
 }
 
-func newVerifier(ctx context.Context, ds lode.Records[any], settle lode.DatasetSnapshotID, ledger *Ledger) (*verifier, error) {
+func (r *run) newVerifier(ctx context.Context, ds lode.Records[any], settle lode.DatasetSnapshotID) (*verifier, error) {
 	snaps, err := ds.Snapshots(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("chaos: list snapshots: %w", err)
@@ -45,10 +45,10 @@ func newVerifier(ctx context.Context, ds lode.Records[any], settle lode.DatasetS
 		v.snapshots[s.ID] = s
 		v.chain.add(s.ID, s.ParentSnapshotID)
 	}
-	for _, c := range ledger.Commits() {
+	for _, c := range r.ledger.Commits() {
 		v.acked[c.ID] = c
 	}
-	v.expired, v.failedReads = ledger.retention()
+	v.expired, v.failedReads = r.ledger.retention()
 	return v, nil
 }
 
@@ -83,30 +83,30 @@ var datasetChecks = []check[*verifier]{
 // progress any more, so every orphan is past any positive grace period.
 const finalGrace = time.Nanosecond
 
-// verify settles the head with one clean commit, so that the pointer names
+// verifyDataset settles the head with one clean commit, so that the pointer names
 // a committed snapshot, and then runs every check, recording each failure.
-func verify(ctx context.Context, cfg Config, store lode.RangeStore, ledger *Ledger) int {
-	ds, err := openDataset(ctx, cfg, store)
+func (r *run) verifyDataset(ctx context.Context) int {
+	ds, err := r.openDataset(ctx, r.store)
 	if err != nil {
-		ledger.violate("verify", "open: %v", err)
+		r.ledger.violate("verify", "open: %v", err)
 		return 0
 	}
 	settle, err := ds.Write(ctx, Commit{Writer: -1, Rows: 1, Day: days[0]}.records(), lode.D{"op": "settle"})
 	if err != nil {
-		ledger.violate("verify", "settling commit: %v", err)
+		r.ledger.violate("verify", "settling commit: %v", err)
 		return 0
 	}
-	if cfg.Retention {
+	if r.cfg.Retention {
 		if _, err := ds.Sweep(ctx, lode.SweepRequest{Grace: finalGrace}); err != nil {
-			ledger.violate("verify", "final sweep: %v", err)
+			r.ledger.violate("verify", "final sweep: %v", err)
 		}
 	}
-	v, err := newVerifier(ctx, ds, settle.ID, ledger)
+	v, err := r.newVerifier(ctx, ds, settle.ID)
 	if err != nil {
-		ledger.violate("verify", "%v", err)
+		r.ledger.violate("verify", "%v", err)
 		return 0
 	}
-	runChecks(ctx, v, cfg.checks(), ledger)
+	runChecks(ctx, v, r.cfg.checks(), r.ledger)
 	return v.chain.size()
 }
 
