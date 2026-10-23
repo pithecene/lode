@@ -1,12 +1,10 @@
 package lode
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
+	"path"
 	"slices"
 	"strings"
 
@@ -189,123 +187,29 @@ func (d *dataset) rejectForeignHistory(ctx context.Context) error {
 // count: data objects that another writer persisted before its first
 // commit are not a history, and counting them would make two first writers
 // with different layouts reject each other before either commits. A
-// manifest is recognized by its content, because one persisted under
-// other path names may bear any file name.
+// manifest is recognized by its file name, from the listing alone: the
+// layouts' manifest name, or the default name, which every manifest
+// persisted before the names became root options bears.
 func rejectForeignManifest(ctx context.Context, store Store, id DatasetID, layouts ...layout) error {
 	keys, err := store.List(ctx, layouts[0].datasetPrefix(id))
 	if err != nil {
 		return fmt.Errorf("lode: failed to list the dataset: %w", err)
 	}
+	names := []string{layouts[0].manifestName(), defaultPathNames().manifest}
 	for _, k := range keys {
 		// A key no store accepts in this form was not persisted by a layout.
 		if key, ok := storepath.Key(k); !ok || key != k {
 			continue
 		}
+		if !slices.Contains(names, path.Base(k)) {
+			continue
+		}
 		if slices.ContainsFunc(layouts, func(l layout) bool { return l.ownsObject(id, k) }) {
 			continue
 		}
-		found, err := isManifest(ctx, store, id, k)
-		if err != nil {
-			return fmt.Errorf("lode: failed to read %s: %w", k, err)
-		}
-		if found {
-			return fmt.Errorf("lode: layout mismatch: dataset holds the manifest %s, which the configured layout does not persist: %w", k, ErrSettingsMismatch)
-		}
+		return fmt.Errorf("lode: layout mismatch: dataset holds the manifest %s, which the configured layout does not persist: %w", k, ErrSettingsMismatch)
 	}
 	return nil
-}
-
-// manifestProbeSize bounds the bytes isManifest reads, beyond the dataset
-// ID: enough to hold a manifest's leading fields with their indentation.
-const manifestProbeSize = 256
-
-// maxEscapedLen is the most bytes JSON encodes one byte of a string as
-// (\u00XX).
-const maxEscapedLen = 6
-
-// isManifest reports whether the object at p is a manifest of dataset id.
-// It reads a bounded prefix, sized to the ID, and continues only when the
-// prefix holds a manifest's leading fields in the order Manifest declares
-// them, which encoding/json never produces for a map record (it sorts the
-// keys), so a data object usually costs one short read. An object that
-// passes is decoded in full, so a typed record that shares the leading
-// fields is still not a manifest. An object removed since it was listed is
-// not one.
-func isManifest(ctx context.Context, store Store, id DatasetID, p string) (bool, error) {
-	rc, err := store.Get(ctx, p)
-	if errors.Is(err, ErrNotFound) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	defer func() { _ = rc.Close() }()
-	// The ID has no length bound, so the probe grows with it.
-	head := make([]byte, manifestProbeSize+maxEscapedLen*len(id))
-	n, err := io.ReadFull(rc, head)
-	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
-		return false, err
-	}
-	if !hasManifestFields(head[:n], id) {
-		return false, nil
-	}
-	body := &readErrors{r: io.MultiReader(bytes.NewReader(head[:n]), rc)}
-	found := decodesAsManifest(body, id)
-	if body.err != nil {
-		return false, body.err
-	}
-	return found, nil
-}
-
-// decodesAsManifest reports whether r holds exactly one JSON value, a valid
-// manifest of dataset id. A data file of records holds a value per record,
-// so it is a manifest only if its one record is a complete manifest.
-func decodesAsManifest(r io.Reader, id DatasetID) bool {
-	dec := json.NewDecoder(r)
-	var m Manifest
-	if err := dec.Decode(&m); err != nil || m.DatasetID != id || validateManifest(&m) != nil {
-		return false
-	}
-	_, err := dec.Token()
-	return errors.Is(err, io.EOF)
-}
-
-// readErrors records the first error of r other than io.EOF, so that a
-// failed read is reported rather than taken for content that is not JSON.
-type readErrors struct {
-	r   io.Reader
-	err error
-}
-
-func (e *readErrors) Read(p []byte) (int, error) {
-	n, err := e.r.Read(p)
-	if err != nil && !errors.Is(err, io.EOF) && e.err == nil {
-		e.err = err
-	}
-	return n, err
-}
-
-// manifestField is one leading field of a manifest; an empty value matches
-// any string.
-type manifestField struct{ key, value string }
-
-// hasManifestFields reports whether data opens a JSON object whose first
-// fields are a manifest's schema name, format version, and dataset ID.
-func hasManifestFields(data []byte, id DatasetID) bool {
-	dec := json.NewDecoder(bytes.NewReader(data))
-	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
-		return false
-	}
-	fields := []manifestField{{"schema_name", manifestSchemaName}, {"format_version", ""}, {"dataset_id", string(id)}}
-	for _, f := range fields {
-		key, keyErr := dec.Token()
-		value, valueErr := dec.Token()
-		s, isString := value.(string)
-		if keyErr != nil || valueErr != nil || key != f.key || !isString || (f.value != "" && s != f.value) {
-			return false
-		}
-	}
-	return true
 }
 
 // settingsManifest is the manifest a writer's settings are checked

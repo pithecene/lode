@@ -60,11 +60,12 @@ A dataset's paths have two sources (V1_API_DECISIONS D11):
 - A root whose datasets directory differs addresses another prefix and sees
   another dataset. A root whose other names differ shares the pointer: if
   it finds the manifest the pointer names, the recorded names reject it,
-  and if it does not, the dataset's directory holds a manifest that its
-  names do not persist, which rejects a writer and a view with
-  `ErrSettingsMismatch` (CONTRACT_WRITE_API §Settings). Lode recognizes a
-  manifest by its content, because a manifest persisted under other names
-  may bear any file name.
+  and if it does not, a writer returns `ErrSnapshotConflict`, as for a
+  pending commit, and never appends.
+- Lode recognizes another history's manifest by its file name, from a
+  listing alone: the root's manifest name, or the default name, which
+  every manifest persisted before the names became root options bears
+  (CONTRACT_WRITE_API §Settings).
 
 The following rules also apply:
 - The persistence layer defines the logical layout of keys.

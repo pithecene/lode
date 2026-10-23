@@ -72,13 +72,10 @@ func TestRootPaths_CustomNames(t *testing.T) {
 			t.Fatalf("got %v, want ErrNotFound", err)
 		}
 	})
-	t.Run("a root sharing the pointer but not the manifest name is rejected", func(t *testing.T) {
+	t.Run("a root sharing the pointer but not the manifest name conflicts", func(t *testing.T) {
 		opts := append(customOptions(), WithManifestFile("manifest.json"))
-		if _, err := Open(Use(store), opts...).Records(t.Context(), "events", jsonl); !errors.Is(err, ErrSettingsMismatch) {
-			t.Fatalf("writer: got %v, want ErrSettingsMismatch", err)
-		}
-		if _, err := OpenReadOnly(Use(store), opts...).Records(t.Context(), "events", jsonl); !errors.Is(err, ErrSettingsMismatch) {
-			t.Fatalf("view: got %v, want ErrSettingsMismatch", err)
+		if _, err := Open(Use(store), opts...).Records(t.Context(), "events", jsonl); !errors.Is(err, ErrSnapshotConflict) {
+			t.Fatalf("got %v, want ErrSnapshotConflict", err)
 		}
 	})
 	t.Run("a root sharing the manifest but not the data name is rejected", func(t *testing.T) {

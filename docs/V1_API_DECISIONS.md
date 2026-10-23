@@ -779,10 +779,13 @@ decision left open:
 - Opening a writer checks its settings against the head, so a
   misconfigured writer fails when it opens; the commit checks again
   (CONTRACT_WRITE_API §Settings).
-- Lode recognizes a manifest by its content rather than its file name, so a
-  root that shares the pointer but not the manifest's name finds the other
-  history and is rejected with `ErrSettingsMismatch`, rather than
-  returning `ErrSnapshotConflict` as the Paths row anticipated.
+- Lode recognizes another history's manifest by its file name, from a
+  listing alone: the root's manifest name or the default name, which every
+  manifest persisted before the names became root options bears. A root
+  with a custom manifest name thus finds a history that predates the
+  pointer. Recognition by content was considered and declined: an object's
+  content can be learned only by reading it, so the check's cost would
+  grow with the number of objects in the dataset's directory.
 - A view matches a custom checksum by name, as it matches a custom
   compressor; reads do not verify checksums.
 

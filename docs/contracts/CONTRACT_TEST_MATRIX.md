@@ -124,9 +124,9 @@ Gaps are recorded with codes that indicate category and priority:
 | A Hive key that is not one path segment or contains `=` is `ErrInvalidArgument` | `TestHive_KeysNamePartitionsUnambiguously` |
 | A pending first commit is checked against its staged copy without a listing | `TestWrite_PendingFirstCommitIsCheckedWithoutListing` |
 | The filesystem store's pointer lock file is not a foreign object | `TestWrite_PointerLockIsNotAForeignObject` |
-| A manifest that the writer's layout does not persist, recognized by its content under any file name, is a foreign history; another writer's uncommitted data, including records that name the manifest schema or share a manifest's leading fields, a tombstone, and its lock file are not | `TestWrite_ForeignManifestsAreAHistoryAndDataIsNot` |
+| A manifest that the writer's layout does not persist is a foreign history; another writer's uncommitted data, a tombstone, and its lock file are not | `TestWrite_ForeignManifestsAreAHistoryAndDataIsNot` |
 | A manifest of format version 1.1.0 names every directory and file under the rule for a root's names (one segment without `=`, distinct, not `latest`), and flat paths name no datasets or snapshots directory | `TestValidateManifest_PathsNameEveryDirectory` |
-| A foreign manifest is recognized whatever the length of the dataset ID | `TestWrite_ForeignManifestOfALongDatasetID` |
+| A history without a pointer, under the default manifest name, rejects a writer or view with a custom manifest name | `TestWrite_DefaultNamedManifestsWithoutAPointer` |
 | A manifest of format version 1.0.0 rejects a writer or view whose path names are not the defaults | `TestSettings_LegacyManifestsUseTheDefaultPathNames` |
 | Concurrent first writers with different layouts: the loser is classified against the winner | `TestWrite_ConcurrentFirstWritersWithDifferentLayouts` |
 | A lost first commit is `ErrSettingsMismatch` when the winner's settings differ, without retries, and stays a conflict when they match | `TestWrite_LostFirstCommitIsAMismatchWithoutRetries` |
@@ -288,7 +288,7 @@ All covered ✅
 | A blob dataset with a partitioned layout rejected | `TestRoot_Blobs/a_partitioned_layout_is_rejected` |
 | Hive keys rejected when empty, not one segment, or containing `=` | `TestHive_KeysNamePartitionsUnambiguously` |
 | Typed records partition with `Hive(...).By`; a `By` for another type, or a partition naming other keys, is rejected | `TestRoot_Records_Typed/Hive_partitions_typed_records_with_By`, `TestRoot_Records_Typed/a_By_function_for_another_record_type_is_rejected`, `TestRoot_Records_Typed/a_partition_naming_other_keys_fails_the_write` |
-| Path names: custom names land at their paths; same names read them; another datasets directory is another dataset; other names are rejected with `ErrSettingsMismatch` | `TestRootPaths_CustomNames` |
+| Path names: custom names land at their paths; same names read them; another datasets directory is another dataset; other names conflict or are rejected | `TestRootPaths_CustomNames` |
 | Path names: invalid, duplicate, `latest`, and flat with a datasets or snapshots directory are rejected | `TestRootPaths_InvalidNames` |
 | Flat paths, partitioned: paths, no dataset listing, views list partitions | `TestRootPaths_Flat` |
 

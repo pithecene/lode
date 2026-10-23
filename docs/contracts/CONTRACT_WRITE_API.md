@@ -63,10 +63,12 @@ manifest records them (CONTRACT_CORE §Manifest Requirements).
   under the writer's layout, contains a history persisted under another
   layout. The writer MUST be rejected with `ErrSettingsMismatch` rather
   than begin a second history beside it. A manifest is recognized by its
-  content, because a manifest persisted under other path names may bear
-  any file name: an object is a manifest when it holds exactly one JSON
-  value, a valid manifest of the dataset. Data objects are not a
-  history:
+  file name, without reading any object: the writer's manifest name, or
+  the default name, which every manifest persisted before the names became
+  root options bears. A history persisted under two other custom names
+  whose pointer is absent is not recognized; Lode persists a pointer with
+  every commit, so only a pointer removed by hand produces that state. Data
+  objects are not a history:
   another writer persists its data before its first commit, and two first
   writers with different layouts would otherwise reject each other before
   either commits. A dataset under another datasets directory (the flat

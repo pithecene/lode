@@ -502,33 +502,12 @@ func TestWrite_ForeignManifestsAreAHistoryAndDataIsNot(t *testing.T) {
 		"datasets/events/staged/x/manifest.json",
 		"datasets/events/expired/" + id + "/manifest.json",
 		"datasets/events/segments/" + id + "/manifest.json",
-		// A manifest under another file name is recognized by its content.
-		"datasets/events/snapshots/" + id + "/_manifest.json",
 	} {
 		store := NewMemory()
-		putManifestObject(t, store, key)
+		putObject(t, store, key)
 		if _, err := tryWrite(t, store, jsonl, R(D{"a": 1})); !errors.Is(err, ErrSettingsMismatch) {
 			t.Errorf("%s: got %v, want a manifest no layout of this writer persists treated as a foreign history", key, err)
 		}
-	}
-	// A data object whose first record names a manifest's schema is not a
-	// manifest: a map record's keys are sorted, so its fields are not a
-	// manifest's leading fields in their order.
-	dataStore := NewMemory()
-	if err := dataStore.Put(t.Context(), "datasets/events/elsewhere/data.jsonl", strings.NewReader(`{"dataset_id":"events","format_version":"1.1.0","schema_name":"lode-manifest"}`+"\n")); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := tryWrite(t, dataStore, jsonl, R(D{"a": 1})); err != nil {
-		t.Errorf("got %v, want a data object that names the schema not treated as a history", err)
-	}
-	// Nor is a typed record whose fields begin as a manifest's do, in order.
-	typedStore := NewMemory()
-	typed := `{"schema_name":"lode-manifest","format_version":"1.1.0","dataset_id":"events","payload":1}` + "\n"
-	if err := typedStore.Put(t.Context(), "datasets/events/elsewhere/data.jsonl", strings.NewReader(typed+typed)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := tryWrite(t, typedStore, jsonl, R(D{"a": 1})); err != nil {
-		t.Errorf("got %v, want a typed record with a manifest's leading fields not treated as a history", err)
 	}
 	// Another writer's uncommitted data, a tombstone, and its lock file are
 	// not a history.
@@ -678,11 +657,21 @@ func TestSettings_LegacyManifestsUseTheDefaultPathNames(t *testing.T) {
 	}
 }
 
-func TestWrite_ForeignManifestOfALongDatasetID(t *testing.T) {
-	id := DatasetID(strings.Repeat("e", 2000))
+func TestWrite_DefaultNamedManifestsWithoutAPointer(t *testing.T) {
 	store := NewMemory()
-	putManifestOf(t, store, id, "datasets/"+string(id)+"/snapshots/x/_manifest.json")
-	if _, err := Open(Use(store)).Records(t.Context(), id, jsonl); !errors.Is(err, ErrSettingsMismatch) {
-		t.Fatalf("got %v, want the manifest found past a fixed probe size", err)
+	if _, err := tryWrite(t, store, jsonl, R(D{"a": 1})); err != nil {
+		t.Fatal(err)
+	}
+	// A history whose pointer is absent, as one persisted before the
+	// pointer existed, bears the default manifest name.
+	if err := store.Delete(t.Context(), "datasets/events/latest"); err != nil {
+		t.Fatal(err)
+	}
+	custom := WithManifestFile("_m.json")
+	if _, err := Open(Use(store), custom).Records(t.Context(), "events", jsonl); !errors.Is(err, ErrSettingsMismatch) {
+		t.Errorf("writer: got %v, want the default-named history found", err)
+	}
+	if _, err := OpenReadOnly(Use(store), custom).Records(t.Context(), "events", jsonl); !errors.Is(err, ErrSettingsMismatch) {
+		t.Errorf("view: got %v, want the default-named history found", err)
 	}
 }
