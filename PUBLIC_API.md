@@ -525,7 +525,8 @@ data.
   (which returns `ErrInvalidPath` for a leading `/`, a backslash, or an
   empty, `.`, or `..` segment) or taken from a listing. The zero value is
   the dataset root: `ListManifests(ctx, lode.PartitionPath{}, opts)` lists
-  every snapshot.
+  every snapshot. It encodes as text (and therefore in JSON) as its string,
+  and decoding validates it.
 - `PartitionListOptions.Prefix` is a raw path prefix (`day=2026-10` matches
   `day=2026-10-18`) and requires a partitioned dataset (otherwise
   `ErrPartitionPrefixNotSupported` is returned). It must be a canonical

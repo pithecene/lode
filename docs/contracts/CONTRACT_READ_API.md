@@ -230,6 +230,12 @@ is used for the `ListManifests` parameter, `PartitionRef.Path`,
 - The empty string MUST parse to the zero value, which denotes the dataset
   root (no partition).
 - `String` MUST return the path as it appears in storage keys.
+- A `PartitionPath` MUST encode as text (`MarshalText`) as its string, and
+  `UnmarshalText` MUST parse as `ParsePartitionPath` does, so that encoded
+  listing results and cursors retain their partition.
+- A listing MUST return only canonical partition paths. A manifest whose
+  location or file paths name a partition that is not canonical MUST cause
+  `ErrManifestInvalid`, not a returned or omitted path.
 
 `PartitionListOptions.Prefix` remains a raw string, because a prefix is not
 a path: `day=a/` ends at a segment boundary, whereas `day=a` also matches

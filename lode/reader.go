@@ -95,7 +95,11 @@ func (d *dataset) ListPartitions(ctx context.Context, opts PartitionListOptions)
 				continue
 			}
 			seen[p] = true
-			partitions = append(partitions, PartitionRef{Path: PartitionPath{path: p}})
+			path, err := listedPartitionPath(p, m.path)
+			if err != nil {
+				return nil, err
+			}
+			partitions = append(partitions, PartitionRef{Path: path})
 		}
 	}
 
@@ -125,7 +129,11 @@ func (d *dataset) ListManifests(ctx context.Context, partition PartitionPath, op
 		if err != nil {
 			return nil, err
 		}
-		refs = append(refs, ManifestRef{ID: m.id, Partition: PartitionPath{path: m.partition}})
+		path, err := listedPartitionPath(m.partition, m.path)
+		if err != nil {
+			return nil, err
+		}
+		refs = append(refs, ManifestRef{ID: m.id, Partition: path})
 	}
 	// A layout without partitions has no snapshot in any named partition: the
 	// selector matches nothing (the dataset itself was found and validated).
@@ -221,6 +229,31 @@ func ParsePartitionPath(s string) (PartitionPath, error) {
 // String returns the path as it appears in storage keys, or "" for the zero
 // value.
 func (p PartitionPath) String() string { return p.path }
+
+// MarshalText encodes the path as its string, so that listing results and
+// cursors keep their partition when encoded, for example as JSON.
+func (p PartitionPath) MarshalText() ([]byte, error) { return []byte(p.path), nil }
+
+// UnmarshalText parses text as ParsePartitionPath does.
+func (p *PartitionPath) UnmarshalText(text []byte) error {
+	parsed, err := ParsePartitionPath(string(text))
+	if err != nil {
+		return err
+	}
+	*p = parsed
+	return nil
+}
+
+// listedPartitionPath returns a partition path that a listing read from
+// storage, under the manifest at source. A listing returns only canonical
+// paths, so a manifest that names another is reported as invalid rather
+// than returned or omitted.
+func listedPartitionPath(p, source string) (PartitionPath, error) {
+	if !validPartitionPath(p) {
+		return PartitionPath{}, fmt.Errorf("lode: manifest %s names partition %q, which is not a canonical path: %w", source, p, ErrManifestInvalid)
+	}
+	return PartitionPath{path: p}, nil
+}
 
 // validPartitionPath reports whether path is a canonical relative partition
 // path (ParsePartitionPath); the empty path is the dataset root.

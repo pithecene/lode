@@ -1,8 +1,12 @@
 package lode
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
+	"io"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -511,6 +515,72 @@ func partitionPath(t *testing.T, s string) PartitionPath {
 		t.Fatal(err)
 	}
 	return p
+}
+
+func TestPartitionPath_Text(t *testing.T) {
+	opts := PartitionListOptions{StartAfter: partitionPath(t, "day=2024-01-15")}
+	data, err := json.Marshal(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back PartitionListOptions
+	if err := json.Unmarshal(data, &back); err != nil {
+		t.Fatal(err)
+	}
+	if back.StartAfter != opts.StartAfter {
+		t.Errorf("round trip = %q, want %q (encoded %s)", back.StartAfter, opts.StartAfter, data)
+	}
+	var p PartitionPath
+	if err := p.UnmarshalText([]byte("a/../b")); !errors.Is(err, ErrInvalidPath) {
+		t.Errorf("UnmarshalText of a noncanonical path = %v, want ErrInvalidPath", err)
+	}
+}
+
+func TestView_ListPartitions_RejectsNoncanonicalPartitions(t *testing.T) {
+	store := NewMemory()
+	ds, err := Open(Use(store)).Records(t.Context(), "test-ds", JSONL[D](), hive("day"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ds.Write(t.Context(), R(D{"day": "a"}), nil); err != nil {
+		t.Fatal(err)
+	}
+	keys, err := store.List(t.Context(), "datasets/test-ds/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Every manifest copy names its data file under a partition whose segment
+	// contains a backslash, which ParsePartitionPath refuses.
+	for _, k := range keys {
+		if strings.HasSuffix(k, "/manifest.json") {
+			rewriteObject(t, store, k, func(s string) string { return strings.ReplaceAll(s, "day=a/", `day=a\\b/`) })
+		}
+	}
+	_, err = ds.ListPartitions(t.Context(), PartitionListOptions{})
+	if !errors.Is(err, ErrManifestInvalid) || !strings.Contains(err.Error(), "not a canonical path") {
+		t.Errorf("ListPartitions = %v, want ErrManifestInvalid for the noncanonical partition", err)
+	}
+}
+
+// rewriteObject replaces the object at key with edit applied to its
+// content, as corruption outside Lode would.
+func rewriteObject(t *testing.T, store Store, key string, edit func(string) string) {
+	t.Helper()
+	rc, err := store.Get(t.Context(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := io.ReadAll(rc)
+	_ = rc.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Delete(t.Context(), key); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Put(t.Context(), key, bytes.NewReader([]byte(edit(string(data))))); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestParsePartitionPath(t *testing.T) {
