@@ -1,8 +1,8 @@
 package s3
 
-// MockS3Client is the in-memory test double for the S3 API. It stays in the
-// built package because it has always been exported from it; moving it out
-// of the compiled API is a v1.0 decision (docs/V1_API_DECISIONS.md).
+// MockS3Client is the in-memory test double for the S3 API. It is compiled
+// only into this package's tests, so it is not part of the adapter's API
+// (docs/V1_API_DECISIONS.md D7).
 
 import (
 	"bytes"

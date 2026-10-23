@@ -37,6 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   | `ErrCodecConfigured`, `ErrOptionNotValidForDataset`, `ErrOptionNotValidForDatasetReader` | removed: these misuses no longer compile |
 - **`Codec` gains `Describe`**: a custom codec returns its configuration in a canonical form, or `""` when it has none.
 - **Volume takes the new factory type**: `volume.New` takes a `lode.Factory[lode.Store]`, and Volume metadata is `volume.Metadata`.
+- **The S3 test double is no longer exported** (`V1_API_DECISIONS.md` D7): `s3.MockS3Client` and `s3.NewMockS3Client` are compiled only into the adapter's tests. A test that needs an in-memory S3 can copy the double or target an emulator such as LocalStack or MinIO.
 - **A dataset ID must be one path segment**: an ID that is empty, `.` or `..`, contains `/` or a backslash, or begins with `.lode-tmp-` is rejected with `ErrInvalidArgument`. `=` remains permitted.
 
 ### Added
