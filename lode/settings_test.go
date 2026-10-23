@@ -521,6 +521,15 @@ func TestWrite_ForeignManifestsAreAHistoryAndDataIsNot(t *testing.T) {
 	if _, err := tryWrite(t, dataStore, jsonl, R(D{"a": 1})); err != nil {
 		t.Errorf("got %v, want a data object that names the schema not treated as a history", err)
 	}
+	// Nor is a typed record whose fields begin as a manifest's do, in order.
+	typedStore := NewMemory()
+	typed := `{"schema_name":"lode-manifest","format_version":"1.1.0","dataset_id":"events","payload":1}` + "\n"
+	if err := typedStore.Put(t.Context(), "datasets/events/elsewhere/data.jsonl", strings.NewReader(typed+typed)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tryWrite(t, typedStore, jsonl, R(D{"a": 1})); err != nil {
+		t.Errorf("got %v, want a typed record with a manifest's leading fields not treated as a history", err)
+	}
 	// Another writer's uncommitted data, a tombstone, and its lock file are
 	// not a history.
 	store := NewMemory()
@@ -672,10 +681,7 @@ func TestSettings_LegacyManifestsUseTheDefaultPathNames(t *testing.T) {
 func TestWrite_ForeignManifestOfALongDatasetID(t *testing.T) {
 	id := DatasetID(strings.Repeat("e", 2000))
 	store := NewMemory()
-	body := `{"schema_name": "lode-manifest", "format_version": "1.1.0", "dataset_id": "` + string(id) + `"}`
-	if err := store.Put(t.Context(), "datasets/"+string(id)+"/snapshots/x/_manifest.json", strings.NewReader(body)); err != nil {
-		t.Fatal(err)
-	}
+	putManifestOf(t, store, id, "datasets/"+string(id)+"/snapshots/x/_manifest.json")
 	if _, err := Open(Use(store)).Records(t.Context(), id, jsonl); !errors.Is(err, ErrSettingsMismatch) {
 		t.Fatalf("got %v, want the manifest found past a fixed probe size", err)
 	}

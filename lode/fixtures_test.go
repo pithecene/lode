@@ -23,14 +23,22 @@ func putObject(t *testing.T, store Store, p string) {
 	}
 }
 
-// putManifestObject persists an object that begins as a manifest of the
-// dataset "events" does, at a path of the caller's choosing.
+// putManifestObject persists a valid manifest of the dataset "events", one
+// that a write to another store committed, at a path of the caller's
+// choosing.
 func putManifestObject(t *testing.T, store Store, p string) {
 	t.Helper()
-	body := "{\n  \"schema_name\": \"lode-manifest\",\n  \"format_version\": \"1.1.0\",\n  \"dataset_id\": \"events\"\n}"
-	if err := store.Put(t.Context(), p, strings.NewReader(body)); err != nil {
+	putManifestOf(t, store, "events", p)
+}
+
+// putManifestOf persists a valid manifest of dataset id at p.
+func putManifestOf(t *testing.T, store Store, id DatasetID, p string) {
+	t.Helper()
+	snap, err := recordsOn(t, NewMemory(), id).Write(t.Context(), R(D{"a": 1}), nil)
+	if err != nil {
 		t.Fatal(err)
 	}
+	writeManifestAt(t, store, p, snap.Manifest)
 }
 
 func exists(t *testing.T, store Store, p string) bool {

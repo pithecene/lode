@@ -223,12 +223,14 @@ const manifestProbeSize = 256
 // (\u00XX).
 const maxEscapedLen = 6
 
-// isManifest reports whether the object at p is a manifest of dataset id:
-// whether it begins with a manifest's leading fields, in the order Manifest
-// declares them, which encoding/json never produces for a map record (it
-// sorts the keys). It reads a bounded prefix, sized to the ID, so a large
-// data object costs one short read. An object removed since it was listed
-// is not one.
+// isManifest reports whether the object at p is a manifest of dataset id.
+// It reads a bounded prefix, sized to the ID, and continues only when the
+// prefix holds a manifest's leading fields in the order Manifest declares
+// them, which encoding/json never produces for a map record (it sorts the
+// keys), so a data object usually costs one short read. An object that
+// passes is decoded in full, so a typed record that shares the leading
+// fields is still not a manifest. An object removed since it was listed is
+// not one.
 func isManifest(ctx context.Context, store Store, id DatasetID, p string) (bool, error) {
 	rc, err := store.Get(ctx, p)
 	if errors.Is(err, ErrNotFound) {
@@ -244,7 +246,43 @@ func isManifest(ctx context.Context, store Store, id DatasetID, p string) (bool,
 	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
 		return false, err
 	}
-	return hasManifestFields(head[:n], id), nil
+	if !hasManifestFields(head[:n], id) {
+		return false, nil
+	}
+	body := &readErrors{r: io.MultiReader(bytes.NewReader(head[:n]), rc)}
+	found := decodesAsManifest(body, id)
+	if body.err != nil {
+		return false, body.err
+	}
+	return found, nil
+}
+
+// decodesAsManifest reports whether r holds exactly one JSON value, a valid
+// manifest of dataset id. A data file of records holds a value per record,
+// so it is a manifest only if its one record is a complete manifest.
+func decodesAsManifest(r io.Reader, id DatasetID) bool {
+	dec := json.NewDecoder(r)
+	var m Manifest
+	if err := dec.Decode(&m); err != nil || m.DatasetID != id || validateManifest(&m) != nil {
+		return false
+	}
+	_, err := dec.Token()
+	return errors.Is(err, io.EOF)
+}
+
+// readErrors records the first error of r other than io.EOF, so that a
+// failed read is reported rather than taken for content that is not JSON.
+type readErrors struct {
+	r   io.Reader
+	err error
+}
+
+func (e *readErrors) Read(p []byte) (int, error) {
+	n, err := e.r.Read(p)
+	if err != nil && !errors.Is(err, io.EOF) && e.err == nil {
+		e.err = err
+	}
+	return n, err
 }
 
 // manifestField is one leading field of a manifest; an empty value matches
