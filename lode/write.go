@@ -84,6 +84,7 @@ func (d *dataset) commit(ctx context.Context, p *pendingSnapshot) (*DatasetSnaps
 		return nil, err
 	}
 	d.settled = true // the dataset's head now records this writer's settings
+	d.removeAdoptedStaged(ctx)
 	return &DatasetSnapshot{ID: p.id, Manifest: manifest}, nil
 }
 
@@ -104,7 +105,7 @@ func (d *dataset) manifest(p *pendingSnapshot, parent DatasetSnapshotID) *Manife
 		Codec:            p.codec,
 		Compressor:       d.compressor.Name(),
 		Partitioner:      d.layout.partitioner().name(),
-		PartitionKeys:    d.layout.partitioner().keys(),
+		PartitionKeys:    slices.Clone(d.layout.partitioner().keys()), // a returned manifest must not alias the layout
 	}
 	m.Paths = d.layout.convention()
 	if d.checksum != nil {

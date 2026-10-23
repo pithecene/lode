@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/pithecene/lode/internal/history"
 	"github.com/pithecene/lode/internal/storepath"
 	"github.com/pithecene/lode/internal/validate"
 )
@@ -388,8 +389,10 @@ func (l *pathLayout) ownsObject(dataset DatasetID, p string) bool {
 	}
 	pointer := l.latestPointerPath(dataset)
 	stagedPrefix := join(l.grammar.datasetDir(dataset), stagedDir) + "/"
+	staged, isStaged := strings.CutPrefix(p, stagedPrefix)
+	id, isJSON := strings.CutSuffix(staged, ".json")
 	return p == pointer || p == pointer+".lock" ||
-		strings.HasPrefix(p, stagedPrefix) ||
+		(isStaged && isJSON && history.IsGeneratedID(DatasetSnapshotID(id))) ||
 		strings.HasPrefix(p, l.tombstonesPrefix(dataset))
 }
 

@@ -104,7 +104,9 @@ manifest as a pending commit:
   while it is pending (CONTRACT_WRITE_API §Settings). Later commits stage
   nothing: the dataset then has a manifest to check against. When the
   pointer update fails, the copy is removed only if the pointer names
-  another snapshot, as for a Volume.
+  another snapshot, as for a Volume. When the first commit is abandoned, the
+  commit that adopts it as its parent, having read its settings from the
+  staged copy, removes the copy after it commits.
 - Parent resolution selects the largest snapshot ID only when the pointer
   is missing or does not contain a snapshot ID.
 - "Missing" means that the store reported the object as not found. When a

@@ -22,6 +22,18 @@ func openOn(t *testing.T, store Store, opts ...Option) Dataset {
 	return ds
 }
 
+// pendFirst turns the committed first snapshot id into a pending one: its
+// canonical manifest moves to the staged path, where an interrupted first
+// commit leaves it.
+func pendFirst(t *testing.T, store Store, id DatasetSnapshotID) {
+	t.Helper()
+	canonical := "datasets/events/snapshots/" + string(id) + "/manifest.json"
+	moveObject(t, store, canonical, "datasets/events/staged/"+string(id)+".json")
+	if err := store.Delete(t.Context(), canonical); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // readManifest decodes the object at p as a manifest.
 func readManifest(t *testing.T, store Store, p string) *Manifest {
 	t.Helper()
@@ -194,13 +206,16 @@ func TestWrite_SettingsOfAPendingFirstCommit(t *testing.T) {
 
 	t.Run("its staged copy records the settings", func(t *testing.T) {
 		store, first := setup(t)
-		moveObject(t, store, canonical(first.ID), "datasets/events/staged/"+string(first.ID)+".json")
+		pendFirst(t, store, first.ID)
 		_, err := openOn(t, store, WithCodec(NewJSONLCodec()), WithCompressor(NewGzipCompressor())).Write(t.Context(), R(D{"a": 2}), nil)
 		if !errors.Is(err, ErrSettingsMismatch) {
 			t.Fatalf("got %v, want the staged copy's settings enforced", err)
 		}
 		if _, err := openOn(t, store, WithCodec(NewJSONLCodec())).Write(t.Context(), R(D{"a": 2}), nil); err != nil {
 			t.Fatalf("got %v, want a matching writer to adopt the pending commit", err)
+		}
+		if exists(t, store, "datasets/events/staged/"+string(first.ID)+".json") {
+			t.Error("the adopted commit's staged manifest remains after its child committed")
 		}
 	})
 	t.Run("without any manifest the writer conflicts", func(t *testing.T) {
@@ -436,7 +451,7 @@ func TestWrite_PendingFirstCommitIsCheckedWithoutListing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	moveObject(t, store, "datasets/events/snapshots/"+string(first.ID)+"/manifest.json", "datasets/events/staged/"+string(first.ID)+".json")
+	pendFirst(t, store, first.ID)
 	if _, err := openOn(t, unlisted{store}, WithCodec(NewJSONLCodec())).Write(t.Context(), R(D{"a": 2}), nil); err != nil {
 		t.Fatalf("got %v, want the staged copy read without a listing", err)
 	}
@@ -456,5 +471,31 @@ func TestWrite_PointerLockIsNotAForeignObject(t *testing.T) {
 	}
 	if _, err := ds.Write(t.Context(), R(D{"a": 1}), nil); err != nil {
 		t.Fatalf("got %v, want the pointer's lock file left by a failed first commit ignored", err)
+	}
+}
+
+func TestWrite_ReturnedManifestDoesNotAliasTheLayout(t *testing.T) {
+	store := NewMemory()
+	ds := openOn(t, store, WithCodec(NewJSONLCodec()), WithHiveLayout("day"))
+	snap, err := ds.Write(t.Context(), R(D{"day": "d"}), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap.Manifest.PartitionKeys[0] = "region"
+	next, err := ds.Write(t.Context(), R(D{"day": "d"}), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(next.Manifest.PartitionKeys, []string{"day"}) {
+		t.Errorf("keys = %v, want the layout's keys unaffected by a caller's edit", next.Manifest.PartitionKeys)
+	}
+}
+
+func TestWrite_UnknownStagedObjectIsForeign(t *testing.T) {
+	store := NewMemory()
+	putObject(t, store, "datasets/events/staged/not-a-manifest")
+	_, err := openOn(t, store, WithCodec(NewJSONLCodec())).Write(t.Context(), R(D{"a": 1}), nil)
+	if !errors.Is(err, ErrSettingsMismatch) {
+		t.Fatalf("got %v, want an object no layout stages treated as foreign", err)
 	}
 }

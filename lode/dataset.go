@@ -273,6 +273,11 @@ type dataset struct {
 	// settled is true once this writer's settings were verified against
 	// the dataset's (checkSettings) or recorded by its own commit.
 	settled bool
+
+	// adoptedStaged is the staged manifest of an abandoned first commit
+	// whose settings checkSettings read; this writer's commit, a child of
+	// it, removes it ("" when there is none).
+	adoptedStaged string
 }
 
 // datasetKind is the dataset's snapshot grammar for history: paths come from
