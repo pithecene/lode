@@ -460,8 +460,10 @@ func (a *analysis) sentinel(call *ast.CallExpr) {
 	if !ok {
 		return
 	}
-	if p := knownPrefix(format); p != "" {
-		a.report(call, fmt.Sprintf("a sentinel carries no source prefix, but this one begins with %q: %q", p, format))
+	// Any leading "word: " is refused, not only a known source: a sentinel
+	// has no context to precede its text, so such a word can only be a prefix.
+	if p := leadingWord(format); p != "" {
+		a.report(call, fmt.Sprintf("a sentinel carries no prefix, but this one begins with %q: %q", p, format))
 	}
 }
 

@@ -587,7 +587,7 @@ func (h *History[ID, M]) resolve(ctx context.Context) (id ID, scanned *Snapshot[
 // object was stored (a lost response stores it), so the snapshot may be
 // visible, and nothing it references may be deleted. Errors carrying it keep
 // the message of the underlying failure.
-var ErrManifestUncertain = errors.New("history: the commit's manifest may have been persisted")
+var ErrManifestUncertain = errors.New("the commit's manifest may have been persisted")
 
 // manifestUncertain wraps a manifest write failure so that it matches
 // ErrManifestUncertain without changing its message.

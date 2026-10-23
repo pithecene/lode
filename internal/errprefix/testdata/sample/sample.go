@@ -14,6 +14,8 @@ var errBare = errors.New("bare sentinel")
 
 var errPrefixed = errors.New("lode: prefixed sentinel") // violation
 
+var errUnknownPrefix = errors.New("history: prefixed sentinel") // violation
+
 // Errors is a stand-in sentinel set; only the real table entry is honored.
 type Errors struct{ NotFound error }
 
@@ -40,5 +42,5 @@ func Cases(name string, errs Errors) []error {
 	_, statErr := os.Stat(name)
 	copied := statErr
 	stat := fmt.Errorf("stat: %w", copied) // violation
-	return []error{errPrefixed, entered, unnamed, created, bare, classified, unclassified, context, doubled, direct, lodeErr, unlisted, walked, stat}
+	return []error{errPrefixed, errUnknownPrefix, entered, unnamed, created, bare, classified, unclassified, context, doubled, direct, lodeErr, unlisted, walked, stat}
 }
