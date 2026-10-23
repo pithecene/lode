@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"sort"
 	"strings"
 
@@ -154,21 +155,29 @@ type listedManifest struct {
 
 // manifestListing is the result of enumerating manifests under a prefix.
 type manifestListing struct {
-	// manifests holds one entry per snapshot, in (partition, path) order; the
-	// entry is the snapshot's lexicographically smallest partition manifest.
+	// manifests holds one entry per snapshot, in (partition, path) order. On
+	// a partitioned layout the entry is the snapshot's lexicographically
+	// smallest partition manifest, or its canonical manifest, under the empty
+	// partition, when the prefix holds no partition manifest of it.
 	manifests []listedManifest
-	// any reports whether the prefix held any manifest at all, including the
-	// canonical ones excluded from manifests; it distinguishes an empty
-	// dataset from a missing one.
+	// any reports whether the prefix held any manifest at all; it
+	// distinguishes an empty dataset from a missing one.
 	any bool
 }
 
 // listManifests enumerates manifests under prefix. Store.List order is
 // unspecified (CONTRACT_STORAGE §List), so entries are sorted by (partition,
 // path): path order alone is not partition order when one partition name
-// prefixes another ("day=a-b/…" sorts before "day=a/…"). Canonical manifests
-// on partition-aware layouts exist only for O(1) lookup by ID and are not
-// listed.
+// prefixes another ("day=a-b/…" sorts before "day=a/…").
+//
+// On a partitioned layout the canonical manifest is the commit, and the
+// partition manifests are an index of it (CONTRACT_CORE §Head Pointer). A
+// snapshot is reported through its partition manifests whenever the prefix
+// holds one, so its reference does not depend on the listing order. A
+// snapshot whose index the prefix does not hold, because its writer
+// terminated before persisting it or because it has no files, is reported
+// through its canonical manifest, which lies only under the unfiltered
+// prefix.
 func (d *dataset) listManifests(ctx context.Context, prefix string) (manifestListing, error) {
 	paths, err := d.store.List(ctx, prefix)
 	if err != nil {
@@ -176,33 +185,46 @@ func (d *dataset) listManifests(ctx context.Context, prefix string) (manifestLis
 	}
 
 	var listing manifestListing
-	var all []listedManifest
+	var indexed, canonical []listedManifest
 	for _, p := range paths {
 		sp, ok := d.layout.manifest(p)
 		if !ok {
 			continue
 		}
 		listing.any = true
-		if sp.snapshot == "" || (d.layout.supportsPartitions() && sp.partition == "") {
+		if sp.snapshot == "" {
 			continue
 		}
-		all = append(all, listedManifest{id: sp.snapshot, partition: sp.partition, path: p})
-	}
-	sort.Slice(all, func(i, j int) bool {
-		if all[i].partition != all[j].partition {
-			return all[i].partition < all[j].partition
+		m := listedManifest{id: sp.snapshot, partition: sp.partition, path: p}
+		if d.layout.supportsPartitions() && sp.partition == "" {
+			canonical = append(canonical, m)
+			continue
 		}
-		return all[i].path < all[j].path
-	})
+		indexed = append(indexed, m)
+	}
+	sortListed(indexed)
 
-	seen := make(map[DatasetSnapshotID]bool, len(all))
-	for _, m := range all {
+	// Partition manifests come first, so a canonical manifest is kept only for
+	// a snapshot that has none here.
+	seen := make(map[DatasetSnapshotID]bool, len(indexed)+len(canonical))
+	for _, m := range slices.Concat(indexed, canonical) {
 		if !seen[m.id] {
 			seen[m.id] = true
 			listing.manifests = append(listing.manifests, m)
 		}
 	}
+	sortListed(listing.manifests)
 	return listing, nil
+}
+
+// sortListed orders listed manifests by (partition, path).
+func sortListed(ms []listedManifest) {
+	sort.Slice(ms, func(i, j int) bool {
+		if ms[i].partition != ms[j].partition {
+			return ms[i].partition < ms[j].partition
+		}
+		return ms[i].path < ms[j].path
+	})
 }
 
 // validPartitionPrefix reports whether a PartitionListOptions.Prefix is a

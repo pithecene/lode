@@ -82,7 +82,11 @@ and leaves the head unchanged. The commit itself resolves its parent,
 advances the pointer with `CompareAndSwap`, and then persists its canonical
 manifest followed by its partition manifests, one at a time. The commit is
 complete when its canonical manifest is persisted; from then on `Latest` and
-`Snapshot` return the snapshot. A snapshot written before canonical
+`Snapshot` return the snapshot. The partition manifests are an index of the
+canonical manifest: a writer that terminates before persisting all of them
+leaves a committed snapshot with an incomplete index, and the unfiltered
+listings report it through its canonical manifest (CONTRACT_READ_API
+§Listing Order and Cursors). A snapshot written before canonical
 manifests were introduced has only partition manifests and is committed
 when any of them is persisted; `Latest`, `Snapshot`, and retention find it
 through them. Between the pointer update and the canonical

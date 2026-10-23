@@ -474,9 +474,11 @@ func TestView_ListManifests(t *testing.T) {
 	})
 
 	// TestView_ListManifests_HiveLayout_SkipsCanonicalManifest verifies
-	// that ListManifests excludes the canonical manifest written for O(1) Snapshot
-	// lookups. Without this, ManifestRef.Partition would be nondeterministic
-	// (empty vs populated) depending on store listing order.
+	// that ListManifests reports a snapshot through its partition manifests,
+	// not through the canonical manifest written for O(1) Snapshot lookups,
+	// whenever a partition manifest exists. Without this, ManifestRef.Partition
+	// would be nondeterministic (empty vs populated) depending on store
+	// listing order.
 	t.Run("hive layout skips canonical manifest", func(t *testing.T) {
 		store := NewMemory()
 

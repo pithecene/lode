@@ -55,6 +55,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Error messages name their source once**: a message begins with the prefix of the component in which the failure originated, and code that wraps a Lode error adds context without repeating a prefix, so a message no longer reads `lode: failed to write data: lode: …`. The filesystem store reports as `fs:` and the in-memory store as `memory:`, and the messages of `ErrSchemaViolation` and `ErrInvalidFormat` no longer begin with `parquet:`. Matching under `errors.Is` and `errors.As` is unchanged; code that matches message text may need to change (CONTRACT_ERRORS §Error Messages).
 
+### Fixed
+
+- **Unfiltered Hive listings report every committed snapshot**: `ListManifests` and `ListPartitions` without a partition filter omitted a snapshot that had no partition manifest, either because its writer terminated after the commit was complete or because it had no files. Such a snapshot is now reported through its canonical manifest, under the dataset root. A listing filtered by partition still reflects only the partition manifests that exist.
+
 ---
 
 ## [0.11.0] - 2026-10-22

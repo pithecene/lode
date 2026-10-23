@@ -82,9 +82,14 @@ The following rules also apply:
   prefix pruning when a partition filter is supplied. A layout that claims
   partition-first semantics but requires scans of every manifest is
   invalid.
-- **Hive-style layouts** MUST place manifests under partition prefixes when
-  partitioning is in use, so that a listing filtered by partition cannot
-  omit committed segments.
+- **Hive-style layouts** MUST place a copy of each manifest under the
+  prefix of every partition that holds its files, so that a listing
+  filtered by partition finds the snapshot without a scan of every
+  manifest. These copies are an index of the canonical manifest, persisted
+  after the commit is complete (CONTRACT_CORE §Head Pointer). A listing
+  filtered by partition reflects the copies that exist: it omits a
+  committed snapshot whose writer terminated before persisting the copy for
+  that partition.
 - Every layout MUST place a dataset's staged first manifest
   (CONTRACT_CORE §Head Pointer) at `<dataset dir>/staged/<snapshot_id>.json`,
   beside the tombstones in `<dataset dir>/expired/`, where no layout parses

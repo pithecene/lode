@@ -530,6 +530,11 @@ data.
   the dataset root: `ListManifests(ctx, lode.PartitionPath{}, opts)` lists
   every snapshot. It encodes as text (and therefore in JSON) as its string,
   and decoding validates it.
+- On a Hive dataset, a snapshot is listed under the smallest partition
+  whose manifest copy exists. A commit persists those copies after it is
+  complete, so one whose writer terminated first, or one without files, is
+  listed under the dataset root, and a listing filtered by partition omits
+  it there.
 - `PartitionListOptions.Prefix` is a raw path prefix (`day=2026-10` matches
   `day=2026-10-18`) and requires a partitioned dataset (otherwise
   `ErrPartitionPrefixNotSupported` is returned). It must be a canonical

@@ -346,6 +346,7 @@ All covered ✅
 | ListPartitions Prefix canonical-only (no dataset escape) | `TestView_ListPartitions_Prefix/rejects_non_canonical` |
 | ListPartitions StartAfter / Limit | `TestView_ListPartitions_Order/start_after_pages`, `TestView_ListPartitions_Order/start_after_exclusive` |
 | ListManifests (Partition, ID) order, deterministic partition | `TestView_ListManifests_Order/sorted_and_deterministic_partition`, `TestView_ListManifests_Order/default_layout_sorted_by_ID` |
+| An unfiltered Hive listing reports a snapshot without partition manifests under the empty partition, and `ListPartitions` reports the partitions of its canonical manifest; a listing filtered by partition reflects only the partition manifests that exist | `TestView_ListManifests_CanonicalOnly`, `TestView_ListManifests_EmptyHiveSnapshot` |
 | ListManifests StartAfter / Limit | `TestView_ListManifests_Paging/start_after_pages`, `TestView_ListManifests_Paging/limit_boundary` |
 | A partition path parses only when canonical, and the empty path is the dataset root | `TestParsePartitionPath` |
 | A partition path round-trips through text and JSON, and decoding rejects a noncanonical path | `TestPartitionPath_Text` |
