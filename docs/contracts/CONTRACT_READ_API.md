@@ -136,6 +136,9 @@ ListManifests(ctx context.Context, partition string, opts ManifestListOptions) (
 GetManifest(ctx context.Context, ref ManifestRef) (*Manifest, error)
 OpenObject(ctx context.Context, obj ObjectRef) (io.ReadCloser, error)
 ReaderAt(ctx context.Context, obj ObjectRef) (io.ReaderAt, error)
+// OpenObject and ReaderAt read only a data object of the handle's dataset
+// (and of obj.Manifest's snapshot, when it names one); any other path
+// returns ErrInvalidArgument.
 
 // RecordView[T]: Read(ctx, id) ([]T, error); BlobView: Read(ctx, id) ([]byte, error)
 ```

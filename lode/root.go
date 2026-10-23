@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"reflect"
 	"strings"
 
 	"github.com/pithecene/lode/internal/storepath"
@@ -82,10 +81,9 @@ func openStore[S ObjectStore](f Factory[S], opts []RootOption) (S, pathNames, er
 }
 
 // isNilStore reports whether a factory returned no store: a nil interface,
-// or a nil pointer inside one.
+// or a nil pointer, map, slice, function, or channel inside one.
 func isNilStore(store any) bool {
-	v := reflect.ValueOf(store)
-	return !v.IsValid() || (v.Kind() == reflect.Pointer && v.IsNil())
+	return validate.Nil(store)
 }
 
 // ListDatasets returns the IDs of the root's datasets, in lexicographic

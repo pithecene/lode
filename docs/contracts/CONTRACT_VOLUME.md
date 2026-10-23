@@ -199,7 +199,7 @@ type Writer interface {
     // Commit records the provided blocks into a new immutable snapshot.
     // The resulting manifest is cumulative: it includes all previously committed
     // blocks plus the new blocks. Commit MUST include at least one new block.
-    Commit(ctx context.Context, blocks []BlockRef, metadata lode.Metadata) (*Snapshot, error)
+    Commit(ctx context.Context, blocks []BlockRef, metadata Metadata) (*Snapshot, error)
 }
 
 // Reader defines the read surface for a volume.
@@ -227,7 +227,7 @@ type Volume interface {
 }
 
 // New creates a volume with a fixed total length.
-func New(id ID, storeFactory lode.StoreFactory, totalLength int64, opts ...Option) (Volume, error)
+func New(id ID, storeFactory lode.Factory[lode.Store], totalLength int64, opts ...Option) (Volume, error)
 ```
 
 ### Volume Options
@@ -269,7 +269,7 @@ value returns `lode.ErrInvalidArgument` with the same message.
 - Overlapping blocks at `Commit` MUST produce `volume.ErrOverlappingBlocks`.
 - An empty block list at `Commit` MUST produce an error.
 - `nil` metadata at `Commit` MUST be converted to empty metadata
-  (`lode.Metadata{}`).
+  (`volume.Metadata{}`).
 - Range reads MUST NOT return partial data without an error.
 - `Latest` on an empty volume MUST return `lode.ErrNoSnapshots`.
 - `Snapshot` for an unknown ID MUST return `lode.ErrNotFound`.

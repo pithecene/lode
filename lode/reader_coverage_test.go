@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"strings"
 	"testing"
+	"time"
 )
 
 // -----------------------------------------------------------------------------
@@ -62,10 +64,34 @@ func TestView_Objects(t *testing.T) {
 	})
 
 	t.Run("open object not found", func(t *testing.T) {
-		view, _ := blobViewOf(t, NewMemory(), []byte("x"))
-		obj := ObjectRef{Manifest: ManifestRef{ID: "no-such-snap"}, Path: "no/such/path"}
+		view, obj := blobViewOf(t, NewMemory(), []byte("x"))
+		missing := idAt(time.Now().Add(time.Hour))
+		obj = ObjectRef{Manifest: ManifestRef{ID: missing}, Path: strings.Replace(obj.Path, string(obj.Manifest.ID), string(missing), 1)}
 		if _, err := view.OpenObject(t.Context(), obj); !errors.Is(err, ErrNotFound) {
 			t.Errorf("expected ErrNotFound, got: %v", err)
+		}
+	})
+
+	t.Run("objects outside the dataset are refused", func(t *testing.T) {
+		store := NewMemory()
+		other, err := blobsOn(t, store, "other").Write(t.Context(), []byte("secret"), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		view, obj := blobViewOf(t, store, []byte("x"))
+		refs := map[string]ObjectRef{
+			"another dataset":        {Path: other.Files[0].Path},
+			"a manifest":             {Path: strings.Replace(obj.Path, "data/", "", 1)},
+			"another snapshot's ref": {Manifest: ManifestRef{ID: other.ID}, Path: obj.Path},
+			"an arbitrary key":       {Path: "no/such/path"},
+		}
+		for name, ref := range refs {
+			if _, err := view.OpenObject(t.Context(), ref); !errors.Is(err, ErrInvalidArgument) {
+				t.Errorf("OpenObject %s: got %v, want ErrInvalidArgument", name, err)
+			}
+			if _, err := view.ReaderAt(t.Context(), ref); !errors.Is(err, ErrInvalidArgument) {
+				t.Errorf("ReaderAt %s: got %v, want ErrInvalidArgument", name, err)
+			}
 		}
 	})
 

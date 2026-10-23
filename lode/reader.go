@@ -250,14 +250,36 @@ func (d *dataset) GetManifest(ctx context.Context, ref ManifestRef) (*Manifest, 
 	return d.loadManifest(ctx, d.layout.manifestPathInPartition(d.id, ref.ID, ref.Partition))
 }
 
-// OpenObject returns a reader for a data object.
+// OpenObject returns a reader for a data object of this dataset.
 func (d *dataset) OpenObject(ctx context.Context, obj ObjectRef) (io.ReadCloser, error) {
+	if err := d.checkObject(obj); err != nil {
+		return nil, err
+	}
 	return d.store.Get(ctx, obj.Path)
 }
 
-// ReaderAt returns an io.ReaderAt for random access to a data object.
+// ReaderAt returns an io.ReaderAt for random access to a data object of
+// this dataset.
 func (d *dataset) ReaderAt(ctx context.Context, obj ObjectRef) (io.ReaderAt, error) {
+	if err := d.checkObject(obj); err != nil {
+		return nil, err
+	}
 	return d.store.ReaderAt(ctx, obj.Path)
+}
+
+// checkObject requires obj to name a data object of this dataset and, when
+// it names a snapshot, of that snapshot, so that a handle reads only within
+// its own dataset: ObjectRef carries no dataset, and every dataset of a
+// root shares one store.
+func (d *dataset) checkObject(obj ObjectRef) error {
+	sp, ok := d.layout.parse(obj.Path)
+	if !ok || sp.dataset != d.id || sp.kind != dataLeaf {
+		return validate.Argument("object %q is not a data object of dataset %s", obj.Path, d.id)
+	}
+	if obj.Manifest.ID != "" && sp.snapshot != obj.Manifest.ID {
+		return validate.Argument("object %q is not a data object of snapshot %s", obj.Path, obj.Manifest.ID)
+	}
+	return nil
 }
 
 // loadListed loads and validates a manifest a listing returned. ErrNotFound

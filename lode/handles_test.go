@@ -1,8 +1,10 @@
 package lode
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"iter"
 	"slices"
 	"testing"
@@ -199,5 +201,41 @@ func TestMetadata_NullEmptiesAReusedValue(t *testing.T) {
 	}
 	if got := string(m.JSON()); got != "{}" {
 		t.Errorf("JSON = %s, want {}", got)
+	}
+}
+
+// unnamedCodec is JSONL under the empty name, which denotes blobs.
+type unnamedCodec struct{ Codec[D] }
+
+func (unnamedCodec) Name() string { return "" }
+
+func TestHandles_RejectAnUnnamedCodec(t *testing.T) {
+	codec := unnamedCodec{JSONL[D]()}
+	if _, err := Open(Use(NewMemory())).Records(t.Context(), "events", Codec[D](codec)); !errors.Is(err, ErrInvalidArgument) {
+		t.Errorf("writer: got %v, want ErrInvalidArgument", err)
+	}
+	if _, err := OpenReadOnly(Use(NewMemory())).Records(t.Context(), "events", Codec[D](codec)); !errors.Is(err, ErrInvalidArgument) {
+		t.Errorf("view: got %v, want ErrInvalidArgument", err)
+	}
+}
+
+// mapStore is a store of a nil-able kind other than a pointer.
+type mapStore map[string]string
+
+func (mapStore) Put(context.Context, string, io.Reader) error       { return nil }
+func (mapStore) Get(context.Context, string) (io.ReadCloser, error) { return nil, ErrNotFound }
+
+func (mapStore) Exists(context.Context, string) (bool, error)                    { return false, nil }
+func (mapStore) List(context.Context, string) ([]string, error)                  { return nil, nil }
+func (mapStore) Delete(context.Context, string) error                            { return nil }
+func (mapStore) ReadRange(context.Context, string, int64, int64) ([]byte, error) { return nil, nil }
+func (mapStore) ReaderAt(context.Context, string) (io.ReaderAt, error)           { return nil, ErrNotFound }
+func (mapStore) CompareAndSwap(context.Context, string, string, string) error    { return nil }
+
+func TestRoots_RejectANilMapStore(t *testing.T) {
+	var nilStore mapStore
+	factory := Factory[mapStore](func() (mapStore, error) { return nilStore, nil })
+	if _, err := Open(factory).Records(t.Context(), "events", JSONL[D]()); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("got %v, want ErrInvalidArgument", err)
 	}
 }

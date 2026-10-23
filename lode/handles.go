@@ -96,6 +96,10 @@ func checkCodec[T any](codec Codec[T]) error {
 	if validate.Nil(codec) {
 		return validate.Argument("codec is required")
 	}
+	// A manifest without a codec name records a blob dataset.
+	if codec.Name() == "" {
+		return validate.Argument("codec name must not be empty: an empty name denotes a blob dataset")
+	}
 	if c, ok := codec.(interface{ configError() error }); ok {
 		return c.configError()
 	}

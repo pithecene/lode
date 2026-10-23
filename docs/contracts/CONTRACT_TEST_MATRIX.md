@@ -304,6 +304,9 @@ All covered ✅
 | A custom compressor is passed to the view by name | `TestRecords_Read/a_custom_compressor_is_passed_to_the_view` |
 | A custom checksum is passed to the view by name | `TestBlobs_Read_CustomChecksumIsPassedToTheView` |
 | A view rejects a nil compressor with `ErrInvalidArgument` | `TestViews_RejectANilCompressor` |
+| A codec with an empty name, which denotes blobs, is rejected with `ErrInvalidArgument` | `TestHandles_RejectAnUnnamedCodec` |
+| A factory that returns a nil store of a kind other than a pointer is rejected with `ErrInvalidArgument` | `TestRoots_RejectANilMapStore` |
+| `OpenObject` and `ReaderAt` refuse a path that is not a data object of the dataset, or of the snapshot the reference names | `TestView_Objects/objects_outside_the_dataset_are_refused` |
 | A nil or typed-nil codec, compressor, checksum, or Hive layout, the zero Hive layout, and a nil `By` function are rejected with `ErrInvalidArgument` | `TestHandles_RejectNilComponents` |
 | A view's store refuses every write, so a retention method reached by a type assertion returns `ErrReadOnly` and changes nothing | `TestViews_CannotWriteThroughRetention` |
 | JSON `null` empties a reused `Metadata` value | `TestMetadata_NullEmptiesAReusedValue` |
