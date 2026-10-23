@@ -101,6 +101,9 @@ func (r *reader) ListDatasets(ctx context.Context, opts DatasetListOptions) ([]D
 }
 
 func (r *reader) ListPartitions(ctx context.Context, dataset DatasetID, opts PartitionListOptions) ([]PartitionRef, error) {
+	if err := validateDatasetID(dataset); err != nil {
+		return nil, err
+	}
 	// Malformed before unsupported: a prefix that could escape the dataset is
 	// rejected as such regardless of layout (CONTRACT_READ_API §Partition Prefix).
 	if !validPartitionPrefix(opts.Prefix) {
@@ -153,6 +156,9 @@ func (r *reader) ListPartitions(ctx context.Context, dataset DatasetID, opts Par
 }
 
 func (r *reader) ListManifests(ctx context.Context, dataset DatasetID, partition string, opts ManifestListOptions) ([]ManifestRef, error) {
+	if err := validateDatasetID(dataset); err != nil {
+		return nil, err
+	}
 	listing, err := r.listManifests(ctx, r.layout.snapshotsPrefixForPartition(dataset, partition))
 	if err != nil {
 		return nil, err
@@ -293,6 +299,9 @@ func cursorWindow[T any](items []T, after func(T) bool, limit int) []T {
 }
 
 func (r *reader) GetManifest(ctx context.Context, dataset DatasetID, ref ManifestRef) (*Manifest, error) {
+	if err := validateDatasetID(dataset); err != nil {
+		return nil, err
+	}
 	manifestPath := r.layout.manifestPathInPartition(dataset, ref.ID, ref.Partition)
 	return r.loadManifest(ctx, manifestPath)
 }
@@ -359,6 +368,9 @@ func validateManifest(m *Manifest) error {
 		{Invalid: m.Compressor == "", Field: "compressor", Message: "is required"},
 		{Invalid: m.Partitioner == "", Field: "partitioner", Message: "is required"},
 	}); err != nil {
+		return err
+	}
+	if err := missingPaths(m); err != nil {
 		return err
 	}
 	return validateFiles(m.Files)

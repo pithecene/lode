@@ -173,7 +173,8 @@ A dataset ID MUST be one canonical path segment: not empty, `.`, or `..`,
 without `/` or a backslash, and not beginning with the reserved prefix
 `.lode-tmp-` (CONTRACT_STORAGE §Put). Lode cleans the paths it builds from
 an ID, so an ID such as `a/../events` would otherwise address the dataset
-`events`. `=` is permitted.
+`events`. `=` is permitted. Every operation that takes a dataset ID,
+reader methods included, rejects an invalid one before any store call.
 
 ---
 

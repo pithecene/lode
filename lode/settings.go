@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path"
 	"slices"
 	"strings"
 
 	"github.com/pithecene/lode/internal/storepath"
+	"github.com/pithecene/lode/internal/validate"
 )
 
 // datasetSettings are what every writer of a dataset must share: the
@@ -47,13 +49,28 @@ type settingComparison struct {
 
 // legacy reports whether m was written before manifests recorded the codec
 // description, partition keys, and path names (format version 1.0.0).
-func legacy(m *Manifest) bool { return m.Paths == (ManifestPaths{}) }
+func legacy(m *Manifest) bool { return m.FormatVersion == legacyFormatVersion }
+
+// legacyFormatVersion is the manifest format before the settings fields.
+const legacyFormatVersion = "1.0.0"
+
+// missingPaths is the validation error of a manifest of format 1.1.0 or
+// later without the path names it must record.
+func missingPaths(m *Manifest) error {
+	if legacy(m) || m.Paths != (ManifestPaths{}) {
+		return nil
+	}
+	return &validate.ManifestError{Field: "paths", Message: "is required from format version 1.1.0"}
+}
 
 // mismatch returns the first setting of m that differs from s, or nil. A
 // legacy manifest is compared by the settings it records; its partition keys
 // are verified separately (verifyLegacyKeys), and its path names are those
 // under which it was found.
 func (s datasetSettings) mismatch(m *Manifest) error {
+	if err := missingPaths(m); err != nil {
+		return fmt.Errorf("lode: manifest of snapshot %s: %w", m.SnapshotID, err)
+	}
 	comparisons := []settingComparison{
 		{"codec", s.codec, m.Codec},
 		{"compressor", s.compressor, m.Compressor},
@@ -124,10 +141,13 @@ func (d *dataset) removeAdoptedStaged(ctx context.Context) {
 }
 
 // rejectForeignHistory returns ErrSettingsMismatch when the dataset's
-// directory holds an object this layout does not persist: a history written
-// under another layout or other path names, whose manifests the configured
-// layout cannot find. A writer that took the dataset for empty would
-// otherwise begin a second history beside it.
+// directory holds a manifest this layout does not persist: a history
+// written under another layout, whose manifests the configured layout
+// cannot find. A writer that took the dataset for empty would otherwise
+// begin a second history beside it. Only manifests count: data objects that
+// another writer persisted before its first commit are not a history, and
+// counting them would make two first writers with different layouts reject
+// each other before either commits.
 func (d *dataset) rejectForeignHistory(ctx context.Context) error {
 	keys, err := d.store.List(ctx, d.layout.datasetPrefix(d.id))
 	if err != nil {
@@ -138,8 +158,8 @@ func (d *dataset) rejectForeignHistory(ctx context.Context) error {
 		if key, ok := storepath.Key(k); !ok || key != k {
 			continue
 		}
-		if !d.layout.ownsObject(d.id, k) {
-			return fmt.Errorf("lode: layout mismatch: dataset holds %s, which the configured layout does not persist: %w", k, ErrSettingsMismatch)
+		if path.Base(k) == d.layout.manifestName() && !d.layout.ownsObject(d.id, k) {
+			return fmt.Errorf("lode: layout mismatch: dataset holds the manifest %s, which the configured layout does not persist: %w", k, ErrSettingsMismatch)
 		}
 	}
 	return nil

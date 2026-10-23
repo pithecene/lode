@@ -52,11 +52,16 @@ manifest records them (CONTRACT_CORE §Manifest Requirements).
   and, when the pointer is absent or names neither, the newest manifest, as
   `Latest` selects it. With no pointer and no manifest, the dataset is
   empty, and the commit records the writer's settings, unless its
-  directory holds an object that the writer's layout does not persist.
-- A dataset directory that holds such an object, when no manifest is found
+  directory holds a manifest that the writer's layout does not persist.
+- A dataset directory that holds such a manifest, when no manifest is found
   under the writer's layout, contains a history persisted under another
-  layout or other path names. The writer MUST be rejected with
-  `ErrSettingsMismatch` rather than begin a second history beside it.
+  layout. The writer MUST be rejected with `ErrSettingsMismatch` rather
+  than begin a second history beside it. Data objects are not a history:
+  another writer persists its data before its first commit, and two first
+  writers with different layouts would otherwise reject each other before
+  either commits. A dataset under another datasets directory (the flat
+  layout's `<id>` rather than `datasets/<id>`) is another dataset
+  (V1_API_DECISIONS D11).
 - A writer whose settings differ MUST be rejected with
   `ErrSettingsMismatch` and MUST NOT commit. The rejection is not retried.
 - A pointer that names a snapshot with neither a manifest nor a staged copy,
@@ -66,7 +71,10 @@ manifest records them (CONTRACT_CORE §Manifest Requirements).
   format version 1.1.0, or a pointer edited by hand, produces that state.
 - Two first commits with conflicting settings are serialized by the
   pointer's `CompareAndSwap`: the losing writer is checked against the
-  winner's manifest after it refreshes the head, and is rejected.
+  winner's manifest after it refreshes the head, and is rejected. A writer
+  never checked against a manifest whose commit ends in a conflict is
+  classified this way whatever its retry budget: the conflict is returned
+  only when the winner's settings match.
 - A writer checks until a check against a manifest of format version
   1.1.0, or its own commit, settles it. Every writer is checked, so every
   later snapshot records the same settings. A check against an earlier

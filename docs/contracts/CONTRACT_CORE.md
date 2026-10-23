@@ -159,9 +159,11 @@ Settings fields (format version 1.1.0 and later):
 
 With the codec, compressor, partitioner, and checksum names, these fields
 record every setting a writer must share with the dataset
-(CONTRACT_WRITE_API §Settings). A manifest without `paths` was written
-with format version 1.0.0, before these fields existed; it is read as using
-the names under which it was found.
+(CONTRACT_WRITE_API §Settings). The format version, not the presence of a
+field, decides which fields a manifest records: a manifest of format
+version 1.0.0 was written before these fields existed and is read as using
+the names under which it was found, and a manifest of format version 1.1.0
+or later without `paths` is invalid.
 
 ### Per-File Statistics
 

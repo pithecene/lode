@@ -492,25 +492,119 @@ func TestWrite_ReturnedManifestDoesNotAliasTheLayout(t *testing.T) {
 	}
 }
 
-func TestWrite_UnknownStagedObjectIsForeign(t *testing.T) {
+func TestWrite_ForeignManifestsAreAHistoryAndDataIsNot(t *testing.T) {
+	id := string(idAt(time.Now()))
 	for _, key := range []string{
-		"datasets/events/staged/not-a-manifest",
-		"datasets/events/expired/not-a-snapshot",
-		"datasets/events/expired/" + string(idAt(time.Now())) + "/nested",
+		"datasets/events/staged/x/manifest.json",
+		"datasets/events/expired/" + id + "/manifest.json",
+		"datasets/events/segments/" + id + "/manifest.json",
 	} {
 		store := NewMemory()
 		putObject(t, store, key)
 		_, err := openOn(t, store, WithCodec(NewJSONLCodec())).Write(t.Context(), R(D{"a": 1}), nil)
 		if !errors.Is(err, ErrSettingsMismatch) {
-			t.Errorf("%s: got %v, want an object no layout persists treated as foreign", key, err)
+			t.Errorf("%s: got %v, want a manifest no layout of this writer persists treated as a foreign history", key, err)
 		}
 	}
+	// Another writer's uncommitted data, a tombstone, and its lock file are
+	// not a history.
 	store := NewMemory()
-	id := string(idAt(time.Now()))
-	putObject(t, store, "datasets/events/expired/"+id)
-	putObject(t, store, "datasets/events/expired/"+id+".lock")
+	for _, key := range []string{
+		"datasets/events/partitions/a=x/segments/" + id + "/data/data",
+		"datasets/events/expired/" + id,
+		"datasets/events/expired/" + id + ".lock",
+	} {
+		putObject(t, store, key)
+	}
 	if _, err := openOn(t, store, WithCodec(NewJSONLCodec())).Write(t.Context(), R(D{"a": 1}), nil); err != nil {
-		t.Errorf("got %v, want a tombstone and its lock file accepted", err)
+		t.Errorf("got %v, want objects that are not manifests ignored", err)
+	}
+}
+
+func TestWrite_ConcurrentFirstWritersWithDifferentLayouts(t *testing.T) {
+	store := NewMemory()
+	hive := openOn(t, store, WithCodec(NewJSONLCodec()), WithHiveLayout("a"))
+	racer := &beforePointerCAS{Store: store}
+	plain := openOn(t, racer, WithCodec(NewJSONLCodec()))
+	// The Hive writer persists its data and commits while the other writer
+	// is between staging its data and its pointer write.
+	racer.hook = func() {
+		if _, err := hive.Write(t.Context(), R(D{"a": "x"}), nil); err != nil {
+			t.Errorf("first writer: %v", err)
+		}
+	}
+	_, err := plain.Write(t.Context(), R(D{"a": "y"}), nil)
+	if !errors.Is(err, ErrSettingsMismatch) {
+		t.Fatalf("got %v, want the loser classified as a mismatch with the winner", err)
+	}
+}
+
+func TestWrite_LostFirstCommitIsAMismatchWithoutRetries(t *testing.T) {
+	store := NewMemory()
+	racer := &beforePointerCAS{Store: store}
+	loser := openOn(t, racer, WithCodec(NewJSONLCodec())) // no retries
+	racer.hook = func() {
+		_, err := openOn(t, store, WithCodec(NewJSONLCodec()), WithCompressor(NewGzipCompressor())).Write(t.Context(), R(D{"a": 1}), nil)
+		if err != nil {
+			t.Errorf("winner: %v", err)
+		}
+	}
+	if _, err := loser.Write(t.Context(), R(D{"a": 2}), nil); !errors.Is(err, ErrSettingsMismatch) {
+		t.Fatalf("got %v, want ErrSettingsMismatch rather than a retryable conflict", err)
+	}
+
+	store = NewMemory()
+	racer = &beforePointerCAS{Store: store}
+	loser = openOn(t, racer, WithCodec(NewJSONLCodec()))
+	racer.hook = func() {
+		if _, err := openOn(t, store, WithCodec(NewJSONLCodec())).Write(t.Context(), R(D{"a": 1}), nil); err != nil {
+			t.Errorf("winner: %v", err)
+		}
+	}
+	if _, err := loser.Write(t.Context(), R(D{"a": 2}), nil); !errors.Is(err, ErrSnapshotConflict) {
+		t.Fatalf("got %v, want a matching loser's conflict returned as such", err)
+	}
+}
+
+func TestModernManifestWithoutPathsIsInvalid(t *testing.T) {
+	store := NewMemory()
+	snap, err := openOn(t, store, WithCodec(NewJSONLCodec())).Write(t.Context(), R(D{"a": 1}), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := "datasets/events/snapshots/" + string(snap.ID) + "/manifest.json"
+	m := readManifest(t, store, p)
+	m.Paths = ManifestPaths{}
+	writeManifestAt(t, store, p, m)
+
+	_, err = openOn(t, store, WithCodec(NewJSONLCodec())).Write(t.Context(), R(D{"a": 2}), nil)
+	if !errors.Is(err, ErrManifestInvalid) {
+		t.Errorf("writer: got %v, want a 1.1.0 manifest without paths rejected as invalid", err)
+	}
+	reader, err := NewDatasetReader(NewMemoryFactoryFrom(store))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reader.GetManifest(t.Context(), "events", ManifestRef{ID: snap.ID}); !errors.Is(err, ErrManifestInvalid) {
+		t.Errorf("reader: got %v, want ErrManifestInvalid", err)
+	}
+}
+
+func TestDatasetReader_RejectsInvalidDatasetIDs(t *testing.T) {
+	reader, err := NewDatasetReader(NewMemoryFactory())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const bad = DatasetID("a/../events")
+	calls := map[string]func() error{
+		"ListPartitions": func() error { _, err := reader.ListPartitions(t.Context(), bad, PartitionListOptions{}); return err },
+		"ListManifests":  func() error { _, err := reader.ListManifests(t.Context(), bad, "", ManifestListOptions{}); return err },
+		"GetManifest":    func() error { _, err := reader.GetManifest(t.Context(), bad, ManifestRef{ID: "x"}); return err },
+	}
+	for name, call := range calls {
+		if err := call(); !errors.Is(err, ErrInvalidArgument) {
+			t.Errorf("%s: got %v, want ErrInvalidArgument", name, err)
+		}
 	}
 }
 

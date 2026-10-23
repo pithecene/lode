@@ -72,6 +72,7 @@ type stagedPaths interface {
 	convention() ManifestPaths
 	datasetPrefix(dataset DatasetID) string
 	ownsObject(dataset DatasetID, p string) bool
+	manifestName() string
 }
 
 // tombstonePaths is where Dataset.Expire records an expired snapshot;
@@ -372,6 +373,9 @@ func (l *pathLayout) latestPointerPath(dataset DatasetID) string {
 func (l *pathLayout) stagedManifestPath(dataset DatasetID, snapshot DatasetSnapshotID) string {
 	return join(l.grammar.datasetDir(dataset), stagedDir, string(snapshot)+".json")
 }
+
+// manifestName is the file name of every manifest of this layout.
+func (l *pathLayout) manifestName() string { return manifestFile }
 
 // datasetPrefix covers every object of the dataset.
 func (l *pathLayout) datasetPrefix(dataset DatasetID) string {
