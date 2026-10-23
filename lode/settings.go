@@ -3,6 +3,7 @@ package lode
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -57,10 +58,24 @@ const legacyFormatVersion = "1.0.0"
 // missingPaths is the validation error of a manifest of format 1.1.0 or
 // later without the path names it must record.
 func missingPaths(m *Manifest) error {
-	if legacy(m) || m.Paths != (ManifestPaths{}) {
+	if legacy(m) {
 		return nil
 	}
-	return &validate.ManifestError{Field: "paths", Message: "is required from format version 1.1.0"}
+	p := m.Paths
+	if p == (ManifestPaths{}) {
+		return &validate.ManifestError{Field: "paths", Message: "is required from format version 1.1.0"}
+	}
+	names := []string{p.Partitions, p.Segments, p.Manifest, p.Data, p.Expired, p.Staged}
+	if p.Flat && (p.Datasets != "" || p.Snapshots != "") {
+		return &validate.ManifestError{Field: "paths", Message: "of flat paths must not name the datasets or snapshots directory"}
+	}
+	if !p.Flat {
+		names = append(names, p.Datasets, p.Snapshots)
+	}
+	if slices.ContainsFunc(names, func(n string) bool { return !storepath.Segment(n) }) {
+		return &validate.ManifestError{Field: "paths", Message: "must name every directory and file, each one path segment"}
+	}
+	return nil
 }
 
 // recordedPaths returns the path names m records. A legacy manifest
@@ -182,7 +197,7 @@ func rejectForeignManifest(ctx context.Context, store Store, id DatasetID, layou
 		if slices.ContainsFunc(layouts, func(l layout) bool { return l.ownsObject(id, k) }) {
 			continue
 		}
-		found, err := isManifest(ctx, store, k)
+		found, err := isManifest(ctx, store, id, k)
 		if err != nil {
 			return fmt.Errorf("lode: failed to read %s: %w", k, err)
 		}
@@ -193,18 +208,17 @@ func rejectForeignManifest(ctx context.Context, store Store, id DatasetID, layou
 	return nil
 }
 
-// manifestPrefix is how every persisted manifest begins once whitespace is
-// removed: Manifest declares its schema name first.
-var manifestPrefix = []byte(`{"schema_name":"` + manifestSchemaName + `"`)
+// manifestProbeSize bounds the bytes isManifest reads: enough to hold a
+// manifest's leading fields with the longest dataset ID a store accepts.
+const manifestProbeSize = 1024
 
-// manifestProbeSize bounds the bytes isManifest reads: enough to hold
-// manifestPrefix with the indentation Lode persists.
-const manifestProbeSize = 128
-
-// isManifest reports whether the object at p begins as a manifest does.
-// It reads at most manifestProbeSize bytes, so a large data object costs
-// one short read. An object removed since it was listed is not one.
-func isManifest(ctx context.Context, store Store, p string) (bool, error) {
+// isManifest reports whether the object at p is a manifest of dataset id:
+// whether it begins with a manifest's leading fields, in the order Manifest
+// declares them, which encoding/json never produces for a map record (it
+// sorts the keys). It reads at most manifestProbeSize bytes, so a large
+// data object costs one short read. An object removed since it was listed
+// is not one.
+func isManifest(ctx context.Context, store Store, id DatasetID, p string) (bool, error) {
 	rc, err := store.Get(ctx, p)
 	if errors.Is(err, ErrNotFound) {
 		return false, nil
@@ -218,7 +232,30 @@ func isManifest(ctx context.Context, store Store, p string) (bool, error) {
 	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
 		return false, err
 	}
-	return bytes.HasPrefix(bytes.Join(bytes.Fields(head[:n]), nil), manifestPrefix), nil
+	return hasManifestFields(head[:n], id), nil
+}
+
+// manifestField is one leading field of a manifest; an empty value matches
+// any string.
+type manifestField struct{ key, value string }
+
+// hasManifestFields reports whether data opens a JSON object whose first
+// fields are a manifest's schema name, format version, and dataset ID.
+func hasManifestFields(data []byte, id DatasetID) bool {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return false
+	}
+	fields := []manifestField{{"schema_name", manifestSchemaName}, {"format_version", ""}, {"dataset_id", string(id)}}
+	for _, f := range fields {
+		key, keyErr := dec.Token()
+		value, valueErr := dec.Token()
+		s, isString := value.(string)
+		if keyErr != nil || valueErr != nil || key != f.key || !isString || (f.value != "" && s != f.value) {
+			return false
+		}
+	}
+	return true
 }
 
 // settingsManifest is the manifest a writer's settings are checked

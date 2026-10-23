@@ -63,8 +63,9 @@ manifest records them (CONTRACT_CORE §Manifest Requirements).
   under the writer's layout, contains a history persisted under another
   layout. The writer MUST be rejected with `ErrSettingsMismatch` rather
   than begin a second history beside it. A manifest is recognized by its
-  content, which begins with its schema name, because a manifest persisted
-  under other path names may bear any file name. Data objects are not a
+  content, whose leading fields are its schema name, format version, and
+  dataset ID, in that order, because a manifest persisted under other path
+  names may bear any file name. Data objects are not a
   history:
   another writer persists its data before its first commit, and two first
   writers with different layouts would otherwise reject each other before

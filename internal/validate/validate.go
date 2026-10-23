@@ -4,7 +4,10 @@
 // identity under errors.Is and the messages are the same from any package.
 package validate
 
-import "fmt"
+import (
+	"fmt"
+	"reflect"
+)
 
 var (
 	// ErrInvalidArgument is re-exported as lode.ErrInvalidArgument.
@@ -61,4 +64,22 @@ func FirstInvalid(checks []Check) error {
 		}
 	}
 	return nil
+}
+
+// nilableKinds are the kinds whose values may be nil inside a non-nil
+// interface value.
+var nilableKinds = map[reflect.Kind]bool{
+	reflect.Pointer: true, reflect.Map: true, reflect.Slice: true,
+	reflect.Func: true, reflect.Chan: true, reflect.Interface: true,
+}
+
+// Nil reports whether v is nil or holds a nil pointer, map, slice,
+// function, or channel: an argument whose methods may dereference nil, so
+// a caller rejects it with Argument rather than panic later.
+func Nil(v any) bool {
+	if v == nil {
+		return true
+	}
+	rv := reflect.ValueOf(v)
+	return nilableKinds[rv.Kind()] && rv.IsNil()
 }

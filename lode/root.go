@@ -3,6 +3,7 @@ package lode
 import (
 	"context"
 	"fmt"
+	"io"
 	"reflect"
 	"strings"
 
@@ -106,12 +107,18 @@ func (r *ReadRoot) ListDatasets(ctx context.Context, opts DatasetListOptions) ([
 	return listDatasets(ctx, r.store, r.names, opts)
 }
 
-// readOnlyStore is a ReadRoot's store: every read passes through, and the
-// conditional write that history's type requires is refused, because a view
-// never writes (it resolves the head without creating a pointer).
+// readOnlyStore is a ReadRoot's store: every read passes through, and every
+// write is refused, because a view never writes (it resolves the head
+// without creating a pointer). A view's handle shares the writer's dataset
+// core, so the refusal is what keeps a method that writes, such as Sweep
+// reached by a type assertion, from changing the store.
 type readOnlyStore struct {
 	ObjectStore
 }
+
+func (readOnlyStore) Put(context.Context, string, io.Reader) error { return ErrReadOnly }
+
+func (readOnlyStore) Delete(context.Context, string) error { return ErrReadOnly }
 
 func (readOnlyStore) CompareAndSwap(context.Context, string, string, string) error {
 	return ErrReadOnly

@@ -124,7 +124,8 @@ Gaps are recorded with codes that indicate category and priority:
 | A Hive key that is not one path segment or contains `=` is `ErrInvalidArgument` | `TestHive_KeysNamePartitionsUnambiguously` |
 | A pending first commit is checked against its staged copy without a listing | `TestWrite_PendingFirstCommitIsCheckedWithoutListing` |
 | The filesystem store's pointer lock file is not a foreign object | `TestWrite_PointerLockIsNotAForeignObject` |
-| A manifest that the writer's layout does not persist, recognized by its content under any file name, is a foreign history; another writer's uncommitted data, a tombstone, and its lock file are not | `TestWrite_ForeignManifestsAreAHistoryAndDataIsNot` |
+| A manifest that the writer's layout does not persist, recognized by its leading fields under any file name, is a foreign history; another writer's uncommitted data, including a record that names the manifest schema, a tombstone, and its lock file are not | `TestWrite_ForeignManifestsAreAHistoryAndDataIsNot` |
+| A manifest of format version 1.1.0 names every directory and file, and flat paths name no datasets or snapshots directory | `TestValidateManifest_PathsNameEveryDirectory` |
 | A manifest of format version 1.0.0 rejects a writer or view whose path names are not the defaults | `TestSettings_LegacyManifestsUseTheDefaultPathNames` |
 | Concurrent first writers with different layouts: the loser is classified against the winner | `TestWrite_ConcurrentFirstWritersWithDifferentLayouts` |
 | A lost first commit is `ErrSettingsMismatch` when the winner's settings differ, without retries, and stays a conflict when they match | `TestWrite_LostFirstCommitIsAMismatchWithoutRetries` |
@@ -302,6 +303,9 @@ All covered ✅
 | A custom compressor is passed to the view by name | `TestRecords_Read/a_custom_compressor_is_passed_to_the_view` |
 | A custom checksum is passed to the view by name | `TestBlobs_Read_CustomChecksumIsPassedToTheView` |
 | A view rejects a nil compressor with `ErrInvalidArgument` | `TestViews_RejectANilCompressor` |
+| A nil or typed-nil codec, compressor, checksum, or Hive layout, the zero Hive layout, and a nil `By` function are rejected with `ErrInvalidArgument` | `TestHandles_RejectNilComponents` |
+| A view's store refuses every write, so a retention method reached by a type assertion returns `ErrReadOnly` and changes nothing | `TestViews_CannotWriteThroughRetention` |
+| JSON `null` empties a reused `Metadata` value | `TestMetadata_NullEmptiesAReusedValue` |
 | A write of no records persists an empty file list, which a view reads | `TestRecords_AnEmptyWriteRemainsReadable` |
 | Metadata decoded from a JSON value that is not an object is rejected with `ErrInvalidArgument` | `TestWrite_RejectsMetadataDecodedFromANonObject` |
 | The JSONL codec encodes a batch by value, as its stream encoder does | `TestJSONL_EncodesRecordsByValueAsStreamsDo` |

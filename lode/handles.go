@@ -93,7 +93,7 @@ func (d *dataset) checkAtOpen(ctx context.Context) error {
 // checkCodec rejects a nil codec and reports a construction error that a
 // codec recorded (Parquet with an invalid schema).
 func checkCodec[T any](codec Codec[T]) error {
-	if codec == nil {
+	if validate.Nil(codec) {
 		return validate.Argument("codec is required")
 	}
 	if c, ok := codec.(interface{ configError() error }); ok {

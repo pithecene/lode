@@ -87,7 +87,9 @@ manifest as a pending commit:
   replaces an existing pointer, because replacing it would revert the head
   past a pending commit. A view (`ReadRoot.Records`, `ReadRoot.Blobs`)
   resolves the head the same way but MUST NOT create a missing pointer: a
-  view never writes, so its store need not provide `CompareAndSwap`.
+  view never writes, so its store need not provide `CompareAndSwap`, and
+  every write through a view's store (`Put`, `Delete`, `CompareAndSwap`)
+  MUST return `ErrReadOnly`.
 - A new commit adopts the snapshot that the pointer names as its parent,
   whether or not that snapshot has a manifest, so the history remains
   linear. After an abandoned commit, the next snapshot's `ParentSnapshotID`

@@ -953,7 +953,7 @@ if errors.Is(err, lode.ErrNoSnapshots) {
 | `ErrRangeReadNotSupported` | The store does not support range reads | Storage |
 | `ErrSnapshotConflict` | Another writer committed after the parent was resolved (CAS) | Writer handles, Volume |
 | `ErrSettingsMismatch` | The handle's codec, codec description, compressor, checksum, layout and partition keys, or path names differ from the dataset's | Writer handles, views |
-| `ErrReadOnly` | A write was attempted through a read-only root's store | Views |
+| `ErrReadOnly` | A write (`Put`, `Delete`, or `CompareAndSwap`) was attempted through a read-only root's store | Views |
 | `ErrSnapshotExpired` | The snapshot was removed by `Expire`; the error also matches `ErrNotFound` | Handles |
 | `ErrHeadUncommitted` | The latest pointer names a snapshot whose manifest has not been persisted, or is absent while snapshots exist | `Expire`, `Sweep` (absent pointer only) |
 | `ErrSchemaViolation` | A record does not conform to the Parquet schema, or the schema is invalid | Parquet codec |

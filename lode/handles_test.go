@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"errors"
 	"iter"
+	"slices"
 	"testing"
+	"time"
 )
 
 // Shared fixtures for tests of the dataset handles. Each opens a handle over
@@ -118,5 +120,84 @@ func TestWrite_RejectsMetadataDecodedFromANonObject(t *testing.T) {
 	_, err := recordsOn(t, NewMemory(), "events").Write(t.Context(), R(D{"a": 1}), m)
 	if !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("got %v, want ErrInvalidArgument", err)
+	}
+}
+
+func TestViews_CannotWriteThroughRetention(t *testing.T) {
+	store := NewMemory()
+	if _, err := recordsOn(t, store, "events").Write(t.Context(), R(D{"a": 1}), nil); err != nil {
+		t.Fatal(err)
+	}
+	// An uncommitted data object old enough that a writer's Sweep would
+	// reclaim it.
+	putObject(t, store, "datasets/events/snapshots/"+string(idAt(time.Now().Add(-time.Hour)))+"/data/orphan")
+	before := storeKeys(t, store)
+	retention, ok := viewOn(t, store, "events").(Retention)
+	if !ok {
+		return // a view without the methods cannot write through them
+	}
+	if _, err := retention.Sweep(t.Context(), SweepRequest{Grace: time.Minute}); !errors.Is(err, ErrReadOnly) {
+		t.Errorf("Sweep: got %v, want ErrReadOnly", err)
+	}
+	if after := storeKeys(t, store); !slices.Equal(before, after) {
+		t.Errorf("objects changed through a view: %v -> %v", before, after)
+	}
+}
+
+// nilCodec is a codec type whose nil pointer a caller might pass.
+type nilCodec struct{ Codec[D] }
+
+func TestHandles_RejectNilComponents(t *testing.T) {
+	var codec *nilCodec
+	var compressor *renamedCompressor
+	var checksum *renamedChecksum
+	var hiveLayout *HiveLayout
+	cases := map[string]func() error{
+		"typed-nil codec": func() error {
+			_, err := Open(Use(NewMemory())).Records(t.Context(), "events", Codec[D](codec))
+			return err
+		},
+		"typed-nil compressor": func() error {
+			_, err := Open(Use(NewMemory())).Records(t.Context(), "events", JSONL[D](), WithCompressor(compressor))
+			return err
+		},
+		"typed-nil view compressor": func() error {
+			_, err := OpenReadOnly(Use(NewMemory())).Records(t.Context(), "events", JSONL[D](), WithCompressor(compressor))
+			return err
+		},
+		"typed-nil checksum": func() error {
+			_, err := Open(Use(NewMemory())).Records(t.Context(), "events", JSONL[D](), WithChecksum(checksum))
+			return err
+		},
+		"nil Hive layout": func() error {
+			_, err := Open(Use(NewMemory())).Records(t.Context(), "events", JSONL[D](), WithLayout(hiveLayout))
+			return err
+		},
+		"zero Hive layout": func() error {
+			_, err := Open(Use(NewMemory())).Records(t.Context(), "events", JSONL[D](), WithLayout(&HiveLayout{}))
+			return err
+		},
+		"nil By function": func() error {
+			_, err := Open(Use(NewMemory())).Records(t.Context(), "events", JSONL[event](), WithLayout(Hive("day").By[event](nil)))
+			return err
+		},
+	}
+	for name, open := range cases {
+		if err := open(); !errors.Is(err, ErrInvalidArgument) {
+			t.Errorf("%s: got %v, want ErrInvalidArgument", name, err)
+		}
+	}
+}
+
+func TestMetadata_NullEmptiesAReusedValue(t *testing.T) {
+	var m Metadata
+	if err := json.Unmarshal([]byte(`{"a":1}`), &m); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(`null`), &m); err != nil {
+		t.Fatal(err)
+	}
+	if got := string(m.JSON()); got != "{}" {
+		t.Errorf("JSON = %s, want {}", got)
 	}
 }

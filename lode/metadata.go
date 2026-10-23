@@ -75,11 +75,12 @@ func (m Metadata) MarshalJSON() ([]byte, error) {
 	return m.orEmpty().raw, nil
 }
 
-// UnmarshalJSON retains a copy of data. JSON null leaves m empty, as
-// encoding/json's convention asks; a manifest whose metadata is absent or
+// UnmarshalJSON retains a copy of data. JSON null empties m, so a reused
+// value retains nothing it held before; a manifest whose metadata is absent or
 // not an object fails validation (valid).
 func (m *Metadata) UnmarshalJSON(data []byte) error {
 	if string(data) == "null" {
+		m.raw = nil
 		return nil
 	}
 	m.raw = bytes.Clone(data)

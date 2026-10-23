@@ -511,6 +511,16 @@ func TestWrite_ForeignManifestsAreAHistoryAndDataIsNot(t *testing.T) {
 			t.Errorf("%s: got %v, want a manifest no layout of this writer persists treated as a foreign history", key, err)
 		}
 	}
+	// A data object whose first record names a manifest's schema is not a
+	// manifest: a map record's keys are sorted, so its fields are not a
+	// manifest's leading fields in their order.
+	dataStore := NewMemory()
+	if err := dataStore.Put(t.Context(), "datasets/events/elsewhere/data.jsonl", strings.NewReader(`{"dataset_id":"events","format_version":"1.1.0","schema_name":"lode-manifest"}`+"\n")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tryWrite(t, dataStore, jsonl, R(D{"a": 1})); err != nil {
+		t.Errorf("got %v, want a data object that names the schema not treated as a history", err)
+	}
 	// Another writer's uncommitted data, a tombstone, and its lock file are
 	// not a history.
 	store := NewMemory()

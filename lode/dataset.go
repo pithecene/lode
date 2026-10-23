@@ -68,18 +68,18 @@ func (o datasetOption) applyDataset(cfg *datasetConfig) error { return o(cfg) }
 
 // componentOption sets a component on a writer handle and on a view.
 type componentOption struct {
-	dataset func(cfg *datasetConfig)
+	dataset func(cfg *datasetConfig) error
 	view    func(cfg *viewConfig) error
 }
 
-func (o componentOption) applyDataset(cfg *datasetConfig) error { o.dataset(cfg); return nil }
+func (o componentOption) applyDataset(cfg *datasetConfig) error { return o.dataset(cfg) }
 func (o componentOption) applyView(cfg *viewConfig) error       { return o.view(cfg) }
 
 // WithLayout sets how a dataset is partitioned: Unpartitioned (the default)
 // or Hive.
 func WithLayout(l Layout) DatasetOption {
 	return datasetOption(func(cfg *datasetConfig) error {
-		if l == nil {
+		if validate.Nil(l) {
 			return validate.Argument("WithLayout: layout must not be nil")
 		}
 		cfg.layout = l
@@ -93,9 +93,15 @@ func WithLayout(l Layout) DatasetOption {
 // compressors by name.
 func WithCompressor(c Compressor) ComponentOption {
 	return componentOption{
-		dataset: func(cfg *datasetConfig) { cfg.compressor = c },
+		dataset: func(cfg *datasetConfig) error {
+			if validate.Nil(c) {
+				return validate.Argument("compressor must not be nil")
+			}
+			cfg.compressor = c
+			return nil
+		},
 		view: func(cfg *viewConfig) error {
-			if c == nil {
+			if validate.Nil(c) {
 				return validate.Argument("WithCompressor: compressor must not be nil")
 			}
 			cfg.compressor = c
@@ -106,11 +112,20 @@ func WithCompressor(c Compressor) ComponentOption {
 
 // WithChecksum sets the checksum algorithm of a writer handle (default:
 // none), whose checksums are computed during writes and recorded in the
-// manifest. For a view it supplies a custom checksum, matched by name.
+// manifest. For a view it supplies a custom checksum, matched by name. A
+// nil checksum is none; a non-nil interface that holds a nil value is
+// rejected.
 func WithChecksum(c Checksum) ComponentOption {
+	set := func(dst *Checksum) error {
+		if c != nil && validate.Nil(c) {
+			return validate.Argument("WithChecksum: checksum holds a nil value")
+		}
+		*dst = c
+		return nil
+	}
 	return componentOption{
-		dataset: func(cfg *datasetConfig) { cfg.checksum = c },
-		view:    func(cfg *viewConfig) error { cfg.checksum = c; return nil },
+		dataset: func(cfg *datasetConfig) error { return set(&cfg.checksum) },
+		view:    func(cfg *viewConfig) error { return set(&cfg.checksum) },
 	}
 }
 
@@ -175,7 +190,7 @@ func resolveDatasetConfig(opts []DatasetOption) (*datasetConfig, error) {
 			return nil, err
 		}
 	}
-	if cfg.compressor == nil {
+	if validate.Nil(cfg.compressor) {
 		return nil, validate.Argument("compressor must not be nil")
 	}
 	return cfg, nil

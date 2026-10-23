@@ -23,11 +23,11 @@ func putObject(t *testing.T, store Store, p string) {
 	}
 }
 
-// putManifestObject persists an object that begins as a manifest does, at
-// a path of the caller's choosing.
+// putManifestObject persists an object that begins as a manifest of the
+// dataset "events" does, at a path of the caller's choosing.
 func putManifestObject(t *testing.T, store Store, p string) {
 	t.Helper()
-	body := "{\n  \"schema_name\": \"lode-manifest\",\n  \"format_version\": \"1.1.0\"\n}"
+	body := "{\n  \"schema_name\": \"lode-manifest\",\n  \"format_version\": \"1.1.0\",\n  \"dataset_id\": \"events\"\n}"
 	if err := store.Put(t.Context(), p, strings.NewReader(body)); err != nil {
 		t.Fatal(err)
 	}

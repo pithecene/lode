@@ -37,18 +37,21 @@ func (unpartitioned) scheme() (partitionScheme, error) { return noopScheme, nil 
 // Hive returns one; By gives it a typed partition function.
 type HiveLayout struct {
 	keys []string
-	err  error
 }
 
 // Hive returns a Hive layout with the given partition keys, in order. Without
 // By, records must be maps (D), and each key names a field. An invalid key
-// set is recorded and returned, matching ErrInvalidArgument, by Root.Records.
+// set, as the zero HiveLayout's empty one, is returned, matching
+// ErrInvalidArgument, by Root.Records.
 func Hive(keys ...string) *HiveLayout {
-	return &HiveLayout{keys: slices.Clone(keys), err: validateHiveKeys(keys)}
+	return &HiveLayout{keys: slices.Clone(keys)}
 }
 
 func (h *HiveLayout) scheme() (partitionScheme, error) {
-	return partitionScheme{name: "hive", keys: h.keys}, h.err
+	if h == nil {
+		return partitionScheme{}, validate.Argument("WithLayout: Hive layout must not be nil")
+	}
+	return partitionScheme{name: "hive", keys: h.keys}, validateHiveKeys(h.keys)
 }
 
 // By returns the Hive layout with a function that gives a record's
@@ -75,6 +78,13 @@ type Partition map[string]any
 type keyedHive[T any] struct {
 	*HiveLayout
 	values func(T) Partition
+}
+
+func (k keyedHive[T]) scheme() (partitionScheme, error) {
+	if k.values == nil {
+		return partitionScheme{}, validate.Argument("Hive.By: partition function must not be nil")
+	}
+	return k.HiveLayout.scheme()
 }
 
 // validateHiveKeys requires at least one key, each one path segment without
