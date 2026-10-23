@@ -184,11 +184,16 @@ func (d *dataset) settingsManifest(ctx context.Context, parent DatasetSnapshotID
 // whose manifests predate recorded keys: by name and in order, against the
 // partition path of the first snapshot with files, following parents from
 // head. A chain without files contains no partition path, so any keys are
-// consistent with it; a chain that ends at a missing or expired parent first
-// cannot be verified.
+// consistent with it; a chain that ends at a missing or expired parent, or
+// repeats a snapshot, before a snapshot with files cannot be verified.
 func (d *dataset) verifyLegacyKeys(ctx context.Context, head *Manifest) error {
 	want := d.layout.partitioner().keys()
+	visited := map[DatasetSnapshotID]bool{}
 	for m := head; ; {
+		if visited[m.SnapshotID] {
+			return fmt.Errorf("lode: cannot verify partition keys: the parent chain repeats snapshot %s: %w", m.SnapshotID, ErrSettingsMismatch)
+		}
+		visited[m.SnapshotID] = true
 		if len(m.Files) > 0 {
 			have := partitionKeyNames(d.layout.extractPartitionPath(m.Files[0].Path))
 			if !slices.Equal(want, have) {

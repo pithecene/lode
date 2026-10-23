@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"slices"
 	"time"
 
 	"github.com/parquet-go/parquet-go"
@@ -121,6 +122,9 @@ func validateSchema(schema ParquetSchema) (map[string]ParquetField, error) {
 // require a footer that references all row groups. Use Dataset.Write for
 // batched encoding.
 func NewParquetCodec(schema ParquetSchema, opts ...ParquetOption) (Codec, error) {
+	// The codec retains the schema; a later change to the caller's slice
+	// must not change what it encodes or describes.
+	schema.Fields = slices.Clone(schema.Fields)
 	fieldsByName, err := validateSchema(schema)
 	if err != nil {
 		return nil, err

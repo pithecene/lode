@@ -499,3 +499,51 @@ func TestWrite_UnknownStagedObjectIsForeign(t *testing.T) {
 		t.Fatalf("got %v, want an object no layout stages treated as foreign", err)
 	}
 }
+
+func TestConfiguration_IsCopiedAtConstruction(t *testing.T) {
+	keys := []string{"day"}
+	layout, err := NewHiveLayout(keys...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys[0] = "region"
+	if got := layout.partitioner().keys(); !slices.Equal(got, []string{"day"}) {
+		t.Errorf("layout keys = %v, want them unaffected by the caller's slice", got)
+	}
+
+	fields := []ParquetField{{Name: "a", Type: ParquetString}}
+	codec, err := NewParquetCodec(ParquetSchema{Fields: fields})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := codec.Describe()
+	fields[0] = ParquetField{Name: "b", Type: parquetTypeMax}
+	if codec.Describe() != before {
+		t.Errorf("description changed to %q after the caller's schema changed", codec.Describe())
+	}
+}
+
+func TestWrite_LegacyParentCycleIsUnverifiable(t *testing.T) {
+	store := NewMemory()
+	ds := openOn(t, store, WithCodec(NewJSONLCodec()), WithHiveLayout("day"))
+	a, err := ds.Write(t.Context(), R(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := ds.Write(t.Context(), R(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyHive(t, store, b)
+	// a names b as its parent, closing a cycle without files.
+	p := "datasets/events/segments/" + string(a.ID) + "/manifest.json"
+	m := readManifest(t, store, p)
+	m.ParentSnapshotID = b.ID
+	m.FormatVersion, m.PartitionKeys, m.Paths = "1.0.0", nil, ManifestPaths{}
+	writeManifestAt(t, store, p, m)
+
+	_, err = openOn(t, store, WithCodec(NewJSONLCodec()), WithHiveLayout("day")).Write(t.Context(), R(D{"day": "d"}), nil)
+	if !errors.Is(err, ErrSettingsMismatch) || !strings.Contains(err.Error(), "repeats") {
+		t.Fatalf("got %v, want a cycle reported as unverifiable", err)
+	}
+}

@@ -3,6 +3,7 @@ package lode
 import (
 	"fmt"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 )
@@ -29,7 +30,7 @@ type hivePartitioner struct {
 }
 
 func newHivePartitioner(keys ...string) partitioner {
-	return &hivePartitioner{keyNames: keys}
+	return &hivePartitioner{keyNames: slices.Clone(keys)} // the caller's slice may change later
 }
 
 func (h *hivePartitioner) name() string {

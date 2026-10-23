@@ -77,8 +77,9 @@ manifest records them (CONTRACT_CORE §Manifest Requirements).
   verified, by name and in order, against the partition path of the first
   snapshot with files, found by following parents from the head. A chain
   without files back to its root is consistent with any keys; a chain that
-  ends at a missing or expired parent before a snapshot with files cannot
-  be verified, and the write MUST be rejected with `ErrSettingsMismatch`.
+  ends at a missing or expired parent, or repeats a snapshot, before a
+  snapshot with files cannot be verified, and the write MUST be rejected
+  with `ErrSettingsMismatch`.
   Lode MUST NOT infer keys from partition paths: the writer states them,
   and Lode verifies them.
 

@@ -127,6 +127,8 @@ Gaps are recorded with codes that indicate category and priority:
 | An object under `staged/` that is not a staged manifest of a generated ID is foreign | `TestWrite_UnknownStagedObjectIsForeign` |
 | A child commit removes the staged manifest of the pending first commit it adopted | `TestWrite_SettingsOfAPendingFirstCommit/its_staged_copy_records_the_settings` |
 | A returned manifest's partition keys do not alias the layout | `TestWrite_ReturnedManifestDoesNotAliasTheLayout` |
+| Hive keys and a Parquet schema are copied at construction | `TestConfiguration_IsCopiedAtConstruction` |
+| A legacy parent chain that repeats a snapshot is unverifiable | `TestWrite_LegacyParentCycleIsUnverifiable` |
 
 **StreamWrite**: All covered ✅
 
