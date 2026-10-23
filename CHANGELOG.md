@@ -49,6 +49,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **S3 factory**: `s3.Factory` returns the factory of an S3 store, for `Open`.
 - **`ErrReadOnly`**: reports a write through a read-only root's store.
 - **Settings checked at open**: opening a writer checks its settings against the dataset's head, so a misconfigured writer fails when it opens rather than at its first commit.
+- **`Sweep` restores partition indexes**: on a Hive dataset, a writer that terminated after its commit was complete but before persisting its partition manifests left a snapshot that listings filtered by partition, and `Expire` by `Partition`, could not find. `Sweep` now copies the canonical manifest to each missing partition path once the snapshot is older than the grace period, and reports it in the new `SweepReport.Reindexed`.
 - **Staged first manifest**: a dataset's first commit stages its manifest at `<dataset dir>/staged/<snapshot_id>.json` before it advances the pointer and removes it afterward, so that a writer can check its settings against the commit while it is pending.
 
 ### Changed

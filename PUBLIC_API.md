@@ -915,12 +915,18 @@ set:
 
 <!-- illustrative -->
 ```go
-// From the caller's own scheduler: complete interrupted expiries and
-// reclaim objects of writes that never committed, once they are older
-// than a day.
+// From the caller's own scheduler: complete interrupted expiries, restore
+// the partition index of interrupted commits, and reclaim objects of
+// writes that never committed, once they are older than a day.
 report, err := ds.Sweep(ctx, lode.SweepRequest{Grace: 24 * time.Hour})
-// report.Settled, report.Objects, report.Bytes, report.Unsized, report.Orphans
+// report.Settled, report.Reindexed, report.Objects, report.Bytes, report.Unsized, report.Orphans
 ```
+
+- **A partition index is restored.** On a Hive dataset, a commit persists
+  its partition manifests after it is complete, so a writer that terminates
+  first leaves a snapshot that a listing filtered by partition omits.
+  `Sweep` copies the canonical manifest to each missing partition path once
+  the snapshot is older than `Grace`, and reports it in `Reindexed`.
 
 - **A grace period is required.** An object of a snapshot that never
   committed is deleted only once its write began longer ago than `Grace`,

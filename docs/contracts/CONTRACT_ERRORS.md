@@ -444,7 +444,9 @@ All operations provide:
 - **Atomic writes**: a commit is complete as CONTRACT_CORE §Head Pointer
   defines it.
 
-  Retention (`Expire`, `Sweep`) is not a snapshot commit. Its only writes
+  Retention (`Expire`, `Sweep`) is not a snapshot commit. Apart from the
+  copies of a canonical manifest with which `Sweep` restores a partition
+  index (`CONTRACT_RETENTION.md` §Definition, step 3), its only writes
   are tombstones, created with create-only semantics (`CONTRACT_RETENTION.md`
   §Order of Operations); every other action it performs is an idempotent
   deletion.

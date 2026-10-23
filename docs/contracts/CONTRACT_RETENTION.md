@@ -44,6 +44,9 @@ guarantees:
   byte-identical, or absent.
 - Expiry is a **state transition of the dataset**, recorded by a new object
   (a tombstone), never by modifying an existing one.
+- `Sweep` restores a committed snapshot's partition index by creating
+  byte-identical copies of its canonical manifest (§Definition, step 3). It
+  creates objects and never replaces one.
 - Retention never reassigns a snapshot ID, and a tombstone is never removed.
   A write reuses an expired ID only in the event of a 64-bit nonce collision
   within a single nanosecond (CONTRACT_CORE §Snapshot ID), never because the
@@ -516,6 +519,33 @@ steps in order:
    - **orphaned** in every other case (a snapshot that never committed). An
      orphaned group is deleted only when its ID instant is older than the
      grace period.
+3. **Restore partition indexes.** On a partitioned layout, the partition
+   manifests of a snapshot are an index of its canonical manifest, which a
+   writer persists after the commit is complete (CONTRACT_CORE §Head
+   Pointer). A writer that terminates first leaves a committed snapshot
+   that a listing filtered by partition, and an `Expire` by `Partition`,
+   cannot find. `Sweep` restores the index of a snapshot when all of the
+   following hold:
+   - the listing shows its canonical manifest, and no tombstone, valid or
+     not, names it;
+   - its ID instant is older than the grace period, so that its writer has
+     finished (§Grace Period); and
+   - the listing shows one of its data objects in a partition in which it
+     shows no manifest of the snapshot. A snapshot whose index the listing
+     shows complete incurs no store call.
+
+   `Sweep` then loads the canonical manifest, which MUST be valid and name
+   the snapshot of this dataset, and creates an unchanged copy of it at the
+   path of every partition that its files name and that holds no copy. The
+   canonical manifest, not the listing, decides the partitions. A copy that
+   already exists is left as it is and is not counted. Because an `Expire`
+   that selects the snapshot can delete its manifests while `Sweep` creates
+   them, `Sweep` checks for a tombstone after it creates the copies and, if
+   one now records the snapshot, deletes them again; an expiry writes its
+   tombstone before it deletes any manifest (§Order of Operations), so a
+   copy created after the expiry deleted the partition manifests is always
+   removed. `Reindexed` reports the snapshots for which this run created at
+   least one copy (on a dry run, would create one), oldest first.
 
 Reclamation operates per snapshot (§Unreferenced Object). A settled
 snapshot's objects are all objects under its data prefixes, including any
@@ -602,7 +632,8 @@ that a real run would return. A dry-run `Expire` still reads the pointer, so
 produce. A dry-run `Sweep` reads the pointer in the same manner and treats
 every validly tombstoned snapshot other than a protected one as settled, so
 its objects are counted exactly as they would be after step 1 of a real
-run.
+run. In step 3 it checks with `Exists` whether each copy is absent rather
+than creating it.
 
 ---
 
@@ -620,6 +651,7 @@ type ExpireReport struct {
 
 type SweepReport struct {
     Settled     []DatasetSnapshotID // tombstoned snapshots whose manifests this run removed (on a dry run, would remove), oldest first
+    Reindexed   []DatasetSnapshotID // committed snapshots whose missing partition manifests this run created (on a dry run, would create), oldest first
     Objects     int                 // data objects deleted (on a dry run, to be deleted)
     Bytes       int64               // the recorded sizes of those that a tombstone inventory lists
     Unsized     int                 // of Objects, those without a recorded size
@@ -692,7 +724,7 @@ number of objects deleted (manifests and data alike).
 | Operation | Store Calls | Memory |
 |-----------|-------------|--------|
 | `Expire` | 1 List (the `Partition` subtree, else the snapshot prefix) + (K + 1) pointer Gets, each followed by at most one `Exists` (and by one List of the snapshot prefix when the named snapshot has no canonical manifest, to find a legacy copy that exists only in a partition) + K manifest Gets + K tombstone Gets (for the recorded inventory, if any, and also one per requested ID without a manifest) + 1 Get per manifest path of each selected snapshot (every copy is verified against the tombstone before the tombstone is written) + K tombstone writes (each followed by at most 1 read-back Get when the tombstone already exists) + Σ(manifests + files) Deletes; when the pointer is absent, +1 List of the whole snapshot prefix (even for a `Partition` request) to distinguish an empty dataset from a refused one, and +1 List of `expired/` when that listing shows no manifest | O(N + K × manifest) |
-| `Sweep` | 2 Lists (tombstones, snapshot prefix) + 1 pointer Get + T tombstone Gets + 1 Get per manifest path of each tombstoned snapshot of which the listing shows any object + 1 `Exists` per manifest path of each group older than the grace period without a listed manifest, whether or not the group is then reclaimed (stopping at the first manifest found) + D Deletes; when the pointer names a snapshot, 1 `Exists` (+1 List when the snapshot has no canonical manifest) to determine whether it is committed | O(N + Σ tombstone inventories + the manifest copies of one snapshot at a time) |
+| `Sweep` | 2 Lists (tombstones, snapshot prefix) + 1 pointer Get + T tombstone Gets + 1 Get per manifest path of each tombstoned snapshot of which the listing shows any object + 1 `Exists` per manifest path of each group older than the grace period without a listed manifest, whether or not the group is then reclaimed (stopping at the first manifest found) + D Deletes + for each committed snapshot older than the grace period whose listed data lies in a partition without a listed manifest of it, 1 Get of its canonical manifest, 1 Put (on a dry run, 1 `Exists`) per partition copy its files name and the listing omits, and, once a copy is created, 1 tombstone Get; when the pointer names a snapshot, 1 `Exists` (+1 List when the snapshot has no canonical manifest) to determine whether it is committed | O(N + Σ tombstone inventories + the manifest copies of one snapshot at a time) |
 | `Snapshot(id)`, `Read(id)` expired path | +1 Get (tombstone) | O(1) |
 
 Pointer Gets: one initial read, plus one further read per selected

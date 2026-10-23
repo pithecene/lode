@@ -530,6 +530,12 @@ type SweepReport struct {
 	// removed, oldest first.
 	Settled []DatasetSnapshotID
 
+	// Reindexed lists committed snapshots, oldest first, whose missing
+	// partition manifests this run persisted from their canonical manifests:
+	// their writers terminated after the commit was complete, before
+	// persisting the partition index.
+	Reindexed []DatasetSnapshotID
+
 	// Objects counts the data objects this run deleted.
 	Objects int
 

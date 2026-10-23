@@ -37,8 +37,8 @@ Based on the full-history audit of the production dataset
   `CompareAndSwap` of every `Store`, and adds two sentinels (§1, §5); the
   earliest pass of both is 2026-11-19. The unreleased surface of
   `V1_API_DECISIONS.md` D11 replaces the construction and record API and
-  restarts both windows when it is released. D10b open; D1–D3 and D8
-  decided by D11; D4–D7, D10a, D10c, and D10f accepted.
+  restarts both windows when it is released. No decision is open: D1–D3
+  and D8 decided by D11; D4–D7 and D10a–D10c and D10f accepted.
 - **Not yet met, evidence missing:** native AWS S3 (§6), steady-state snapshot
   reads (§3), checksum-backed corruption checks (no production file carries a
   checksum, §10).
@@ -180,7 +180,10 @@ partitions, one dataset on R2.
 >
 > **Evidence:** D6 accepted (owner decision, 2026-10-23) and implemented, unreleased: an error's source prefix is added where the error originates, and wrapping sites add context only. The rule is in CONTRACT_ERRORS §Error Messages, and the test in `internal/errprefix` enforces it.
 > Date: 2026-10-23 | Observer: @pithecene | Project: lode
-> Summary: Not met; D10b open.
+>
+> **Evidence:** D10b accepted (owner decision, 2026-10-23) and implemented, unreleased: the canonical manifest is the commit and the partition manifests are its index. An unfiltered listing reports a snapshot without partition manifests under the empty partition, and `Sweep` restores the index once the snapshot is older than the grace period. The read-only check of the six F6 snapshots remains open; it no longer decides D10b.
+> Date: 2026-10-23 | Observer: @pithecene | Project: lode
+> Summary: Not met; no decision is open, but the accepted decisions are unreleased.
 > Issue: —
 
 - [ ] `PUBLIC_API.md` matches exported symbols in `lode/api.go` with zero discrepancies
