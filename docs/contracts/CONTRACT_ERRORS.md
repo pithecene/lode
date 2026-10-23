@@ -402,8 +402,8 @@ Errors MUST NOT imply:
 All operations provide:
 - **Idempotent reads**: the same input yields the same output, subject to
   the store's consistency.
-- **Atomic writes**: the presence of the manifest is the sole signal that a
-  commit is complete.
+- **Atomic writes**: a commit is complete as CONTRACT_CORE §Head Pointer
+  defines it.
 
   Retention (`Expire`, `Sweep`) is not a snapshot commit. Its only writes
   are tombstones, created with create-only semantics (`CONTRACT_RETENTION.md`
