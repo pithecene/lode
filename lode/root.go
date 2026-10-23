@@ -57,7 +57,7 @@ func OpenReadOnly[S ObjectStore](f Factory[S], opts ...RootOption) *ReadRoot {
 	if err != nil {
 		return &ReadRoot{err: err}
 	}
-	return &ReadRoot{store: readOnlyStore{store}, names: names}
+	return &ReadRoot{store: newReadOnlyStore(store), names: names}
 }
 
 // openStore validates the path options, then calls the factory: arguments
@@ -121,6 +121,22 @@ func (readOnlyStore) Delete(context.Context, string) error { return ErrReadOnly 
 
 func (readOnlyStore) CompareAndSwap(context.Context, string, string, string) error {
 	return ErrReadOnly
+}
+
+// readOnlyRangeStore is a readOnlyStore over a store that reads ranges;
+// range reads pass through.
+type readOnlyRangeStore struct {
+	readOnlyStore
+	RangeReader
+}
+
+// newReadOnlyStore wraps store so that it refuses writes and reads ranges
+// only when store does (RangeReader).
+func newReadOnlyStore(store ObjectStore) Store {
+	if ranges, ok := store.(RangeReader); ok {
+		return readOnlyRangeStore{readOnlyStore{store}, ranges}
+	}
+	return readOnlyStore{store}
 }
 
 // -----------------------------------------------------------------------------

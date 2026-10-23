@@ -29,17 +29,17 @@ import (
 // storeBackend opens one built-in Store, fresh for each subtest.
 type storeBackend struct {
 	name string
-	open func(t *testing.T) Store
+	open func(t *testing.T) RangeStore
 }
 
 // storeBackends are the built-in stores every shared store test runs on.
 var storeBackends = []storeBackend{
 	{name: "fs", open: openFSStore},
-	{name: "memory", open: func(*testing.T) Store { return NewMemory() }},
+	{name: "memory", open: func(*testing.T) RangeStore { return NewMemory() }},
 }
 
 // openFSStore is an FS store over a fresh temporary directory.
-func openFSStore(t *testing.T) Store {
+func openFSStore(t *testing.T) RangeStore {
 	t.Helper()
 	tmpDir, err := os.MkdirTemp("", "lode-test-*")
 	if err != nil {
@@ -54,7 +54,7 @@ func openFSStore(t *testing.T) Store {
 }
 
 // forEachStore runs test once per built-in store, as a subtest named for it.
-func forEachStore(t *testing.T, test func(t *testing.T, store Store)) {
+func forEachStore(t *testing.T, test func(t *testing.T, store RangeStore)) {
 	t.Helper()
 	for _, b := range storeBackends {
 		t.Run(b.name, func(t *testing.T) { test(t, b.open(t)) })
@@ -63,7 +63,7 @@ func forEachStore(t *testing.T, test func(t *testing.T, store Store)) {
 
 func TestStore_Put(t *testing.T) {
 	t.Run("err path exists", func(t *testing.T) {
-		forEachStore(t, func(t *testing.T, store Store) {
+		forEachStore(t, func(t *testing.T, store RangeStore) {
 			ctx := t.Context()
 
 			// First write should succeed
@@ -85,7 +85,7 @@ func TestStore_Put(t *testing.T) {
 
 func TestStore_Get(t *testing.T) {
 	t.Run("not found", func(t *testing.T) {
-		forEachStore(t, func(t *testing.T, store Store) {
+		forEachStore(t, func(t *testing.T, store RangeStore) {
 			ctx := t.Context()
 
 			_, err := store.Get(ctx, "nonexistent.txt")
@@ -96,7 +96,7 @@ func TestStore_Get(t *testing.T) {
 	})
 
 	t.Run("invalid path", func(t *testing.T) {
-		forEachStore(t, func(t *testing.T, store Store) {
+		forEachStore(t, func(t *testing.T, store RangeStore) {
 			ctx := t.Context()
 
 			_, err := store.Get(ctx, "../escape")
@@ -109,7 +109,7 @@ func TestStore_Get(t *testing.T) {
 
 func TestStore_Exists(t *testing.T) {
 	t.Run("true", func(t *testing.T) {
-		forEachStore(t, func(t *testing.T, store Store) {
+		forEachStore(t, func(t *testing.T, store RangeStore) {
 			ctx := t.Context()
 
 			err := store.Put(ctx, "test/file.txt", bytes.NewReader([]byte("hello")))
@@ -128,7 +128,7 @@ func TestStore_Exists(t *testing.T) {
 	})
 
 	t.Run("false", func(t *testing.T) {
-		forEachStore(t, func(t *testing.T, store Store) {
+		forEachStore(t, func(t *testing.T, store RangeStore) {
 			ctx := t.Context()
 
 			exists, err := store.Exists(ctx, "nonexistent/file.txt")
@@ -142,7 +142,7 @@ func TestStore_Exists(t *testing.T) {
 	})
 
 	t.Run("invalid path", func(t *testing.T) {
-		forEachStore(t, func(t *testing.T, store Store) {
+		forEachStore(t, func(t *testing.T, store RangeStore) {
 			ctx := t.Context()
 
 			_, err := store.Exists(ctx, "../escape")
@@ -155,7 +155,7 @@ func TestStore_Exists(t *testing.T) {
 
 func TestStore_Delete(t *testing.T) {
 	t.Run("exists", func(t *testing.T) {
-		forEachStore(t, func(t *testing.T, store Store) {
+		forEachStore(t, func(t *testing.T, store RangeStore) {
 			ctx := t.Context()
 
 			err := store.Put(ctx, "test/delete.txt", bytes.NewReader([]byte("hello")))
@@ -181,7 +181,7 @@ func TestStore_Delete(t *testing.T) {
 	// Retention deletes objects that readers may still hold open; on Windows
 	// that requires the readers to grant delete sharing.
 	t.Run("while a reader holds the object", func(t *testing.T) {
-		forEachStore(t, func(t *testing.T, store Store) {
+		forEachStore(t, func(t *testing.T, store RangeStore) {
 			ctx := t.Context()
 			if err := store.Put(ctx, "test/held.txt", bytes.NewReader([]byte("hello"))); err != nil {
 				t.Fatal(err)
@@ -202,7 +202,7 @@ func TestStore_Delete(t *testing.T) {
 	})
 
 	t.Run("not exist", func(t *testing.T) {
-		forEachStore(t, func(t *testing.T, store Store) {
+		forEachStore(t, func(t *testing.T, store RangeStore) {
 			ctx := t.Context()
 
 			err := store.Delete(ctx, "nonexistent.txt")
@@ -215,7 +215,7 @@ func TestStore_Delete(t *testing.T) {
 
 func TestStore_List(t *testing.T) {
 	t.Run("non-existent prefix returns empty", func(t *testing.T) {
-		forEachStore(t, func(t *testing.T, store Store) {
+		forEachStore(t, func(t *testing.T, store RangeStore) {
 			ctx := t.Context()
 
 			// List a prefix that doesn't exist - should return empty list, not error
@@ -230,7 +230,7 @@ func TestStore_List(t *testing.T) {
 	})
 
 	t.Run("specific prefix", func(t *testing.T) {
-		forEachStore(t, func(t *testing.T, store Store) {
+		forEachStore(t, func(t *testing.T, store RangeStore) {
 			ctx := t.Context()
 
 			for _, key := range []string{"a/file1.txt", "a/file2.txt", "b/file3.txt"} {
@@ -250,7 +250,7 @@ func TestStore_List(t *testing.T) {
 	})
 
 	t.Run("traversal prefix", func(t *testing.T) {
-		forEachStore(t, func(t *testing.T, store Store) {
+		forEachStore(t, func(t *testing.T, store RangeStore) {
 			ctx := t.Context()
 
 			_, err := store.List(ctx, "../escape")
@@ -265,7 +265,7 @@ func TestStore_List(t *testing.T) {
 
 func TestStore_ReadRange(t *testing.T) {
 	t.Run("basic", func(t *testing.T) {
-		forEachStore(t, func(t *testing.T, store Store) {
+		forEachStore(t, func(t *testing.T, store RangeStore) {
 			ctx := t.Context()
 
 			content := []byte("hello world")
@@ -285,7 +285,7 @@ func TestStore_ReadRange(t *testing.T) {
 	})
 
 	t.Run("beyond EOF", func(t *testing.T) {
-		forEachStore(t, func(t *testing.T, store Store) {
+		forEachStore(t, func(t *testing.T, store RangeStore) {
 			ctx := t.Context()
 
 			content := []byte("hello")
@@ -305,7 +305,7 @@ func TestStore_ReadRange(t *testing.T) {
 	})
 
 	t.Run("offset beyond EOF", func(t *testing.T) {
-		forEachStore(t, func(t *testing.T, store Store) {
+		forEachStore(t, func(t *testing.T, store RangeStore) {
 			ctx := t.Context()
 
 			content := []byte("hello")
@@ -325,7 +325,7 @@ func TestStore_ReadRange(t *testing.T) {
 	})
 
 	t.Run("not found", func(t *testing.T) {
-		forEachStore(t, func(t *testing.T, store Store) {
+		forEachStore(t, func(t *testing.T, store RangeStore) {
 			ctx := t.Context()
 
 			_, err := store.ReadRange(ctx, "nonexistent.txt", 0, 10)
@@ -338,7 +338,7 @@ func TestStore_ReadRange(t *testing.T) {
 
 func TestStore_ReadRange_Bounds(t *testing.T) {
 	t.Run("negative offset", func(t *testing.T) {
-		forEachStore(t, func(t *testing.T, store Store) {
+		forEachStore(t, func(t *testing.T, store RangeStore) {
 			ctx := t.Context()
 
 			_, err := store.ReadRange(ctx, "test.txt", -1, 10)
@@ -349,7 +349,7 @@ func TestStore_ReadRange_Bounds(t *testing.T) {
 	})
 
 	t.Run("negative length", func(t *testing.T) {
-		forEachStore(t, func(t *testing.T, store Store) {
+		forEachStore(t, func(t *testing.T, store RangeStore) {
 			ctx := t.Context()
 
 			_, err := store.ReadRange(ctx, "test.txt", 0, -1)
@@ -360,7 +360,7 @@ func TestStore_ReadRange_Bounds(t *testing.T) {
 	})
 
 	t.Run("length overflow", func(t *testing.T) {
-		forEachStore(t, func(t *testing.T, store Store) {
+		forEachStore(t, func(t *testing.T, store RangeStore) {
 			// This test validates 32-bit platform protection.
 			// On 64-bit systems, math.MaxInt == math.MaxInt64, so the overflow check
 			// cannot trigger. Skip on 64-bit.
@@ -378,7 +378,7 @@ func TestStore_ReadRange_Bounds(t *testing.T) {
 	})
 
 	t.Run("offset plus length overflow", func(t *testing.T) {
-		forEachStore(t, func(t *testing.T, store Store) {
+		forEachStore(t, func(t *testing.T, store RangeStore) {
 			ctx := t.Context()
 
 			_, err := store.ReadRange(ctx, "test.txt", math.MaxInt64-10, 20)
@@ -393,7 +393,7 @@ func TestStore_ReadRange_Bounds(t *testing.T) {
 
 func TestStore_ReaderAt(t *testing.T) {
 	t.Run("basic", func(t *testing.T) {
-		forEachStore(t, func(t *testing.T, store Store) {
+		forEachStore(t, func(t *testing.T, store RangeStore) {
 			ctx := t.Context()
 
 			content := []byte("hello world")
@@ -423,7 +423,7 @@ func TestStore_ReaderAt(t *testing.T) {
 	})
 
 	t.Run("not found", func(t *testing.T) {
-		forEachStore(t, func(t *testing.T, store Store) {
+		forEachStore(t, func(t *testing.T, store RangeStore) {
 			ctx := t.Context()
 
 			_, err := store.ReaderAt(ctx, "nonexistent.txt")
@@ -442,14 +442,22 @@ func TestStore_ReaderAt(t *testing.T) {
 // checks: the built-in stores, and SingleProcess over a store without CAS.
 var casBackends = append(slices.Clone(storeBackends), storeBackend{
 	name: "single-process",
-	open: func(*testing.T) Store { return SingleProcess(testutil.WithoutCAS(NewMemory())) },
+	open: func(t *testing.T) RangeStore {
+		// SingleProcess reads ranges exactly when the store it wraps does,
+		// which is known only when it runs.
+		store, ok := SingleProcess(testutil.WithoutCAS(NewMemory())).(RangeStore)
+		if !ok {
+			t.Fatal("SingleProcess over a memory store does not read ranges")
+		}
+		return store
+	},
 })
 
 // TestSingleProcess_WrapsOnlyStoresWithoutCAS checks that the conformance
 // test reaches the process lock: testutil.WithoutCAS must hide the memory
 // store's CompareAndSwap, and a store with CAS is returned unchanged.
 func TestSingleProcess_WrapsOnlyStoresWithoutCAS(t *testing.T) {
-	if _, ok := SingleProcess(testutil.WithoutCAS(NewMemory())).(*singleProcessStore); !ok {
+	if _, ok := SingleProcess(testutil.WithoutCAS(NewMemory())).(singleProcessRangeStore); !ok {
 		t.Error("SingleProcess did not wrap a store without CompareAndSwap")
 	}
 	mem := NewMemory()

@@ -139,7 +139,8 @@ snapshot's manifest names.
 
 `volume.New(id, factory, totalLength, opts...)` creates a sparse byte
 space, addressable by range, with manifest-driven commit semantics. It
-takes a `lode.Factory[lode.Store]`.
+takes a `lode.Factory[lode.RangeStore]`, so a store without range reads does
+not compile there.
 
 A Dataset constructs complete objects before committing; a Volume commits
 data incrementally as sparse byte ranges. A Volume suits a byte object of
@@ -231,7 +232,8 @@ includes a curated set of components:
 - `s3.Factory(client, config)`: S3-compatible storage (see below)
 
 The stores themselves: `NewFS(root)`, `NewMemory()`, `s3.New(client,
-config)`, and `SingleProcess(objectStore)`.
+config)`, and `SingleProcess(objectStore)`. `FS`, `Memory`, and `s3.Factory`
+are factories of `RangeStore`, and `NewFS` and `NewMemory` return one.
 
 **Layouts:**
 - `Unpartitioned()`: no partitions (the default)
@@ -278,11 +280,19 @@ config)`, and `SingleProcess(objectStore)`.
   column
 
 **Range reads:**
-- `Store.ReadRange(ctx, path, offset, length)`: reads a byte range from an
-  object
-- `Store.ReaderAt(ctx, path)`: returns an `io.ReaderAt` for random access
+- `RangeReader`: the optional range-read capability of a store; a store
+  that cannot read ranges does not implement it
+- `RangeStore`: a `Store` that is also a `RangeReader`, which the built-in
+  stores and the S3 adapter are
+- `RangeReader.ReadRange(ctx, path, offset, length)`: reads a byte range
+  from an object
+- `RangeReader.ReaderAt(ctx, path)`: returns an `io.ReaderAt` for random
+  access
 - `ReaderAt(ctx, obj)` on a dataset handle or view: returns an
-  `io.ReaderAt` for a data object
+  `io.ReaderAt` for a data object, or `ErrRangeReadNotSupported` when the
+  store does not implement `RangeReader`
+- `volume.New` takes a factory of `RangeStore`, so the requirement is
+  checked when the program compiles
 
 Range reads provide efficient access to columnar formats (Parquet footers),
 block-indexed logs, and partial previews of artifacts.
@@ -956,7 +966,7 @@ if errors.Is(err, lode.ErrNoSnapshots) {
 | `ErrCodecNotStreamable` | `Records.StreamWrite` was called with a codec that does not stream | `Records` |
 | `ErrNilIterator` | A `nil` iterator was supplied to `Records.StreamWrite` | `Records` |
 | `ErrPartitioningNotSupported` | `Records.StreamWrite` was called on a partitioned dataset | `Records` |
-| `ErrRangeReadNotSupported` | The store does not support range reads | Storage |
+| `ErrRangeReadNotSupported` | The store does not implement `RangeReader` | `ReaderAt` on a handle or view |
 | `ErrSnapshotConflict` | Another writer committed after the parent was resolved (CAS) | Writer handles, Volume |
 | `ErrSettingsMismatch` | The handle's codec, codec description, compressor, checksum, layout and partition keys, or path names differ from the dataset's | Writer handles, views |
 | `ErrReadOnly` | A write (`Put`, `Delete`, or `CompareAndSwap`) was attempted through a read-only root's store | Views |

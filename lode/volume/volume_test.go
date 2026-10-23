@@ -22,7 +22,7 @@ import (
 
 // writeVolumeManifest writes a Manifest directly to the store for
 // validation testing. Mirrors writeManifest in reader_test.go.
-func writeVolumeManifest(ctx context.Context, t *testing.T, store lode.Store, m *Manifest) {
+func writeVolumeManifest(ctx context.Context, t *testing.T, store lode.RangeStore, m *Manifest) {
 	t.Helper()
 	data, err := json.Marshal(m)
 	if err != nil {
@@ -51,7 +51,7 @@ func validVolumeManifest(volumeID ID, totalLength int64) *Manifest {
 }
 
 // newTestVolume is a convenience helper that creates a Volume and t.Fatal's on error.
-func newTestVolume(t *testing.T, id ID, factory lode.Factory[lode.Store], totalLength int64, opts ...Option) Volume {
+func newTestVolume(t *testing.T, id ID, factory lode.Factory[lode.RangeStore], totalLength int64, opts ...Option) Volume {
 	t.Helper()
 	vol, err := New(id, factory, totalLength, opts...)
 	if err != nil {
@@ -113,7 +113,7 @@ func TestNewVolume(t *testing.T) {
 	})
 
 	t.Run("nil store returns error", func(t *testing.T) {
-		factory := func() (lode.Store, error) { return nil, nil } //nolint:nilnil // intentionally testing nil store guard
+		factory := func() (lode.RangeStore, error) { return nil, nil } //nolint:nilnil // intentionally testing nil store guard
 		_, err := New("test-vol", factory, 1024)
 		if err == nil {
 			t.Fatal("expected error for nil store")
@@ -653,7 +653,7 @@ func TestVolume_Commit_Blocks(t *testing.T) {
 	// are stored sorted by offset in the manifest, enabling O(log B) lookups.
 	t.Run("blocks sorted in manifest", func(t *testing.T) {
 		store := lode.NewMemory()
-		vol, err := New("test-vol", func() (lode.Store, error) { return store, nil }, 100)
+		vol, err := New("test-vol", func() (lode.RangeStore, error) { return store, nil }, 100)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1806,7 +1806,7 @@ func TestVolume_Commit_AbandonedCommit(t *testing.T) {
 }
 
 // lodeGet reads an object as a string.
-func lodeGet(t *testing.T, store lode.Store, path string) (string, error) {
+func lodeGet(t *testing.T, store lode.RangeStore, path string) (string, error) {
 	t.Helper()
 	rc, err := store.Get(t.Context(), path)
 	if err != nil {

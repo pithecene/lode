@@ -29,11 +29,11 @@ type fsStore struct {
 	root string
 }
 
-// FS returns a factory for a filesystem-backed Store rooted at the given
-// directory (NewFS). The directory must exist when a root opens; until then
-// the factory performs no I/O.
-func FS(root string) Factory[Store] {
-	return func() (Store, error) {
+// FS returns a factory for a filesystem-backed RangeStore rooted at the
+// given directory (NewFS). The directory must exist when a root opens; until
+// then the factory performs no I/O.
+func FS(root string) Factory[RangeStore] {
+	return func() (RangeStore, error) {
 		return NewFS(root)
 	}
 }
@@ -48,13 +48,13 @@ func Use[S ObjectStore](store S) Factory[S] {
 	}
 }
 
-// NewFS creates a filesystem-backed Store rooted at the given directory.
+// NewFS creates a filesystem-backed RangeStore rooted at the given directory.
 // The directory must exist, on a filesystem that supports hard links: Put
 // publishes each object with one, and fails where links are unsupported
 // (CONTRACT_STORAGE §Put).
 //
 // Consistency: Immediate read-after-write on local filesystems.
-func NewFS(root string) (Store, error) {
+func NewFS(root string) (RangeStore, error) {
 	info, err := os.Stat(root)
 	if err != nil {
 		return nil, fmt.Errorf("lode: fs stat root: %w", err)
@@ -372,19 +372,19 @@ type memoryStore struct {
 	data map[string][]byte
 }
 
-// Memory returns a factory for a new in-memory Store (NewMemory). Each root
-// opened with it gets its own store; use Use(NewMemory()) to share one.
-func Memory() Factory[Store] {
-	return func() (Store, error) {
+// Memory returns a factory for a new in-memory RangeStore (NewMemory). Each
+// root opened with it gets its own store; use Use(NewMemory()) to share one.
+func Memory() Factory[RangeStore] {
+	return func() (RangeStore, error) {
 		return NewMemory(), nil
 	}
 }
 
-// NewMemory creates an in-memory Store.
+// NewMemory creates an in-memory RangeStore.
 //
 // Consistency: Immediate.
 // Memory is safe for concurrent use.
-func NewMemory() Store {
+func NewMemory() RangeStore {
 	return &memoryStore{
 		data: make(map[string][]byte),
 	}

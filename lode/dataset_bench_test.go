@@ -14,7 +14,7 @@ import (
 // costs 50-100ms, making O(n) store scans per write visible as wall-clock
 // degradation.
 type latencyStore struct {
-	inner   Store
+	inner   RangeStore
 	latency time.Duration
 }
 

@@ -31,7 +31,11 @@ func SingleProcess(store ObjectStore) Store {
 	if s, ok := store.(Store); ok {
 		return s
 	}
-	return &singleProcessStore{ObjectStore: store}
+	s := &singleProcessStore{ObjectStore: store}
+	if ranges, ok := store.(RangeReader); ok {
+		return singleProcessRangeStore{singleProcessStore: s, ranges: ranges}
+	}
+	return s
 }
 
 // singleProcessStore implements CompareAndSwap over a store without one.
@@ -62,18 +66,25 @@ func (s *singleProcessStore) List(ctx context.Context, prefix string) ([]string,
 	return s.ObjectStore.List(ctx, prefix)
 }
 
+// singleProcessRangeStore is a singleProcessStore over a store that reads
+// ranges (RangeReader); its range reads wait like its other reads.
+type singleProcessRangeStore struct {
+	*singleProcessStore
+	ranges RangeReader
+}
+
 // ReadRange reads a range of path once no replacement is in progress.
-func (s *singleProcessStore) ReadRange(ctx context.Context, path string, offset, length int64) ([]byte, error) {
+func (s singleProcessRangeStore) ReadRange(ctx context.Context, path string, offset, length int64) ([]byte, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.ObjectStore.ReadRange(ctx, path, offset, length)
+	return s.ranges.ReadRange(ctx, path, offset, length)
 }
 
 // ReaderAt opens path once no replacement is in progress.
-func (s *singleProcessStore) ReaderAt(ctx context.Context, path string) (io.ReaderAt, error) {
+func (s singleProcessRangeStore) ReaderAt(ctx context.Context, path string) (io.ReaderAt, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.ObjectStore.ReaderAt(ctx, path)
+	return s.ranges.ReaderAt(ctx, path)
 }
 
 // CompareAndSwap applies the ConditionalWriter semantics under the process

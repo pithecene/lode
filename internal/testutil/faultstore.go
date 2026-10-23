@@ -22,8 +22,8 @@ import (
 // under controlled failure conditions without relying on timing.
 
 // Store is the method set of lode.Store, restated so this package does not
-// import lode (lode's own tests use it). Any lode.Store satisfies it, and a
-// *FaultStore satisfies lode.Store.
+// import lode (lode's own tests use it). Any lode.RangeStore satisfies it,
+// and a *FaultStore satisfies lode.RangeStore.
 type Store interface {
 	Put(ctx context.Context, path string, r io.Reader) error
 	Get(ctx context.Context, path string) (io.ReadCloser, error)

@@ -28,7 +28,7 @@ import (
 // whether a goroutine's stack belongs to the backend's own machinery, which
 // legitimately outlives the run, rather than to a leak.
 type Backend struct {
-	Store       lode.Store
+	Store       lode.RangeStore
 	Release     func(ctx context.Context) error
 	RetainsData bool
 	Lingering   func(stack string) bool
@@ -52,7 +52,13 @@ var backends = map[string]openBackend{
 		return Backend{Store: lode.NewMemory(), Release: keep, RetainsData: true}, nil
 	},
 	"single-process": func(context.Context, string, string) (Backend, error) {
-		return Backend{Store: lode.SingleProcess(testutil.WithoutCAS(lode.NewMemory())), Release: keep, RetainsData: true}, nil
+		// SingleProcess reads ranges exactly when the store it wraps does,
+		// which is known only when it runs.
+		store, ok := lode.SingleProcess(testutil.WithoutCAS(lode.NewMemory())).(lode.RangeStore)
+		if !ok {
+			return Backend{}, errors.New("chaos: SingleProcess over a memory store does not read ranges")
+		}
+		return Backend{Store: store, Release: keep, RetainsData: true}, nil
 	},
 	"fs": func(_ context.Context, dir, _ string) (Backend, error) {
 		store, err := lode.FS(dir)()

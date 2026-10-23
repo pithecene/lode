@@ -63,12 +63,16 @@ type ObjectStore interface {
     Exists(ctx context.Context, path string) (bool, error)
     List(ctx context.Context, prefix string) ([]string, error)
     Delete(ctx context.Context, path string) error
-    ReadRange(ctx context.Context, path string, offset, length int64) ([]byte, error)
-    ReaderAt(ctx context.Context, path string) (io.ReaderAt, error)
 }
 
 type ConditionalWriter interface {
     CompareAndSwap(ctx context.Context, path, expected, replacement string) error
+}
+
+// RangeReader is optional (V1_API_DECISIONS D5).
+type RangeReader interface {
+    ReadRange(ctx context.Context, path string, offset, length int64) ([]byte, error)
+    ReaderAt(ctx context.Context, path string) (io.ReaderAt, error)
 }
 ```
 
@@ -77,6 +81,8 @@ The read path uses the `ObjectStore` methods; commits and retention also use
 
 ### Adapter Obligations (Read Path)
 
+- An adapter that cannot read ranges MUST NOT implement `RangeReader`, so
+  that a type assertion reports the capability before any read.
 - `ReadRange` must correspond to genuine range requests (for example, HTTP
   `Range` requests on S3).
 - `ReaderAt` must provide random-access reads and be safe for concurrent
@@ -87,15 +93,19 @@ The read path uses the `ObjectStore` methods; commits and retention also use
 ### Range-Read Access Paths
 
 Every dataset handle and view provides `ReaderAt(ctx, ObjectRef)` for
-random access. Callers that need direct byte-range reads have two options:
+random access; it MUST return `ErrRangeReadNotSupported` when the store does
+not implement `RangeReader`. Lode's store wrappers (`SingleProcess` and the
+store of a read-only root) MUST implement `RangeReader` exactly when the
+store they wrap does. Callers that need direct byte-range reads have two
+options:
 
 1. **`ReaderAt`** returns an `io.ReaderAt` for standard random access,
    which suits most uses (Parquet footers, block indexes, and similar
    structures).
 
-2. **`Store.ReadRange`** reads a byte range directly from the underlying
-   store. Callers with access to the `Store` interface can use
-   `ReadRange(ctx, path, offset, length)`.
+2. **`RangeReader.ReadRange`** reads a byte range directly from the
+   underlying store. Callers that hold the store assert it to
+   `RangeReader` and call `ReadRange(ctx, path, offset, length)`.
 
 The handles deliberately omit a direct `ReadRange` method, because `io.ReaderAt` covers most range-read uses and is a standard
 Go interface that existing libraries already accept.

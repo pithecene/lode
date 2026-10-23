@@ -35,7 +35,7 @@ type Config struct {
 // Run drives the workload against store for cfg.Duration, then verifies
 // the history it left. The report lists every violation observed during
 // the run and by the final checks.
-func Run(ctx context.Context, cfg Config, store lode.Store) Report {
+func Run(ctx context.Context, cfg Config, store lode.RangeStore) Report {
 	if cfg.Volume {
 		return runVolume(ctx, cfg, store)
 	}
@@ -62,7 +62,7 @@ func Run(ctx context.Context, cfg Config, store lode.Store) Report {
 
 // runVolume drives concurrent Volume writers for cfg.Duration and then
 // verifies the volume's history and contents.
-func runVolume(ctx context.Context, cfg Config, store lode.Store) Report {
+func runVolume(ctx context.Context, cfg Config, store lode.RangeStore) Report {
 	ledger := &Ledger{}
 	until := time.Now().Add(cfg.Duration)
 	var wg sync.WaitGroup

@@ -17,7 +17,7 @@ import (
 // `available` arithmetic and `available <= 0` → `<` (only the buffer size
 // differs; ReadAt still returns exactly the bytes present).
 
-func assertReadRangeBounds(t *testing.T, store Store) {
+func assertReadRangeBounds(t *testing.T, store RangeStore) {
 	t.Helper()
 	ctx := t.Context()
 	content := []byte("hello")

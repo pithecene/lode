@@ -318,7 +318,11 @@ func (d *dataset) ReaderAt(ctx context.Context, obj ObjectRef) (io.ReaderAt, err
 	if err := d.checkObject(obj); err != nil {
 		return nil, err
 	}
-	return d.store.ReaderAt(ctx, obj.Path)
+	ranges, ok := d.store.(RangeReader)
+	if !ok {
+		return nil, ErrRangeReadNotSupported
+	}
+	return ranges.ReaderAt(ctx, obj.Path)
 }
 
 // checkObject requires obj to name a data object of this dataset and, when

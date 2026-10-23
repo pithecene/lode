@@ -192,7 +192,15 @@ without range reads, which today constructs and then fails on read. Adapters
 are not broken: the methods they already have satisfy the new interface.
 Quarry references neither the methods nor the sentinel.
 
-**Status.** Open.
+**Status.** Accepted (owner decision, 2026-10-23) and implemented,
+unreleased. `SingleProcess` and the store of a read-only root implement
+`RangeReader` exactly when the store they wrap does. Where the capability
+is static, it is a type rather than a run-time check: `RangeStore` is a
+`Store` that reads ranges, the built-in constructors and factories return
+one, and `volume.New` takes a `Factory[RangeStore]`, so a store without
+range reads does not compile there instead of returning
+`ErrInvalidArgument`. This amends the Factory row of D11, under which the
+factories return `Factory[Store]`.
 
 ---
 

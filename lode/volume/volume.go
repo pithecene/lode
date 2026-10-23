@@ -27,7 +27,7 @@ const (
 // volume implements the Volume interface.
 type volume struct {
 	id          ID
-	store       lode.Store
+	store       lode.RangeStore // reads are built on range reads (V1_API_DECISIONS D5)
 	totalLength int64
 	checksum    lode.Checksum
 	retry       retry.Config
@@ -102,7 +102,7 @@ var historyErrors = history.Errors{
 }
 
 // New creates a volume with a fixed total length.
-func New(id ID, storeFactory lode.Factory[lode.Store], totalLength int64, opts ...Option) (Volume, error) {
+func New(id ID, storeFactory lode.Factory[lode.RangeStore], totalLength int64, opts ...Option) (Volume, error) {
 	if storeFactory == nil {
 		return nil, validate.Argument("store factory must not be nil")
 	}

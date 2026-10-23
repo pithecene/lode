@@ -226,16 +226,29 @@ type ObjectStore interface {
 
 	// Delete removes the path if it exists.
 	Delete(ctx context.Context, path string) error
+}
 
+// RangeReader is the optional range-read capability of a store. A handle's
+// ReaderAt returns ErrRangeReadNotSupported over a store without it. A store
+// that cannot read ranges does not implement it, so that the capability is
+// known before any read.
+type RangeReader interface {
 	// ReadRange reads a byte range from the given path.
 	// Returns ErrNotFound if the path does not exist.
-	// Returns ErrRangeReadNotSupported if the store does not support range reads.
 	ReadRange(ctx context.Context, path string, offset, length int64) ([]byte, error)
 
 	// ReaderAt returns an io.ReaderAt for random access reads.
 	// Returns ErrNotFound if the path does not exist.
-	// Returns ErrRangeReadNotSupported if the store does not support range reads.
 	ReaderAt(ctx context.Context, path string) (io.ReaderAt, error)
+}
+
+// RangeStore is a Store that reads ranges. The stores of FS, Memory, and
+// the S3 adapter are RangeStores, and a Volume requires one, so that a store
+// without range reads is refused when the program compiles rather than
+// when it runs.
+type RangeStore interface {
+	Store
+	RangeReader
 }
 
 // ConditionalWriter is the conditional write every Store provides. Commits

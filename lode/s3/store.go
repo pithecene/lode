@@ -167,8 +167,8 @@ func New(client API, cfg Config) (*Store, error) {
 // root rather than returned here.
 //
 //	root := lode.Open(s3.Factory(client, s3.Config{Bucket: "my-bucket"}))
-func Factory(client API, cfg Config) lode.Factory[lode.Store] {
-	return func() (lode.Store, error) {
+func Factory(client API, cfg Config) lode.Factory[lode.RangeStore] {
+	return func() (lode.RangeStore, error) {
 		s, err := New(client, cfg)
 		if err != nil {
 			return nil, err

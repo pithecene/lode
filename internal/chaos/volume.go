@@ -54,9 +54,9 @@ func (c Config) settleBlock() Block {
 
 // openVolume opens one handle on the run's volume for a goroutine, with its
 // own in-memory head and, when faults are enabled, its own faulty store.
-func openVolume(cfg Config, base lode.Store, rng *rand.Rand) (volume.Volume, error) {
+func openVolume(cfg Config, base lode.RangeStore, rng *rand.Rand) (volume.Volume, error) {
 	store := cfg.storeFor(base, rng)
-	factory := func() (lode.Store, error) { return store, nil }
+	factory := func() (lode.RangeStore, error) { return store, nil }
 	return volume.New(volumeID, factory, cfg.volumeLength(), volume.WithRetryCount(cfg.Retries))
 }
 
@@ -64,7 +64,7 @@ func openVolume(cfg Config, base lode.Store, rng *rand.Rand) (volume.Volume, err
 // stripe and commits them, until the deadline. A failed commit leaves its
 // blocks staged and unreferenced; the stripe moves past them. As for the
 // Dataset writers, the deadline is checked between commits.
-func volumeWriter(ctx context.Context, cfg Config, store lode.Store, index int, until time.Time, ledger *Ledger) {
+func volumeWriter(ctx context.Context, cfg Config, store lode.RangeStore, index int, until time.Time, ledger *Ledger) {
 	rng := rand.New(rand.NewPCG(cfg.Seed, uint64(index)+1)) //nolint:gosec // reproducible test randomness, not security
 	next, end := int64(index)*stripe, int64(index+1)*stripe
 	var vol volume.Volume
@@ -143,8 +143,8 @@ var volumeChecks = []check[*volumeVerifier]{
 // history and contents the run left. The settling commit must succeed even
 // after an abandoned commit, whose staged manifest supplies the blocks it
 // merges (CONTRACT_VOLUME §Error Semantics).
-func verifyVolume(ctx context.Context, cfg Config, store lode.Store, ledger *Ledger) int {
-	vol, err := volume.New(volumeID, func() (lode.Store, error) { return store, nil }, cfg.volumeLength(), volume.WithRetryCount(cfg.Retries))
+func verifyVolume(ctx context.Context, cfg Config, store lode.RangeStore, ledger *Ledger) int {
+	vol, err := volume.New(volumeID, func() (lode.RangeStore, error) { return store, nil }, cfg.volumeLength(), volume.WithRetryCount(cfg.Retries))
 	if err != nil {
 		ledger.violate("verify", "open: %v", err)
 		return 0

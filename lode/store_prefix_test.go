@@ -42,7 +42,7 @@ func listSorted(ctx context.Context, t *testing.T, store Store, prefix string) [
 	return paths
 }
 
-func assertStringPrefixSemantics(t *testing.T, store Store) {
+func assertStringPrefixSemantics(t *testing.T, store RangeStore) {
 	t.Helper()
 	ctx := t.Context()
 	seedPrefixFixture(t, store)

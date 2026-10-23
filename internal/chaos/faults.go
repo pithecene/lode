@@ -60,7 +60,7 @@ func FaultLevelNames() []string { return slices.Sorted(maps.Keys(faultLevels)) }
 // storeFor returns the store one handle reaches base through: base itself,
 // or, when faults are enabled, a faulty store of its own, seeded from rng so
 // a run's fault decisions repeat for the same seed.
-func (c Config) storeFor(base lode.Store, rng *rand.Rand) lode.Store {
+func (c Config) storeFor(base lode.RangeStore, rng *rand.Rand) lode.RangeStore {
 	if !c.Faults.Enabled() {
 		return base
 	}
@@ -71,7 +71,7 @@ func (c Config) storeFor(base lode.Store, rng *rand.Rand) lode.Store {
 // It is safe for concurrent use: a streaming write calls Put from its own
 // goroutine.
 type faultyStore struct {
-	inner  lode.Store
+	inner  lode.RangeStore
 	faults Faults
 
 	mu   sync.Mutex
@@ -80,7 +80,7 @@ type faultyStore struct {
 }
 
 // newFaultyStore wraps inner.
-func newFaultyStore(inner lode.Store, faults Faults, rng *rand.Rand) lode.Store {
+func newFaultyStore(inner lode.RangeStore, faults Faults, rng *rand.Rand) lode.RangeStore {
 	return &faultyStore{inner: inner, faults: faults, rng: rng}
 }
 

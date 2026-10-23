@@ -60,14 +60,22 @@ var replacementReads = []struct {
 		return fmt.Sprintf("%s %v", strings.Join(paths, ","), err)
 	}},
 	{"ReadRange", func(ctx context.Context, s Store) string {
-		data, err := s.ReadRange(ctx, "ptr/latest", 0, 6)
+		ranges, ok := s.(RangeReader)
+		if !ok {
+			return "the store does not read ranges"
+		}
+		data, err := ranges.ReadRange(ctx, "ptr/latest", 0, 6)
 		if err != nil {
 			return err.Error()
 		}
 		return string(data)
 	}},
 	{"ReaderAt", func(ctx context.Context, s Store) string {
-		ra, err := s.ReaderAt(ctx, "ptr/latest")
+		ranges, ok := s.(RangeReader)
+		if !ok {
+			return "the store does not read ranges"
+		}
+		ra, err := ranges.ReaderAt(ctx, "ptr/latest")
 		if err != nil {
 			return err.Error()
 		}

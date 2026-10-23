@@ -22,7 +22,7 @@ func (c Config) sweepGrace() time.Duration { return c.Duration + time.Minute }
 // janitor runs retention concurrently with the writers until the deadline:
 // expiries by instant and by ID, and sweeps. It records every snapshot that
 // a report lists as expired.
-func janitor(ctx context.Context, cfg Config, store lode.Store, until time.Time, ledger *Ledger) {
+func janitor(ctx context.Context, cfg Config, store lode.RangeStore, until time.Time, ledger *Ledger) {
 	rng := rand.New(rand.NewPCG(cfg.Seed, 2000)) //nolint:gosec // reproducible test randomness, not security
 	var ds lode.Records[any]
 	for ctx.Err() == nil && time.Now().Before(until) {

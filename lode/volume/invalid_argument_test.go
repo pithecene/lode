@@ -15,7 +15,7 @@ import (
 func TestErrInvalidArgument_Classification(t *testing.T) {
 	ctx := t.Context()
 	factory := memoryFactoryFrom(lode.NewMemory())
-	nilStore := func() (lode.Store, error) { return nil, nil } //nolint:nilnil // the misbehaving factory under test
+	nilStore := func() (lode.RangeStore, error) { return nil, nil } //nolint:nilnil // the misbehaving factory under test
 
 	vol, err := New("vol", factory, 16)
 	if err != nil {
@@ -89,7 +89,7 @@ func TestErrInvalidArgument_Classification(t *testing.T) {
 // even when the factory would fail, and the factory is not called.
 func TestErrInvalidArgument_BeforeStoreFactory(t *testing.T) {
 	calls := 0
-	failing := func() (lode.Store, error) { calls++; return nil, errors.New("factory down") }
+	failing := func() (lode.RangeStore, error) { calls++; return nil, errors.New("factory down") }
 
 	_, err := New("v", failing, 1, WithRetryCount(-1))
 	if !errors.Is(err, lode.ErrInvalidArgument) {
