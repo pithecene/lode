@@ -57,7 +57,7 @@ func Use[S ObjectStore](store S) Factory[S] {
 func NewFS(root string) (RangeStore, error) {
 	info, err := os.Stat(root)
 	if err != nil {
-		return nil, fmt.Errorf("lode: fs stat root: %w", err)
+		return nil, fmt.Errorf("fs: stat root: %w", err)
 	}
 	if !info.IsDir() {
 		return nil, os.ErrNotExist
@@ -77,7 +77,7 @@ func (f *fsStore) Put(_ context.Context, path string, r io.Reader) error {
 
 	dir := filepath.Dir(fullPath)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("lode: fs put: %w", err)
+		return fmt.Errorf("fs: put: %w", err)
 	}
 
 	// The object is written under a temporary name and then published with a
@@ -86,7 +86,7 @@ func (f *fsStore) Put(_ context.Context, path string, r io.Reader) error {
 	// Put cannot overwrite it. List never reports a temporary name.
 	tmp, err := createTemp(dir)
 	if err != nil {
-		return fmt.Errorf("lode: fs put: %w", err)
+		return fmt.Errorf("fs: put: %w", err)
 	}
 	if err := writeTemp(tmp, r); err != nil {
 		return discardTemp(tmp.Name(), err)
@@ -95,7 +95,7 @@ func (f *fsStore) Put(_ context.Context, path string, r io.Reader) error {
 		if os.IsExist(err) {
 			return discardTemp(tmp.Name(), ErrPathExists)
 		}
-		return discardTemp(tmp.Name(), fmt.Errorf("lode: fs put: %w", err))
+		return discardTemp(tmp.Name(), fmt.Errorf("fs: put: %w", err))
 	}
 	// The object is published. The temporary name is never listed and is
 	// rejected as a key, so failing to remove it changes nothing a caller
@@ -120,7 +120,7 @@ func writeTemp(tmp *os.File, r io.Reader) error {
 		err = closeErr
 	}
 	if err != nil {
-		return fmt.Errorf("lode: fs put: %w", err)
+		return fmt.Errorf("fs: put: %w", err)
 	}
 	return nil
 }
@@ -129,7 +129,7 @@ func writeTemp(tmp *os.File, r io.Reader) error {
 // joined with the removal failure if there is one (CONTRACT_STORAGE §Put).
 func discardTemp(name string, cause error) error {
 	if err := os.Remove(name); err != nil && !os.IsNotExist(err) {
-		return errors.Join(cause, fmt.Errorf("lode: fs put: remove temporary file: %w", err))
+		return errors.Join(cause, fmt.Errorf("fs: put: remove temporary file: %w", err))
 	}
 	return cause
 }
@@ -155,7 +155,7 @@ func (f *fsStore) Get(_ context.Context, path string) (io.ReadCloser, error) {
 		if os.IsNotExist(err) {
 			return nil, ErrNotFound
 		}
-		return nil, fmt.Errorf("lode: fs get: %w", err)
+		return nil, fmt.Errorf("fs: get: %w", err)
 	}
 	return file, nil
 }
@@ -172,7 +172,7 @@ func (f *fsStore) Exists(_ context.Context, path string) (bool, error) {
 	if os.IsNotExist(err) {
 		return false, nil
 	}
-	return false, fmt.Errorf("lode: fs exists: %w", err)
+	return false, fmt.Errorf("fs: exists: %w", err)
 }
 
 func (f *fsStore) List(_ context.Context, prefix string) ([]string, error) {
@@ -211,14 +211,14 @@ func (f *fsStore) List(_ context.Context, prefix string) ([]string, error) {
 			if os.IsNotExist(err) {
 				return nil
 			}
-			return fmt.Errorf("lode: fs list: %w", err)
+			return fmt.Errorf("fs: list: %w", err)
 		}
 		if d.IsDir() || isTemporary(path) {
 			return nil
 		}
 		relPath, err := filepath.Rel(f.root, path)
 		if err != nil {
-			return fmt.Errorf("lode: fs list: %w", err)
+			return fmt.Errorf("fs: list: %w", err)
 		}
 		rel := filepath.ToSlash(relPath)
 		if filter != "" && !strings.HasPrefix(rel, filter) {
@@ -243,7 +243,7 @@ func (f *fsStore) Delete(_ context.Context, path string) error {
 		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("lode: fs delete: %w", err)
+		return fmt.Errorf("fs: delete: %w", err)
 	}
 	return nil
 }
@@ -263,7 +263,7 @@ func (f *fsStore) ReadRange(_ context.Context, path string, offset, length int64
 		if os.IsNotExist(err) {
 			return nil, ErrNotFound
 		}
-		return nil, fmt.Errorf("lode: fs read range: %w", err)
+		return nil, fmt.Errorf("fs: read range: %w", err)
 	}
 	defer closer(file)()
 
@@ -272,7 +272,7 @@ func (f *fsStore) ReadRange(_ context.Context, path string, offset, length int64
 	// length must not allocate memory the read can never fill.
 	info, err := file.Stat()
 	if err != nil {
-		return nil, fmt.Errorf("lode: fs read range: %w", err)
+		return nil, fmt.Errorf("fs: read range: %w", err)
 	}
 	available := info.Size() - offset
 	if available <= 0 {
@@ -283,7 +283,7 @@ func (f *fsStore) ReadRange(_ context.Context, path string, offset, length int64
 	data := make([]byte, int(length))
 	n, err := file.ReadAt(data, offset)
 	if err != nil && !errors.Is(err, io.EOF) {
-		return nil, fmt.Errorf("lode: fs read range: %w", err)
+		return nil, fmt.Errorf("fs: read range: %w", err)
 	}
 
 	return data[:n], nil
@@ -300,7 +300,7 @@ func (f *fsStore) ReaderAt(_ context.Context, path string) (io.ReaderAt, error) 
 		if os.IsNotExist(err) {
 			return nil, ErrNotFound
 		}
-		return nil, fmt.Errorf("lode: fs reader at: %w", err)
+		return nil, fmt.Errorf("fs: reader at: %w", err)
 	}
 
 	// Note: The caller is responsible for closing via type assertion if needed.
@@ -398,7 +398,7 @@ func (m *memoryStore) Put(_ context.Context, path string, r io.Reader) error {
 
 	data, err := io.ReadAll(r)
 	if err != nil {
-		return err
+		return fmt.Errorf("memory: put: %w", err)
 	}
 
 	m.mu.Lock()

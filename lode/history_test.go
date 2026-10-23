@@ -77,8 +77,8 @@ func TestHistory_Advance_ErrorNamesTheKind(t *testing.T) {
 	cases := []struct {
 		name, noun, want string
 	}{
-		{"dataset", "manifest", "lode: failed to write manifest: disk full"},
-		{"volume", "volume manifest", "lode: failed to write volume manifest: disk full"},
+		{"dataset", "manifest", "failed to write manifest: disk full"},
+		{"volume", "volume manifest", "failed to write volume manifest: disk full"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

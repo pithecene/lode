@@ -173,7 +173,7 @@ func (d *writer) discard(ctx context.Context, path string) {
 func (d *writer) stageBlob(ctx context.Context, p *pendingSnapshot, blob []byte) error {
 	ref, err := d.putFile(ctx, d.filePath(p.id, "", blobFile), blobContent(blob))
 	if err != nil {
-		return fmt.Errorf("lode: failed to write blob: %w", err)
+		return fmt.Errorf("failed to write blob: %w", err)
 	}
 	p.add(ref, "")
 	p.rowCount = 1
@@ -185,12 +185,12 @@ func stageRecords[T any](ctx context.Context, r *recordDataset[T], p *pendingSna
 	d := r.writer
 	partitions, err := groupRecords(records, r.partitionKey, !d.layout.partitioning().isNoop())
 	if err != nil {
-		return fmt.Errorf("lode: partitioning failed: %w", err)
+		return fmt.Errorf("partitioning failed: %w", err)
 	}
 	for key, group := range partitions {
 		ref, err := d.putFile(ctx, d.filePath(p.id, key, dataFile), encodedRecords[T]{r.codec, group})
 		if err != nil {
-			return fmt.Errorf("lode: failed to write data file: %w", err)
+			return fmt.Errorf("failed to write data file: %w", err)
 		}
 		ref.Stats = fileStats(r.codec)
 		p.add(ref, key)
@@ -215,7 +215,7 @@ func (d *writer) filePath(id DatasetSnapshotID, partition, role string) string {
 func (d *writer) putFile(ctx context.Context, path string, content fileContent) (FileRef, error) {
 	ref, err := d.storeFile(ctx, path, content)
 	if err != nil {
-		return FileRef{}, fmt.Errorf("lode: %s: %w", content.op(), err)
+		return FileRef{}, fmt.Errorf("%s: %w", content.op(), err)
 	}
 	return ref, nil
 }

@@ -103,11 +103,11 @@ func (s *singleProcessStore) CompareAndSwap(ctx context.Context, path, expected,
 	}
 	if exists {
 		if err := s.Delete(ctx, path); err != nil {
-			return fmt.Errorf("lode: single-process cas delete: %w", err)
+			return fmt.Errorf("single-process cas delete: %w", err)
 		}
 	}
 	if err := s.Put(ctx, path, strings.NewReader(replacement)); err != nil {
-		return fmt.Errorf("lode: single-process cas put: %w", err)
+		return fmt.Errorf("single-process cas put: %w", err)
 	}
 	return nil
 }
@@ -120,7 +120,7 @@ func (s *singleProcessStore) read(ctx context.Context, path string) (string, boo
 		return "", false, nil
 	}
 	if err != nil {
-		return "", false, fmt.Errorf("lode: single-process cas read: %w", err)
+		return "", false, fmt.Errorf("single-process cas read: %w", err)
 	}
 	defer closer(rc)()
 	data, err := io.ReadAll(rc)

@@ -163,7 +163,7 @@ func mapRecords[T any]() bool {
 func mapPartitionPath(keys []string, record any) (string, error) {
 	m, ok := record.(map[string]any)
 	if !ok {
-		return "", fmt.Errorf("hive partitioner: record must be map[string]any, got %T", record)
+		return "", fmt.Errorf("lode: hive partitioner: record must be map[string]any, got %T", record)
 	}
 	return hivePath(keys, Partition(m), false)
 }
@@ -173,13 +173,13 @@ func mapPartitionPath(keys []string, record any) (string, error) {
 // may hold other fields.
 func hivePath(keys []string, values Partition, exact bool) (string, error) {
 	if exact && len(values) != len(keys) {
-		return "", fmt.Errorf("hive partitioner: partition names %v, want exactly the keys %v", slices.Sorted(maps.Keys(values)), keys)
+		return "", fmt.Errorf("lode: hive partitioner: partition names %v, want exactly the keys %v", slices.Sorted(maps.Keys(values)), keys)
 	}
 	parts := make([]string, 0, len(keys))
 	for _, key := range keys {
 		val, exists := values[key]
 		if !exists {
-			return "", fmt.Errorf("hive partitioner: missing key %q", key)
+			return "", fmt.Errorf("lode: hive partitioner: missing key %q", key)
 		}
 		parts = append(parts, key+"="+escapeValue(val))
 	}

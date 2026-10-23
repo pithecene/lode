@@ -27,7 +27,7 @@ func TestFirstInvalid(t *testing.T) {
 	if !errors.Is(err, ErrManifestInvalid) {
 		t.Fatalf("got %v, want ErrManifestInvalid", err)
 	}
-	if got, want := err.Error(), "invalid manifest: b: is required"; got != want {
+	if got, want := err.Error(), "lode: invalid manifest: b: is required"; got != want {
 		t.Fatalf("got %q, want the first failing check %q", got, want)
 	}
 }

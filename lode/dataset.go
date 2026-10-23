@@ -306,7 +306,7 @@ func (k datasetKind) NotExpired(ctx context.Context, id DatasetSnapshotID) (bool
 	}
 	present, err := k.store.Exists(ctx, k.ManifestPath(id))
 	if err != nil {
-		return false, fmt.Errorf("lode: failed to check manifest: %w", err)
+		return false, fmt.Errorf("failed to check manifest: %w", err)
 	}
 	return present, nil
 }
@@ -369,7 +369,7 @@ func (d *dataset) Snapshot(ctx context.Context, id DatasetSnapshotID) (*DatasetS
 		if errors.Is(err, ErrNotFound) {
 			return nil, err
 		}
-		return nil, fmt.Errorf("lode: failed to get manifest: %w", err)
+		return nil, fmt.Errorf("failed to get manifest: %w", err)
 	}
 	return toDatasetSnapshot(s), nil
 }
@@ -444,7 +444,7 @@ func (d *dataset) readBlob(ctx context.Context, id DatasetSnapshotID) ([]byte, e
 		return err
 	})
 	if err != nil {
-		return nil, fmt.Errorf("lode: failed to read blob %s: %w", path, err)
+		return nil, fmt.Errorf("failed to read blob %s: %w", path, err)
 	}
 	return buf.Bytes(), nil
 }
@@ -467,7 +467,7 @@ func readRecords[T any](ctx context.Context, d *dataset, codec Codec[T], id Data
 			return err
 		})
 		if err != nil {
-			return nil, fmt.Errorf("lode: failed to read data file %s: %w", f.Path, err)
+			return nil, fmt.Errorf("failed to read data file %s: %w", f.Path, err)
 		}
 	}
 	return all, nil

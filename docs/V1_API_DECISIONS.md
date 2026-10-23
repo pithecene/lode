@@ -218,8 +218,15 @@ keep their package prefix (`s3:`), codecs theirs (`parquet:`).
 
 **Breaks.** Nothing under `errors.Is`; substring matches on full messages.
 
-**Status.** Open. Not strictly breaking; listed so it is decided with the
-rest rather than drifting.
+**Status.** Accepted (owner decision, 2026-10-23) and implemented,
+unreleased, with the prefix placed where an error originates rather than at
+the public boundary. Only the code that creates an error knows its source,
+and a boundary is not visible to a helper that public methods share, so the
+proposed rule could not be checked and would have let the duplicate return.
+Sentinels carry no prefix, as proposed; the filesystem and in-memory stores
+report as `fs:` and `memory:`; wrapping sites add context only. The rule is
+stated in CONTRACT_ERRORS §Error Messages and enforced by the test in
+`internal/errprefix`.
 
 ---
 

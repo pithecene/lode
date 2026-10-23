@@ -99,13 +99,13 @@ func validateSchema(schema ParquetSchema) (map[string]ParquetField, error) {
 	fieldsByName := make(map[string]ParquetField, len(schema.Fields))
 	for _, field := range schema.Fields {
 		if field.Type < 0 || field.Type >= parquetTypeMax {
-			return nil, fmt.Errorf("%w: invalid ParquetType %d for field %q", ErrSchemaViolation, field.Type, field.Name)
+			return nil, fmt.Errorf("parquet: %w: invalid ParquetType %d for field %q", ErrSchemaViolation, field.Type, field.Name)
 		}
 		if field.Name == "" {
-			return nil, fmt.Errorf("%w: field name cannot be empty", ErrSchemaViolation)
+			return nil, fmt.Errorf("parquet: %w: field name cannot be empty", ErrSchemaViolation)
 		}
 		if _, exists := fieldsByName[field.Name]; exists {
-			return nil, fmt.Errorf("%w: duplicate field name %q", ErrSchemaViolation, field.Name)
+			return nil, fmt.Errorf("parquet: %w: duplicate field name %q", ErrSchemaViolation, field.Name)
 		}
 		fieldsByName[field.Name] = field
 	}
@@ -274,7 +274,7 @@ func (c *parquetCodec) Decode(r io.Reader) ([]D, error) {
 		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 			return nil, ErrInvalidFormat
 		}
-		return nil, fmt.Errorf("%w: %w", ErrInvalidFormat, err)
+		return nil, fmt.Errorf("parquet: %w: %w", ErrInvalidFormat, err)
 	}
 
 	numRows := file.NumRows()
@@ -301,7 +301,7 @@ func (c *parquetCodec) Decode(r io.Reader) ([]D, error) {
 				break
 			}
 			// Wrap ReadRows errors with ErrInvalidFormat per contract
-			return nil, fmt.Errorf("%w: read rows: %w", ErrInvalidFormat, err)
+			return nil, fmt.Errorf("parquet: %w: read rows: %w", ErrInvalidFormat, err)
 		}
 	}
 
@@ -336,7 +336,7 @@ func (c *parquetCodec) recordToRow(m D, index int) (parquet.Row, error) {
 		val, exists := m[fieldName]
 		if !exists || val == nil {
 			if !field.Nullable {
-				return nil, fmt.Errorf("%w: record %d missing required field %q", ErrSchemaViolation, index, fieldName)
+				return nil, fmt.Errorf("parquet: %w: record %d missing required field %q", ErrSchemaViolation, index, fieldName)
 			}
 			row[i] = parquet.NullValue().Level(0, 0, i)
 			continue
@@ -382,26 +382,26 @@ func (c *parquetCodec) convertToParquetValue(val any, field ParquetField, index 
 		switch v := val.(type) {
 		case int:
 			if v < minInt32 || v > maxInt32 {
-				return parquet.Value{}, fmt.Errorf("%w: record %d field %q: value %d overflows int32", ErrSchemaViolation, index, field.Name, v)
+				return parquet.Value{}, fmt.Errorf("parquet: %w: record %d field %q: value %d overflows int32", ErrSchemaViolation, index, field.Name, v)
 			}
 			return parquet.Int32Value(int32(v)), nil
 		case int32:
 			return parquet.Int32Value(v), nil
 		case int64:
 			if v < minInt32 || v > maxInt32 {
-				return parquet.Value{}, fmt.Errorf("%w: record %d field %q: value %d overflows int32", ErrSchemaViolation, index, field.Name, v)
+				return parquet.Value{}, fmt.Errorf("parquet: %w: record %d field %q: value %d overflows int32", ErrSchemaViolation, index, field.Name, v)
 			}
 			return parquet.Int32Value(int32(v)), nil
 		case float64: // JSON numbers
 			if math.Trunc(v) != v {
-				return parquet.Value{}, fmt.Errorf("%w: record %d field %q: float64 %v is not an integer", ErrSchemaViolation, index, field.Name, v)
+				return parquet.Value{}, fmt.Errorf("parquet: %w: record %d field %q: float64 %v is not an integer", ErrSchemaViolation, index, field.Name, v)
 			}
 			if v < minInt32 || v > maxInt32 {
-				return parquet.Value{}, fmt.Errorf("%w: record %d field %q: value %v overflows int32", ErrSchemaViolation, index, field.Name, v)
+				return parquet.Value{}, fmt.Errorf("parquet: %w: record %d field %q: value %v overflows int32", ErrSchemaViolation, index, field.Name, v)
 			}
 			return parquet.Int32Value(int32(v)), nil
 		default:
-			return parquet.Value{}, fmt.Errorf("%w: record %d field %q: expected int32, got %T", ErrSchemaViolation, index, field.Name, val)
+			return parquet.Value{}, fmt.Errorf("parquet: %w: record %d field %q: expected int32, got %T", ErrSchemaViolation, index, field.Name, val)
 		}
 
 	case ParquetInt64:
@@ -414,15 +414,15 @@ func (c *parquetCodec) convertToParquetValue(val any, field ParquetField, index 
 			return parquet.Int64Value(v), nil
 		case float64: // JSON numbers
 			if math.Trunc(v) != v {
-				return parquet.Value{}, fmt.Errorf("%w: record %d field %q: float64 %v is not an integer", ErrSchemaViolation, index, field.Name, v)
+				return parquet.Value{}, fmt.Errorf("parquet: %w: record %d field %q: float64 %v is not an integer", ErrSchemaViolation, index, field.Name, v)
 			}
 			// float64 can represent integers up to 2^53 exactly
 			if v < -maxSafeInt64 || v > maxSafeInt64 {
-				return parquet.Value{}, fmt.Errorf("%w: record %d field %q: value %v exceeds safe integer range for float64", ErrSchemaViolation, index, field.Name, v)
+				return parquet.Value{}, fmt.Errorf("parquet: %w: record %d field %q: value %v exceeds safe integer range for float64", ErrSchemaViolation, index, field.Name, v)
 			}
 			return parquet.Int64Value(int64(v)), nil
 		default:
-			return parquet.Value{}, fmt.Errorf("%w: record %d field %q: expected int64, got %T", ErrSchemaViolation, index, field.Name, val)
+			return parquet.Value{}, fmt.Errorf("parquet: %w: record %d field %q: expected int64, got %T", ErrSchemaViolation, index, field.Name, val)
 		}
 
 	case ParquetFloat32:
@@ -432,7 +432,7 @@ func (c *parquetCodec) convertToParquetValue(val any, field ParquetField, index 
 		case float64:
 			return parquet.FloatValue(float32(v)), nil
 		default:
-			return parquet.Value{}, fmt.Errorf("%w: record %d field %q: expected float32, got %T", ErrSchemaViolation, index, field.Name, val)
+			return parquet.Value{}, fmt.Errorf("parquet: %w: record %d field %q: expected float32, got %T", ErrSchemaViolation, index, field.Name, val)
 		}
 
 	case ParquetFloat64:
@@ -442,7 +442,7 @@ func (c *parquetCodec) convertToParquetValue(val any, field ParquetField, index 
 		case float64:
 			return parquet.DoubleValue(v), nil
 		default:
-			return parquet.Value{}, fmt.Errorf("%w: record %d field %q: expected float64, got %T", ErrSchemaViolation, index, field.Name, val)
+			return parquet.Value{}, fmt.Errorf("parquet: %w: record %d field %q: expected float64, got %T", ErrSchemaViolation, index, field.Name, val)
 		}
 
 	case ParquetString:
@@ -450,7 +450,7 @@ func (c *parquetCodec) convertToParquetValue(val any, field ParquetField, index 
 		case string:
 			return parquet.ByteArrayValue([]byte(v)), nil
 		default:
-			return parquet.Value{}, fmt.Errorf("%w: record %d field %q: expected string, got %T", ErrSchemaViolation, index, field.Name, val)
+			return parquet.Value{}, fmt.Errorf("parquet: %w: record %d field %q: expected string, got %T", ErrSchemaViolation, index, field.Name, val)
 		}
 
 	case ParquetBool:
@@ -458,7 +458,7 @@ func (c *parquetCodec) convertToParquetValue(val any, field ParquetField, index 
 		case bool:
 			return parquet.BooleanValue(v), nil
 		default:
-			return parquet.Value{}, fmt.Errorf("%w: record %d field %q: expected bool, got %T", ErrSchemaViolation, index, field.Name, val)
+			return parquet.Value{}, fmt.Errorf("parquet: %w: record %d field %q: expected bool, got %T", ErrSchemaViolation, index, field.Name, val)
 		}
 
 	case ParquetBytes:
@@ -468,7 +468,7 @@ func (c *parquetCodec) convertToParquetValue(val any, field ParquetField, index 
 		case string:
 			return parquet.ByteArrayValue([]byte(v)), nil
 		default:
-			return parquet.Value{}, fmt.Errorf("%w: record %d field %q: expected []byte, got %T", ErrSchemaViolation, index, field.Name, val)
+			return parquet.Value{}, fmt.Errorf("parquet: %w: record %d field %q: expected []byte, got %T", ErrSchemaViolation, index, field.Name, val)
 		}
 
 	case ParquetTimestamp:
@@ -478,15 +478,15 @@ func (c *parquetCodec) convertToParquetValue(val any, field ParquetField, index 
 		case string:
 			t, err := time.Parse(time.RFC3339Nano, v)
 			if err != nil {
-				return parquet.Value{}, fmt.Errorf("%w: record %d field %q: invalid timestamp: %w", ErrSchemaViolation, index, field.Name, err)
+				return parquet.Value{}, fmt.Errorf("parquet: %w: record %d field %q: invalid timestamp: %w", ErrSchemaViolation, index, field.Name, err)
 			}
 			return parquet.Int64Value(t.UnixNano()), nil
 		default:
-			return parquet.Value{}, fmt.Errorf("%w: record %d field %q: expected time.Time, got %T", ErrSchemaViolation, index, field.Name, val)
+			return parquet.Value{}, fmt.Errorf("parquet: %w: record %d field %q: expected time.Time, got %T", ErrSchemaViolation, index, field.Name, val)
 		}
 
 	default:
-		return parquet.Value{}, fmt.Errorf("%w: record %d field %q: unknown type %d", ErrSchemaViolation, index, field.Name, field.Type)
+		return parquet.Value{}, fmt.Errorf("parquet: %w: record %d field %q: unknown type %d", ErrSchemaViolation, index, field.Name, field.Type)
 	}
 }
 
@@ -548,7 +548,7 @@ func buildFieldNode(field ParquetField) (parquet.Node, error) {
 	case ParquetTimestamp:
 		node = parquet.Timestamp(parquet.Nanosecond)
 	default:
-		return nil, fmt.Errorf("%w: invalid ParquetType %d for field %q", ErrSchemaViolation, field.Type, field.Name)
+		return nil, fmt.Errorf("parquet: %w: invalid ParquetType %d for field %q", ErrSchemaViolation, field.Type, field.Name)
 	}
 
 	if field.Nullable {

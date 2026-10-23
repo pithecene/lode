@@ -125,7 +125,7 @@ func New(id ID, storeFactory lode.Factory[lode.RangeStore], totalLength int64, o
 	// Arguments are checked before any store work (CONTRACT_ERRORS §5).
 	store, err := storeFactory()
 	if err != nil {
-		return nil, fmt.Errorf("lode: failed to create store: %w", err)
+		return nil, fmt.Errorf("failed to create store: %w", err)
 	}
 	if store == nil {
 		return nil, validate.Argument("store factory returned nil store")
@@ -204,7 +204,7 @@ func (v *volume) StageWriteAt(ctx context.Context, offset int64, r io.Reader) (B
 	}
 
 	if err := v.store.Put(ctx, blockPath, bytes.NewReader(data)); err != nil {
-		return BlockRef{}, fmt.Errorf("lode: failed to stage block: %w", err)
+		return BlockRef{}, fmt.Errorf("failed to stage block: %w", err)
 	}
 
 	return BlockRef{
@@ -405,7 +405,7 @@ func (v *volume) ReadAt(ctx context.Context, snapshotID SnapshotID, offset, leng
 
 		data, err := v.store.ReadRange(ctx, b.Path, storeOffset, readLen)
 		if err != nil {
-			return nil, fmt.Errorf("lode: failed to read block at offset %d: %w", b.Offset, err)
+			return nil, fmt.Errorf("failed to read block at offset %d: %w", b.Offset, err)
 		}
 		if int64(len(data)) != readLen {
 			return nil, fmt.Errorf("lode: block data truncated at offset %d (expected %d bytes, got %d)", b.Offset, readLen, len(data))
@@ -489,7 +489,7 @@ func (v *volume) Snapshot(ctx context.Context, id SnapshotID) (*Snapshot, error)
 		if errors.Is(err, lode.ErrNotFound) {
 			return nil, err
 		}
-		return nil, fmt.Errorf("lode: failed to get volume manifest: %w", err)
+		return nil, fmt.Errorf("failed to get volume manifest: %w", err)
 	}
 	return toVolumeSnapshot(s), nil
 }
