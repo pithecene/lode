@@ -73,7 +73,7 @@ Place HTML comments immediately before the code fence:
 ```markdown
 <!-- illustrative -->
 ```go
-ds, _ := lode.NewDataset("mydata", lode.NewFSFactory("/data"))
+ds, _ := lode.Open(lode.FS("/data")).Blobs(ctx, "mydata")
 ```
 
 <!-- runnable -->
@@ -117,8 +117,8 @@ If no annotation is present, the snippet is assumed **illustrative** by default.
 
 | Lines | Language | Category | Description |
 |-------|----------|----------|-------------|
-| 34-44 | go | Illustrative | NewDataset construction |
-| 54-63 | go | Illustrative | NewReader construction |
+| 34-44 | go | Illustrative | Root, Records, and view construction |
+| 54-63 | go | Illustrative | Path name options |
 | 141-145 | go | Illustrative | Timestamped interface definition |
 | 152-163 | go | Illustrative | Timestamped implementation example |
 | 254-262 | go | Illustrative | Bootstrap helper pattern |

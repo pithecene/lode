@@ -9,6 +9,7 @@ package lode
 import (
 	"context"
 	"io"
+	"iter"
 	"time"
 
 	"github.com/pithecene/lode/internal/validate"
@@ -24,27 +25,20 @@ type DatasetID string
 // DatasetSnapshotID uniquely identifies an immutable snapshot within a dataset.
 type DatasetSnapshotID string
 
-// Metadata holds user-defined key-value pairs stored with a snapshot.
-type Metadata map[string]any
-
 // D is a shorthand alias for map-based records in examples and callsites.
 // It is equivalent to map[string]any.
 type D = map[string]any
 
-// R converts record literals into the []any form expected by Dataset.Write.
+// R collects record literals into the []D that Records[D].Write takes.
 // This is a convenience helper for callsites and examples.
-func R(records ...D) []any {
-	out := make([]any, len(records))
-	for i, r := range records {
-		out[i] = r
-	}
-	return out
+func R(records ...D) []D {
+	return records
 }
 
 // Timestamped is implemented by records that have an associated timestamp.
-// When records passed to Dataset.Write implement this interface, the manifest's
-// MinTimestamp and MaxTimestamp fields are automatically computed from the data.
-// Records that do not implement this interface are ignored for timestamp tracking.
+// When the records a Records handle writes implement this interface, the
+// manifest's MinTimestamp and MaxTimestamp fields are computed from the data.
+// A record type that does not implement it is not tracked.
 type Timestamped interface {
 	Timestamp() time.Time
 }
@@ -73,7 +67,7 @@ type Manifest struct {
 	// CreatedAt records when the snapshot was committed.
 	CreatedAt time.Time `json:"created_at"`
 
-	// Metadata contains user-provided key-value pairs.
+	// Metadata is the caller's metadata, a JSON object.
 	Metadata Metadata `json:"metadata"`
 
 	// Files lists all data files comprising this snapshot.
@@ -187,12 +181,14 @@ type ColumnStats struct {
 // -----------------------------------------------------------------------------
 
 // DatasetSnapshot represents an immutable point-in-time view of a dataset.
+// It embeds its manifest, so snap.Metadata and snap.Files name the
+// manifest's fields.
 type DatasetSnapshot struct {
 	// ID uniquely identifies this snapshot.
 	ID DatasetSnapshotID
 
 	// Manifest describes the snapshot's contents.
-	Manifest *Manifest
+	*Manifest
 }
 
 // -----------------------------------------------------------------------------
@@ -256,17 +252,23 @@ type ConditionalWriter interface {
 	CompareAndSwap(ctx context.Context, path, expected, replacement string) error
 }
 
-// StoreFactory creates a Store. Used for deferred store construction.
-type StoreFactory func() (Store, error)
+// Factory creates a store when a root opens. FS, Memory, Use, and the S3
+// adapter return one; a factory performs no I/O until it is called, and
+// Open and OpenReadOnly record its error rather than return it, so a caller
+// checks one error at the first dataset it opens. The type parameter
+// carries the store's capability: Open requires a Store, which provides
+// CompareAndSwap, and OpenReadOnly accepts any ObjectStore.
+type Factory[S ObjectStore] func() (S, error)
 
 // -----------------------------------------------------------------------------
 // Codec interface
 // -----------------------------------------------------------------------------
 
-// Codec handles serialization and deserialization of records.
+// Codec serializes records of type T. A dataset's codec fixes its record
+// type: Root.Records infers T from it.
 //
 // Codecs are pluggable and orthogonal to storage, compression, and partitioning.
-type Codec interface {
+type Codec[T any] interface {
 	// Name returns the codec identifier (for example, "jsonl" or "parquet").
 	Name() string
 
@@ -278,64 +280,35 @@ type Codec interface {
 	Describe() string
 
 	// Encode writes records to the given writer.
-	Encode(w io.Writer, records []any) error
+	Encode(w io.Writer, records []T) error
 
 	// Decode reads records from the given reader.
-	Decode(r io.Reader) ([]any, error)
+	Decode(r io.Reader) ([]T, error)
 }
 
-// -----------------------------------------------------------------------------
-// Streaming codec interfaces
-// -----------------------------------------------------------------------------
-
-// StreamingRecordCodec is implemented by codecs that support streaming record encoding.
-//
-// StreamWriteRecords requires a codec that implements this interface. Codecs that
-// do not support streaming should not implement this interface.
-type StreamingRecordCodec interface {
-	Codec
+// StreamingCodec is implemented by codecs that encode one record at a time.
+// Records.StreamWrite requires one.
+type StreamingCodec[T any] interface {
+	Codec[T]
 
 	// NewStreamEncoder creates a streaming encoder that writes to w.
-	NewStreamEncoder(w io.Writer) (RecordStreamEncoder, error)
+	NewStreamEncoder(w io.Writer) (StreamEncoder[T], error)
 }
 
-// RecordStreamEncoder writes records one at a time to a stream.
-type RecordStreamEncoder interface {
+// StreamEncoder writes records one at a time to a stream.
+type StreamEncoder[T any] interface {
 	// WriteRecord encodes and writes a single record.
-	WriteRecord(record any) error
+	WriteRecord(record T) error
 
 	// Close finalizes the stream and flushes any buffered data.
 	Close() error
 }
 
-// -----------------------------------------------------------------------------
-// Statistical codec interfaces
-// -----------------------------------------------------------------------------
-
-// StatisticalCodec is implemented by codecs that report per-file statistics
-// after encoding. This is an optional extension to the Codec interface.
-//
-// The codec accumulates statistics during Encode and returns them via FileStats.
-// FileStats must be called after a successful Encode call and before the next
-// Encode call; behavior is undefined otherwise.
+// StatisticalCodec is implemented by codecs, and by stream encoders, that
+// report per-file statistics after encoding. FileStats returns the
+// statistics of the most recent Encode call, or of the stream after Close;
+// nil when none are available.
 type StatisticalCodec interface {
-	Codec
-
-	// FileStats returns statistics accumulated during the most recent Encode call.
-	// Returns nil if no statistics are available.
-	FileStats() *FileStats
-}
-
-// StatisticalStreamEncoder is implemented by stream encoders that report
-// per-file statistics after the stream is finalized. This is an optional
-// extension to the RecordStreamEncoder interface.
-//
-// FileStats must be called after Close returns successfully.
-type StatisticalStreamEncoder interface {
-	RecordStreamEncoder
-
-	// FileStats returns statistics accumulated during stream encoding.
-	// Returns nil if no statistics are available.
 	FileStats() *FileStats
 }
 
@@ -387,61 +360,123 @@ type HashWriter interface {
 }
 
 // -----------------------------------------------------------------------------
-// Dataset interface
+// Dataset handles
 // -----------------------------------------------------------------------------
 
-// Dataset provides operations on a named collection of snapshots.
-//
-// A dataset is a logical container for related data. All writes to a dataset
-// produce immutable snapshots.
-type Dataset interface {
-	// ID returns the dataset's unique identifier.
+// SnapshotReader is what every dataset handle reads: its snapshots and the
+// stored facts behind them. Per CONTRACT_READ_API.md, Lode's read API exposes
+// stored facts, not interpretations.
+type SnapshotReader interface {
+	// ID returns the dataset's identifier.
 	ID() DatasetID
 
-	// Write commits new data and metadata as an immutable snapshot.
-	Write(ctx context.Context, data []any, metadata Metadata) (*DatasetSnapshot, error)
-
-	// Snapshot retrieves a specific snapshot by ID.
-	Snapshot(ctx context.Context, id DatasetSnapshotID) (*DatasetSnapshot, error)
-
-	// Snapshots lists all committed snapshots.
-	Snapshots(ctx context.Context) ([]*DatasetSnapshot, error)
-
-	// Read retrieves all data units from a specific snapshot.
-	Read(ctx context.Context, id DatasetSnapshotID) ([]any, error)
-
-	// Latest returns the most recently committed snapshot.
+	// Latest returns the head snapshot; ErrNoSnapshots for an empty dataset.
 	Latest(ctx context.Context) (*DatasetSnapshot, error)
 
-	// StreamWrite returns a StreamWriter for single-pass streaming of a binary payload.
-	// Returns an error if metadata is nil or if a codec is configured.
-	StreamWrite(ctx context.Context, metadata Metadata) (StreamWriter, error)
+	// Snapshot retrieves a snapshot by ID.
+	Snapshot(ctx context.Context, id DatasetSnapshotID) (*DatasetSnapshot, error)
 
-	// StreamWriteRecords consumes records via a pull-based iterator and streams them
-	// through a streaming-capable codec. Returns an error if metadata is nil or if
-	// the configured codec does not support streaming.
-	StreamWriteRecords(ctx context.Context, records RecordIterator, metadata Metadata) (*DatasetSnapshot, error)
+	// Snapshots lists every committed snapshot, oldest first.
+	Snapshots(ctx context.Context) ([]*DatasetSnapshot, error)
 
+	// ListPartitions returns the partition paths that committed manifests
+	// name. Returns ErrNotFound if the dataset holds no manifest.
+	ListPartitions(ctx context.Context, opts PartitionListOptions) ([]PartitionRef, error)
+
+	// ListManifests returns committed manifests (snapshots), within a
+	// partition when one is given. Returns ErrNotFound if the dataset holds
+	// no manifest.
+	ListManifests(ctx context.Context, partition string, opts ManifestListOptions) ([]ManifestRef, error)
+
+	// GetManifest loads and validates the manifest a reference names.
+	GetManifest(ctx context.Context, ref ManifestRef) (*Manifest, error)
+
+	// OpenObject returns a reader for a data object. The caller closes it.
+	OpenObject(ctx context.Context, obj ObjectRef) (io.ReadCloser, error)
+
+	// ReaderAt returns an io.ReaderAt for random access to a data object.
+	// Returns ErrRangeReadNotSupported if the store does not support range
+	// reads.
+	ReaderAt(ctx context.Context, obj ObjectRef) (io.ReaderAt, error)
+}
+
+// Retention removes snapshots and reclaims their objects. Only writer
+// handles retain: removal is a write. See CONTRACT_RETENTION.md.
+type Retention interface {
 	// Expire removes the selected snapshots: their manifests and the data
 	// objects their manifests list. The head is never expired; when the
 	// selection includes it, it is kept and reported in RetainedHead. The
 	// report is non-nil, also on error, and describes the work done before
-	// the error. See CONTRACT_RETENTION.md.
+	// the error.
 	Expire(ctx context.Context, req ExpireRequest) (*ExpireReport, error)
 
 	// Sweep completes interrupted expiries and reclaims data objects of
 	// snapshots that were never committed, once they are older than
 	// req.Grace. It never deletes an object a manifest still describes, nor
 	// any object outside the layout's data topology. The report is non-nil,
-	// also on error. See CONTRACT_RETENTION.md.
+	// also on error.
 	Sweep(ctx context.Context, req SweepRequest) (*SweepReport, error)
+}
+
+// RecordView reads a dataset of records of type T. ReadRoot.Records returns
+// one; Records embeds it.
+type RecordView[T any] interface {
+	SnapshotReader
+
+	// Read returns every record of the snapshot, decoded with the view's
+	// codec and the compressor the snapshot's manifest names.
+	Read(ctx context.Context, id DatasetSnapshotID) ([]T, error)
+}
+
+// Records writes and reads a dataset of records of type T. Root.Records
+// returns one. A Records value is not safe for concurrent use by several
+// goroutines; several values, in one process or many, may write the same
+// dataset (CONTRACT_WRITE_API §Concurrency).
+type Records[T any] interface {
+	RecordView[T]
+	Retention
+
+	// Write commits records and metadata as an immutable snapshot. metadata
+	// is any value that encodes as a JSON object, a struct or a map; nil
+	// persists as {}.
+	Write(ctx context.Context, records []T, metadata any) (*DatasetSnapshot, error)
+
+	// StreamWrite consumes records from an iterator and streams them
+	// through the codec, which must be a StreamingCodec, into one data file.
+	// An error the iterator yields aborts the write. A partitioned layout is
+	// not supported, because partitioning requires every record's keys
+	// before any file is written.
+	StreamWrite(ctx context.Context, records iter.Seq2[T, error], metadata any) (*DatasetSnapshot, error)
+}
+
+// BlobView reads a dataset whose snapshots each hold one blob.
+// ReadRoot.Blobs returns one; Blobs embeds it.
+type BlobView interface {
+	SnapshotReader
+
+	// Read returns the snapshot's blob.
+	Read(ctx context.Context, id DatasetSnapshotID) ([]byte, error)
+}
+
+// Blobs writes and reads a dataset whose snapshots each hold one blob.
+// Root.Blobs returns one. Concurrency is as for Records.
+type Blobs interface {
+	BlobView
+	Retention
+
+	// Write commits one blob and metadata as an immutable snapshot.
+	Write(ctx context.Context, data []byte, metadata any) (*DatasetSnapshot, error)
+
+	// StreamWrite returns a StreamWriter that streams one blob directly to
+	// its final object; Commit creates the snapshot.
+	StreamWrite(ctx context.Context, metadata any) (StreamWriter, error)
 }
 
 // -----------------------------------------------------------------------------
 // Retention
 // -----------------------------------------------------------------------------
 
-// ExpireRequest selects the snapshots Dataset.Expire removes. Set fields
+// ExpireRequest selects the snapshots Retention.Expire removes. Set fields
 // intersect; at least one of IDs, Partition and Before must be set.
 type ExpireRequest struct {
 	// IDs selects these snapshots, including any whose expiry an earlier
@@ -558,25 +593,6 @@ type StreamWriter interface {
 }
 
 // -----------------------------------------------------------------------------
-// RecordIterator interface
-// -----------------------------------------------------------------------------
-
-// RecordIterator provides pull-based iteration over records.
-//
-// The typical usage pattern is:
-//
-//	for iter.Next() {
-//	    record := iter.Record()
-//	    // process record
-//	}
-//	if err := iter.Err(); err != nil { ... }
-type RecordIterator interface {
-	Next() bool  // Advances to the next record. Returns false when exhausted.
-	Record() any // Returns the current record. Only valid after Next returns true.
-	Err() error  // Returns any error encountered during iteration.
-}
-
-// -----------------------------------------------------------------------------
 // Errors
 // -----------------------------------------------------------------------------
 
@@ -597,16 +613,15 @@ var (
 	// ErrRangeReadNotSupported indicates the store does not support range reads.
 	ErrRangeReadNotSupported = errRangeReadNotSupported{}
 
-	// ErrCodecConfigured indicates StreamWrite was called with a codec configured.
-	ErrCodecConfigured = errCodecConfigured{}
-
-	// ErrCodecNotStreamable indicates the configured codec does not support streaming.
+	// ErrCodecNotStreamable indicates Records.StreamWrite was called with a
+	// codec that is not a StreamingCodec.
 	ErrCodecNotStreamable = errCodecNotStreamable{}
 
-	// ErrNilIterator indicates a nil iterator was passed to StreamWriteRecords.
+	// ErrNilIterator indicates a nil iterator was passed to Records.StreamWrite.
 	ErrNilIterator = errNilIterator{}
 
-	// ErrPartitioningNotSupported indicates StreamWriteRecords was called with partitioning configured.
+	// ErrPartitioningNotSupported indicates Records.StreamWrite was called on
+	// a partitioned layout.
 	ErrPartitioningNotSupported = errPartitioningNotSupported{}
 
 	// ErrPartitionPrefixNotSupported indicates PartitionListOptions.Prefix was
@@ -627,8 +642,8 @@ var (
 	ErrSnapshotConflict = errSnapshotConflict{}
 
 	// ErrInvalidArgument indicates a caller-supplied value that cannot be
-	// used: a nil store factory, a negative offset, a block outside the
-	// volume, a blob write without exactly one []byte. The message names the
+	// used: a nil store factory, an invalid dataset ID or path name, a
+	// negative offset, a block outside the volume. The message names the
 	// value. Not retry-safe; fix the call.
 	ErrInvalidArgument error = validate.ErrInvalidArgument
 
@@ -639,7 +654,7 @@ var (
 	ErrInvalidPath error = errInvalidPath{}
 
 	// ErrSnapshotExpired indicates the snapshot was removed by
-	// Dataset.Expire. It also matches ErrNotFound.
+	// Retention.Expire. It also matches ErrNotFound.
 	ErrSnapshotExpired error = errSnapshotExpired{}
 
 	// ErrHeadUncommitted indicates retention cannot tell the committed head:
@@ -660,13 +675,10 @@ var (
 	// ErrManifestInvalid indicates a manifest failed validation.
 	ErrManifestInvalid error = validate.ErrManifestInvalid
 
-	// ErrOptionNotValidForDataset indicates an option was used with NewDataset
-	// that only applies to NewDatasetReader.
-	ErrOptionNotValidForDataset error = errOptionNotValidForDataset{}
-
-	// ErrOptionNotValidForDatasetReader indicates an option was used with
-	// NewDatasetReader that only applies to NewDataset.
-	ErrOptionNotValidForDatasetReader error = errOptionNotValidForDatasetReader{}
+	// ErrReadOnly indicates a write through a store that a read-only root
+	// opened: OpenReadOnly accepts an ObjectStore, which has no
+	// CompareAndSwap, and its views never write.
+	ErrReadOnly error = errReadOnly{}
 )
 
 type errNotFound struct{}
@@ -705,12 +717,6 @@ type errRangeReadNotSupported struct{}
 
 func (errRangeReadNotSupported) Error() string { return "range read not supported" }
 
-type errCodecConfigured struct{}
-
-func (errCodecConfigured) Error() string {
-	return "StreamWrite requires no codec; use StreamWriteRecords for structured data"
-}
-
 type errCodecNotStreamable struct{}
 
 func (errCodecNotStreamable) Error() string { return "codec does not support streaming" }
@@ -728,7 +734,7 @@ func (errNilIterator) Error() string { return "records iterator must be non-nil"
 type errPartitioningNotSupported struct{}
 
 func (errPartitioningNotSupported) Error() string {
-	return "StreamWriteRecords does not support partitioning; use Write for partitioned data"
+	return "StreamWrite does not support partitioning; use Write for partitioned data"
 }
 
 type errSchemaViolation struct{}
@@ -747,16 +753,12 @@ type errInvalidPath struct{}
 
 func (errInvalidPath) Error() string { return "invalid path" }
 
-type errOptionNotValidForDataset struct{}
+type errReadOnly struct{}
 
-func (errOptionNotValidForDataset) Error() string { return "option not valid for dataset" }
-
-type errOptionNotValidForDatasetReader struct{}
-
-func (errOptionNotValidForDatasetReader) Error() string { return "option not valid for reader" }
+func (errReadOnly) Error() string { return "read-only store" }
 
 // -----------------------------------------------------------------------------
-// DatasetReader interface
+// Listing
 // -----------------------------------------------------------------------------
 
 // ManifestRef references a committed manifest (snapshot) within a dataset.
@@ -778,9 +780,6 @@ type PartitionRef struct {
 
 // ObjectRef references a data object within a dataset manifest.
 type ObjectRef struct {
-	// Dataset is the dataset containing this object.
-	Dataset DatasetID
-
 	// Manifest is the manifest containing this object.
 	Manifest ManifestRef
 
@@ -844,39 +843,9 @@ type ManifestListOptions struct {
 	StartAfter ManifestRef
 }
 
-// DatasetReader provides read operations over stored datasets.
-//
-// DatasetReader is a façade over storage and layout that performs no interpretation.
-// Per CONTRACT_READ_API.md: "Lode's read API exposes stored facts, not interpretations.
-// Planning and meaning belong to consumers."
-type DatasetReader interface {
-	// ListDatasets returns all dataset IDs found in storage.
-	// Returns ErrDatasetsNotModeled if the layout doesn't support dataset enumeration.
-	ListDatasets(ctx context.Context, opts DatasetListOptions) ([]DatasetID, error)
-
-	// ListPartitions returns partition paths found across all committed manifests.
-	// Returns ErrNotFound if the dataset does not exist.
-	ListPartitions(ctx context.Context, dataset DatasetID, opts PartitionListOptions) ([]PartitionRef, error)
-
-	// ListManifests returns committed manifests (snapshots) within a dataset.
-	// Returns ErrNotFound if the dataset does not exist.
-	ListManifests(ctx context.Context, dataset DatasetID, partition string, opts ManifestListOptions) ([]ManifestRef, error)
-
-	// GetManifest loads the manifest for a specific snapshot.
-	// Returns ErrNotFound if the dataset or snapshot does not exist.
-	GetManifest(ctx context.Context, dataset DatasetID, ref ManifestRef) (*Manifest, error)
-
-	// OpenObject returns a reader for a data object.
-	// The caller must close the reader when done.
-	OpenObject(ctx context.Context, obj ObjectRef) (io.ReadCloser, error)
-
-	// ReaderAt returns an io.ReaderAt for random access reads on a data object.
-	// Returns ErrRangeReadNotSupported if the underlying store does not support range reads.
-	ReaderAt(ctx context.Context, obj ObjectRef) (io.ReaderAt, error)
-}
-
-// ErrDatasetsNotModeled indicates that the current layout does not support
-// dataset enumeration.
+// ErrDatasetsNotModeled indicates that the root's paths do not support
+// dataset enumeration: flat paths place datasets at the store root, which
+// has no common prefix.
 var ErrDatasetsNotModeled = errDatasetsNotModeled{}
 
 type errDatasetsNotModeled struct{}

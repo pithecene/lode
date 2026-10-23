@@ -7,21 +7,18 @@ import (
 
 	"github.com/pithecene/lode/internal/history"
 	"github.com/pithecene/lode/internal/storepath"
-	"github.com/pithecene/lode/internal/validate"
 )
 
-// layout is everything a dataset or reader needs from one path grammar and
-// its partitioner. Per CONTRACT_LAYOUT.md the two are unified: users
-// configure both through Layout constructors. It is composed from one
-// interface per concern, so a consumer that needs only one concern holds
-// only that one.
+// layout is everything a dataset handle needs from one path grammar and its
+// partitioning: the root's path names and the dataset's Layout
+// (CONTRACT_LAYOUT.md). It is composed from one interface per concern, so a
+// consumer that needs only one concern holds only that one.
 type layout interface {
 	snapshotPaths
 	partitionPaths
-	datasetPaths
 	tombstonePaths
 	stagedPaths
-	partitioner() partitioner
+	partitioning() partitionScheme
 }
 
 // snapshotPaths is where a dataset's snapshots live: the pointer, every
@@ -56,12 +53,6 @@ type partitionPaths interface {
 	extractPartitionPath(filePath string) string
 }
 
-// datasetPaths is where datasets themselves are enumerated.
-type datasetPaths interface {
-	supportsDatasetEnumeration() bool
-	datasetsPrefix() string
-}
-
 // stagedPaths is where a dataset's first commit stages its manifest before
 // it advances the pointer (CONTRACT_CORE §Head Pointer), the convention a
 // manifest records, and which objects under a dataset's directory belong
@@ -82,18 +73,55 @@ type tombstonePaths interface {
 	tombstonesPrefix(dataset DatasetID) string
 }
 
-// Layout constants
-const (
-	datasetsDir   = "datasets"
-	snapshotsDir  = "snapshots"
-	manifestFile  = "manifest.json"
-	dataDir       = "data"
-	partitionsDir = "partitions"
-	segmentsDir   = "segments"
-	latestFile    = "latest"
-	tombstonesDir = "expired"
-	stagedDir     = "staged"
-)
+// latestFile names every dataset's head pointer. It is not configurable:
+// the pointer is where the writers of a dataset coordinate, and two roots
+// that named it differently would commit independent histories over shared
+// snapshot paths (V1_API_DECISIONS D11).
+const latestFile = "latest"
+
+// pathNames are the names within a dataset's paths, which a root's path
+// options set (V1_API_DECISIONS D11). defaultPathNames returns the names
+// every earlier release wrote. Flat paths have no datasets directory and,
+// without partitions, no snapshots directory.
+type pathNames struct {
+	datasets, snapshots, partitions, segments string
+	manifest, data, expired, staged           string
+	flat                                      bool
+}
+
+func defaultPathNames() pathNames {
+	return pathNames{
+		datasets: "datasets", snapshots: "snapshots", partitions: "partitions", segments: "segments",
+		manifest: "manifest.json", data: "data", expired: "expired", staged: "staged",
+	}
+}
+
+// grammar returns the path grammar of these names, with or without
+// partitions. A partitioned grammar places snapshots in the segments
+// directory, flat or not.
+func (n pathNames) grammar(partitioned bool) pathGrammar {
+	g := pathGrammar{names: n, partitioned: partitioned}
+	if !n.flat {
+		g.root, g.snapshotDir = n.datasets, n.snapshots
+	}
+	if partitioned {
+		g.snapshotDir = n.segments
+	}
+	return g
+}
+
+// convention is the record of these names that a manifest persists.
+func (n pathNames) convention() ManifestPaths {
+	p := ManifestPaths{
+		Datasets: n.datasets, Snapshots: n.snapshots, Partitions: n.partitions,
+		Segments: n.segments, Manifest: n.manifest, Data: n.data,
+		Expired: n.expired, Staged: n.staged,
+	}
+	if n.flat {
+		p.Datasets, p.Snapshots, p.Flat = "", "", true
+	}
+	return p
+}
 
 // -----------------------------------------------------------------------------
 // Path grammar
@@ -107,9 +135,10 @@ const (
 //
 // root, partitions and snapshotDir are each optional per grammar.
 type pathGrammar struct {
-	root        string // common prefix for all datasets; "" puts datasets at the store root
-	snapshotDir string // directory holding snapshots under a dataset (or partition); "" for none
-	partitioned bool   // partitions/<k=v>... may sit between the dataset and snapshotDir
+	root        string    // common prefix for all datasets; "" puts datasets at the store root
+	snapshotDir string    // directory holding snapshots under a dataset (or partition); "" for none
+	partitioned bool      // partitions/<k=v>... may sit between the dataset and snapshotDir
+	names       pathNames // the partitions, manifest, and data names
 }
 
 // pathKind is what the leaf of a parsed path names.
@@ -172,7 +201,7 @@ func (g pathGrammar) partitionParts(partition string) (dir, part string) {
 	if !g.partitioned || partition == "" {
 		return "", ""
 	}
-	return partitionsDir, partition
+	return g.names.partitions, partition
 }
 
 // datasetDir is the directory that holds everything about one dataset.
@@ -188,7 +217,7 @@ func (g pathGrammar) snapshotDirFor(dataset DatasetID, partition string) string 
 }
 
 // objectPath is the path of one object in a snapshot's directory: the
-// manifest (dir "", file manifestFile) or a data file (dir dataDir).
+// manifest (dir "", file names.manifest) or a data file (dir names.data).
 func (g pathGrammar) objectPath(dataset DatasetID, partition string, snapshot DatasetSnapshotID, dir, file string) string {
 	partDir, part := g.partitionParts(partition)
 	return join(g.root, string(dataset), partDir, part, g.snapshotDir, string(snapshot), dir, file)
@@ -220,7 +249,7 @@ func (g pathGrammar) parse(p string) (sp snapshotPath, ok bool) {
 	}
 	sp.dataset = DatasetID(ds)
 
-	if g.partitioned && len(parts) > 0 && parts[0] == partitionsDir {
+	if g.partitioned && len(parts) > 0 && parts[0] == g.names.partitions {
 		parts = parts[1:]
 		end := slices.Index(parts, g.snapshotDir)
 		if end <= 0 {
@@ -240,11 +269,11 @@ func (g pathGrammar) parse(p string) (sp snapshotPath, ok bool) {
 
 	// The leaf decides the kind. If-chain rather than a tagless switch so
 	// the mutation gate measures these guards (go-gremlins/gremlins#298).
-	if len(parts) == 1 && parts[0] == manifestFile {
+	if len(parts) == 1 && parts[0] == g.names.manifest {
 		sp.kind = manifestLeaf
 		return sp, true
 	}
-	if len(parts) == 2 && parts[0] == dataDir && parts[1] != "" {
+	if len(parts) == 2 && parts[0] == g.names.data && parts[1] != "" {
 		sp.kind = dataLeaf
 		return sp, true
 	}
@@ -255,77 +284,32 @@ func (g pathGrammar) parse(p string) (sp snapshotPath, ok bool) {
 // The one layout implementation
 // -----------------------------------------------------------------------------
 
-// pathLayout implements layout from a grammar and a partitioner.
+// pathLayout implements layout from a grammar and a partition scheme.
 type pathLayout struct {
 	grammar pathGrammar
-	part    partitioner
+	part    partitionScheme
 }
 
-// NewDefaultLayout creates the default novice-friendly layout:
+// newPathLayout lays out a dataset with the root's names and the dataset's
+// partitioning. With the default names, an unpartitioned layout writes:
 //
-//	/datasets/<dataset>/snapshots/<snapshot>/
-//	  manifest.json
-//	  /data/<file>
+//	datasets/<dataset>/snapshots/<snapshot>/manifest.json
+//	datasets/<dataset>/snapshots/<snapshot>/data/<file>
 //
-// Flat (noop partitioning); the default for NewDataset and NewDatasetReader.
-func NewDefaultLayout() layout {
-	return &pathLayout{
-		grammar: pathGrammar{root: datasetsDir, snapshotDir: snapshotsDir},
-		part:    newNoopPartitioner(),
-	}
+// and a Hive layout writes each manifest under every partition it touches,
+// plus a canonical copy for lookup by ID:
+//
+//	datasets/<dataset>/partitions/<k=v>.../segments/<snapshot>/manifest.json
+//	datasets/<dataset>/segments/<snapshot>/manifest.json
+//
+// Flat names omit the datasets directory and, without partitions, the
+// snapshots directory: <dataset>/<snapshot>/manifest.json.
+func newPathLayout(names pathNames, part partitionScheme) *pathLayout {
+	return &pathLayout{grammar: names.grammar(!part.isNoop()), part: part}
 }
 
-// NewHiveLayout creates a Hive (partition-first) layout with the specified partition keys:
-//
-//	/datasets/<dataset>/partitions/<k=v>/segments/<snapshot>/
-//	  manifest.json
-//	  /data/<file>
-//
-// plus a canonical manifest at /datasets/<dataset>/segments/<snapshot>/manifest.json
-// for O(1) lookup by ID. At least one partition key is required; for
-// unpartitioned data use NewDefaultLayout. Records must be map[string]any
-// with the keys present.
-//
-// Example:
-//
-//	layout, err := NewHiveLayout("day", "region")
-//	// Records will be partitioned by day=<value>/region=<value>
-func NewHiveLayout(keys ...string) (layout, error) {
-	if len(keys) == 0 {
-		return nil, validate.Argument("NewHiveLayout requires at least one partition key; use NewDefaultLayout for unpartitioned data")
-	}
-	for _, key := range keys {
-		if !storepath.Segment(key) || strings.Contains(key, "=") {
-			return nil, validate.Argument("NewHiveLayout: partition key %q must be one path segment without \"=\", so that a partition path names its keys unambiguously", key)
-		}
-	}
-	return &pathLayout{
-		grammar: pathGrammar{root: datasetsDir, snapshotDir: segmentsDir, partitioned: true},
-		part:    newHivePartitioner(keys...),
-	}, nil
-}
-
-// NewFlatLayout creates a minimal layout with dataset names at the store root:
-//
-//	/<dataset>/<snapshot>/
-//	  manifest.json
-//	  /data/<file>
-//
-// No partitions, and no dataset enumeration (there is no common prefix).
-func NewFlatLayout() layout {
-	return &pathLayout{grammar: pathGrammar{}, part: newNoopPartitioner()}
-}
-
-func (l *pathLayout) supportsDatasetEnumeration() bool { return l.grammar.root != "" }
-func (l *pathLayout) supportsPartitions() bool         { return l.grammar.partitioned }
-func (l *pathLayout) partitioner() partitioner         { return l.part }
-
-func (l *pathLayout) datasetsPrefix() string {
-	if l.grammar.root == "" {
-		return ""
-	}
-	return l.grammar.root + "/"
-}
+func (l *pathLayout) supportsPartitions() bool      { return l.grammar.partitioned }
+func (l *pathLayout) partitioning() partitionScheme { return l.part }
 
 // snapshotsPrefix covers every manifest of the dataset. On a partitioned
 // grammar that is the whole dataset directory (partitions sit inside it).
@@ -349,19 +333,19 @@ func (l *pathLayout) partitionsPrefix(dataset DatasetID, partitionPrefix string)
 	}
 	// Raw concatenation, not path.Join: a partial final token such as
 	// "day=2026-10" must stay a prefix of "day=2026-10-18".
-	return join(l.grammar.root, string(dataset), partitionsDir) + "/" + partitionPrefix
+	return join(l.grammar.root, string(dataset), l.grammar.names.partitions) + "/" + partitionPrefix
 }
 
 func (l *pathLayout) manifestPath(dataset DatasetID, snapshot DatasetSnapshotID) string {
-	return l.grammar.objectPath(dataset, "", snapshot, "", manifestFile)
+	return l.grammar.objectPath(dataset, "", snapshot, "", l.grammar.names.manifest)
 }
 
 func (l *pathLayout) manifestPathInPartition(dataset DatasetID, snapshot DatasetSnapshotID, partition string) string {
-	return l.grammar.objectPath(dataset, partition, snapshot, "", manifestFile)
+	return l.grammar.objectPath(dataset, partition, snapshot, "", l.grammar.names.manifest)
 }
 
 func (l *pathLayout) dataFilePath(dataset DatasetID, snapshot DatasetSnapshotID, partition, filename string) string {
-	return l.grammar.objectPath(dataset, partition, snapshot, dataDir, filename)
+	return l.grammar.objectPath(dataset, partition, snapshot, l.grammar.names.data, filename)
 }
 
 func (l *pathLayout) latestPointerPath(dataset DatasetID) string {
@@ -371,11 +355,11 @@ func (l *pathLayout) latestPointerPath(dataset DatasetID) string {
 // stagedManifestPath lies beside the dataset's tombstones, where no grammar
 // parses a manifest, so a staged copy is never listed as a snapshot.
 func (l *pathLayout) stagedManifestPath(dataset DatasetID, snapshot DatasetSnapshotID) string {
-	return join(l.grammar.datasetDir(dataset), stagedDir, string(snapshot)+".json")
+	return join(l.grammar.datasetDir(dataset), l.grammar.names.staged, string(snapshot)+".json")
 }
 
 // manifestName is the file name of every manifest of this layout.
-func (l *pathLayout) manifestName() string { return manifestFile }
+func (l *pathLayout) manifestName() string { return l.grammar.names.manifest }
 
 // datasetPrefix covers every object of the dataset.
 func (l *pathLayout) datasetPrefix(dataset DatasetID) string {
@@ -394,7 +378,7 @@ func (l *pathLayout) ownsObject(dataset DatasetID, p string) bool {
 		return true
 	}
 	pointer := l.latestPointerPath(dataset)
-	stagedPrefix := join(l.grammar.datasetDir(dataset), stagedDir) + "/"
+	stagedPrefix := join(l.grammar.datasetDir(dataset), l.grammar.names.staged) + "/"
 	return p == pointer || p == pointer+".lock" ||
 		snapshotLeaf(p, stagedPrefix, ".json") ||
 		snapshotLeaf(p, l.tombstonesPrefix(dataset), "") ||
@@ -412,26 +396,15 @@ func snapshotLeaf(p, prefix, suffix string) bool {
 	return ok && history.IsGeneratedID(DatasetSnapshotID(id))
 }
 
-// convention is the names this layout's paths use. A layout without a
-// datasets directory has the flat paths.
-func (l *pathLayout) convention() ManifestPaths {
-	p := ManifestPaths{
-		Datasets: datasetsDir, Snapshots: snapshotsDir, Partitions: partitionsDir,
-		Segments: segmentsDir, Manifest: manifestFile, Data: dataDir,
-		Expired: tombstonesDir, Staged: stagedDir,
-	}
-	if l.grammar.root == "" {
-		p.Datasets, p.Snapshots, p.Flat = "", "", true
-	}
-	return p
-}
+// convention is the names this layout's paths use.
+func (l *pathLayout) convention() ManifestPaths { return l.grammar.names.convention() }
 
 func (l *pathLayout) tombstonePath(dataset DatasetID, snapshot DatasetSnapshotID) string {
-	return join(l.grammar.datasetDir(dataset), tombstonesDir, string(snapshot))
+	return join(l.grammar.datasetDir(dataset), l.grammar.names.expired, string(snapshot))
 }
 
 func (l *pathLayout) tombstonesPrefix(dataset DatasetID) string {
-	return join(l.grammar.datasetDir(dataset), tombstonesDir) + "/"
+	return join(l.grammar.datasetDir(dataset), l.grammar.names.expired) + "/"
 }
 
 func (l *pathLayout) parse(p string) (snapshotPath, bool) {
@@ -439,7 +412,12 @@ func (l *pathLayout) parse(p string) (snapshotPath, bool) {
 }
 
 // leafDir is the directory under a snapshot that holds each kind of leaf.
-var leafDir = map[pathKind]string{manifestLeaf: "", dataLeaf: dataDir}
+func (g pathGrammar) leafDir(kind pathKind) string {
+	if kind == dataLeaf {
+		return g.names.data
+	}
+	return ""
+}
 
 // isObjectOf requires p to be a key every store accepts, already in clean
 // form, and to survive a parse-and-rebuild round trip unchanged: no "..",
@@ -453,7 +431,7 @@ func (l *pathLayout) isObjectOf(dataset DatasetID, snapshot DatasetSnapshotID, k
 	if !ok || sp.kind != kind || sp.dataset != dataset || sp.snapshot != snapshot {
 		return false
 	}
-	return l.grammar.objectPath(dataset, sp.partition, snapshot, leafDir[kind], path.Base(p)) == p
+	return l.grammar.objectPath(dataset, sp.partition, snapshot, l.grammar.leafDir(kind), path.Base(p)) == p
 }
 
 // withinPartition reports whether partition p is partition or lies beneath

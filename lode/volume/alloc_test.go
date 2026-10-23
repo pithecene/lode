@@ -34,7 +34,7 @@ func TestAllocationGates(t *testing.T) { testutil.RunAllocGates(t, allocGates) }
 // for as many more blocks as a gate commits, and its head.
 func gateVolume(t *testing.T) (Volume, *Snapshot) {
 	t.Helper()
-	vol, err := New("gate", lode.NewMemoryFactory(), 1<<30)
+	vol, err := New("gate", lode.Memory(), 1<<30)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,7 +42,7 @@ func gateVolume(t *testing.T) (Volume, *Snapshot) {
 	for i := range refs {
 		refs[i] = gateStage(t, vol, int64(i))
 	}
-	snap, err := vol.Commit(t.Context(), refs, lode.Metadata{})
+	snap, err := vol.Commit(t.Context(), refs, Metadata{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +79,7 @@ func gateCommit(t *testing.T) func() {
 	}
 	next := 0
 	return func() {
-		if _, err := vol.Commit(t.Context(), refs[next:next+1], lode.Metadata{}); err != nil {
+		if _, err := vol.Commit(t.Context(), refs[next:next+1], Metadata{}); err != nil {
 			t.Fatal(err)
 		}
 		next++

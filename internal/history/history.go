@@ -419,13 +419,34 @@ func (h *History[ID, M]) Forget() {
 // discarded, so the next Resolve consults storage and adopts the pending
 // commit as parent.
 func (h *History[ID, M]) Latest(ctx context.Context) (*Snapshot[ID, M], error) {
+	s, pointerMissing, err := h.resolveHead(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if pointerMissing {
+		h.createPointer(ctx, s.ID)
+	}
+	return s, nil
+}
+
+// Head is Latest for a reader that never writes: it resolves the head the
+// same way but never creates a missing pointer (CONTRACT_CORE §Head
+// Pointer), so it needs no CompareAndSwap.
+func (h *History[ID, M]) Head(ctx context.Context) (*Snapshot[ID, M], error) {
+	s, _, err := h.resolveHead(ctx)
+	return s, err
+}
+
+// resolveHead resolves the head through the pointer, or by scan when the pointer
+// names no loadable snapshot, and reports whether the pointer was missing.
+func (h *History[ID, M]) resolveHead(ctx context.Context) (s *Snapshot[ID, M], pointerMissing bool, err error) {
 	id, err := h.ReadPointer(ctx)
-	pointerMissing := errors.Is(err, h.errs.NotFound)
+	pointerMissing = errors.Is(err, h.errs.NotFound)
 	if err == nil {
 		s, loadErr := h.Snapshot(ctx, id)
 		if loadErr == nil {
 			h.remember(id, string(id))
-			return s, nil
+			return s, false, nil
 		}
 		if !errors.Is(loadErr, h.errs.NotFound) {
 			err = fmt.Errorf("lode: failed to load latest snapshot: %w", loadErr)
@@ -435,17 +456,14 @@ func (h *History[ID, M]) Latest(ctx context.Context) (*Snapshot[ID, M], error) {
 	// stale; the next Resolve must consult storage.
 	h.Forget()
 	if err != nil && !pointerMissing {
-		return nil, err
+		return nil, false, err
 	}
 
-	s, err := h.scan(ctx)
+	s, err = h.scan(ctx)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	if pointerMissing {
-		h.createPointer(ctx, s.ID)
-	}
-	return s, nil
+	return s, pointerMissing, nil
 }
 
 // createPointer creates a missing pointer naming head, the scan's result.

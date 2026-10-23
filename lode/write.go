@@ -11,11 +11,10 @@ import (
 	"time"
 
 	"github.com/pithecene/lode/internal/history"
-	"github.com/pithecene/lode/internal/validate"
 )
 
-// Data file roles: a dataset without a codec stores one blob per snapshot, a
-// dataset with a codec stores encoded records. The compressor's extension is
+// Data file roles: a blob dataset stores one blob per snapshot, a record
+// dataset stores encoded records. The compressor's extension is
 // appended to the role to name the file.
 const (
 	blobFile = "blob"
@@ -31,7 +30,6 @@ type pendingSnapshot struct {
 	files      []FileRef
 	partitions []string // partition key of each file, for manifest fan-out
 	rowCount   int64
-	codec      string
 	timestamps timestampRange
 
 	// streamed names a streamed data object, which is deleted best-effort when
@@ -41,12 +39,15 @@ type pendingSnapshot struct {
 }
 
 // newPending starts a snapshot with a fresh ID. Data files are written under
-// paths derived from the ID, so it must not change once staging begins.
-func (d *dataset) newPending(metadata Metadata) pendingSnapshot {
-	if metadata == nil {
-		metadata = Metadata{}
+// paths derived from the ID, so it must not change once staging begins. The
+// metadata is encoded first, so a value that is not a JSON object is
+// rejected before any store call.
+func (d *dataset) newPending(metadata any) (pendingSnapshot, error) {
+	m, err := newMetadata(metadata)
+	if err != nil {
+		return pendingSnapshot{}, err
 	}
-	return pendingSnapshot{id: DatasetSnapshotID(history.NewID()), metadata: metadata}
+	return pendingSnapshot{id: DatasetSnapshotID(history.NewID()), metadata: m}, nil
 }
 
 // add records a persisted data file and the partition it belongs to.
@@ -125,17 +126,15 @@ func (d *dataset) manifest(p *pendingSnapshot, parent DatasetSnapshotID) *Manife
 		RowCount:         p.rowCount,
 		MinTimestamp:     p.timestamps.min,
 		MaxTimestamp:     p.timestamps.max,
-		Codec:            p.codec,
+		Codec:            d.codecName,
 		Compressor:       d.compressor.Name(),
-		Partitioner:      d.layout.partitioner().name(),
-		PartitionKeys:    slices.Clone(d.layout.partitioner().keys()), // a returned manifest must not alias the layout
+		Partitioner:      d.layout.partitioning().name,
+		PartitionKeys:    slices.Clone(d.layout.partitioning().keys), // a returned manifest must not alias the layout
+		CodecDescription: d.codecDescription,
 	}
 	m.Paths = d.layout.convention()
 	if d.checksum != nil {
 		m.ChecksumAlgorithm = d.checksum.Name()
-	}
-	if d.codec != nil {
-		m.CodecDescription = d.codec.Describe()
 	}
 	return m
 }
@@ -176,23 +175,8 @@ func (d *dataset) discard(ctx context.Context, path string) {
 // Buffered staging (Write)
 // -----------------------------------------------------------------------------
 
-// stage persists data as this dataset's kind of files: one blob without a
-// codec, one encoded file per partition with one.
-func (d *dataset) stage(ctx context.Context, p *pendingSnapshot, data []any) error {
-	if d.codec == nil {
-		return d.stageBlob(ctx, p, data)
-	}
-	return d.stageRecords(ctx, p, data)
-}
-
-func (d *dataset) stageBlob(ctx context.Context, p *pendingSnapshot, data []any) error {
-	if len(data) != 1 {
-		return validate.Argument("raw blob mode requires exactly one data element")
-	}
-	blob, ok := data[0].([]byte)
-	if !ok {
-		return validate.Argument("raw blob mode requires []byte, got %T", data[0])
-	}
+// stageBlob persists one blob as the snapshot's single data file.
+func (d *dataset) stageBlob(ctx context.Context, p *pendingSnapshot, blob []byte) error {
 	ref, err := d.putFile(ctx, d.filePath(p.id, "", blobFile), blobContent(blob))
 	if err != nil {
 		return fmt.Errorf("lode: failed to write blob: %w", err)
@@ -202,23 +186,26 @@ func (d *dataset) stageBlob(ctx context.Context, p *pendingSnapshot, data []any)
 	return nil
 }
 
-func (d *dataset) stageRecords(ctx context.Context, p *pendingSnapshot, data []any) error {
-	partitions, err := d.layout.partitioner().group(data)
+// stageRecords persists records as one encoded data file per partition.
+func stageRecords[T any](ctx context.Context, r *recordDataset[T], p *pendingSnapshot, records []T) error {
+	d := r.dataset
+	partitions, err := groupRecords(records, r.partitionKey, !d.layout.partitioning().isNoop())
 	if err != nil {
 		return fmt.Errorf("lode: partitioning failed: %w", err)
 	}
-	for key, records := range partitions {
-		ref, err := d.putFile(ctx, d.filePath(p.id, key, dataFile), encodedRecords{d.codec, records})
+	for key, group := range partitions {
+		ref, err := d.putFile(ctx, d.filePath(p.id, key, dataFile), encodedRecords[T]{r.codec, group})
 		if err != nil {
 			return fmt.Errorf("lode: failed to write data file: %w", err)
 		}
-		ref.Stats = fileStats(d.codec)
+		ref.Stats = fileStats(r.codec)
 		p.add(ref, key)
 	}
-	p.rowCount = int64(len(data))
-	p.codec = d.codec.Name()
-	for _, record := range data {
-		p.timestamps.observe(record)
+	p.rowCount = int64(len(records))
+	if r.timestamped {
+		for i := range records {
+			p.timestamps.observe(records[i])
+		}
 	}
 	return nil
 }
@@ -288,18 +275,18 @@ func (b blobContent) writeTo(w io.Writer) error {
 
 func (blobContent) op() string { return "write blob" }
 
-type encodedRecords struct {
-	codec   Codec
-	records []any
+type encodedRecords[T any] struct {
+	codec   Codec[T]
+	records []T
 }
 
-func (e encodedRecords) writeTo(w io.Writer) error { return e.codec.Encode(w, e.records) }
-func (encodedRecords) op() string                  { return "write data file" }
+func (e encodedRecords[T]) writeTo(w io.Writer) error { return e.codec.Encode(w, e.records) }
+func (encodedRecords[T]) op() string                  { return "write data file" }
 
-// fileStats returns per-file statistics when the encoder reports them
-// (StatisticalCodec, StatisticalStreamEncoder), nil otherwise.
+// fileStats returns per-file statistics when the codec or stream encoder
+// reports them (StatisticalCodec), nil otherwise.
 func fileStats(encoder any) *FileStats {
-	if s, ok := encoder.(interface{ FileStats() *FileStats }); ok {
+	if s, ok := encoder.(StatisticalCodec); ok {
 		return s.FileStats()
 	}
 	return nil

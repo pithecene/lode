@@ -115,7 +115,7 @@ func commitBlocks(ctx context.Context, vol volume.Volume, blocks []Block, writer
 		}
 		refs[i] = ref
 	}
-	return vol.Commit(ctx, refs, lode.Metadata{"writer": writer})
+	return vol.Commit(ctx, refs, volume.Metadata{"writer": writer})
 }
 
 // volumeVerifier holds the evidence a finished Volume run left: the

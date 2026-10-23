@@ -55,7 +55,7 @@ var backends = map[string]openBackend{
 		return Backend{Store: lode.SingleProcess(testutil.WithoutCAS(lode.NewMemory())), Release: keep, RetainsData: true}, nil
 	},
 	"fs": func(_ context.Context, dir, _ string) (Backend, error) {
-		store, err := lode.NewFSFactory(dir)()
+		store, err := lode.FS(dir)()
 		return Backend{Store: store, Release: keep}, err
 	},
 	"localstack": func(ctx context.Context, _, runID string) (Backend, error) {

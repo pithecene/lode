@@ -67,8 +67,8 @@ scale with the size of a dataset's or volume's history.
 |-----------|-------------------|--------------------|--------|
 | Write (no partitions) | 4 fixed | scan fallback (below) | O(R + encoded) |
 | Write (P partitions) | 2P + 3 | scan fallback (below) | O(R + encoded) |
-| StreamWrite | 4 fixed | scan fallback (below) | O(1) streaming |
-| StreamWriteRecords | 4 fixed | scan fallback (below) | O(1) streaming |
+| Blobs.StreamWrite | 4 fixed | scan fallback (below) | O(1) streaming |
+| Records.StreamWrite | 4 fixed | scan fallback (below) | O(1) streaming |
 
 Parent resolution:
 - In-memory cache: 0 calls
@@ -107,11 +107,29 @@ Exceptions, each incurred once (CONTRACT_WRITE_API §Settings):
 
 ---
 
-## DatasetReader — Enumeration
+## Opening a Handle
+
+| Operation | Store Calls |
+|-----------|-------------|
+| `Root.Records`, `Root.Blobs` (warm: the pointer names a manifest) | 1 Get of the pointer + 1 Get of the manifest |
+| `Root.Records`, `Root.Blobs` (empty dataset) | 1 Get of the pointer + the scan fallback + 1 List of the dataset's directory |
+| `ReadRoot.Records`, `ReadRoot.Blobs` (warm) | 1 Get of the pointer + at most 2 Gets of the manifest |
+| `ReadRoot.Records`, `ReadRoot.Blobs` (no pointer) | 1 Get of the pointer + the scan fallback of each grammar |
+
+A view does not know whether the dataset is partitioned until it has read a
+manifest, so it reads the canonical manifest under the snapshots directory,
+then under the segments directory; at most one exists. Opening writes
+nothing. A writer's open check is the settings check of
+CONTRACT_WRITE_API §Settings Check; once settled, commits keep the bounds
+above.
+
+---
+
+## Dataset Views and Handles — Enumeration
 
 | Operation | Path | Store Calls | Memory |
 |-----------|------|-------------|--------|
-| ListDatasets | Cold | 1 List | O(N) |
+| ListDatasets (on a root) | Cold | 1 List | O(N) |
 | ListManifests | Cold | 1 List + M Gets (validation) | O(N + M × manifest) |
 | ListPartitions | Cold | 1 List + M Gets | O(N + M × manifest) |
 | GetManifest | Hot | 1 Get | O(manifest) |

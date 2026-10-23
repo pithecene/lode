@@ -82,10 +82,12 @@ manifest as a pending commit:
   pending or abandoned commit, a manual edit, or a failed `Put` in the
   replacement of `lode.SingleProcess`), `Latest` selects the largest snapshot ID that has a
   manifest. If the clock was set back, or two commits began in the same
-  nanosecond, that selection may not be the most recent commit. `Latest`
-  creates a missing pointer from the selection but never replaces an
-  existing pointer, because replacing it would revert the head past a
-  pending commit.
+  nanosecond, that selection may not be the most recent commit. A writer
+  handle's `Latest` creates a missing pointer from the selection but never
+  replaces an existing pointer, because replacing it would revert the head
+  past a pending commit. A view (`ReadRoot.Records`, `ReadRoot.Blobs`)
+  resolves the head the same way but MUST NOT create a missing pointer: a
+  view never writes, so its store need not provide `CompareAndSwap`.
 - A new commit adopts the snapshot that the pointer names as its parent,
   whether or not that snapshot has a manifest, so the history remains
   linear. After an abandoned commit, the next snapshot's `ParentSnapshotID`
@@ -197,11 +199,16 @@ Manifests are immutable once written.
 ## Metadata Rules
 
 - Metadata MUST be explicit on every snapshot.
-- `nil` metadata is converted to an empty object (`{}`) at the API boundary.
+- A writer accepts metadata as any value that encodes as a JSON object (a
+  struct or a map). `nil` is converted to an empty object (`{}`) at the API
+  boundary; a value that does not encode as an object is rejected with
+  `ErrInvalidArgument`.
 - Empty metadata (`{}`) is valid and MUST be persisted as an explicit
   object.
-- Metadata values MUST be serializable as JSON.
-- Manifests always contain a non-nil metadata map.
+- The persisted object is retained as written (`Metadata`) and decoded on
+  request; Lode does not reinterpret its values.
+- Manifests always contain a metadata object; a manifest whose metadata is
+  absent or not an object is invalid.
 
 ---
 

@@ -47,7 +47,7 @@ func run() error {
 	fmt.Printf("Storage root: %s\n\n", tmpDir)
 
 	// Create filesystem store factory
-	storeFactory := lode.NewFSFactory(tmpDir)
+	storeFactory := lode.FS(tmpDir)
 
 	// -------------------------------------------------------------------------
 	// SETUP: Create a 1 KB volume
@@ -81,7 +81,7 @@ func run() error {
 	}
 	fmt.Printf("Staged sector 2: offset=%d length=%d path=%s\n", blk2.Offset, blk2.Length, blk2.Path)
 
-	snap1, err := vol.Commit(ctx, []volume.BlockRef{blk0, blk2}, lode.Metadata{"step": "initial"})
+	snap1, err := vol.Commit(ctx, []volume.BlockRef{blk0, blk2}, volume.Metadata{"step": "initial"})
 	if err != nil {
 		return fmt.Errorf("failed to commit: %w", err)
 	}
@@ -132,7 +132,7 @@ func run() error {
 		return fmt.Errorf("failed to stage sector 1: %w", err)
 	}
 
-	snap2, err := vol.Commit(ctx, []volume.BlockRef{blk1}, lode.Metadata{"step": "fill-gap"})
+	snap2, err := vol.Commit(ctx, []volume.BlockRef{blk1}, volume.Metadata{"step": "fill-gap"})
 	if err != nil {
 		return fmt.Errorf("failed to commit: %w", err)
 	}
@@ -173,7 +173,7 @@ func run() error {
 		return fmt.Errorf("failed to stage sector 3: %w", err)
 	}
 
-	snap3, err := vol2.Commit(ctx, []volume.BlockRef{blk3}, lode.Metadata{"step": "complete"})
+	snap3, err := vol2.Commit(ctx, []volume.BlockRef{blk3}, volume.Metadata{"step": "complete"})
 	if err != nil {
 		return fmt.Errorf("failed to commit: %w", err)
 	}

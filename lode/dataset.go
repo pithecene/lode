@@ -24,218 +24,126 @@ const (
 )
 
 // -----------------------------------------------------------------------------
-// Dataset Configuration
+// Options
 // -----------------------------------------------------------------------------
 
-// datasetConfig holds the resolved configuration for a dataset.
+// datasetConfig holds a writer handle's configuration.
 type datasetConfig struct {
-	layout     layout
+	layout     Layout
 	compressor Compressor
-	codec      Codec
 	checksum   Checksum
 	retry      retry.Config
 }
 
-// Option configures dataset or reader construction.
-// Options implement methods for the constructors they support.
-// Using an option with an unsupported constructor returns an error.
-// Volumes take their own options (package lode/volume).
-type Option interface {
-	applyDataset(*datasetConfig) error
-	applyReader(*readerConfig) error
-}
-
-// layoutOption implements Option for WithLayout.
-type layoutOption struct {
-	layout layout
-}
-
-// WithLayout sets the layout for the dataset or reader.
-// Layout configures both path topology AND partitioning.
-// Default: NewDefaultLayout() (flat, no partitions).
-func WithLayout(l layout) Option {
-	return &layoutOption{layout: l}
-}
-
-func (o *layoutOption) applyDataset(cfg *datasetConfig) error {
-	cfg.layout = o.layout
-	return nil
-}
-
-func (o *layoutOption) applyReader(cfg *readerConfig) error {
-	cfg.layout = o.layout
-	return nil
-}
-
-// hiveLayoutOption implements Option for WithHiveLayout.
-type hiveLayoutOption struct {
-	keys []string
-}
-
-// WithHiveLayout creates a Hive (partition-first) layout option with the specified partition keys.
-//
-// This is the preferred way to configure Hive layout for fluent callsites.
-// At least one partition key is required; validation occurs when the option is applied.
-//
-// Example:
-//
-//	ds, err := lode.NewDataset("events", factory,
-//	    lode.WithHiveLayout("day", "region"),
-//	    lode.WithCodec(lode.NewJSONLCodec()),
-//	)
-func WithHiveLayout(keys ...string) Option {
-	return &hiveLayoutOption{keys: keys}
-}
-
-func (o *hiveLayoutOption) applyDataset(cfg *datasetConfig) error {
-	l, err := NewHiveLayout(o.keys...)
-	if err != nil {
-		return err
-	}
-	cfg.layout = l
-	return nil
-}
-
-func (o *hiveLayoutOption) applyReader(cfg *readerConfig) error {
-	l, err := NewHiveLayout(o.keys...)
-	if err != nil {
-		return err
-	}
-	cfg.layout = l
-	return nil
-}
-
-// compressorOption implements Option for WithCompressor (dataset-only).
-type compressorOption struct {
+// viewConfig holds a view's custom components, which a view uses for the
+// snapshots whose manifests name them.
+type viewConfig struct {
 	compressor Compressor
+	checksum   Checksum
 }
 
-// WithCompressor sets the compressor for the dataset.
-// Default: NewNoOpCompressor().
-// This option is only valid for NewDataset.
-func WithCompressor(c Compressor) Option {
-	return &compressorOption{compressor: c}
+// DatasetOption configures a writer handle: Root.Records or Root.Blobs.
+type DatasetOption interface {
+	applyDataset(cfg *datasetConfig) error
 }
 
-func (o *compressorOption) applyDataset(cfg *datasetConfig) error {
-	cfg.compressor = o.compressor
-	return nil
+// ViewOption configures a view: ReadRoot.Records or ReadRoot.Blobs. A view
+// takes its layout and components from the dataset's manifests; only a
+// custom compressor or checksum, which Lode cannot reconstruct from its
+// name, is passed to it.
+type ViewOption interface {
+	applyView(cfg *viewConfig) error
 }
 
-func (o *compressorOption) applyReader(*readerConfig) error {
-	return fmt.Errorf("lode: WithCompressor: %w", ErrOptionNotValidForDatasetReader)
+// ComponentOption configures a writer handle or a view.
+type ComponentOption interface {
+	DatasetOption
+	ViewOption
 }
 
-// codecOption implements Option for WithCodec (dataset-only).
-type codecOption struct {
-	codec Codec
+// datasetOption adapts a function to DatasetOption.
+type datasetOption func(cfg *datasetConfig) error
+
+func (o datasetOption) applyDataset(cfg *datasetConfig) error { return o(cfg) }
+
+// componentOption sets a component on a writer handle and on a view.
+type componentOption struct {
+	dataset func(cfg *datasetConfig)
+	view    func(cfg *viewConfig)
 }
 
-// WithCodec sets the codec for the dataset.
-// Default: none (raw blob storage).
-// This option is only valid for NewDataset.
-//
-// When a codec is set, Write expects structured records that will be
-// serialized using the codec. When nil (default), Write expects a single
-// []byte element and stores it as a raw blob.
-func WithCodec(c Codec) Option {
-	return &codecOption{codec: c}
+func (o componentOption) applyDataset(cfg *datasetConfig) error { o.dataset(cfg); return nil }
+func (o componentOption) applyView(cfg *viewConfig) error       { o.view(cfg); return nil }
+
+// WithLayout sets how a dataset is partitioned: Unpartitioned (the default)
+// or Hive.
+func WithLayout(l Layout) DatasetOption {
+	return datasetOption(func(cfg *datasetConfig) error {
+		if l == nil {
+			return validate.Argument("WithLayout: layout must not be nil")
+		}
+		cfg.layout = l
+		return nil
+	})
 }
 
-func (o *codecOption) applyDataset(cfg *datasetConfig) error {
-	cfg.codec = o.codec
-	return nil
-}
-
-func (o *codecOption) applyReader(*readerConfig) error {
-	return fmt.Errorf("lode: WithCodec: %w", ErrOptionNotValidForDatasetReader)
-}
-
-// checksumOption implements Option for WithChecksum (dataset-only).
-type checksumOption struct {
-	checksum Checksum
-}
-
-// WithChecksum sets the checksum algorithm for the dataset.
-// Default: none (no checksums).
-// This option is only valid for NewDataset.
-//
-// When a checksum is configured, checksums are computed during write
-// and recorded in the manifest for each data file.
-func WithChecksum(c Checksum) Option {
-	return &checksumOption{checksum: c}
-}
-
-func (o *checksumOption) applyDataset(cfg *datasetConfig) error {
-	cfg.checksum = o.checksum
-	return nil
-}
-
-func (o *checksumOption) applyReader(*readerConfig) error {
-	return fmt.Errorf("lode: WithChecksum: %w", ErrOptionNotValidForDatasetReader)
-}
-
-// retryOption implements Option for all WithRetry* constructors.
-// Retry options apply to datasets and are never valid for readers. set is
-// the retry.Config setter, which package lode/volume's options share, so a
-// validation failure reads the same in both: an invalid argument named after
-// the option.
-type retryOption struct {
-	name string
-	set  func(*retry.Config) error
-}
-
-func (o *retryOption) apply(r *retry.Config) error {
-	if err := o.set(r); err != nil {
-		return validate.Argument("%s: %v", o.name, err)
+// WithCompressor sets the compressor of a writer handle (default:
+// NewNoOpCompressor). For a view it supplies a custom compressor, used for
+// the snapshots whose manifests name it; Lode reconstructs the bundled
+// compressors by name.
+func WithCompressor(c Compressor) ComponentOption {
+	return componentOption{
+		dataset: func(cfg *datasetConfig) { cfg.compressor = c },
+		view:    func(cfg *viewConfig) { cfg.compressor = c },
 	}
-	return nil
 }
 
-func (o *retryOption) applyDataset(cfg *datasetConfig) error { return o.apply(&cfg.retry) }
-
-func (o *retryOption) applyReader(*readerConfig) error {
-	return fmt.Errorf("lode: %s: %w", o.name, ErrOptionNotValidForDatasetReader)
-}
-
-// WithRetryCount enables automatic CAS retry on snapshot conflict.
-// When n > 0, the commit path retries up to n times on ErrSnapshotConflict,
-// refreshing the parent state between attempts.
-// Default: 0 (no retry; ErrSnapshotConflict returned immediately).
-func WithRetryCount(n int) Option {
-	return &retryOption{
-		name: "WithRetryCount",
-		set:  func(r *retry.Config) error { return r.SetMaxAttempts(n) },
+// WithChecksum sets the checksum algorithm of a writer handle (default:
+// none), whose checksums are computed during writes and recorded in the
+// manifest. For a view it supplies a custom checksum, matched by name.
+func WithChecksum(c Checksum) ComponentOption {
+	return componentOption{
+		dataset: func(cfg *datasetConfig) { cfg.checksum = c },
+		view:    func(cfg *viewConfig) { cfg.checksum = c },
 	}
+}
+
+// retryOption builds a retry option whose validation failure is an invalid
+// argument named after the option, as package lode/volume's options are.
+func retryOption(name string, set func(r *retry.Config) error) DatasetOption {
+	return datasetOption(func(cfg *datasetConfig) error {
+		if err := set(&cfg.retry); err != nil {
+			return validate.Argument("%s: %v", name, err)
+		}
+		return nil
+	})
+}
+
+// WithRetry enables automatic retry of a commit on snapshot conflict: up
+// to n retries on ErrSnapshotConflict, refreshing the parent between
+// attempts. Default: 0 (ErrSnapshotConflict is returned at once).
+func WithRetry(n int) DatasetOption {
+	return retryOption("WithRetry", func(r *retry.Config) error { return r.SetMaxAttempts(n) })
 }
 
 // WithRetryBaseDelay sets the base delay for exponential backoff on CAS retry.
 // The actual delay doubles with each attempt and is jittered.
 // Default: 10ms.
-func WithRetryBaseDelay(d time.Duration) Option {
-	return &retryOption{
-		name: "WithRetryBaseDelay",
-		set:  func(r *retry.Config) error { return r.SetBaseDelay(d) },
-	}
+func WithRetryBaseDelay(d time.Duration) DatasetOption {
+	return retryOption("WithRetryBaseDelay", func(r *retry.Config) error { return r.SetBaseDelay(d) })
 }
 
 // WithRetryMaxDelay sets the maximum delay for exponential backoff on CAS retry.
 // Default: 2s.
-func WithRetryMaxDelay(d time.Duration) Option {
-	return &retryOption{
-		name: "WithRetryMaxDelay",
-		set:  func(r *retry.Config) error { return r.SetMaxDelay(d) },
-	}
+func WithRetryMaxDelay(d time.Duration) DatasetOption {
+	return retryOption("WithRetryMaxDelay", func(r *retry.Config) error { return r.SetMaxDelay(d) })
 }
 
 // WithRetryJitter sets the jitter factor for CAS retry backoff.
 // 0.0 means no jitter (deterministic delay), 1.0 means full jitter.
 // Default: 1.0 (full jitter).
-func WithRetryJitter(j float64) Option {
-	return &retryOption{
-		name: "WithRetryJitter",
-		set:  func(r *retry.Config) error { return r.SetJitter(j) },
-	}
+func WithRetryJitter(j float64) DatasetOption {
+	return retryOption("WithRetryJitter", func(r *retry.Config) error { return r.SetJitter(j) })
 }
 
 // WithRetryObserver registers a callback invoked once per CAS retry attempt.
@@ -245,27 +153,62 @@ func WithRetryJitter(j float64) Option {
 // attempt, so the number of calls equals the number of retries performed.
 // The callback must be fast and must not block; it is intended for
 // observability (e.g. incrementing a retry counter metric).
-// Has no effect unless WithRetryCount(n) is configured with n > 0.
-func WithRetryObserver(fn func(attempt int)) Option {
-	return &retryOption{
-		name: "WithRetryObserver",
-		set:  func(r *retry.Config) error { return r.SetObserver(fn) },
+// Has no effect unless WithRetry(n) is configured with n > 0.
+func WithRetryObserver(fn func(attempt int)) DatasetOption {
+	return retryOption("WithRetryObserver", func(r *retry.Config) error { return r.SetObserver(fn) })
+}
+
+// resolveDatasetConfig applies opts over the defaults.
+func resolveDatasetConfig(opts []DatasetOption) (*datasetConfig, error) {
+	cfg := &datasetConfig{layout: Unpartitioned(), compressor: NewNoOpCompressor(), retry: retry.Default()}
+	for _, opt := range opts {
+		if opt == nil {
+			return nil, validate.Argument("option must not be nil")
+		}
+		if err := opt.applyDataset(cfg); err != nil {
+			return nil, err
+		}
 	}
+	if cfg.compressor == nil {
+		return nil, validate.Argument("compressor must not be nil")
+	}
+	return cfg, nil
+}
+
+// resolveViewConfig applies opts.
+func resolveViewConfig(opts []ViewOption) (*viewConfig, error) {
+	cfg := &viewConfig{}
+	for _, opt := range opts {
+		if opt == nil {
+			return nil, validate.Argument("option must not be nil")
+		}
+		if err := opt.applyView(cfg); err != nil {
+			return nil, err
+		}
+	}
+	return cfg, nil
 }
 
 // -----------------------------------------------------------------------------
-// Dataset Implementation
+// The dataset core
 // -----------------------------------------------------------------------------
 
-// dataset implements the Dataset interface.
+// dataset is what every handle of one dataset shares: its paths, its
+// history, its components, and the writer's state. Records, Blobs, and the
+// views wrap it; a view's store refuses writes (readOnlyStore), and a view
+// never calls the writer's methods.
 type dataset struct {
 	id         DatasetID
 	store      Store
 	layout     layout
-	compressor Compressor
-	codec      Codec
+	compressor Compressor // the writer's; nil for a view
 	checksum   Checksum
+	custom     viewConfig // a view's custom components
 	retry      retry.Config
+
+	// codecName and codecDescription are the codec the manifests record;
+	// "" for a blob dataset.
+	codecName, codecDescription string
 
 	// history owns the snapshot sequence and its head pointer (internal/history).
 	history history.History[DatasetSnapshotID, Manifest]
@@ -356,83 +299,20 @@ func fromHistory(s *history.Snapshot[DatasetSnapshotID, Manifest], err error) (*
 	return toDatasetSnapshot(s), nil
 }
 
-// NewDataset creates a dataset with documented defaults.
-//
-// Default bundle (per PUBLIC_API.md):
-//   - Layout: NewDefaultLayout() (flat, no partitions)
-//   - Compressor: NewNoOpCompressor()
-//   - Codec: none (raw blob storage)
-//
-// Use option functions to override defaults:
-//   - WithLayout(l) to use a different layout (configures both paths AND partitioning)
-//   - WithCompressor(c) to use compression
-//   - WithCodec(c) to use structured records with a codec
-//   - WithChecksum(c) to enable file checksums
-func NewDataset(id DatasetID, factory StoreFactory, opts ...Option) (Dataset, error) {
-	if factory == nil {
-		return nil, validate.Argument("store factory is required")
-	}
-	if err := validateDatasetID(id); err != nil {
-		return nil, err
-	}
-
-	cfg := &datasetConfig{
-		layout:     NewDefaultLayout(),
-		compressor: NewNoOpCompressor(),
-		codec:      nil,
-		retry:      retry.Default(),
-	}
-
-	for _, opt := range opts {
-		if err := opt.applyDataset(cfg); err != nil {
-			return nil, err // option errors carry the lode: prefix
-		}
-	}
-
-	if cfg.layout == nil {
-		return nil, validate.Argument("layout must not be nil")
-	}
-	if cfg.compressor == nil {
-		return nil, validate.Argument("compressor must not be nil")
-	}
-	// Raw blob mode (no codec) cannot use partitioning - there are no record fields to extract keys from
-	if cfg.codec == nil && !cfg.layout.partitioner().isNoop() {
-		return nil, validate.Argument("raw blob mode (no codec) requires a layout with noop partitioner")
-	}
-
-	// Arguments are checked before any store work (CONTRACT_ERRORS §5).
-	store, err := factory()
-	if err != nil {
-		return nil, fmt.Errorf("lode: store factory failed: %w", err)
-	}
-	if store == nil {
-		return nil, validate.Argument("store factory returned nil store")
-	}
-
+// newDataset assembles the core of a dataset handle over store.
+func newDataset(id DatasetID, store Store, l layout) *dataset {
 	return &dataset{
-		id:         id,
-		store:      store,
-		layout:     cfg.layout,
-		compressor: cfg.compressor,
-		codec:      cfg.codec,
-		checksum:   cfg.checksum,
-		retry:      cfg.retry,
-		history:    history.New(store, newDatasetKind(id, cfg.layout, store), cfg.layout.latestPointerPath(id), "manifest", historyErrors),
-	}, nil
+		id:      id,
+		store:   store,
+		layout:  l,
+		retry:   retry.Default(),
+		history: history.New(store, newDatasetKind(id, l, store), l.latestPointerPath(id), "manifest", historyErrors),
+	}
 }
 
+// ID returns the dataset's identifier.
 func (d *dataset) ID() DatasetID {
 	return d.id
-}
-
-func (d *dataset) Write(ctx context.Context, data []any, metadata Metadata) (*DatasetSnapshot, error) {
-	// Data files are written once; on a commit conflict only the manifest is
-	// re-parented, never the data re-uploaded.
-	pending := d.newPending(metadata)
-	if err := d.stage(ctx, &pending, data); err != nil {
-		return nil, err
-	}
-	return d.commit(ctx, &pending)
 }
 
 // Snapshot loads a snapshot by ID. A dataset written before canonical
@@ -467,158 +347,122 @@ func (d *dataset) Snapshots(ctx context.Context) ([]*DatasetSnapshot, error) {
 		snapshots[i] = toDatasetSnapshot(s)
 	}
 	sort.Slice(snapshots, func(i, j int) bool {
-		return snapshots[i].Manifest.CreatedAt.Before(snapshots[j].Manifest.CreatedAt)
+		return snapshots[i].CreatedAt.Before(snapshots[j].CreatedAt)
 	})
 	return snapshots, nil
 }
 
-func (d *dataset) Read(ctx context.Context, id DatasetSnapshotID) ([]any, error) {
+// latest returns the head snapshot for a writer, which creates a missing
+// pointer from the scan result.
+func (d *dataset) latest(ctx context.Context) (*DatasetSnapshot, error) {
+	return fromHistory(d.history.Latest(ctx))
+}
+
+// head returns the head snapshot for a view, which never writes.
+func (d *dataset) head(ctx context.Context) (*DatasetSnapshot, error) {
+	return fromHistory(d.history.Head(ctx))
+}
+
+// readFile reads one data file of a snapshot through the compressor its
+// manifest names, passing the decompressed stream to decode.
+func (d *dataset) readFile(ctx context.Context, m *Manifest, path string, decode func(io.Reader) error) error {
+	compressor, err := d.compressorFor(m)
+	if err != nil {
+		return err
+	}
+	rc, err := d.store.Get(ctx, path)
+	if err != nil {
+		return err
+	}
+	defer closer(rc)()
+	decompressed, err := compressor.Decompress(rc)
+	if err != nil {
+		return err
+	}
+	defer closer(decompressed)()
+	return decode(decompressed)
+}
+
+// readBlob reads the single blob of a blob snapshot.
+func (d *dataset) readBlob(ctx context.Context, id DatasetSnapshotID) ([]byte, error) {
 	snapshot, err := d.Snapshot(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-
-	if err := d.validateComponentsMatch(snapshot.Manifest); err != nil {
+	if err := matchCodec(snapshot.Manifest, "", ""); err != nil {
 		return nil, err
 	}
-
-	if d.codec == nil {
-		if len(snapshot.Manifest.Files) != 1 {
-			return nil, fmt.Errorf("lode: raw blob snapshot must have exactly one file, got %d", len(snapshot.Manifest.Files))
-		}
-		data, err := d.readRawBlob(ctx, snapshot.Manifest.Files[0].Path)
-		if err != nil {
-			return nil, fmt.Errorf("lode: failed to read blob %s: %w", snapshot.Manifest.Files[0].Path, err)
-		}
-		return []any{data}, nil
+	if len(snapshot.Files) != 1 {
+		return nil, fmt.Errorf("lode: blob snapshot must have exactly one file, got %d", len(snapshot.Files))
 	}
-
-	var allRecords []any
-	for _, fileRef := range snapshot.Manifest.Files {
-		records, err := d.readDataFile(ctx, fileRef.Path)
-		if err != nil {
-			return nil, fmt.Errorf("lode: failed to read data file %s: %w", fileRef.Path, err)
-		}
-		allRecords = append(allRecords, records...)
-	}
-
-	return allRecords, nil
-}
-
-// Latest returns the head snapshot.
-func (d *dataset) Latest(ctx context.Context) (*DatasetSnapshot, error) {
-	s, err := d.history.Latest(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return toDatasetSnapshot(s), nil
-}
-
-func (d *dataset) StreamWrite(ctx context.Context, metadata Metadata) (StreamWriter, error) {
-	if d.codec != nil {
-		return nil, ErrCodecConfigured
-	}
-	// Surface an unreadable head now rather than at Commit.
-	if _, _, err := d.history.Resolve(ctx); err != nil {
-		return nil, err
-	}
-
-	pending := d.newPending(metadata)
-	stream, err := d.openStream(ctx, pending.id, blobFile)
-	if err != nil {
-		return nil, err
-	}
-	return &streamWriter{ds: d, ctx: ctx, pending: pending, stream: stream}, nil
-}
-
-func (d *dataset) StreamWriteRecords(ctx context.Context, records RecordIterator, metadata Metadata) (*DatasetSnapshot, error) {
-	if records == nil {
-		return nil, ErrNilIterator
-	}
-	if d.codec == nil {
-		return nil, validate.Argument("StreamWriteRecords requires a codec")
-	}
-	streamCodec, ok := d.codec.(StreamingRecordCodec)
-	if !ok {
-		return nil, ErrCodecNotStreamable
-	}
-	// A single streamed file cannot be partitioned: that would require
-	// buffering the records to determine their keys.
-	if !d.layout.partitioner().isNoop() {
-		return nil, ErrPartitioningNotSupported
-	}
-
-	pending := d.newPending(metadata)
-	stream, err := d.openRecordStream(ctx, pending.id, streamCodec)
-	if err != nil {
-		return nil, err
-	}
-	if err := stream.encode(records); err != nil {
-		return nil, err
-	}
-	ref, err := stream.finish()
-	if err != nil {
-		return nil, err
-	}
-
-	pending.add(ref, "")
-	pending.rowCount = stream.rows
-	pending.codec = d.codec.Name()
-	pending.timestamps = stream.timestamps
-	pending.streamed = ref.Path
-	return d.commit(ctx, &pending)
-}
-
-func (d *dataset) readRawBlob(ctx context.Context, filePath string) ([]byte, error) {
-	rc, err := d.store.Get(ctx, filePath)
-	if err != nil {
-		return nil, fmt.Errorf("lode: read blob: %w", err)
-	}
-	defer closer(rc)()
-
-	decompReader, err := d.compressor.Decompress(rc)
-	if err != nil {
-		return nil, fmt.Errorf("lode: read blob: %w", err)
-	}
-	defer closer(decompReader)()
-
+	path := snapshot.Files[0].Path
 	var buf bytes.Buffer
-	if _, err := buf.ReadFrom(decompReader); err != nil {
-		return nil, fmt.Errorf("lode: read blob: %w", err)
+	err = d.readFile(ctx, snapshot.Manifest, path, func(r io.Reader) error {
+		_, err := buf.ReadFrom(r)
+		return err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("lode: failed to read blob %s: %w", path, err)
 	}
 	return buf.Bytes(), nil
 }
 
-func (d *dataset) readDataFile(ctx context.Context, filePath string) ([]any, error) {
-	rc, err := d.store.Get(ctx, filePath)
+// readRecords reads every record of a record snapshot with codec, which
+// must be the one the manifest names.
+func readRecords[T any](ctx context.Context, d *dataset, codec Codec[T], id DatasetSnapshotID) ([]T, error) {
+	snapshot, err := d.Snapshot(ctx, id)
 	if err != nil {
-		return nil, fmt.Errorf("lode: read data file: %w", err)
+		return nil, err
 	}
-	defer closer(rc)()
-
-	decompReader, err := d.compressor.Decompress(rc)
-	if err != nil {
-		return nil, fmt.Errorf("lode: read data file: %w", err)
+	if err := matchCodec(snapshot.Manifest, codec.Name(), codec.Describe()); err != nil {
+		return nil, err
 	}
-	defer closer(decompReader)()
-
-	return d.codec.Decode(decompReader)
+	var all []T
+	for _, f := range snapshot.Files {
+		err := d.readFile(ctx, snapshot.Manifest, f.Path, func(r io.Reader) error {
+			records, err := codec.Decode(r)
+			all = append(all, records...)
+			return err
+		})
+		if err != nil {
+			return nil, fmt.Errorf("lode: failed to read data file %s: %w", f.Path, err)
+		}
+	}
+	return all, nil
 }
 
-func (d *dataset) validateComponentsMatch(m *Manifest) error {
-	var expectedCodec string
-	if d.codec != nil {
-		expectedCodec = d.codec.Name()
+// matchCodec rejects a snapshot written with another codec, or, unless its
+// manifest is legacy, with another codec configuration.
+func matchCodec(m *Manifest, name, description string) error {
+	if m.Codec != name {
+		return fmt.Errorf("lode: codec mismatch: snapshot %s uses %q, handle has %q: %w", m.SnapshotID, m.Codec, name, ErrSettingsMismatch)
 	}
-	if m.Codec != expectedCodec {
-		return fmt.Errorf("lode: codec mismatch: snapshot uses %q but dataset configured with %q",
-			m.Codec, expectedCodec)
-	}
-	if m.Compressor != d.compressor.Name() {
-		return fmt.Errorf("lode: compressor mismatch: snapshot uses %q but dataset configured with %q",
-			m.Compressor, d.compressor.Name())
+	if !legacy(m) && m.CodecDescription != description {
+		return fmt.Errorf("lode: codec description mismatch: snapshot %s records %q, handle has %q: %w", m.SnapshotID, m.CodecDescription, description, ErrSettingsMismatch)
 	}
 	return nil
+}
+
+// bundledCompressors are the compressors Lode reconstructs from the name a
+// manifest records.
+var bundledCompressors = map[string]func() Compressor{
+	"noop": NewNoOpCompressor,
+	"gzip": NewGzipCompressor,
+	"zstd": NewZstdCompressor,
+}
+
+// compressorFor returns the compressor a snapshot's manifest names: the
+// handle's own or custom one when its name matches, else the bundled one.
+func (d *dataset) compressorFor(m *Manifest) (Compressor, error) {
+	for _, c := range []Compressor{d.compressor, d.custom.compressor} {
+		if c != nil && c.Name() == m.Compressor {
+			return c, nil
+		}
+	}
+	if newCompressor, ok := bundledCompressors[m.Compressor]; ok {
+		return newCompressor(), nil
+	}
+	return nil, fmt.Errorf("lode: snapshot %s uses compressor %q, which is not bundled; pass it with WithCompressor: %w", m.SnapshotID, m.Compressor, ErrSettingsMismatch)
 }
 
 // validateDatasetID rejects an ID that is not one canonical path segment

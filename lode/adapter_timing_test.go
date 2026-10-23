@@ -42,7 +42,7 @@ func TestFSAdapter_ContextCancel(t *testing.T) {
 			return NewFS(tmpDir)
 		}
 
-		ds, err := NewDataset("cancel-test", storeFactory)
+		ds, err := Open(storeFactory).Blobs(t.Context(), "cancel-test")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -50,7 +50,7 @@ func TestFSAdapter_ContextCancel(t *testing.T) {
 		// Create a cancellable context
 		cancelCtx, cancel := context.WithCancel(ctx)
 
-		sw, err := ds.StreamWrite(cancelCtx, Metadata{"test": "cancel"})
+		sw, err := ds.StreamWrite(cancelCtx, D{"test": "cancel"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -99,16 +99,16 @@ func TestFSAdapter_ContextCancel(t *testing.T) {
 			return NewFS(tmpDir)
 		}
 
-		ds, err := NewDataset("cancel-test", storeFactory, WithCodec(NewJSONLCodec()))
+		ds, err := Open(storeFactory).Records(t.Context(), "cancel-test", JSONL[D]())
 		if err != nil {
 			t.Fatal(err)
 		}
 
 		// Create records
-		records := []any{
-			D{"id": "1", "data": "first"},
-			D{"id": "2", "data": "second"},
-			D{"id": "3", "data": "third"},
+		records := []D{
+			{"id": "1", "data": "first"},
+			{"id": "2", "data": "second"},
+			{"id": "3", "data": "third"},
 		}
 
 		// Create a cancellable context with short timeout
@@ -116,8 +116,8 @@ func TestFSAdapter_ContextCancel(t *testing.T) {
 		defer cancel()
 
 		// StreamWriteRecords may or may not complete before timeout
-		iter := &sliceIterator{records: records}
-		_, err = ds.StreamWriteRecords(cancelCtx, iter, Metadata{"test": "cancel"})
+		iter := seqOf(records...)
+		_, err = ds.StreamWrite(cancelCtx, iter, D{"test": "cancel"})
 
 		if err == nil {
 			// Completed before cancel - valid, verify snapshot exists
@@ -126,8 +126,8 @@ func TestFSAdapter_ContextCancel(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Expected snapshot after successful write, got: %v", err)
 			}
-			if snap.Manifest.RowCount != int64(len(records)) {
-				t.Errorf("Expected %d rows, got %d", len(records), snap.Manifest.RowCount)
+			if snap.RowCount != int64(len(records)) {
+				t.Errorf("Expected %d rows, got %d", len(records), snap.RowCount)
 			}
 		} else {
 			// Failed (likely due to cancel) - verify no snapshot visible
@@ -156,7 +156,7 @@ func TestFSAdapter_ContextCancel(t *testing.T) {
 			return NewFS(tmpDir)
 		}
 
-		ds, err := NewDataset("cleanup-test", storeFactory)
+		ds, err := Open(storeFactory).Blobs(t.Context(), "cleanup-test")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -164,7 +164,7 @@ func TestFSAdapter_ContextCancel(t *testing.T) {
 		// Create a context that cancels quickly
 		cancelCtx, cancel := context.WithCancel(ctx)
 
-		sw, err := ds.StreamWrite(cancelCtx, Metadata{})
+		sw, err := ds.StreamWrite(cancelCtx, nil)
 		if err != nil {
 			t.Fatal(err)
 		}

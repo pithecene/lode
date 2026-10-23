@@ -73,34 +73,36 @@ If another writer advanced the pointer first, the CAS fails with
 `ErrSnapshotConflict`. With `WithRetryCount`, Lode reads the head again and
 retries with the same staged data, which may still publish the snapshot. If
 the commit fails permanently, the data files that a buffered write staged
-remain as orphaned objects until `Dataset.Sweep` reclaims them. A stream
+remain as orphaned objects until `Sweep` reclaims them. A stream
 write deletes its object on a best-effort basis if the commit failed before
 any manifest write, and retains it otherwise, because a manifest whose
 write reported an error may still have been stored.
 
 ## Choosing a Write API
 
-| Paradigm | API | Use Case | Codec | Partitioning |
+| Handle | API | Use Case | Codec | Partitioning |
 |----------|-----|----------|-------|--------------|
-| Dataset | `Write` | In-memory data, small batches | ✅ Optional | ✅ Supported |
-| Dataset | `StreamWrite` | Large binary payloads (gigabytes or more) | ❌ Raw only | ❌ Not supported |
-| Dataset | `StreamWriteRecords` | Large streams of records | ✅ Required (streaming) | ❌ Not supported |
+| `Records[T]` | `Write` | Records in memory, batches | ✅ Fixes `T` | ✅ Supported |
+| `Records[T]` | `StreamWrite` | Large streams of records (`iter.Seq2[T, error]`) | ✅ Must stream | ❌ Not supported |
+| `Blobs` | `Write` | One blob in memory | ❌ Raw bytes | ❌ Not applicable |
+| `Blobs` | `StreamWrite` | Large binary payloads (gigabytes or more) | ❌ Raw bytes | ❌ Not applicable |
 | Volume (experimental) | `StageWriteAt` + `Commit` | Sparse, resumable byte ranges | ❌ Raw only | ❌ Not applicable |
 
 **Decision procedure:**
-1. If the data is already in memory, use `Write`.
-2. If it is a large, unstructured binary object, use `StreamWrite`.
-3. If it is a large stream of records, use `StreamWriteRecords` with a
+1. If the data is records already in memory, use `Records.Write`.
+2. If it is a large, unstructured binary object, use `Blobs.StreamWrite`
+   (or `Blobs.Write` for one in memory).
+3. If it is a large stream of records, use `Records.StreamWrite` with a
    streaming codec.
 4. If it is a sparse, resumable byte address space, use `volume.Volume`
    (experimental).
 
 ```mermaid
 flowchart TD
-    A{Already in memory?} -- yes --> W[Write]
+    A{Records in memory?} -- yes --> W[Records.Write]
     A -- no --> B{What is it?}
-    B -- one large blob --> SW[StreamWrite]
-    B -- a large record stream --> R["StreamWriteRecords<br/>(streaming codec)"]
+    B -- one large blob --> SW[Blobs.StreamWrite]
+    B -- a large record stream --> R["Records.StreamWrite<br/>(streaming codec)"]
     B -- sparse, resumable byte ranges --> V["Volume:<br/>StageWriteAt + Commit"]
 ```
 
@@ -108,15 +110,18 @@ flowchart TD
 
 A typical Lode workflow has the following configuration:
 
-- Dataset: `events`
-- Rows: events with timestamps
-- Partitioning: Hive style, by day (`dt=YYYY-MM-DD`)
+- Root: `lode.Open(lode.FS(dir))` or `lode.Open(s3.Factory(client, cfg))`
+- Dataset: `events`, opened as `Records[Event]` with `lode.JSONL[Event]()`
+- Rows: events with timestamps (`Event` implements `Timestamped`)
+- Partitioning: Hive style, by day (`dt=YYYY-MM-DD`), with
+  `lode.Hive("dt").By(...)`
 - Format: JSON Lines
 - Compression: gzip
 - Backend: filesystem or S3
 
 Each write produces a new snapshot, and every read targets a snapshot
-explicitly.
+explicitly. A reader opens a view, which takes the layout, codec name, and
+compressor from the dataset's manifests rather than repeating them.
 
 ## What Lode Guarantees
 

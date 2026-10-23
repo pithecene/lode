@@ -6,18 +6,32 @@ import (
 )
 
 // -----------------------------------------------------------------------------
-// FlatLayout lifecycle tests
+// Flat paths lifecycle tests
 // -----------------------------------------------------------------------------
+
+// flatBlobs opens a blob dataset under a root with flat paths.
+func flatBlobs(t *testing.T, id DatasetID) Blobs {
+	t.Helper()
+	ds, err := Open(Memory(), WithFlatPaths()).Blobs(t.Context(), id)
+	if err != nil {
+		t.Fatalf("Blobs: %v", err)
+	}
+	return ds
+}
+
+// flatLayout is the unpartitioned layout under flat names.
+func flatLayout() *pathLayout {
+	names := defaultPathNames()
+	names.flat = true
+	return newPathLayout(names, noopScheme)
+}
 
 func TestFlatLayout(t *testing.T) {
 	t.Run("write and read", func(t *testing.T) {
-		ds, err := NewDataset("myds", NewMemoryFactory(), WithLayout(NewFlatLayout()))
-		if err != nil {
-			t.Fatalf("NewDataset: %v", err)
-		}
+		ds := flatBlobs(t, "myds")
 
 		payload := []byte("flat-layout-data")
-		snap, err := ds.Write(t.Context(), []any{payload}, Metadata{"tag": "flat"})
+		snap, err := ds.Write(t.Context(), payload, D{"tag": "flat"})
 		if err != nil {
 			t.Fatalf("Write: %v", err)
 		}
@@ -25,21 +39,13 @@ func TestFlatLayout(t *testing.T) {
 		if snap.ID == "" {
 			t.Fatal("expected non-empty snapshot ID")
 		}
-		if snap.Manifest.Metadata["tag"] != "flat" {
-			t.Errorf("expected metadata tag=flat, got %v", snap.Manifest.Metadata)
+		if tag := metadataOf(t, snap.Metadata)["tag"]; tag != "flat" {
+			t.Errorf("expected metadata tag=flat, got %v", tag)
 		}
 
-		readData, err := ds.Read(t.Context(), snap.ID)
+		readBytes, err := ds.Read(t.Context(), snap.ID)
 		if err != nil {
 			t.Fatalf("Read: %v", err)
-		}
-
-		if len(readData) != 1 {
-			t.Fatalf("expected 1 element, got %d", len(readData))
-		}
-		readBytes, ok := readData[0].([]byte)
-		if !ok {
-			t.Fatalf("expected []byte, got %T", readData[0])
 		}
 		if !bytes.Equal(readBytes, payload) {
 			t.Errorf("expected %q, got %q", payload, readBytes)
@@ -47,17 +53,14 @@ func TestFlatLayout(t *testing.T) {
 	})
 
 	t.Run("multiple snapshots", func(t *testing.T) {
-		ds, err := NewDataset("multi", NewMemoryFactory(), WithLayout(NewFlatLayout()))
-		if err != nil {
-			t.Fatalf("NewDataset: %v", err)
-		}
+		ds := flatBlobs(t, "multi")
 
-		snap1, err := ds.Write(t.Context(), []any{[]byte("first")}, Metadata{"n": "1"})
+		snap1, err := ds.Write(t.Context(), []byte("first"), D{"n": "1"})
 		if err != nil {
 			t.Fatalf("Write 1: %v", err)
 		}
 
-		snap2, err := ds.Write(t.Context(), []any{[]byte("second")}, Metadata{"n": "2"})
+		snap2, err := ds.Write(t.Context(), []byte("second"), D{"n": "2"})
 		if err != nil {
 			t.Fatalf("Write 2: %v", err)
 		}
@@ -71,16 +74,16 @@ func TestFlatLayout(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Read snap1: %v", err)
 		}
-		if string(data1[0].([]byte)) != "first" {
-			t.Errorf("snap1 data mismatch: %q", data1[0])
+		if string(data1) != "first" {
+			t.Errorf("snap1 data mismatch: %q", data1)
 		}
 
 		data2, err := ds.Read(t.Context(), snap2.ID)
 		if err != nil {
 			t.Fatalf("Read snap2: %v", err)
 		}
-		if string(data2[0].([]byte)) != "second" {
-			t.Errorf("snap2 data mismatch: %q", data2[0])
+		if string(data2) != "second" {
+			t.Errorf("snap2 data mismatch: %q", data2)
 		}
 
 		// Latest should be snap2
@@ -94,7 +97,7 @@ func TestFlatLayout(t *testing.T) {
 	})
 
 	t.Run("path generation", func(t *testing.T) {
-		fl := NewFlatLayout()
+		fl := flatLayout()
 
 		dataset := DatasetID("myds")
 		segment := DatasetSnapshotID("snap-abc")
@@ -124,11 +127,6 @@ func TestFlatLayout(t *testing.T) {
 				got:  fl.snapshotsPrefix(dataset),
 				want: "myds/",
 			},
-			{
-				name: "datasets prefix is empty",
-				got:  fl.datasetsPrefix(),
-				want: "",
-			},
 		}
 
 		for _, tt := range tests {
@@ -156,10 +154,7 @@ func TestFlatLayout(t *testing.T) {
 			t.Error("data file should not be recognized as manifest")
 		}
 
-		// Verify flat layout does not support enumeration or partitions
-		if fl.supportsDatasetEnumeration() {
-			t.Error("FlatLayout should not support dataset enumeration")
-		}
+		// Verify the unpartitioned flat layout has no partitions
 		if fl.supportsPartitions() {
 			t.Error("FlatLayout should not support partitions")
 		}

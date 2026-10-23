@@ -29,11 +29,22 @@ type fsStore struct {
 	root string
 }
 
-// NewFSFactory returns a StoreFactory that creates a filesystem-backed Store.
-// The directory must exist when the factory is invoked.
-func NewFSFactory(root string) StoreFactory {
+// FS returns a factory for a filesystem-backed Store rooted at the given
+// directory (NewFS). The directory must exist when a root opens; until then
+// the factory performs no I/O.
+func FS(root string) Factory[Store] {
 	return func() (Store, error) {
 		return NewFS(root)
+	}
+}
+
+// Use returns a factory for a store the caller already holds, so that
+// several roots, or a root and code outside Lode, share one store value:
+// lode.Open(lode.Use(store)). Sharing matters for a store that coordinates
+// only within one value, such as SingleProcess.
+func Use[S ObjectStore](store S) Factory[S] {
+	return func() (S, error) {
+		return store, nil
 	}
 }
 
@@ -361,8 +372,9 @@ type memoryStore struct {
 	data map[string][]byte
 }
 
-// NewMemoryFactory returns a StoreFactory that creates an in-memory Store.
-func NewMemoryFactory() StoreFactory {
+// Memory returns a factory for a new in-memory Store (NewMemory). Each root
+// opened with it gets its own store; use Use(NewMemory()) to share one.
+func Memory() Factory[Store] {
 	return func() (Store, error) {
 		return NewMemory(), nil
 	}

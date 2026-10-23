@@ -3,7 +3,6 @@ package lode
 import (
 	"errors"
 	"testing"
-	"time"
 
 	"github.com/pithecene/lode/internal/validate"
 )
@@ -16,21 +15,6 @@ import (
 // Known equivalent mutants left alive: the `<` → `<=` boundary mutants in the
 // sort.Slice comparators (reader.go ListPartitions/ListManifests) — a
 // non-strict comparator sorts the same distinct keys identically.
-
-func validTestManifest() *Manifest {
-	return &Manifest{
-		SchemaName:    "lode-manifest",
-		FormatVersion: "1.0.0",
-		DatasetID:     "test-ds",
-		SnapshotID:    "snap-1",
-		CreatedAt:     time.Now().UTC(),
-		Metadata:      Metadata{},
-		Files:         []FileRef{{Path: "data/f", SizeBytes: 1}},
-		RowCount:      1,
-		Compressor:    "noop",
-		Partitioner:   "noop",
-	}
-}
 
 func TestValidateManifest_ZeroIsValid_NegativeRejected(t *testing.T) {
 	cases := []struct {
@@ -95,7 +79,7 @@ func TestCursorWindow_Bounds(t *testing.T) {
 	}
 }
 
-func TestDatasetReader_ListDatasets_Limit_Boundary(t *testing.T) {
+func TestView_ListDatasets_Limit_Boundary(t *testing.T) {
 	ctx := t.Context()
 	store := NewMemory()
 	for _, id := range []DatasetID{"ds-a", "ds-b", "ds-c"} {
@@ -103,7 +87,7 @@ func TestDatasetReader_ListDatasets_Limit_Boundary(t *testing.T) {
 		m.DatasetID = id
 		writeManifest(ctx, t, store, m)
 	}
-	reader, err := NewDatasetReader(NewMemoryFactoryFrom(store))
+	reader, err := newTestReader(Use(store))
 	if err != nil {
 		t.Fatal(err)
 	}

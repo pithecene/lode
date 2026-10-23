@@ -16,7 +16,7 @@ func BenchmarkVolume_ReadAt(b *testing.B) {
 	const blockCount = 10
 	const totalLength = blockSize * blockCount
 
-	vol, err := New("bench-vol", lode.NewMemoryFactory(), totalLength)
+	vol, err := New("bench-vol", lode.Memory(), totalLength)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -32,7 +32,7 @@ func BenchmarkVolume_ReadAt(b *testing.B) {
 		blocks[i] = blk
 	}
 
-	snap, err := vol.Commit(b.Context(), blocks, lode.Metadata{})
+	snap, err := vol.Commit(b.Context(), blocks, Metadata{})
 	if err != nil {
 		b.Fatalf("Commit: %v", err)
 	}

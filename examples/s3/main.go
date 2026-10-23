@@ -73,26 +73,16 @@ func run() error {
 		return nil //nolint:nilerr // intentional: skip example gracefully when S3 is unreachable
 	}
 
-	// Create Lode S3 store
-	store, err := s3.New(client, s3.Config{
+	// Open a root over the S3 store. s3.Factory performs no I/O; a
+	// configuration error is returned when the dataset opens.
+	root := lode.Open(s3.Factory(client, s3.Config{
 		Bucket: bucket,
 		Prefix: prefix,
-	})
-	if err != nil {
-		return fmt.Errorf("failed to create s3 store: %w", err)
-	}
+	}))
 
-	storeFactory := func() (lode.Store, error) {
-		return store, nil
-	}
-
-	ds, err := lode.NewDataset(
-		"events",
-		storeFactory,
-		lode.WithCodec(lode.NewJSONLCodec()),
-	)
+	ds, err := root.Records(ctx, "events", lode.JSONL[lode.D]())
 	if err != nil {
-		return fmt.Errorf("failed to create dataset: %w", err)
+		return fmt.Errorf("failed to open dataset: %w", err)
 	}
 
 	records := lode.R(
@@ -100,21 +90,16 @@ func run() error {
 		lode.D{"id": 2, "event": "click", "user": "bob"},
 	)
 
-	snapshot, err := ds.Write(ctx, records, lode.Metadata{"source": "s3-example"})
+	snapshot, err := ds.Write(ctx, records, lode.D{"source": "s3-example"})
 	if err != nil {
 		return fmt.Errorf("failed to write: %w", err)
 	}
 
 	fmt.Printf("Created snapshot: %s\n", snapshot.ID)
 	fmt.Printf("S3 prefix: %s\n", prefix)
-	fmt.Printf("Files in manifest: %d\n", len(snapshot.Manifest.Files))
+	fmt.Printf("Files in manifest: %d\n", len(snapshot.Files))
 
-	reader, err := lode.NewDatasetReader(storeFactory)
-	if err != nil {
-		return fmt.Errorf("failed to create reader: %w", err)
-	}
-
-	datasets, err := reader.ListDatasets(ctx, lode.DatasetListOptions{})
+	datasets, err := root.ListDatasets(ctx, lode.DatasetListOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to list datasets: %w", err)
 	}

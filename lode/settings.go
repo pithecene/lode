@@ -27,13 +27,12 @@ type datasetSettings struct {
 // settings are this writer's settings, as its manifests record them.
 func (d *dataset) settings() datasetSettings {
 	s := datasetSettings{
-		compressor:    d.compressor.Name(),
-		partitioner:   d.layout.partitioner().name(),
-		partitionKeys: d.layout.partitioner().keys(),
-		paths:         d.layout.convention(),
-	}
-	if d.codec != nil {
-		s.codec, s.codecDescription = d.codec.Name(), d.codec.Describe()
+		codec:            d.codecName,
+		codecDescription: d.codecDescription,
+		compressor:       d.compressor.Name(),
+		partitioner:      d.layout.partitioning().name,
+		partitionKeys:    d.layout.partitioning().keys,
+		paths:            d.layout.convention(),
 	}
 	if d.checksum != nil {
 		s.checksum = d.checksum.Name()
@@ -116,7 +115,7 @@ func (d *dataset) checkSettings(ctx context.Context, parent DatasetSnapshotID) e
 	if err := d.settings().mismatch(head); err != nil {
 		return err
 	}
-	if legacy(head) && !d.layout.partitioner().isNoop() {
+	if legacy(head) && !d.layout.partitioning().isNoop() {
 		if err := d.verifyLegacyKeys(ctx, head); err != nil {
 			return err
 		}
@@ -207,7 +206,7 @@ func (d *dataset) settingsManifest(ctx context.Context, parent DatasetSnapshotID
 // consistent with it; a chain that ends at a missing or expired parent, or
 // repeats a snapshot, before a snapshot with files cannot be verified.
 func (d *dataset) verifyLegacyKeys(ctx context.Context, head *Manifest) error {
-	want := d.layout.partitioner().keys()
+	want := d.layout.partitioning().keys
 	visited := map[DatasetSnapshotID]bool{}
 	for m := head; ; {
 		if visited[m.SnapshotID] {

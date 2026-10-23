@@ -49,7 +49,7 @@ form as `DatasetSnapshotID` (CONTRACT_CORE §Snapshot ID).
 A reference to a staged or committed byte block (offset, length, and object
 path). A block is not committed until a snapshot manifest includes it.
 
-Note: `BlockRef` is a Volume concept. The `DatasetReader` API uses
+Note: `BlockRef` is a Volume concept. The dataset read API uses
 `ManifestRef` for dataset manifest locators.
 
 ### Volume Manifest
@@ -232,8 +232,9 @@ func New(id ID, storeFactory lode.StoreFactory, totalLength int64, opts ...Optio
 
 ### Volume Options
 
-Volume has its own `Option` type; Dataset and DatasetReader options are a
-different type and are rejected at compile time. The options are:
+Volume has its own `Option` type; dataset options (`DatasetOption`,
+`ViewOption`, `RootOption`) are different types and are rejected at compile
+time. The options are:
 
 - `WithChecksum(c lode.Checksum)`: integrity checksums on staged blocks
   (disabled by default).

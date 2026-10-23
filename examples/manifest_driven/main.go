@@ -45,21 +45,14 @@ func run() error {
 
 	fmt.Printf("Storage root: %s\n\n", tmpDir)
 
-	// Create filesystem store factory
-	storeFactory := lode.NewFSFactory(tmpDir)
-
 	// For this demonstration, we need direct store access to write
-	// uncommitted data. Invoke the factory to get the store.
-	store, err := storeFactory()
+	// uncommitted data, so the example holds the store and shares it with a
+	// read-only root through lode.Use.
+	store, err := lode.NewFS(tmpDir)
 	if err != nil {
 		return fmt.Errorf("failed to create store: %w", err)
 	}
-
-	// Create reader with default layout
-	reader, err := lode.NewDatasetReader(storeFactory)
-	if err != nil {
-		return fmt.Errorf("failed to create reader: %w", err)
-	}
+	readRoot := lode.OpenReadOnly(lode.Use(store))
 
 	// -------------------------------------------------------------------------
 	// Step 1: Write data files WITHOUT manifests (uncommitted)
@@ -75,7 +68,7 @@ func run() error {
 	fmt.Printf("Wrote data file: %s\n", dataPath)
 
 	// Try to discover datasets - should get ErrNoManifests (objects exist but no manifests)
-	datasets, err := reader.ListDatasets(ctx, lode.DatasetListOptions{})
+	datasets, err := readRoot.ListDatasets(ctx, lode.DatasetListOptions{})
 	switch {
 	case errors.Is(err, lode.ErrNoManifests):
 		fmt.Printf("ListDatasets returned ErrNoManifests (expected: objects exist but no manifests)\n\n")
@@ -90,6 +83,12 @@ func run() error {
 	// -------------------------------------------------------------------------
 	fmt.Println("=== STEP 2: Write manifest (commit) ===")
 
+	// Metadata is persisted as a JSON object; decode it to read it back.
+	var metadata lode.Metadata
+	if err := json.Unmarshal([]byte(`{"source":"manifest-driven-example"}`), &metadata); err != nil {
+		return fmt.Errorf("failed to build metadata: %w", err)
+	}
+
 	// Create a proper manifest
 	manifest := &lode.Manifest{
 		SchemaName:    "lode-manifest",
@@ -97,7 +96,7 @@ func run() error {
 		DatasetID:     "committed-ds",
 		SnapshotID:    "snap-1",
 		CreatedAt:     time.Now().UTC(),
-		Metadata:      lode.Metadata{"source": "manifest-driven-example"},
+		Metadata:      metadata,
 		Files: []lode.FileRef{
 			{
 				Path:      "datasets/committed-ds/snapshots/snap-1/data/events.jsonl",
@@ -118,7 +117,7 @@ func run() error {
 	fmt.Printf("Wrote manifest: %s\n", manifestPath)
 
 	// Now discover datasets - should find the committed one
-	datasets, err = reader.ListDatasets(ctx, lode.DatasetListOptions{})
+	datasets, err = readRoot.ListDatasets(ctx, lode.DatasetListOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to list datasets: %w", err)
 	}
@@ -129,8 +128,15 @@ func run() error {
 	// -------------------------------------------------------------------------
 	fmt.Println("=== STEP 3: Manifest-driven metadata ===")
 
+	// Open a view of the committed dataset. Its manifest names the JSONL
+	// codec, so the view decodes map records with it.
+	view, err := readRoot.Records(ctx, "committed-ds", lode.JSONL[lode.D]())
+	if err != nil {
+		return fmt.Errorf("failed to open view: %w", err)
+	}
+
 	// List manifests
-	manifests, err := reader.ListManifests(ctx, "committed-ds", "", lode.ManifestListOptions{})
+	manifests, err := view.ListManifests(ctx, "", lode.ManifestListOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to list manifests: %w", err)
 	}
@@ -140,7 +146,7 @@ func run() error {
 	}
 
 	// Get manifest metadata
-	loadedManifest, err := reader.GetManifest(ctx, "committed-ds", manifests[0])
+	loadedManifest, err := view.GetManifest(ctx, manifests[0])
 	if err != nil {
 		return fmt.Errorf("failed to get manifest: %w", err)
 	}
@@ -157,7 +163,7 @@ func run() error {
 	for _, f := range loadedManifest.Files {
 		fmt.Printf("    - %s (%d bytes)\n", f.Path, f.SizeBytes)
 	}
-	fmt.Printf("  Metadata: %v\n", loadedManifest.Metadata)
+	fmt.Printf("  Metadata: %s\n", loadedManifest.Metadata.JSON())
 
 	// -------------------------------------------------------------------------
 	// Step 4: Show that data file paths come from manifest

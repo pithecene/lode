@@ -42,7 +42,7 @@ func validVolumeManifest(volumeID ID, totalLength int64) *Manifest {
 		VolumeID:      volumeID,
 		SnapshotID:    "snap-1",
 		CreatedAt:     time.Now().UTC(),
-		Metadata:      lode.Metadata{},
+		Metadata:      Metadata{},
 		TotalLength:   totalLength,
 		Blocks: []BlockRef{
 			{Offset: 0, Length: 10, Path: volumeBlockPath(volumeID, 0, 10)},
@@ -51,7 +51,7 @@ func validVolumeManifest(volumeID ID, totalLength int64) *Manifest {
 }
 
 // newTestVolume is a convenience helper that creates a Volume and t.Fatal's on error.
-func newTestVolume(t *testing.T, id ID, factory lode.StoreFactory, totalLength int64, opts ...Option) Volume {
+func newTestVolume(t *testing.T, id ID, factory lode.Factory[lode.Store], totalLength int64, opts ...Option) Volume {
 	t.Helper()
 	vol, err := New(id, factory, totalLength, opts...)
 	if err != nil {
@@ -71,7 +71,7 @@ func stageBlock(t *testing.T, vol Volume, offset int64, data []byte) BlockRef {
 }
 
 // commitBlocks is a convenience helper that commits blocks and t.Fatal's on error.
-func commitBlocks(t *testing.T, vol Volume, blocks []BlockRef, meta lode.Metadata) *Snapshot {
+func commitBlocks(t *testing.T, vol Volume, blocks []BlockRef, meta Metadata) *Snapshot {
 	t.Helper()
 	snap, err := vol.Commit(t.Context(), blocks, meta)
 	if err != nil {
@@ -86,7 +86,7 @@ func commitBlocks(t *testing.T, vol Volume, blocks []BlockRef, meta lode.Metadat
 
 func TestNewVolume(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
-		vol, err := New("test-vol", lode.NewMemoryFactory(), 1024)
+		vol, err := New("test-vol", lode.Memory(), 1024)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -106,7 +106,7 @@ func TestNewVolume(t *testing.T) {
 	})
 
 	t.Run("zero total length returns error", func(t *testing.T) {
-		_, err := New("test-vol", lode.NewMemoryFactory(), 0)
+		_, err := New("test-vol", lode.Memory(), 0)
 		if err == nil {
 			t.Fatal("expected error for zero total length")
 		}
@@ -121,14 +121,14 @@ func TestNewVolume(t *testing.T) {
 	})
 
 	t.Run("empty ID returns error", func(t *testing.T) {
-		_, err := New("", lode.NewMemoryFactory(), 1024)
+		_, err := New("", lode.Memory(), 1024)
 		if err == nil {
 			t.Fatal("expected error for empty ID")
 		}
 	})
 
 	t.Run("with checksum option", func(t *testing.T) {
-		vol, err := New("test", lode.NewMemoryFactory(), 1024, WithChecksum(lode.NewMD5Checksum()))
+		vol, err := New("test", lode.Memory(), 1024, WithChecksum(lode.NewMD5Checksum()))
 		if err != nil {
 			t.Fatalf("New with WithChecksum: %v", err)
 		}
@@ -148,7 +148,7 @@ func TestNewVolume(t *testing.T) {
 
 func TestVolume_EndToEnd(t *testing.T) {
 	t.Run("stage commit read at end to end", func(t *testing.T) {
-		vol, err := New("test-vol", lode.NewMemoryFactory(), 100)
+		vol, err := New("test-vol", lode.Memory(), 100)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -169,7 +169,7 @@ func TestVolume_EndToEnd(t *testing.T) {
 		}
 
 		// Commit.
-		snap, err := vol.Commit(ctx, []BlockRef{blk}, lode.Metadata{"source": "test"})
+		snap, err := vol.Commit(ctx, []BlockRef{blk}, Metadata{"source": "test"})
 		if err != nil {
 			t.Fatalf("Commit failed: %v", err)
 		}
@@ -192,12 +192,12 @@ func TestVolume_EndToEnd(t *testing.T) {
 
 	t.Run("FS store stage commit read at", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		vol := newTestVolume(t, "test-vol", lode.NewFSFactory(tmpDir), 100)
+		vol := newTestVolume(t, "test-vol", lode.FS(tmpDir), 100)
 		ctx := t.Context()
 
 		data := []byte("filesystem-backed-volume-data")
 		blk := stageBlock(t, vol, 0, data)
-		snap := commitBlocks(t, vol, []BlockRef{blk}, lode.Metadata{"store": "fs"})
+		snap := commitBlocks(t, vol, []BlockRef{blk}, Metadata{"store": "fs"})
 
 		got, err := vol.ReadAt(ctx, snap.ID, 0, int64(len(data)))
 		if err != nil {
@@ -211,7 +211,7 @@ func TestVolume_EndToEnd(t *testing.T) {
 
 func TestVolume_Cumulative(t *testing.T) {
 	t.Run("cumulative manifest", func(t *testing.T) {
-		vol, err := New("test-vol", lode.NewMemoryFactory(), 100)
+		vol, err := New("test-vol", lode.Memory(), 100)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -224,7 +224,7 @@ func TestVolume_Cumulative(t *testing.T) {
 		if err != nil {
 			t.Fatalf("StageWriteAt failed: %v", err)
 		}
-		snap1, err := vol.Commit(ctx, []BlockRef{blk1}, lode.Metadata{})
+		snap1, err := vol.Commit(ctx, []BlockRef{blk1}, Metadata{})
 		if err != nil {
 			t.Fatalf("Commit 1 failed: %v", err)
 		}
@@ -238,7 +238,7 @@ func TestVolume_Cumulative(t *testing.T) {
 		if err != nil {
 			t.Fatalf("StageWriteAt failed: %v", err)
 		}
-		snap2, err := vol.Commit(ctx, []BlockRef{blk2}, lode.Metadata{})
+		snap2, err := vol.Commit(ctx, []BlockRef{blk2}, Metadata{})
 		if err != nil {
 			t.Fatalf("Commit 2 failed: %v", err)
 		}
@@ -255,12 +255,12 @@ func TestVolume_Cumulative(t *testing.T) {
 	})
 
 	t.Run("three snapshots cumulative progression", func(t *testing.T) {
-		vol := newTestVolume(t, "test-vol", lode.NewMemoryFactory(), 90)
+		vol := newTestVolume(t, "test-vol", lode.Memory(), 90)
 		ctx := t.Context()
 
 		// Snap 1: [0, 30)
 		blk1 := stageBlock(t, vol, 0, bytes.Repeat([]byte("A"), 30))
-		snap1 := commitBlocks(t, vol, []BlockRef{blk1}, lode.Metadata{})
+		snap1 := commitBlocks(t, vol, []BlockRef{blk1}, Metadata{})
 		if len(snap1.Manifest.Blocks) != 1 {
 			t.Fatalf("snap1: expected 1 block, got %d", len(snap1.Manifest.Blocks))
 		}
@@ -270,7 +270,7 @@ func TestVolume_Cumulative(t *testing.T) {
 
 		// Snap 2: [30, 60)
 		blk2 := stageBlock(t, vol, 30, bytes.Repeat([]byte("B"), 30))
-		snap2 := commitBlocks(t, vol, []BlockRef{blk2}, lode.Metadata{})
+		snap2 := commitBlocks(t, vol, []BlockRef{blk2}, Metadata{})
 		if len(snap2.Manifest.Blocks) != 2 {
 			t.Fatalf("snap2: expected 2 cumulative blocks, got %d", len(snap2.Manifest.Blocks))
 		}
@@ -280,7 +280,7 @@ func TestVolume_Cumulative(t *testing.T) {
 
 		// Snap 3: [60, 90)
 		blk3 := stageBlock(t, vol, 60, bytes.Repeat([]byte("C"), 30))
-		snap3 := commitBlocks(t, vol, []BlockRef{blk3}, lode.Metadata{})
+		snap3 := commitBlocks(t, vol, []BlockRef{blk3}, Metadata{})
 		if len(snap3.Manifest.Blocks) != 3 {
 			t.Fatalf("snap3: expected 3 cumulative blocks, got %d", len(snap3.Manifest.Blocks))
 		}
@@ -301,13 +301,13 @@ func TestVolume_Cumulative(t *testing.T) {
 	})
 
 	t.Run("sparse blocks with gaps", func(t *testing.T) {
-		vol := newTestVolume(t, "test-vol", lode.NewMemoryFactory(), 100)
+		vol := newTestVolume(t, "test-vol", lode.Memory(), 100)
 		ctx := t.Context()
 
 		// Stage non-contiguous blocks: [0, 10) and [50, 60).
 		blk1 := stageBlock(t, vol, 0, bytes.Repeat([]byte("A"), 10))
 		blk2 := stageBlock(t, vol, 50, bytes.Repeat([]byte("B"), 10))
-		snap := commitBlocks(t, vol, []BlockRef{blk1, blk2}, lode.Metadata{})
+		snap := commitBlocks(t, vol, []BlockRef{blk1, blk2}, Metadata{})
 
 		if len(snap.Manifest.Blocks) != 2 {
 			t.Fatalf("expected 2 blocks, got %d", len(snap.Manifest.Blocks))
@@ -338,7 +338,7 @@ func TestVolume_Cumulative(t *testing.T) {
 	})
 
 	t.Run("dense packing adjacent", func(t *testing.T) {
-		vol := newTestVolume(t, "test-vol", lode.NewMemoryFactory(), 100)
+		vol := newTestVolume(t, "test-vol", lode.Memory(), 100)
 		ctx := t.Context()
 
 		// Pack the full volume: [0,25) [25,50) [50,75) [75,100).
@@ -346,7 +346,7 @@ func TestVolume_Cumulative(t *testing.T) {
 		blk2 := stageBlock(t, vol, 25, bytes.Repeat([]byte("B"), 25))
 		blk3 := stageBlock(t, vol, 50, bytes.Repeat([]byte("C"), 25))
 		blk4 := stageBlock(t, vol, 75, bytes.Repeat([]byte("D"), 25))
-		snap := commitBlocks(t, vol, []BlockRef{blk1, blk2, blk3, blk4}, lode.Metadata{})
+		snap := commitBlocks(t, vol, []BlockRef{blk1, blk2, blk3, blk4}, Metadata{})
 
 		if len(snap.Manifest.Blocks) != 4 {
 			t.Fatalf("expected 4 blocks, got %d", len(snap.Manifest.Blocks))
@@ -369,7 +369,7 @@ func TestVolume_Cumulative(t *testing.T) {
 
 func TestVolume_ReadAt(t *testing.T) {
 	t.Run("spanning blocks", func(t *testing.T) {
-		vol, err := New("test-vol", lode.NewMemoryFactory(), 100)
+		vol, err := New("test-vol", lode.Memory(), 100)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -389,7 +389,7 @@ func TestVolume_ReadAt(t *testing.T) {
 			t.Fatalf("StageWriteAt failed: %v", err)
 		}
 
-		snap, err := vol.Commit(ctx, []BlockRef{blk1, blk2}, lode.Metadata{})
+		snap, err := vol.Commit(ctx, []BlockRef{blk1, blk2}, Metadata{})
 		if err != nil {
 			t.Fatalf("Commit failed: %v", err)
 		}
@@ -407,10 +407,10 @@ func TestVolume_ReadAt(t *testing.T) {
 	})
 
 	t.Run("exact block boundary", func(t *testing.T) {
-		vol := newTestVolume(t, "test-vol", lode.NewMemoryFactory(), 100)
+		vol := newTestVolume(t, "test-vol", lode.Memory(), 100)
 		data := []byte("0123456789")
 		blk := stageBlock(t, vol, 0, data)
-		snap := commitBlocks(t, vol, []BlockRef{blk}, lode.Metadata{})
+		snap := commitBlocks(t, vol, []BlockRef{blk}, Metadata{})
 
 		got, err := vol.ReadAt(t.Context(), snap.ID, 0, 10)
 		if err != nil {
@@ -422,10 +422,10 @@ func TestVolume_ReadAt(t *testing.T) {
 	})
 
 	t.Run("within single block", func(t *testing.T) {
-		vol := newTestVolume(t, "test-vol", lode.NewMemoryFactory(), 100)
+		vol := newTestVolume(t, "test-vol", lode.Memory(), 100)
 		data := []byte("0123456789")
 		blk := stageBlock(t, vol, 0, data)
-		snap := commitBlocks(t, vol, []BlockRef{blk}, lode.Metadata{})
+		snap := commitBlocks(t, vol, []BlockRef{blk}, Metadata{})
 
 		// Read [2, 7) within [0, 10).
 		got, err := vol.ReadAt(t.Context(), snap.ID, 2, 5)
@@ -438,12 +438,12 @@ func TestVolume_ReadAt(t *testing.T) {
 	})
 
 	t.Run("full volume", func(t *testing.T) {
-		vol := newTestVolume(t, "test-vol", lode.NewMemoryFactory(), 20)
+		vol := newTestVolume(t, "test-vol", lode.Memory(), 20)
 		data1 := bytes.Repeat([]byte("A"), 10)
 		data2 := bytes.Repeat([]byte("B"), 10)
 		blk1 := stageBlock(t, vol, 0, data1)
 		blk2 := stageBlock(t, vol, 10, data2)
-		snap := commitBlocks(t, vol, []BlockRef{blk1, blk2}, lode.Metadata{})
+		snap := commitBlocks(t, vol, []BlockRef{blk1, blk2}, Metadata{})
 
 		got, err := vol.ReadAt(t.Context(), snap.ID, 0, 20)
 		if err != nil {
@@ -458,7 +458,7 @@ func TestVolume_ReadAt(t *testing.T) {
 	})
 
 	t.Run("missing range returns err range missing", func(t *testing.T) {
-		vol, err := New("test-vol", lode.NewMemoryFactory(), 100)
+		vol, err := New("test-vol", lode.Memory(), 100)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -470,7 +470,7 @@ func TestVolume_ReadAt(t *testing.T) {
 		if err != nil {
 			t.Fatalf("StageWriteAt failed: %v", err)
 		}
-		snap, err := vol.Commit(ctx, []BlockRef{blk}, lode.Metadata{})
+		snap, err := vol.Commit(ctx, []BlockRef{blk}, Metadata{})
 		if err != nil {
 			t.Fatalf("Commit failed: %v", err)
 		}
@@ -483,10 +483,10 @@ func TestVolume_ReadAt(t *testing.T) {
 	})
 
 	t.Run("gap at start returns err range missing", func(t *testing.T) {
-		vol := newTestVolume(t, "test-vol", lode.NewMemoryFactory(), 100)
+		vol := newTestVolume(t, "test-vol", lode.Memory(), 100)
 		// Block at [10, 20), gap at [0, 10).
 		blk := stageBlock(t, vol, 10, bytes.Repeat([]byte("A"), 10))
-		snap := commitBlocks(t, vol, []BlockRef{blk}, lode.Metadata{})
+		snap := commitBlocks(t, vol, []BlockRef{blk}, Metadata{})
 
 		_, err := vol.ReadAt(t.Context(), snap.ID, 0, 5)
 		if !errors.Is(err, ErrRangeMissing) {
@@ -495,11 +495,11 @@ func TestVolume_ReadAt(t *testing.T) {
 	})
 
 	t.Run("gap in middle returns err range missing", func(t *testing.T) {
-		vol := newTestVolume(t, "test-vol", lode.NewMemoryFactory(), 100)
+		vol := newTestVolume(t, "test-vol", lode.Memory(), 100)
 		// Blocks at [0, 5) and [10, 15), gap at [5, 10).
 		blk1 := stageBlock(t, vol, 0, bytes.Repeat([]byte("A"), 5))
 		blk2 := stageBlock(t, vol, 10, bytes.Repeat([]byte("B"), 5))
-		snap := commitBlocks(t, vol, []BlockRef{blk1, blk2}, lode.Metadata{})
+		snap := commitBlocks(t, vol, []BlockRef{blk1, blk2}, Metadata{})
 
 		_, err := vol.ReadAt(t.Context(), snap.ID, 0, 15)
 		if !errors.Is(err, ErrRangeMissing) {
@@ -508,9 +508,9 @@ func TestVolume_ReadAt(t *testing.T) {
 	})
 
 	t.Run("negative offset returns error", func(t *testing.T) {
-		vol := newTestVolume(t, "test-vol", lode.NewMemoryFactory(), 100)
+		vol := newTestVolume(t, "test-vol", lode.Memory(), 100)
 		blk := stageBlock(t, vol, 0, bytes.Repeat([]byte("A"), 10))
-		snap := commitBlocks(t, vol, []BlockRef{blk}, lode.Metadata{})
+		snap := commitBlocks(t, vol, []BlockRef{blk}, Metadata{})
 
 		_, err := vol.ReadAt(t.Context(), snap.ID, -1, 5)
 		if err == nil {
@@ -519,9 +519,9 @@ func TestVolume_ReadAt(t *testing.T) {
 	})
 
 	t.Run("zero length returns error", func(t *testing.T) {
-		vol := newTestVolume(t, "test-vol", lode.NewMemoryFactory(), 100)
+		vol := newTestVolume(t, "test-vol", lode.Memory(), 100)
 		blk := stageBlock(t, vol, 0, bytes.Repeat([]byte("A"), 10))
-		snap := commitBlocks(t, vol, []BlockRef{blk}, lode.Metadata{})
+		snap := commitBlocks(t, vol, []BlockRef{blk}, Metadata{})
 
 		_, err := vol.ReadAt(t.Context(), snap.ID, 0, 0)
 		if err == nil {
@@ -530,11 +530,11 @@ func TestVolume_ReadAt(t *testing.T) {
 	})
 
 	t.Run("overflow offset returns error", func(t *testing.T) {
-		vol := newTestVolume(t, "test-vol", lode.NewMemoryFactory(), 1024)
+		vol := newTestVolume(t, "test-vol", lode.Memory(), 1024)
 		ctx := t.Context()
 
 		blk := stageBlock(t, vol, 0, bytes.Repeat([]byte("A"), 1024))
-		snap := commitBlocks(t, vol, []BlockRef{blk}, lode.Metadata{})
+		snap := commitBlocks(t, vol, []BlockRef{blk}, Metadata{})
 
 		// offset + length would overflow int64.
 		_, err := vol.ReadAt(ctx, snap.ID, math.MaxInt64-5, 10)
@@ -546,11 +546,11 @@ func TestVolume_ReadAt(t *testing.T) {
 
 func TestVolume_Commit_Manifest(t *testing.T) {
 	t.Run("empty metadata succeeds", func(t *testing.T) {
-		vol := newTestVolume(t, "test-vol", lode.NewMemoryFactory(), 100)
+		vol := newTestVolume(t, "test-vol", lode.Memory(), 100)
 		blk := stageBlock(t, vol, 0, bytes.Repeat([]byte("A"), 10))
-		snap, err := vol.Commit(t.Context(), []BlockRef{blk}, lode.Metadata{})
+		snap, err := vol.Commit(t.Context(), []BlockRef{blk}, Metadata{})
 		if err != nil {
-			t.Fatalf("expected success with empty lode.Metadata{}, got: %v", err)
+			t.Fatalf("expected success with empty Metadata{}, got: %v", err)
 		}
 		if snap.ID == "" {
 			t.Fatal("expected non-empty snapshot ID")
@@ -558,7 +558,7 @@ func TestVolume_Commit_Manifest(t *testing.T) {
 	})
 
 	t.Run("nil metadata coalesces to empty", func(t *testing.T) {
-		vol, err := New("test-vol", lode.NewMemoryFactory(), 100)
+		vol, err := New("test-vol", lode.Memory(), 100)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -582,11 +582,11 @@ func TestVolume_Commit_Manifest(t *testing.T) {
 	})
 
 	t.Run("with checksum algorithm persisted", func(t *testing.T) {
-		vol := newTestVolume(t, "test-vol", lode.NewMemoryFactory(), 100,
+		vol := newTestVolume(t, "test-vol", lode.Memory(), 100,
 			WithChecksum(lode.NewMD5Checksum()),
 		)
 		blk := stageBlock(t, vol, 0, bytes.Repeat([]byte("A"), 10))
-		snap := commitBlocks(t, vol, []BlockRef{blk}, lode.Metadata{})
+		snap := commitBlocks(t, vol, []BlockRef{blk}, Metadata{})
 
 		if snap.Manifest.ChecksumAlgorithm != "md5" {
 			t.Errorf("expected checksum algorithm 'md5', got %q", snap.Manifest.ChecksumAlgorithm)
@@ -597,9 +597,9 @@ func TestVolume_Commit_Manifest(t *testing.T) {
 	})
 
 	t.Run("without checksum no algorithm", func(t *testing.T) {
-		vol := newTestVolume(t, "test-vol", lode.NewMemoryFactory(), 100)
+		vol := newTestVolume(t, "test-vol", lode.Memory(), 100)
 		blk := stageBlock(t, vol, 0, bytes.Repeat([]byte("A"), 10))
-		snap := commitBlocks(t, vol, []BlockRef{blk}, lode.Metadata{})
+		snap := commitBlocks(t, vol, []BlockRef{blk}, Metadata{})
 
 		if snap.Manifest.ChecksumAlgorithm != "" {
 			t.Errorf("expected empty checksum algorithm, got %q", snap.Manifest.ChecksumAlgorithm)
@@ -619,7 +619,7 @@ func TestVolume_Commit_Manifest(t *testing.T) {
 		// Inject error on manifest write.
 		fs.SetPutError(testutil.ErrInjectedPut, "manifest.json")
 
-		_, err := vol.Commit(ctx, []BlockRef{blk}, lode.Metadata{})
+		_, err := vol.Commit(ctx, []BlockRef{blk}, Metadata{})
 		if err == nil {
 			t.Fatal("expected error when manifest write fails")
 		}
@@ -635,12 +635,12 @@ func TestVolume_Commit_Manifest(t *testing.T) {
 
 func TestVolume_Commit_Blocks(t *testing.T) {
 	t.Run("adjacent blocks valid", func(t *testing.T) {
-		vol := newTestVolume(t, "test-vol", lode.NewMemoryFactory(), 100)
+		vol := newTestVolume(t, "test-vol", lode.Memory(), 100)
 		// [0, 10) and [10, 20) are adjacent, not overlapping.
 		blk1 := stageBlock(t, vol, 0, bytes.Repeat([]byte("A"), 10))
 		blk2 := stageBlock(t, vol, 10, bytes.Repeat([]byte("B"), 10))
 
-		snap, err := vol.Commit(t.Context(), []BlockRef{blk1, blk2}, lode.Metadata{})
+		snap, err := vol.Commit(t.Context(), []BlockRef{blk1, blk2}, Metadata{})
 		if err != nil {
 			t.Fatalf("expected adjacent blocks to succeed, got: %v", err)
 		}
@@ -663,7 +663,7 @@ func TestVolume_Commit_Blocks(t *testing.T) {
 		blk1 := stageBlock(t, vol, 0, bytes.Repeat([]byte("A"), 10))
 		blk2 := stageBlock(t, vol, 10, bytes.Repeat([]byte("B"), 10))
 
-		snap := commitBlocks(t, vol, []BlockRef{blk3, blk1, blk2}, lode.Metadata{})
+		snap := commitBlocks(t, vol, []BlockRef{blk3, blk1, blk2}, Metadata{})
 
 		// Verify blocks in manifest are sorted by offset.
 		for i := 1; i < len(snap.Manifest.Blocks); i++ {
@@ -675,65 +675,65 @@ func TestVolume_Commit_Blocks(t *testing.T) {
 	})
 
 	t.Run("block exceeds bounds returns error", func(t *testing.T) {
-		vol := newTestVolume(t, "test-vol", lode.NewMemoryFactory(), 100)
+		vol := newTestVolume(t, "test-vol", lode.Memory(), 100)
 		// Construct a BlockRef that exceeds bounds.
 		bad := BlockRef{Offset: 90, Length: 20, Path: volumeBlockPath("test-vol", 90, 20)}
-		_, err := vol.Commit(t.Context(), []BlockRef{bad}, lode.Metadata{})
+		_, err := vol.Commit(t.Context(), []BlockRef{bad}, Metadata{})
 		if err == nil {
 			t.Fatal("expected error for block exceeding volume bounds")
 		}
 	})
 
 	t.Run("duplicate blocks returns error", func(t *testing.T) {
-		vol := newTestVolume(t, "test-vol", lode.NewMemoryFactory(), 100)
+		vol := newTestVolume(t, "test-vol", lode.Memory(), 100)
 		ctx := t.Context()
 
 		blk := stageBlock(t, vol, 0, bytes.Repeat([]byte("A"), 10))
-		commitBlocks(t, vol, []BlockRef{blk}, lode.Metadata{})
+		commitBlocks(t, vol, []BlockRef{blk}, Metadata{})
 
 		// Re-commit the same block (no new blocks) → error.
-		_, err := vol.Commit(ctx, []BlockRef{blk}, lode.Metadata{})
+		_, err := vol.Commit(ctx, []BlockRef{blk}, Metadata{})
 		if err == nil {
 			t.Fatal("expected error when committing only duplicate blocks")
 		}
 	})
 
 	t.Run("empty block path returns error", func(t *testing.T) {
-		vol, err := New("test-vol", lode.NewMemoryFactory(), 100)
+		vol, err := New("test-vol", lode.Memory(), 100)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
 		// A BlockRef with an empty path should be rejected.
-		_, err = vol.Commit(t.Context(), []BlockRef{{Offset: 0, Length: 10, Path: ""}}, lode.Metadata{})
+		_, err = vol.Commit(t.Context(), []BlockRef{{Offset: 0, Length: 10, Path: ""}}, Metadata{})
 		if err == nil {
 			t.Fatal("expected error for empty block path")
 		}
 	})
 
 	t.Run("empty blocks returns error", func(t *testing.T) {
-		vol, err := New("test-vol", lode.NewMemoryFactory(), 100)
+		vol, err := New("test-vol", lode.Memory(), 100)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
-		_, err = vol.Commit(t.Context(), []BlockRef{}, lode.Metadata{})
+		_, err = vol.Commit(t.Context(), []BlockRef{}, Metadata{})
 		if err == nil {
 			t.Fatal("expected error for empty blocks")
 		}
 	})
 
 	t.Run("negative block offset returns error", func(t *testing.T) {
-		vol := newTestVolume(t, "test-vol", lode.NewMemoryFactory(), 100)
+		vol := newTestVolume(t, "test-vol", lode.Memory(), 100)
 		bad := BlockRef{Offset: -1, Length: 10, Path: volumeBlockPath("test-vol", -1, 10)}
-		_, err := vol.Commit(t.Context(), []BlockRef{bad}, lode.Metadata{})
+		_, err := vol.Commit(t.Context(), []BlockRef{bad}, Metadata{})
 		if err == nil {
 			t.Fatal("expected error for negative block offset")
 		}
 	})
 
 	t.Run("overflow block ref returns error", func(t *testing.T) {
-		vol := newTestVolume(t, "test-vol", lode.NewMemoryFactory(), 1024)
+		vol := newTestVolume(t, "test-vol", lode.Memory(), 1024)
 
 		// Craft a BlockRef where Offset + Length overflows int64.
 		overflowBlock := BlockRef{
@@ -742,26 +742,26 @@ func TestVolume_Commit_Blocks(t *testing.T) {
 			Path:   volumeBlockPath("test-vol", math.MaxInt64-5, 10),
 		}
 
-		_, err := vol.Commit(t.Context(), []BlockRef{overflowBlock}, lode.Metadata{})
+		_, err := vol.Commit(t.Context(), []BlockRef{overflowBlock}, Metadata{})
 		if err == nil {
 			t.Fatal("expected error for block ref that would overflow, got nil")
 		}
 	})
 
 	t.Run("path mismatch returns error", func(t *testing.T) {
-		vol := newTestVolume(t, "test-vol", lode.NewMemoryFactory(), 100)
+		vol := newTestVolume(t, "test-vol", lode.Memory(), 100)
 		// Stage data at [0, 10) but give it a wrong path.
 		bad := BlockRef{Offset: 0, Length: 10, Path: "volumes/other-vol/data/0-10.bin"}
-		_, err := vol.Commit(t.Context(), []BlockRef{bad}, lode.Metadata{})
+		_, err := vol.Commit(t.Context(), []BlockRef{bad}, Metadata{})
 		if err == nil {
 			t.Fatal("expected error for path mismatch")
 		}
 	})
 
 	t.Run("zero block length returns error", func(t *testing.T) {
-		vol := newTestVolume(t, "test-vol", lode.NewMemoryFactory(), 100)
+		vol := newTestVolume(t, "test-vol", lode.Memory(), 100)
 		bad := BlockRef{Offset: 0, Length: 0, Path: volumeBlockPath("test-vol", 0, 0)}
-		_, err := vol.Commit(t.Context(), []BlockRef{bad}, lode.Metadata{})
+		_, err := vol.Commit(t.Context(), []BlockRef{bad}, Metadata{})
 		if err == nil {
 			t.Fatal("expected error for zero block length")
 		}
@@ -770,7 +770,7 @@ func TestVolume_Commit_Blocks(t *testing.T) {
 
 func TestVolume_Commit_Overlaps(t *testing.T) {
 	t.Run("overlapping blocks returns err overlapping blocks", func(t *testing.T) {
-		vol, err := New("test-vol", lode.NewMemoryFactory(), 100)
+		vol, err := New("test-vol", lode.Memory(), 100)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -787,59 +787,59 @@ func TestVolume_Commit_Overlaps(t *testing.T) {
 			t.Fatalf("StageWriteAt failed: %v", err)
 		}
 
-		_, err = vol.Commit(ctx, []BlockRef{blk1, blk2}, lode.Metadata{})
+		_, err = vol.Commit(ctx, []BlockRef{blk1, blk2}, Metadata{})
 		if !errors.Is(err, ErrOverlappingBlocks) {
 			t.Errorf("expected ErrOverlappingBlocks, got: %v", err)
 		}
 	})
 
 	t.Run("contained block overlap", func(t *testing.T) {
-		vol := newTestVolume(t, "test-vol", lode.NewMemoryFactory(), 100)
+		vol := newTestVolume(t, "test-vol", lode.Memory(), 100)
 		// [0, 20) contains [5, 10).
 		blk1 := stageBlock(t, vol, 0, bytes.Repeat([]byte("A"), 20))
 		blk2 := stageBlock(t, vol, 5, bytes.Repeat([]byte("B"), 5))
 
-		_, err := vol.Commit(t.Context(), []BlockRef{blk1, blk2}, lode.Metadata{})
+		_, err := vol.Commit(t.Context(), []BlockRef{blk1, blk2}, Metadata{})
 		if !errors.Is(err, ErrOverlappingBlocks) {
 			t.Errorf("expected ErrOverlappingBlocks for contained block, got: %v", err)
 		}
 	})
 
 	t.Run("same start offset overlap", func(t *testing.T) {
-		vol := newTestVolume(t, "test-vol", lode.NewMemoryFactory(), 100)
+		vol := newTestVolume(t, "test-vol", lode.Memory(), 100)
 		// [5, 10) and [5, 15) share the same start offset.
 		blk1 := stageBlock(t, vol, 5, bytes.Repeat([]byte("A"), 5))
 		blk2 := stageBlock(t, vol, 5, bytes.Repeat([]byte("B"), 10))
 
-		_, err := vol.Commit(t.Context(), []BlockRef{blk1, blk2}, lode.Metadata{})
+		_, err := vol.Commit(t.Context(), []BlockRef{blk1, blk2}, Metadata{})
 		if !errors.Is(err, ErrOverlappingBlocks) {
 			t.Errorf("expected ErrOverlappingBlocks for same-start-offset blocks, got: %v", err)
 		}
 	})
 
 	t.Run("three block overlap", func(t *testing.T) {
-		vol := newTestVolume(t, "test-vol", lode.NewMemoryFactory(), 100)
+		vol := newTestVolume(t, "test-vol", lode.Memory(), 100)
 		// [0, 10) + [5, 15) + [12, 20) — multiple overlaps.
 		blk1 := stageBlock(t, vol, 0, bytes.Repeat([]byte("A"), 10))
 		blk2 := stageBlock(t, vol, 5, bytes.Repeat([]byte("B"), 10))
 		blk3 := stageBlock(t, vol, 12, bytes.Repeat([]byte("C"), 8))
 
-		_, err := vol.Commit(t.Context(), []BlockRef{blk1, blk2, blk3}, lode.Metadata{})
+		_, err := vol.Commit(t.Context(), []BlockRef{blk1, blk2, blk3}, Metadata{})
 		if !errors.Is(err, ErrOverlappingBlocks) {
 			t.Errorf("expected ErrOverlappingBlocks for three-block overlap, got: %v", err)
 		}
 	})
 
 	t.Run("overlap with existing rejected", func(t *testing.T) {
-		vol := newTestVolume(t, "test-vol", lode.NewMemoryFactory(), 100)
+		vol := newTestVolume(t, "test-vol", lode.Memory(), 100)
 
 		// Snap 1: commit [0, 10).
 		blk1 := stageBlock(t, vol, 0, bytes.Repeat([]byte("A"), 10))
-		commitBlocks(t, vol, []BlockRef{blk1}, lode.Metadata{})
+		commitBlocks(t, vol, []BlockRef{blk1}, Metadata{})
 
 		// Snap 2: try to commit [5, 15) which overlaps with existing [0, 10).
 		blk2 := stageBlock(t, vol, 5, bytes.Repeat([]byte("B"), 10))
-		_, err := vol.Commit(t.Context(), []BlockRef{blk2}, lode.Metadata{})
+		_, err := vol.Commit(t.Context(), []BlockRef{blk2}, Metadata{})
 		if !errors.Is(err, ErrOverlappingBlocks) {
 			t.Errorf("expected ErrOverlappingBlocks for overlap with existing, got: %v", err)
 		}
@@ -848,7 +848,7 @@ func TestVolume_Commit_Overlaps(t *testing.T) {
 
 func TestVolume_Snapshots(t *testing.T) {
 	t.Run("latest empty volume returns err no snapshots", func(t *testing.T) {
-		vol, err := New("test-vol", lode.NewMemoryFactory(), 100)
+		vol, err := New("test-vol", lode.Memory(), 100)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -860,7 +860,7 @@ func TestVolume_Snapshots(t *testing.T) {
 	})
 
 	t.Run("snapshot not found returns err not found", func(t *testing.T) {
-		vol, err := New("test-vol", lode.NewMemoryFactory(), 100)
+		vol, err := New("test-vol", lode.Memory(), 100)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -886,7 +886,7 @@ func TestVolume_Snapshots(t *testing.T) {
 				VolumeID:      "test-vol",
 				SnapshotID:    snapID,
 				CreatedAt:     t0.Add(time.Duration(i) * time.Hour),
-				Metadata:      lode.Metadata{},
+				Metadata:      Metadata{},
 				TotalLength:   100,
 				Blocks:        []BlockRef{},
 			}
@@ -918,18 +918,18 @@ func TestVolume_Snapshots(t *testing.T) {
 	})
 
 	t.Run("manifest round trip all fields preserved", func(t *testing.T) {
-		vol := newTestVolume(t, "test-vol", lode.NewMemoryFactory(), 100,
+		vol := newTestVolume(t, "test-vol", lode.Memory(), 100,
 			WithChecksum(lode.NewMD5Checksum()),
 		)
 		ctx := t.Context()
 
 		// First snap for parent chain.
 		blk1 := stageBlock(t, vol, 0, bytes.Repeat([]byte("A"), 10))
-		snap1 := commitBlocks(t, vol, []BlockRef{blk1}, lode.Metadata{"key": "value"})
+		snap1 := commitBlocks(t, vol, []BlockRef{blk1}, Metadata{"key": "value"})
 
 		// Second snap.
 		blk2 := stageBlock(t, vol, 10, bytes.Repeat([]byte("B"), 10))
-		snap2 := commitBlocks(t, vol, []BlockRef{blk2}, lode.Metadata{"step": "two"})
+		snap2 := commitBlocks(t, vol, []BlockRef{blk2}, Metadata{"step": "two"})
 
 		// Load snap2 from store and verify all fields.
 		loaded, err := vol.Snapshot(ctx, snap2.ID)
@@ -983,7 +983,7 @@ func TestVolume_Snapshots(t *testing.T) {
 			VolumeID:      "test-vol",
 			SnapshotID:    "snap-unsorted",
 			CreatedAt:     time.Now().UTC(),
-			Metadata:      lode.Metadata{},
+			Metadata:      Metadata{},
 			TotalLength:   100,
 			Blocks: []BlockRef{
 				{Offset: 20, Length: 10, Path: volumeBlockPath("test-vol", 20, 10)},
@@ -1013,7 +1013,7 @@ func TestVolume_Snapshots(t *testing.T) {
 	})
 
 	t.Run("ID returns volume ID", func(t *testing.T) {
-		vol, err := New("my-volume", lode.NewMemoryFactory(), 1024)
+		vol, err := New("my-volume", lode.Memory(), 1024)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -1025,7 +1025,7 @@ func TestVolume_Snapshots(t *testing.T) {
 
 func TestVolume_StageWriteAt(t *testing.T) {
 	t.Run("with checksum", func(t *testing.T) {
-		vol, err := New("test-vol", lode.NewMemoryFactory(), 100,
+		vol, err := New("test-vol", lode.Memory(), 100,
 			WithChecksum(lode.NewMD5Checksum()),
 		)
 		if err != nil {
@@ -1043,7 +1043,7 @@ func TestVolume_StageWriteAt(t *testing.T) {
 	})
 
 	t.Run("negative offset returns error", func(t *testing.T) {
-		vol := newTestVolume(t, "test-vol", lode.NewMemoryFactory(), 100)
+		vol := newTestVolume(t, "test-vol", lode.Memory(), 100)
 		_, err := vol.StageWriteAt(t.Context(), -1, bytes.NewReader([]byte("data")))
 		if err == nil {
 			t.Fatal("expected error for negative offset")
@@ -1051,7 +1051,7 @@ func TestVolume_StageWriteAt(t *testing.T) {
 	})
 
 	t.Run("exceeds bounds returns error", func(t *testing.T) {
-		vol := newTestVolume(t, "test-vol", lode.NewMemoryFactory(), 100)
+		vol := newTestVolume(t, "test-vol", lode.Memory(), 100)
 		// 10 bytes at offset 95 → [95, 105) exceeds totalLength=100.
 		_, err := vol.StageWriteAt(t.Context(), 95, bytes.NewReader(bytes.Repeat([]byte("X"), 10)))
 		if err == nil {
@@ -1060,7 +1060,7 @@ func TestVolume_StageWriteAt(t *testing.T) {
 	})
 
 	t.Run("empty reader returns error", func(t *testing.T) {
-		vol := newTestVolume(t, "test-vol", lode.NewMemoryFactory(), 100)
+		vol := newTestVolume(t, "test-vol", lode.Memory(), 100)
 		_, err := vol.StageWriteAt(t.Context(), 0, bytes.NewReader(nil))
 		if err == nil {
 			t.Fatal("expected error for empty reader")
@@ -1068,7 +1068,7 @@ func TestVolume_StageWriteAt(t *testing.T) {
 	})
 
 	t.Run("exact fit", func(t *testing.T) {
-		vol := newTestVolume(t, "test-vol", lode.NewMemoryFactory(), 10)
+		vol := newTestVolume(t, "test-vol", lode.Memory(), 10)
 		// 10 bytes at offset 0 → [0, 10) exactly fills totalLength=10.
 		blk, err := vol.StageWriteAt(t.Context(), 0, bytes.NewReader(bytes.Repeat([]byte("X"), 10)))
 		if err != nil {
@@ -1080,7 +1080,7 @@ func TestVolume_StageWriteAt(t *testing.T) {
 	})
 
 	t.Run("path layout", func(t *testing.T) {
-		vol := newTestVolume(t, "my-vol", lode.NewMemoryFactory(), 100)
+		vol := newTestVolume(t, "my-vol", lode.Memory(), 100)
 		blk, err := vol.StageWriteAt(t.Context(), 5, bytes.NewReader(bytes.Repeat([]byte("X"), 20)))
 		if err != nil {
 			t.Fatalf("StageWriteAt failed: %v", err)
@@ -1106,7 +1106,7 @@ func TestVolume_StageWriteAt(t *testing.T) {
 	})
 
 	t.Run("overflow offset returns error", func(t *testing.T) {
-		vol := newTestVolume(t, "test-vol", lode.NewMemoryFactory(), 1024)
+		vol := newTestVolume(t, "test-vol", lode.Memory(), 1024)
 
 		// offset + length would overflow int64 if computed naively.
 		_, err := vol.StageWriteAt(t.Context(), math.MaxInt64, bytes.NewReader([]byte("A")))
@@ -1140,7 +1140,7 @@ func TestVolume_Resume(t *testing.T) {
 		// Instance 1: create a snapshot.
 		vol1 := newTestVolume(t, "test-vol", factory, 100)
 		blk := stageBlock(t, vol1, 0, bytes.Repeat([]byte("A"), 10))
-		snap1 := commitBlocks(t, vol1, []BlockRef{blk}, lode.Metadata{"step": "first"})
+		snap1 := commitBlocks(t, vol1, []BlockRef{blk}, Metadata{"step": "first"})
 
 		// Instance 2: new Volume on same store should see the snapshot.
 		vol2 := newTestVolume(t, "test-vol", factory, 100)
@@ -1160,12 +1160,12 @@ func TestVolume_Resume(t *testing.T) {
 		// Instance 1: commit block [0, 10).
 		vol1 := newTestVolume(t, "test-vol", factory, 100)
 		blk1 := stageBlock(t, vol1, 0, bytes.Repeat([]byte("A"), 10))
-		commitBlocks(t, vol1, []BlockRef{blk1}, lode.Metadata{})
+		commitBlocks(t, vol1, []BlockRef{blk1}, Metadata{})
 
 		// Instance 2: resume, stage [10, 20), commit → cumulative manifest has 2 blocks.
 		vol2 := newTestVolume(t, "test-vol", factory, 100)
 		blk2 := stageBlock(t, vol2, 10, bytes.Repeat([]byte("B"), 10))
-		snap2 := commitBlocks(t, vol2, []BlockRef{blk2}, lode.Metadata{})
+		snap2 := commitBlocks(t, vol2, []BlockRef{blk2}, Metadata{})
 
 		if len(snap2.Manifest.Blocks) != 2 {
 			t.Fatalf("expected 2 cumulative blocks after resume, got %d", len(snap2.Manifest.Blocks))
@@ -1464,7 +1464,7 @@ func TestVolume_LatestPointer(t *testing.T) {
 		vol := newTestVolume(t, "test-vol", newFaultStoreFactory(fs), 100)
 
 		blk := stageBlock(t, vol, 0, bytes.Repeat([]byte("A"), 10))
-		snap := commitBlocks(t, vol, []BlockRef{blk}, lode.Metadata{})
+		snap := commitBlocks(t, vol, []BlockRef{blk}, Metadata{})
 
 		// Verify pointer file exists.
 		pointerPath := "volumes/test-vol/latest"
@@ -1503,7 +1503,7 @@ func TestVolume_LatestPointer(t *testing.T) {
 		for i := range 3 {
 			offset := int64(i) * 30
 			blk := stageBlock(t, vol, offset, bytes.Repeat([]byte("X"), 30))
-			snap := commitBlocks(t, vol, []BlockRef{blk}, lode.Metadata{})
+			snap := commitBlocks(t, vol, []BlockRef{blk}, Metadata{})
 
 			rc, err := store.Get(t.Context(), pointerPath)
 			if err != nil {
@@ -1524,7 +1524,7 @@ func TestVolume_LatestPointer(t *testing.T) {
 		vol := newTestVolume(t, "test-vol", memoryFactoryFrom(store), 100)
 
 		blk := stageBlock(t, vol, 0, bytes.Repeat([]byte("A"), 10))
-		snap1 := commitBlocks(t, vol, []BlockRef{blk}, lode.Metadata{})
+		snap1 := commitBlocks(t, vol, []BlockRef{blk}, Metadata{})
 
 		// Delete the pointer to simulate pre-pointer state.
 		_ = store.Delete(t.Context(), "volumes/test-vol/latest")
@@ -1540,7 +1540,7 @@ func TestVolume_LatestPointer(t *testing.T) {
 
 		// Next commit should create the pointer.
 		blk2 := stageBlock(t, vol, 10, bytes.Repeat([]byte("B"), 10))
-		snap2 := commitBlocks(t, vol, []BlockRef{blk2}, lode.Metadata{})
+		snap2 := commitBlocks(t, vol, []BlockRef{blk2}, Metadata{})
 
 		rc, err := store.Get(t.Context(), "volumes/test-vol/latest")
 		if err != nil {
@@ -1727,7 +1727,7 @@ func TestVolume_Commit_PendingCommit(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		return vol.Commit(t.Context(), []BlockRef{block}, lode.Metadata{})
+		return vol.Commit(t.Context(), []BlockRef{block}, Metadata{})
 	}
 	if _, err := commit(open(), 0, "block-1"); err != nil {
 		t.Fatal(err)
@@ -1752,14 +1752,14 @@ func TestVolume_Commit_PendingCommit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := late.Commit(t.Context(), []BlockRef{block3}, lode.Metadata{}); !errors.Is(err, lode.ErrSnapshotConflict) {
+	if _, err := late.Commit(t.Context(), []BlockRef{block3}, Metadata{}); !errors.Is(err, lode.ErrSnapshotConflict) {
 		t.Fatalf("commit while another is pending = %v, want lode.ErrSnapshotConflict", err)
 	}
 
 	if err := mem.Put(t.Context(), manifestPath, bytes.NewReader(manifest)); err != nil {
 		t.Fatal(err)
 	}
-	next, err := late.Commit(t.Context(), []BlockRef{block3}, lode.Metadata{})
+	next, err := late.Commit(t.Context(), []BlockRef{block3}, Metadata{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1776,10 +1776,10 @@ func TestVolume_Commit_AbandonedCommit(t *testing.T) {
 	mem := lode.NewMemory()
 	fs := testutil.NewFaultStore(mem)
 	abandoning := newTestVolume(t, "test-vol", newFaultStoreFactory(fs), 100)
-	commitBlocks(t, abandoning, []BlockRef{stageBlock(t, abandoning, 0, []byte("first"))}, lode.Metadata{})
+	commitBlocks(t, abandoning, []BlockRef{stageBlock(t, abandoning, 0, []byte("first"))}, Metadata{})
 
 	fs.SetPutError(testutil.ErrInjectedPut, "manifest.json")
-	abandoned, err := abandoning.Commit(t.Context(), []BlockRef{stageBlock(t, abandoning, 10, []byte("second"))}, lode.Metadata{})
+	abandoned, err := abandoning.Commit(t.Context(), []BlockRef{stageBlock(t, abandoning, 10, []byte("second"))}, Metadata{})
 	if err == nil {
 		t.Fatalf("commit with a failing manifest write = %+v, want an error", abandoned)
 	}
@@ -1790,7 +1790,7 @@ func TestVolume_Commit_AbandonedCommit(t *testing.T) {
 	}
 
 	next := newTestVolume(t, "test-vol", memoryFactoryFrom(mem), 100)
-	snap, err := next.Commit(t.Context(), []BlockRef{stageBlock(t, next, 20, []byte("third"))}, lode.Metadata{})
+	snap, err := next.Commit(t.Context(), []BlockRef{stageBlock(t, next, 20, []byte("third"))}, Metadata{})
 	if err != nil {
 		t.Fatalf("commit after an abandoned commit: %v", err)
 	}
@@ -1833,7 +1833,7 @@ func TestVolume_Commit_Pointer(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		snap1, err := vol.Commit(t.Context(), []BlockRef{block1}, lode.Metadata{})
+		snap1, err := vol.Commit(t.Context(), []BlockRef{block1}, Metadata{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1842,7 +1842,7 @@ func TestVolume_Commit_Pointer(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, err = vol.Commit(t.Context(), []BlockRef{block2}, lode.Metadata{})
+		_, err = vol.Commit(t.Context(), []BlockRef{block2}, Metadata{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1861,7 +1861,7 @@ func TestVolume_Commit_Pointer(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, err = vol.Commit(t.Context(), []BlockRef{block3}, lode.Metadata{})
+		_, err = vol.Commit(t.Context(), []BlockRef{block3}, Metadata{})
 		if !errors.Is(err, lode.ErrSnapshotConflict) {
 			t.Fatalf("expected lode.ErrSnapshotConflict for externally modified pointer, got: %v", err)
 		}
@@ -1882,7 +1882,7 @@ func TestVolume_Commit_Pointer(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, err = vol.Commit(t.Context(), []BlockRef{block1}, lode.Metadata{})
+		_, err = vol.Commit(t.Context(), []BlockRef{block1}, Metadata{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1901,7 +1901,7 @@ func TestVolume_Commit_Pointer(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, err = vol.Commit(t.Context(), []BlockRef{block2}, lode.Metadata{})
+		_, err = vol.Commit(t.Context(), []BlockRef{block2}, Metadata{})
 		if !errors.Is(err, lode.ErrSnapshotConflict) {
 			t.Fatalf("expected lode.ErrSnapshotConflict for externally modified pointer, got: %v", err)
 		}
@@ -1923,7 +1923,7 @@ func TestVolume_Commit_Pointer(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		snap1, err := vol.Commit(t.Context(), []BlockRef{block1}, lode.Metadata{})
+		snap1, err := vol.Commit(t.Context(), []BlockRef{block1}, Metadata{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1940,7 +1940,7 @@ func TestVolume_Commit_Pointer(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, err = vol.Commit(t.Context(), []BlockRef{block2}, lode.Metadata{})
+		_, err = vol.Commit(t.Context(), []BlockRef{block2}, Metadata{})
 		if err == nil {
 			t.Fatal("expected commit to fail when pointer write fails")
 		}
@@ -1960,7 +1960,7 @@ func TestVolume_Commit_Pointer(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		snap3, err := vol.Commit(t.Context(), []BlockRef{block2b}, lode.Metadata{})
+		snap3, err := vol.Commit(t.Context(), []BlockRef{block2b}, Metadata{})
 		if err != nil {
 			t.Fatalf("commit after clearing error should succeed: %v", err)
 		}
@@ -1986,7 +1986,7 @@ func TestVolume_Commit_ColdStart(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		snap1, err := volA.Commit(t.Context(), []BlockRef{block1}, lode.Metadata{})
+		snap1, err := volA.Commit(t.Context(), []BlockRef{block1}, Metadata{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1997,7 +1997,7 @@ func TestVolume_Commit_ColdStart(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		snap2, err := volA.Commit(t.Context(), []BlockRef{block2}, lode.Metadata{})
+		snap2, err := volA.Commit(t.Context(), []BlockRef{block2}, Metadata{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2020,7 +2020,7 @@ func TestVolume_Commit_ColdStart(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		snap3, err := volB.Commit(t.Context(), []BlockRef{block3}, lode.Metadata{})
+		snap3, err := volB.Commit(t.Context(), []BlockRef{block3}, Metadata{})
 		if err != nil {
 			t.Fatalf("cold-start commit with corrupt pointer should succeed: %v", err)
 		}
@@ -2050,7 +2050,7 @@ func TestVolume_Commit_ColdStart(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		snap1, err := volA.Commit(t.Context(), []BlockRef{block1}, lode.Metadata{})
+		snap1, err := volA.Commit(t.Context(), []BlockRef{block1}, Metadata{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2059,7 +2059,7 @@ func TestVolume_Commit_ColdStart(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, err = volA.Commit(t.Context(), []BlockRef{block2}, lode.Metadata{})
+		_, err = volA.Commit(t.Context(), []BlockRef{block2}, Metadata{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2068,7 +2068,7 @@ func TestVolume_Commit_ColdStart(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		snap3, err := volA.Commit(t.Context(), []BlockRef{block3}, lode.Metadata{})
+		snap3, err := volA.Commit(t.Context(), []BlockRef{block3}, Metadata{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2093,7 +2093,7 @@ func TestVolume_Commit_ColdStart(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		snap4, err := volB.Commit(t.Context(), []BlockRef{block4}, lode.Metadata{})
+		snap4, err := volB.Commit(t.Context(), []BlockRef{block4}, Metadata{})
 		if err != nil {
 			t.Fatalf("cold-start commit should succeed: %v", err)
 		}
@@ -2162,7 +2162,7 @@ func TestVolume_Commit_Conflict(t *testing.T) {
 		if err != nil {
 			t.Fatalf("v1 stage: %v", err)
 		}
-		_, err = v1.Commit(t.Context(), []BlockRef{block1}, lode.Metadata{})
+		_, err = v1.Commit(t.Context(), []BlockRef{block1}, Metadata{})
 		if err != nil {
 			t.Fatalf("v1 first commit: %v", err)
 		}
@@ -2172,7 +2172,7 @@ func TestVolume_Commit_Conflict(t *testing.T) {
 		if err != nil {
 			t.Fatalf("v2 stage: %v", err)
 		}
-		_, err = v2.Commit(t.Context(), []BlockRef{block2}, lode.Metadata{})
+		_, err = v2.Commit(t.Context(), []BlockRef{block2}, Metadata{})
 		if err != nil {
 			t.Fatalf("v2 first commit: %v", err)
 		}
@@ -2183,7 +2183,7 @@ func TestVolume_Commit_Conflict(t *testing.T) {
 		if err != nil {
 			t.Fatalf("v1 stage 2: %v", err)
 		}
-		_, err = v1.Commit(t.Context(), []BlockRef{block3}, lode.Metadata{})
+		_, err = v1.Commit(t.Context(), []BlockRef{block3}, Metadata{})
 		if !errors.Is(err, lode.ErrSnapshotConflict) {
 			t.Fatalf("expected lode.ErrSnapshotConflict from v1 (stale cache), got: %v", err)
 		}
@@ -2200,7 +2200,7 @@ func TestVolume_Commit_Conflict(t *testing.T) {
 		if err != nil {
 			t.Fatalf("v1 stage 3: %v", err)
 		}
-		_, err = v1.Commit(t.Context(), []BlockRef{block4}, lode.Metadata{})
+		_, err = v1.Commit(t.Context(), []BlockRef{block4}, Metadata{})
 		if err != nil {
 			t.Fatalf("v1 retry after Latest() should succeed, got: %v", err)
 		}
@@ -2231,7 +2231,7 @@ func TestVolume_Commit_Conflict(t *testing.T) {
 		if err != nil {
 			t.Fatalf("v1 stage: %v", err)
 		}
-		_, err = v1.Commit(t.Context(), []BlockRef{block1}, lode.Metadata{})
+		_, err = v1.Commit(t.Context(), []BlockRef{block1}, Metadata{})
 		if err != nil {
 			t.Fatalf("v1 first commit: %v", err)
 		}
@@ -2241,7 +2241,7 @@ func TestVolume_Commit_Conflict(t *testing.T) {
 		if err != nil {
 			t.Fatalf("v2 stage: %v", err)
 		}
-		_, err = v2.Commit(t.Context(), []BlockRef{block2}, lode.Metadata{})
+		_, err = v2.Commit(t.Context(), []BlockRef{block2}, Metadata{})
 		if err != nil {
 			t.Fatalf("v2 commit: %v", err)
 		}
@@ -2253,7 +2253,7 @@ func TestVolume_Commit_Conflict(t *testing.T) {
 		if err != nil {
 			t.Fatalf("v1 stage 2: %v", err)
 		}
-		_, err = v1.Commit(t.Context(), []BlockRef{block3}, lode.Metadata{})
+		_, err = v1.Commit(t.Context(), []BlockRef{block3}, Metadata{})
 		if !errors.Is(err, ErrOverlappingBlocks) {
 			t.Fatalf("expected ErrOverlappingBlocks on retry, got: %v", err)
 		}
@@ -2284,7 +2284,7 @@ func TestVolume_Commit_Conflict(t *testing.T) {
 		if err != nil {
 			t.Fatalf("v1 stage 1: %v", err)
 		}
-		_, err = v1.Commit(t.Context(), []BlockRef{block1}, lode.Metadata{})
+		_, err = v1.Commit(t.Context(), []BlockRef{block1}, Metadata{})
 		if err != nil {
 			t.Fatalf("v1 first commit: %v", err)
 		}
@@ -2294,7 +2294,7 @@ func TestVolume_Commit_Conflict(t *testing.T) {
 		if err != nil {
 			t.Fatalf("v2 stage: %v", err)
 		}
-		_, err = v2.Commit(t.Context(), []BlockRef{block2}, lode.Metadata{})
+		_, err = v2.Commit(t.Context(), []BlockRef{block2}, Metadata{})
 		if err != nil {
 			t.Fatalf("v2 commit: %v", err)
 		}
@@ -2305,7 +2305,7 @@ func TestVolume_Commit_Conflict(t *testing.T) {
 		if err != nil {
 			t.Fatalf("v1 stage 2: %v", err)
 		}
-		snap, err := v1.Commit(t.Context(), []BlockRef{block3}, lode.Metadata{})
+		snap, err := v1.Commit(t.Context(), []BlockRef{block3}, Metadata{})
 		if err != nil {
 			t.Fatalf("v1 commit with retry should succeed, got: %v", err)
 		}
@@ -2342,7 +2342,7 @@ func TestVolume_Commit_RetryOptions(t *testing.T) {
 		if err != nil {
 			t.Fatalf("v1 stage: %v", err)
 		}
-		_, err = v1.Commit(t.Context(), []BlockRef{block1}, lode.Metadata{})
+		_, err = v1.Commit(t.Context(), []BlockRef{block1}, Metadata{})
 		if err != nil {
 			t.Fatalf("v1 first commit: %v", err)
 		}
@@ -2352,7 +2352,7 @@ func TestVolume_Commit_RetryOptions(t *testing.T) {
 		if err != nil {
 			t.Fatalf("v2 stage: %v", err)
 		}
-		_, err = v2.Commit(t.Context(), []BlockRef{block2}, lode.Metadata{})
+		_, err = v2.Commit(t.Context(), []BlockRef{block2}, Metadata{})
 		if err != nil {
 			t.Fatalf("v2 commit: %v", err)
 		}
@@ -2362,7 +2362,7 @@ func TestVolume_Commit_RetryOptions(t *testing.T) {
 		if err != nil {
 			t.Fatalf("v1 stage 2: %v", err)
 		}
-		_, err = v1.Commit(t.Context(), []BlockRef{block3}, lode.Metadata{})
+		_, err = v1.Commit(t.Context(), []BlockRef{block3}, Metadata{})
 		if !errors.Is(err, lode.ErrSnapshotConflict) {
 			t.Fatalf("expected lode.ErrSnapshotConflict with retries=0, got: %v", err)
 		}
@@ -2393,7 +2393,7 @@ func TestVolume_Commit_RetryOptions(t *testing.T) {
 		if err != nil {
 			t.Fatalf("v1 stage 1: %v", err)
 		}
-		if _, err := v1.Commit(t.Context(), []BlockRef{block1}, lode.Metadata{}); err != nil {
+		if _, err := v1.Commit(t.Context(), []BlockRef{block1}, Metadata{}); err != nil {
 			t.Fatalf("v1 first commit: %v", err)
 		}
 		if len(attempts) != 0 {
@@ -2404,7 +2404,7 @@ func TestVolume_Commit_RetryOptions(t *testing.T) {
 		if err != nil {
 			t.Fatalf("v2 stage: %v", err)
 		}
-		if _, err := v2.Commit(t.Context(), []BlockRef{block2}, lode.Metadata{}); err != nil {
+		if _, err := v2.Commit(t.Context(), []BlockRef{block2}, Metadata{}); err != nil {
 			t.Fatalf("v2 commit: %v", err)
 		}
 
@@ -2412,7 +2412,7 @@ func TestVolume_Commit_RetryOptions(t *testing.T) {
 		if err != nil {
 			t.Fatalf("v1 stage 2: %v", err)
 		}
-		if _, err := v1.Commit(t.Context(), []BlockRef{block3}, lode.Metadata{}); err != nil {
+		if _, err := v1.Commit(t.Context(), []BlockRef{block3}, Metadata{}); err != nil {
 			t.Fatalf("v1 commit with retry: %v", err)
 		}
 		if len(attempts) != 1 || attempts[0] != 1 {
@@ -2422,12 +2422,12 @@ func TestVolume_Commit_RetryOptions(t *testing.T) {
 
 	// TestVolume_WithRetryCount_OptionValidation verifies volume option validation.
 	t.Run("with retry count option validation", func(t *testing.T) {
-		_, err := New("test", lode.NewMemoryFactory(), 1024, WithRetryCount(-1))
+		_, err := New("test", lode.Memory(), 1024, WithRetryCount(-1))
 		if err == nil {
 			t.Fatal("expected error for negative retry count")
 		}
 
-		_, err = New("test", lode.NewMemoryFactory(), 1024, WithRetryObserver(nil))
+		_, err = New("test", lode.Memory(), 1024, WithRetryObserver(nil))
 		if err == nil {
 			t.Fatal("expected error for nil retry observer")
 		}

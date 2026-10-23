@@ -22,12 +22,18 @@ It is authoritative for any `Dataset` implementation.
 
 ---
 
-## Dataset.Write Semantics
+## Write Semantics
+
+`Records[T]` writes records of type `T`; `Blobs` writes one blob per
+snapshot. Both are opened at a root (`Root.Records`, `Root.Blobs`), which
+checks the writer's settings against the dataset's head (§Settings).
 
 ### Required Behavior
 
 - `Write(ctx, data, metadata)` MUST create a new snapshot on success.
-- `nil` metadata MUST be converted to empty metadata (`Metadata{}`).
+- Metadata MUST encode as a JSON object (a struct, a map, or `nil`); a
+  value that does not MUST be rejected with `ErrInvalidArgument` before any
+  store call. `nil` metadata MUST be persisted as `{}`.
 - Empty metadata is valid and MUST be persisted explicitly.
 - The new snapshot MUST reference the previous snapshot, if any, as its parent.
 - Writes MUST NOT mutate existing snapshots or manifests.
@@ -36,8 +42,8 @@ It is authoritative for any `Dataset` implementation.
   maximum timestamps).
 - When the codec implements `StatisticalCodec`, per-file statistics MUST be
   collected after encoding and recorded on the `FileRef`.
-- When no codec is configured, each write represents a single data unit, and
-  the row or event count MUST be `1`.
+- A blob write represents a single data unit, and the row or event count
+  MUST be `1`.
 
 ### Settings
 
@@ -46,8 +52,8 @@ and description (`Codec.Describe`), the compressor, the checksum
 algorithm, the partitioner and its keys, and the path names, as the
 manifest records them (CONTRACT_CORE §Manifest Requirements).
 
-- Before its first commit, a writer MUST compare its settings with one
-  manifest, found in this order: the manifest of the snapshot that the
+- When it opens, and again before its first commit, a writer MUST compare
+  its settings with one manifest, found in this order: the manifest of the snapshot that the
   pointer names; that snapshot's staged copy (CONTRACT_CORE §Head Pointer);
   and, when the pointer is absent or names neither, the newest manifest, as
   `Latest` selects it. With no pointer and no manifest, the dataset is
@@ -91,11 +97,11 @@ manifest records them (CONTRACT_CORE §Manifest Requirements).
   Lode MUST NOT infer keys from partition paths: the writer states them,
   and Lode verifies them.
 
-### StreamWrite Semantics
+### Blobs.StreamWrite Semantics
 
-- `StreamWrite(ctx, metadata)` MUST convert `nil` metadata to empty metadata
-  (`Metadata{}`).
-- `StreamWrite` MUST return a `StreamWriter` for a single binary data unit.
+- `Blobs.StreamWrite(ctx, metadata)` MUST persist `nil` metadata as `{}`.
+- `Blobs.StreamWrite` MUST return a `StreamWriter` for a single binary data
+  unit.
 - `StreamWriter.Commit(ctx)` MUST write the manifest and return the new snapshot.
 - A snapshot MUST NOT be visible before `Commit` writes the manifest.
 - `StreamWriter.Abort(ctx)` MUST ensure that no manifest is written.
@@ -106,7 +112,6 @@ manifest records them (CONTRACT_CORE §Manifest Requirements).
 - Streamed writes MUST set the row or event count to `1`.
 - When a checksum component is configured, the checksum MUST be computed during
   streaming and recorded in the manifest for each file written.
-- When a codec is configured, `StreamWrite` MUST return an error.
 - If the store's `Put` returns before consuming the stream (for example,
   with `ErrPathExists`), every `Write` call issued after `Put` returned, and
   `Commit`, MUST fail with that error, even when a compressor would buffer
@@ -118,20 +123,22 @@ manifest records them (CONTRACT_CORE §Manifest Requirements).
   succeeded and whose commit then failed before any manifest write was
   attempted. A failed manifest write does not show whether the manifest was
   stored (a lost response stores it), so the snapshot may be visible; the
-  data object MUST then be retained, and `Dataset.Sweep` reclaims it if the
-  commit did fail.
+  data object MUST then be retained, and `Sweep` reclaims it if the commit
+  did fail.
 
-### StreamWriteRecords Semantics
+### Records.StreamWrite Semantics
 
-- `StreamWriteRecords(ctx, records, metadata)` MUST convert `nil` metadata to
-  empty metadata (`Metadata{}`).
-- `StreamWriteRecords` MUST return an error if the records iterator is `nil`.
-- `StreamWriteRecords` MUST consume records through a pull-based iterator.
-- `StreamWriteRecords` MUST return an error if the configured codec does not support
-  streaming record encoding.
-- `StreamWriteRecords` MUST return an error if partitioning is configured (a
-  partitioner other than `noop`), because single-pass streaming cannot
-  partition records without buffering them.
+- `Records.StreamWrite(ctx, records, metadata)` MUST persist `nil` metadata
+  as `{}`.
+- `Records.StreamWrite` MUST return `ErrNilIterator` if the iterator is
+  `nil`.
+- `Records.StreamWrite` MUST consume records from an `iter.Seq2[T, error]`,
+  one at a time; an error the iterator yields aborts the write.
+- `Records.StreamWrite` MUST return `ErrCodecNotStreamable` if the codec is
+  not a `StreamingCodec`.
+- `Records.StreamWrite` MUST return `ErrPartitioningNotSupported` if the
+  layout is partitioned, because single-pass streaming cannot partition
+  records without buffering them.
 - Streamed record writes MUST be single-pass writes to the final object path.
 - Streamed record writes MUST NOT mutate existing objects; every write
   targets a new path.
@@ -140,26 +147,28 @@ manifest records them (CONTRACT_CORE §Manifest Requirements).
   manifest is written. A failed `Put` leaves no object (`CONTRACT_STORAGE.md`
   §Put). A data object whose `Put` succeeded is deleted on a best-effort
   basis if the commit failed before any manifest write was attempted, and
-  retained otherwise, as for `StreamWrite`.
-- If the store's `Put` returns before consuming the stream, `StreamWriteRecords`
-  MUST return that error in preference to any iterator or finalization error
-  reported afterward, and MUST NOT block on the store or the pipe. The `Put`
-  result is examined before and after every iterator call (`Next`, `Record`,
-  `Err`) and before each record is accepted. Lode cannot interrupt the
-  caller's own iterator: while a call to `Next` or `Err` blocks,
-  `StreamWriteRecords` blocks as well, and the storage error is reported
-  when the call returns. The writer MUST NOT access the path afterward.
+  retained otherwise, as for `Blobs.StreamWrite`.
+- If the store's `Put` returns before consuming the stream,
+  `Records.StreamWrite` MUST return that error in preference to any iterator
+  or finalization error reported afterward, and MUST NOT block on the store
+  or the pipe. The `Put` result is examined before the first record, after
+  the iterator produces each result, after each record is written, and
+  after the iterator ends. Lode cannot interrupt the caller's own iterator:
+  while it blocks producing a result, `Records.StreamWrite` blocks as well,
+  and the storage error is reported when it returns. The writer MUST NOT
+  access the path afterward.
 - The row or event count MUST equal the total number of records consumed.
 - When a checksum component is configured, the checksum MUST be computed during
   streaming and recorded in the manifest for each file written.
-- When the stream encoder implements `StatisticalStreamEncoder`, per-file
-  statistics MUST be collected after the stream is finalized and recorded on
-  the `FileRef`.
+- When the stream encoder implements `StatisticalCodec`, per-file statistics
+  MUST be collected after the stream is finalized and recorded on the
+  `FileRef`.
 
 ### Timestamp Computation
 
-- When records implement the `Timestamped` interface, `Write` MUST compute
-  `MinTimestamp` and `MaxTimestamp` from the data.
+- When records implement the `Timestamped` interface, `Records.Write` MUST
+  compute `MinTimestamp` and `MaxTimestamp` from the data. Whether the
+  record type can implement it is decided once, when the handle opens.
 - Timestamps are extracted by calling `Timestamp()` on each record that
   implements the interface.
 - Records that do not implement `Timestamped` are ignored for timestamp
@@ -167,7 +176,7 @@ manifest records them (CONTRACT_CORE §Manifest Requirements).
 - When no records implement `Timestamped`, both timestamp fields MUST be `nil`.
 - Timestamp computation is explicit (through implementation of the
   interface), not inferred.
-- The same timestamp rules apply to `StreamWriteRecords` as it consumes
+- The same timestamp rules apply to `Records.StreamWrite` as it consumes
   records.
 
 ### Empty Dataset Behavior
@@ -228,7 +237,7 @@ one manifest write plus one pointer swap.
 
 **Automatic retry (disabled by default):**
 
-`WithRetryCount(n)` enables a bounded number of automatic retries within the
+`WithRetry(n)` enables a bounded number of automatic retries within the
 commit path. On `ErrSnapshotConflict`, the writer:
 1. Waits for an exponential backoff interval with jitter.
 2. Calls `Latest()` to refresh the in-memory CAS cache.
@@ -240,7 +249,7 @@ Data files are written once; only the manifest and the pointer are retried.
 If all retries are exhausted, `ErrSnapshotConflict` is returned as it would
 be without retries.
 
-Retry options: `WithRetryCount(n)`, `WithRetryBaseDelay(d)`,
+Retry options: `WithRetry(n)`, `WithRetryBaseDelay(d)`,
 `WithRetryMaxDelay(d)`, `WithRetryJitter(j)`, `WithRetryObserver(fn)`.
 Defaults: zero retries, a 10 ms base delay, a 2 s maximum delay, full
 jitter, and no observer.
@@ -297,7 +306,7 @@ file, in sequence) or handle `ErrSnapshotConflict` by retrying.
 
 ### Storage-Level Concurrency for Streaming Writes
 
-Streaming writes (`StreamWrite`, `StreamWriteRecords`) that produce large
+Streaming writes (`Blobs.StreamWrite`, `Records.StreamWrite`) that produce large
 payloads may use the storage adapter's multipart (chunked) upload path.
 
 **Backends that support conditional completion (for example, S3 with
@@ -324,12 +333,13 @@ Implementations MUST use the following error sentinels where applicable:
 - `ErrNoSnapshots` for an empty history
 - `ErrNotFound` for a missing snapshot ID
 - `ErrPathExists` for an attempt to write to an existing path
-- `ErrCodecConfigured` when `StreamWrite` is called with a configured codec
-- `ErrCodecNotStreamable` when the codec used by `StreamWriteRecords` does
-  not support streaming
-- `ErrNilIterator` when `StreamWriteRecords` is called with a `nil` iterator
-- `ErrPartitioningNotSupported` when `StreamWriteRecords` is used with a
-  partitioner other than `noop`
+- `ErrCodecNotStreamable` when the codec used by `Records.StreamWrite` is not
+  a `StreamingCodec`
+- `ErrNilIterator` when `Records.StreamWrite` is called with a `nil`
+  iterator
+- `ErrPartitioningNotSupported` when `Records.StreamWrite` is used on a
+  partitioned layout
+- `ErrInvalidArgument` for metadata that does not encode as a JSON object
 - `ErrSnapshotConflict` when another writer committed after the parent was
   resolved, or when the pointer names a snapshot whose settings no
   manifest records (§Settings)
@@ -379,8 +389,8 @@ The check runs once per writer, before its first commit:
 |-----------|-------------------|--------|
 | `Write` (unpartitioned) | 4 fixed | O(R + encoded) |
 | `Write` (P partitions) | 2P + 3 | O(R + encoded) |
-| `StreamWrite` | 4 fixed | O(1) streaming |
-| `StreamWriteRecords` | 4 fixed | O(1) streaming |
+| `Blobs.StreamWrite` | 4 fixed | O(1) streaming |
+| `Records.StreamWrite` | 4 fixed | O(1) streaming |
 
 A dataset's first commit adds **1 Put and 1 Delete** for its staged
 manifest (CONTRACT_CORE §Head Pointer).

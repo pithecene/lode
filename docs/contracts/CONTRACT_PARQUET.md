@@ -28,20 +28,30 @@ It is authoritative for any Parquet codec implementation within Lode.
 
 ## Parquet Codec Interface
 
-The Parquet codec MUST implement the `Codec` interface:
+The Parquet codec MUST implement `Codec[D]` for map records
+(`D = map[string]any`):
 
 ```go
-type Codec interface {
-    Name() string                             // Returns "parquet"
-    Encode(w io.Writer, records []any) error  // Batch encoding
-    Decode(r io.Reader) ([]any, error)        // Batch decoding
+type Codec[T any] interface {
+    Name() string                          // Returns "parquet"
+    Describe() string                      // The schema, canonical JSON
+    Encode(w io.Writer, records []T) error // Batch encoding
+    Decode(r io.Reader) ([]T, error)       // Batch decoding
 }
 ```
 
-The Parquet codec MUST NOT implement `StreamingRecordCodec`. Because
-Parquet requires a footer, genuine streaming is impossible without
-buffering the entire file.
-`StreamWriteRecords` with a Parquet codec MUST return `ErrCodecNotStreamable`.
+The Parquet codec MUST NOT implement `StreamingCodec`. Because Parquet
+requires a footer, genuine streaming is impossible without buffering the
+entire file. `Records.StreamWrite` with a Parquet codec MUST return
+`ErrCodecNotStreamable`.
+
+### Describe
+
+- `Describe()` MUST return the schema as canonical JSON, its fields in
+  schema order with their names, types, and nullability, so that equal
+  schemas yield equal descriptions (CONTRACT_LAYOUT §Codec).
+- The internal compression MUST NOT be part of the description: it does not
+  affect which records a file holds or how they decode.
 
 ### Name
 
@@ -61,8 +71,7 @@ buffering the entire file.
 ### Decode
 
 - `Decode(r)` MUST read a complete Parquet file from `r`.
-- It returns records as `[]any`, in which each record is a
-  `map[string]any`.
+- It returns records as `[]D`, each a `map[string]any`.
 - Field types are mapped according to the table in §Type Mapping.
 - `Decode` MUST support files written by this codec and by standard Parquet
   writers.
@@ -79,21 +88,21 @@ configuration of the schema.
 Schemas are defined when the codec is constructed:
 
 ```go
-codec, err := lode.NewParquetCodec(lode.ParquetSchema{
+codec := lode.Parquet(lode.ParquetSchema{
     Fields: []lode.ParquetField{
         {Name: "id", Type: lode.ParquetInt64},
         {Name: "name", Type: lode.ParquetString},
         {Name: "timestamp", Type: lode.ParquetTimestamp},
     },
 })
-if err != nil {
-    // Handle schema validation error
-}
+ds, err := root.Records(ctx, "events", codec) // returns a schema error
 ```
 
 ### Schema Construction Validation
 
-`NewParquetCodec` validates the schema and returns an error for:
+`Parquet` validates the schema and records an error, matching
+`ErrSchemaViolation`, which `Root.Records` and `ReadRoot.Records` return,
+and which `Encode` and `Decode` return if called directly, for:
 
 - invalid `ParquetType` values (out of range);
 - empty field names; and
@@ -196,13 +205,13 @@ group, which makes genuine streaming impossible.
 - For large datasets, callers MUST divide the data among several
   snapshots.
 
-### StreamWriteRecords Behavior
+### Records.StreamWrite Behavior
 
-The Parquet codec MUST NOT implement `StreamingRecordCodec`:
+The Parquet codec MUST NOT implement `StreamingCodec`:
 
-- `StreamWriteRecords` with the Parquet codec returns
+- `Records.StreamWrite` with the Parquet codec returns
   `ErrCodecNotStreamable`.
-- Callers MUST use `Dataset.Write` for Parquet encoding.
+- Callers MUST use `Records.Write` for Parquet encoding.
 - The restriction is explicit: Parquet's format precludes streaming without
   buffering.
 
@@ -341,9 +350,11 @@ truncated file, and similar defects).
 ### Minimal API
 
 ```go
-// NewParquetCodec creates a Parquet codec with the given schema.
-// Returns an error if the schema is invalid (bad types, empty names, duplicates).
-func NewParquetCodec(schema ParquetSchema, opts ...ParquetOption) (Codec, error)
+// Parquet returns a Parquet codec for map records with the given schema.
+// An invalid schema (bad types, empty names, duplicates) is recorded and
+// returned when a dataset opens with the codec, so that it can be passed
+// in a chain.
+func Parquet(schema ParquetSchema, opts ...ParquetOption) Codec[D]
 
 // ParquetSchema defines the record structure.
 type ParquetSchema struct {
@@ -426,7 +437,7 @@ work with**:
 
 ### Internal Invariants
 
-The implementation validates all schema constraints in `NewParquetCodec`.
+The implementation validates all schema constraints in `Parquet`.
 Internal functions that process validated schemas may panic on invalid
 types as a secondary safeguard. Such a panic indicates a programming error
 (validation that was circumvented), not an error in user input. This
@@ -472,9 +483,9 @@ this contract.
 
 ### Dataset-Level Tests
 
-- `StreamWriteRecords` returns `ErrCodecNotStreamable` for the Parquet
+- `Records.StreamWrite` returns `ErrCodecNotStreamable` for the Parquet
   codec.
-- `Dataset.Write` produces readable Parquet files.
+- `Records.Write` produces readable Parquet files.
 - The manifest records `codec: "parquet"`.
 
 ### External Reader Tests (Optional)

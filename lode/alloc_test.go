@@ -12,23 +12,23 @@ import (
 	"github.com/pithecene/lode/internal/testutil"
 )
 
-// allocGates are the hot paths of the Dataset API on the in-memory store,
+// allocGates are the hot paths of the dataset handles on the in-memory store,
 // warm: the head is known, so no operation scans. Each byte ceiling is the
 // measured figure rounded up to the next 64 bytes, because map growth in the
 // in-memory store varies it by a few bytes.
 var allocGates = []testutil.AllocGate{
-	{Name: "Write of three records", Allocs: 56, Bytes: 7104, Setup: gateWrite},
-	{Name: "Read of three records", Allocs: 62, Bytes: 10368, Setup: gateRead},
-	{Name: "StreamWrite of one kibibyte", Allocs: 32, Bytes: 7232, Setup: gateStreamWrite},
-	{Name: "StreamWriteRecords of three records", Allocs: 61, Bytes: 7296, Setup: gateStreamWriteRecords},
-	{Name: "JSONL Decode of three records", Allocs: 33, Bytes: 5568, Setup: gateDecode},
+	{Name: "Write of three records", Allocs: 53, Bytes: 6656, Setup: gateWrite},
+	{Name: "Read of three records", Allocs: 60, Bytes: 10176, Setup: gateRead},
+	{Name: "Blob StreamWrite of one kibibyte", Allocs: 31, Bytes: 7232, Setup: gateStreamWrite},
+	{Name: "Record StreamWrite of three records", Allocs: 63, Bytes: 7296, Setup: gateStreamWriteRecords},
+	{Name: "JSONL Decode of three records", Allocs: 33, Bytes: 5504, Setup: gateDecode},
 }
 
-// TestAllocationGates holds each Dataset hot path to its allocation ceiling.
+// TestAllocationGates holds each dataset hot path to its allocation ceiling.
 func TestAllocationGates(t *testing.T) { testutil.RunAllocGates(t, allocGates) }
 
 // gateRecords are the records every gate writes or reads.
-func gateRecords() []any {
+func gateRecords() []D {
 	return R(
 		D{"id": "1", "value": "hello"},
 		D{"id": "2", "value": "world"},
@@ -36,19 +36,15 @@ func gateRecords() []any {
 	)
 }
 
-func gateDataset(t *testing.T) Dataset {
+func gateDataset(t *testing.T) Records[D] {
 	t.Helper()
-	ds, err := NewDataset("gate", NewMemoryFactory(), WithCodec(NewJSONLCodec()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return ds
+	return recordsOn(t, NewMemory(), "gate")
 }
 
 func gateWrite(t *testing.T) func() {
 	ds, records := gateDataset(t), gateRecords()
 	return func() {
-		if _, err := ds.Write(t.Context(), records, Metadata{}); err != nil {
+		if _, err := ds.Write(t.Context(), records, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -56,7 +52,7 @@ func gateWrite(t *testing.T) func() {
 
 func gateRead(t *testing.T) func() {
 	ds := gateDataset(t)
-	snap, err := ds.Write(t.Context(), gateRecords(), Metadata{})
+	snap, err := ds.Write(t.Context(), gateRecords(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,13 +64,10 @@ func gateRead(t *testing.T) func() {
 }
 
 func gateStreamWrite(t *testing.T) func() {
-	ds, err := NewDataset("gate", NewMemoryFactory())
-	if err != nil {
-		t.Fatal(err)
-	}
+	ds := blobsOn(t, NewMemory(), "gate")
 	payload := bytes.Repeat([]byte("x"), 1024)
 	return func() {
-		sw, err := ds.StreamWrite(t.Context(), Metadata{})
+		sw, err := ds.StreamWrite(t.Context(), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -90,14 +83,14 @@ func gateStreamWrite(t *testing.T) func() {
 func gateStreamWriteRecords(t *testing.T) func() {
 	ds, records := gateDataset(t), gateRecords()
 	return func() {
-		if _, err := ds.StreamWriteRecords(t.Context(), &sliceIterator{records: records}, Metadata{}); err != nil {
+		if _, err := ds.StreamWrite(t.Context(), seqOf(records...), nil); err != nil {
 			t.Fatal(err)
 		}
 	}
 }
 
 func gateDecode(t *testing.T) func() {
-	codec := NewJSONLCodec()
+	codec := JSONL[D]()
 	var buf bytes.Buffer
 	if err := codec.Encode(&buf, gateRecords()); err != nil {
 		t.Fatal(err)

@@ -84,11 +84,11 @@ figures in the other sections were measured with Go 1.25.
 
 | Gate | Allocations | Bytes |
 |------|------------:|------:|
-| Write of three records | 56 | 7,104 |
-| Read of three records | 62 | 10,368 |
-| StreamWrite of one kibibyte | 32 | 7,232 |
-| StreamWriteRecords of three records | 61 | 7,296 |
-| JSONL Decode of three records | 33 | 5,568 |
+| Write of three records | 53 | 6,656 |
+| Read of three records | 60 | 10,176 |
+| Blob StreamWrite of one kibibyte | 31 | 7,232 |
+| Record StreamWrite of three records | 63 | 7,296 |
+| JSONL Decode of three records | 33 | 5,504 |
 | Volume ReadAt within one of ten blocks | 41 | 10,816 |
 | Volume Commit of one block onto a small volume | 136 | 252,032 |
 
@@ -98,7 +98,14 @@ figure lowers the ceiling to the new figure in the same pull request, so the
 gates never retain unused headroom. Manifest format 1.1.0 records the
 codec description, partition keys, and path names in every manifest, which
 raised the byte ceilings of the four Dataset gates, and one allocation of
-the Read gate, by the size of the larger manifest. A toolchain or dependency upgrade that
+the Read gate, by the size of the larger manifest. The typed handles of
+V1_API_DECISIONS D11 lowered the Write, Read, and Blob StreamWrite gates:
+metadata is persisted as written rather than decoded into a map, and the
+JSONL codec decodes a map record through an interface value, which costs
+jsoniter three fewer allocations per record than its map decoder. The
+Record StreamWrite gate rose by two allocations, the cost of the iterator
+protocol (`iter.Seq2`): the caller's iterator closure and the loop body
+that ranges over it. A toolchain or dependency upgrade that
 moves the figures resets the ceilings in the upgrade's pull request.
 `task gates` runs each gate three times and reports the ceilings that each
 run calls for, with the byte figure already rounded. A byte figure near a
@@ -176,7 +183,7 @@ the benchmark does not measure such commits.
 
 | Benchmark | Backend | Notes |
 |-----------|---------|-------|
-| Streaming record write round-trip | S3 (LocalStack/RustFS) | `StreamWriteRecords` path |
+| Streaming record write round-trip | S3 (LocalStack/RustFS) | `Records.StreamWrite` path |
 | Compressed write round-trip | S3 (LocalStack/RustFS) | gzip/zstd codec variants |
 | Volume commit round-trip | S3 (LocalStack/RustFS) | Multi-block Volume write path |
 

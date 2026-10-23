@@ -44,16 +44,16 @@ import (
 func main() {
     ctx := context.Background()
 
-    // Create a dataset on filesystem storage.
-    ds, _ := lode.NewDataset("mydata", lode.NewFSFactory("/tmp/lode-demo"))
+    // Open a root over filesystem storage, and a blob dataset in it.
+    blobs, _ := lode.Open(lode.FS("/tmp/lode-demo")).Blobs(ctx, "mydata")
 
-    // Write a blob (by default, raw bytes without a codec).
-    snap, _ := ds.Write(ctx, []any{[]byte("hello world")}, lode.Metadata{"source": "demo"})
+    // Write a blob: one []byte per snapshot.
+    snap, _ := blobs.Write(ctx, []byte("hello world"), lode.D{"source": "demo"})
     fmt.Println("Created snapshot:", snap.ID)
 
     // Read the blob back.
-    data, _ := ds.Read(ctx, snap.ID)
-    fmt.Println("Data:", string(data[0].([]byte)))
+    data, _ := blobs.Read(ctx, snap.ID)
+    fmt.Println("Data:", string(data))
 }
 ```
 
@@ -61,22 +61,40 @@ func main() {
 
 <!-- illustrative: shows API pattern; see examples/ for runnable code -->
 ```go
-// With a codec, Write accepts structured records.
-ds, _ := lode.NewDataset("events",
-    lode.NewFSFactory("/tmp/lode-demo"),
-    lode.WithCodec(lode.NewJSONLCodec()),
-)
+// The codec fixes the record type: here Event, encoded as JSON Lines.
+type Event struct {
+    ID    int    `json:"id"`
+    Event string `json:"event"`
+    Day   string `json:"day"`
+}
 
-records := lode.R(
-    lode.D{"id": 1, "event": "signup"},
-    lode.D{"id": 2, "event": "login"},
-)
-snap, _ := ds.Write(ctx, records, lode.Metadata{"batch": "1"})
+// Batch is the snapshot's metadata.
+type Batch struct {
+    Number int `json:"number"`
+}
+
+root := lode.Open(lode.FS("/tmp/lode-demo"))
+events, _ := root.Records(ctx, "events", lode.JSONL[Event](),
+    lode.WithLayout(lode.Hive("day").By(func(e Event) lode.Partition {
+        return lode.Partition{"day": e.Day}
+    })))
+
+snap, _ := events.Write(ctx, []Event{
+    {ID: 1, Event: "signup", Day: "2026-10-22"},
+    {ID: 2, Event: "login", Day: "2026-10-22"},
+}, Batch{Number: 1})
+got, _ := events.Read(ctx, snap.ID) // []Event
+
+var batch Batch
+_ = snap.Metadata.Decode(&batch)
+
+// A reader opens a view: it takes the layout from the manifests.
+view, _ := lode.OpenReadOnly(lode.FS("/tmp/lode-demo")).Records(ctx, "events", lode.JSONL[Event]())
 ```
 
-Lode stores data on the filesystem (`NewFSFactory`), in memory
-(`NewMemoryFactory`), or on S3-compatible storage (`lode/s3`). The storage
-location must exist before a dataset is constructed (see [Storage
+Lode stores data on the filesystem (`lode.FS`), in memory (`lode.Memory`),
+or on S3-compatible storage (`s3.Factory`). The storage location must exist
+before a dataset is opened (see [Storage
 Prerequisites](PUBLIC_API.md#storage-prerequisites)). Streaming writes and
 the experimental Volume API are described in [`PUBLIC_API.md`](PUBLIC_API.md),
 and complete programs are listed in [`examples/`](examples/).

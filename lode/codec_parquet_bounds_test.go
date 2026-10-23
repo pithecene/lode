@@ -17,12 +17,12 @@ import (
 
 func encodeSingle(t *testing.T, fieldType ParquetType, val any) error {
 	t.Helper()
-	codec, err := NewParquetCodec(ParquetSchema{Fields: []ParquetField{{Name: "val", Type: fieldType}}})
+	codec, err := newParquet(ParquetSchema{Fields: []ParquetField{{Name: "val", Type: fieldType}}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	var buf bytes.Buffer
-	return codec.Encode(&buf, []any{map[string]any{"val": val}})
+	return codec.Encode(&buf, []D{map[string]any{"val": val}})
 }
 
 type boundaryCase struct {
@@ -85,14 +85,14 @@ func TestParquetCodec_Int64_ExactSafeFloatBounds(t *testing.T) {
 }
 
 func TestParquetCodec_NewParquetCodec_TypeAtSentinel_Rejected(t *testing.T) {
-	_, err := NewParquetCodec(ParquetSchema{Fields: []ParquetField{{Name: "v", Type: parquetTypeMax}}})
+	_, err := newParquet(ParquetSchema{Fields: []ParquetField{{Name: "v", Type: parquetTypeMax}}})
 	if !errors.Is(err, ErrSchemaViolation) {
 		t.Fatalf("Type == parquetTypeMax: got %v, want ErrSchemaViolation", err)
 	}
-	if _, err := NewParquetCodec(ParquetSchema{Fields: []ParquetField{{Name: "v", Type: parquetTypeMax - 1}}}); err != nil {
+	if _, err := newParquet(ParquetSchema{Fields: []ParquetField{{Name: "v", Type: parquetTypeMax - 1}}}); err != nil {
 		t.Fatalf("Type == parquetTypeMax-1 (last valid): unexpected error %v", err)
 	}
-	if _, err := NewParquetCodec(ParquetSchema{Fields: []ParquetField{{Name: "v", Type: ParquetType(0)}}}); err != nil {
+	if _, err := newParquet(ParquetSchema{Fields: []ParquetField{{Name: "v", Type: ParquetType(0)}}}); err != nil {
 		t.Fatalf("Type == 0 (first valid): unexpected error %v", err)
 	}
 }
@@ -100,14 +100,14 @@ func TestParquetCodec_NewParquetCodec_TypeAtSentinel_Rejected(t *testing.T) {
 // Int32 and Float32 columns never appeared in a stats test, so their
 // lessThan branches were never executed.
 func TestParquetCodec_FileStats_Int32AndFloat32(t *testing.T) {
-	codec, err := NewParquetCodec(ParquetSchema{Fields: []ParquetField{
+	codec, err := newParquet(ParquetSchema{Fields: []ParquetField{
 		{Name: "n", Type: ParquetInt32},
 		{Name: "f", Type: ParquetFloat32},
 	}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	records := []any{
+	records := []D{
 		map[string]any{"n": int32(5), "f": float32(2.5)},
 		map[string]any{"n": int32(-3), "f": float32(-1.5)},
 		map[string]any{"n": int32(9), "f": float32(7.25)},

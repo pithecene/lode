@@ -24,14 +24,13 @@ func (c Config) sweepGrace() time.Duration { return c.Duration + time.Minute }
 // a report lists as expired.
 func janitor(ctx context.Context, cfg Config, store lode.Store, until time.Time, ledger *Ledger) {
 	rng := rand.New(rand.NewPCG(cfg.Seed, 2000)) //nolint:gosec // reproducible test randomness, not security
-	var ds lode.Dataset
+	var ds lode.Records[any]
 	for ctx.Err() == nil && time.Now().Before(until) {
+		if !reopen(ctx, cfg, store, rng, &ds, "janitor", ledger) {
+			return
+		}
 		if ds == nil {
-			var err error
-			if ds, err = openHandle(cfg, store, rng); err != nil {
-				ledger.violate("open", "janitor: %v", err)
-				return
-			}
+			continue
 		}
 		err := retentionOps[rng.IntN(len(retentionOps))](ctx, ds, rng, cfg, ledger)
 		switch {
@@ -59,20 +58,20 @@ func pause(ctx context.Context, d time.Duration) {
 }
 
 // retentionOp is one retention call the janitor can make.
-type retentionOp func(ctx context.Context, ds lode.Dataset, rng *rand.Rand, cfg Config, ledger *Ledger) error
+type retentionOp func(ctx context.Context, ds lode.Records[any], rng *rand.Rand, cfg Config, ledger *Ledger) error
 
 var retentionOps = []retentionOp{expireBefore, expireOne, sweep}
 
 // expireBefore expires snapshots whose writes began in the first part of
 // the run.
-func expireBefore(ctx context.Context, ds lode.Dataset, _ *rand.Rand, cfg Config, ledger *Ledger) error {
+func expireBefore(ctx context.Context, ds lode.Records[any], _ *rand.Rand, cfg Config, ledger *Ledger) error {
 	report, err := ds.Expire(ctx, lode.ExpireRequest{Before: time.Now().Add(-cfg.Duration / 4)})
 	recordExpiry(report, ledger)
 	return err
 }
 
 // expireOne expires one acknowledged snapshot by ID.
-func expireOne(ctx context.Context, ds lode.Dataset, rng *rand.Rand, _ Config, ledger *Ledger) error {
+func expireOne(ctx context.Context, ds lode.Records[any], rng *rand.Rand, _ Config, ledger *Ledger) error {
 	c, ok := ledger.randomCommit(rng)
 	if !ok {
 		return nil
@@ -82,7 +81,7 @@ func expireOne(ctx context.Context, ds lode.Dataset, rng *rand.Rand, _ Config, l
 	return err
 }
 
-func sweep(ctx context.Context, ds lode.Dataset, _ *rand.Rand, cfg Config, _ *Ledger) error {
+func sweep(ctx context.Context, ds lode.Records[any], _ *rand.Rand, cfg Config, _ *Ledger) error {
 	_, err := ds.Sweep(ctx, lode.SweepRequest{Grace: cfg.sweepGrace()})
 	return err
 }

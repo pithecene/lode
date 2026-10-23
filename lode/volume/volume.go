@@ -102,7 +102,7 @@ var historyErrors = history.Errors{
 }
 
 // New creates a volume with a fixed total length.
-func New(id ID, storeFactory lode.StoreFactory, totalLength int64, opts ...Option) (Volume, error) {
+func New(id ID, storeFactory lode.Factory[lode.Store], totalLength int64, opts ...Option) (Volume, error) {
 	if storeFactory == nil {
 		return nil, validate.Argument("store factory must not be nil")
 	}
@@ -216,9 +216,9 @@ func (v *volume) StageWriteAt(ctx context.Context, offset int64, r io.Reader) (B
 }
 
 // Commit records the provided blocks into a new immutable snapshot.
-func (v *volume) Commit(ctx context.Context, blocks []BlockRef, metadata lode.Metadata) (*Snapshot, error) {
+func (v *volume) Commit(ctx context.Context, blocks []BlockRef, metadata Metadata) (*Snapshot, error) {
 	if metadata == nil {
-		metadata = lode.Metadata{}
+		metadata = Metadata{}
 	}
 	if len(blocks) == 0 {
 		return nil, validate.Argument("commit must include at least one new block")
@@ -293,7 +293,7 @@ func hasNewBlock(existing, blocks []BlockRef) bool {
 }
 
 // buildManifest constructs the manifest for a snapshot of this volume.
-func (v *volume) buildManifest(snapshotID, parentID SnapshotID, metadata lode.Metadata, blocks []BlockRef) *Manifest {
+func (v *volume) buildManifest(snapshotID, parentID SnapshotID, metadata Metadata, blocks []BlockRef) *Manifest {
 	var checksumAlgorithm string
 	if v.checksum != nil {
 		checksumAlgorithm = v.checksum.Name()

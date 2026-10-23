@@ -38,12 +38,8 @@ func run() error {
 	}
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
-	ds, err := lode.NewDataset(
-		"crawls",
-		lode.NewFSFactory(tmpDir),
-		lode.WithHiveLayout("run_id", "event_type"),
-		lode.WithCodec(lode.NewJSONLCodec()),
-	)
+	ds, err := lode.Open(lode.FS(tmpDir)).Records(ctx, "crawls", lode.JSONL[lode.D](),
+		lode.WithLayout(lode.Hive("run_id", "event_type")))
 	if err != nil {
 		return fmt.Errorf("failed to create dataset: %w", err)
 	}
@@ -103,12 +99,12 @@ func run() error {
 
 // writeRun commits one snapshot per event type of a run, as a crawler
 // flushing its batches would.
-func writeRun(ctx context.Context, ds lode.Dataset, run string) ([]*lode.DatasetSnapshot, error) {
+func writeRun(ctx context.Context, ds lode.Records[lode.D], run string) ([]*lode.DatasetSnapshot, error) {
 	var snaps []*lode.DatasetSnapshot
 	for _, eventType := range []string{"page", "item"} {
 		snap, err := ds.Write(ctx, lode.R(
 			lode.D{"run_id": run, "event_type": eventType, "url": "https://example.com/" + run},
-		), lode.Metadata{"run": run})
+		), lode.D{"run": run})
 		if err != nil {
 			return nil, fmt.Errorf("failed to write %s/%s: %w", run, eventType, err)
 		}
