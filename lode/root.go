@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 
 	"github.com/pithecene/lode/internal/storepath"
@@ -20,7 +21,7 @@ import (
 // (CONTRACT_WRITE_API §Concurrency).
 type Root struct {
 	store Store
-	names pathNames
+	names ManifestPaths
 	err   error // a factory or path-option error, which every method returns
 }
 
@@ -29,7 +30,7 @@ type Root struct {
 // CompareAndSwap.
 type ReadRoot struct {
 	store Store // the store, behind readOnlyStore
-	names pathNames
+	names ManifestPaths
 	err   error
 }
 
@@ -61,21 +62,21 @@ func OpenReadOnly[S ObjectStore](f Factory[S], opts ...RootOption) *ReadRoot {
 
 // openStore validates the path options, then calls the factory: arguments
 // are checked before any store work (CONTRACT_ERRORS §5).
-func openStore[S ObjectStore](f Factory[S], opts []RootOption) (S, pathNames, error) {
+func openStore[S ObjectStore](f Factory[S], opts []RootOption) (S, ManifestPaths, error) {
 	var zero S
 	names, err := resolveRootConfig(opts)
 	if err != nil {
-		return zero, pathNames{}, err
+		return zero, ManifestPaths{}, err
 	}
 	if f == nil {
-		return zero, pathNames{}, validate.Argument("store factory is required")
+		return zero, ManifestPaths{}, validate.Argument("store factory is required")
 	}
 	store, err := f()
 	if err != nil {
-		return zero, pathNames{}, fmt.Errorf("lode: store factory failed: %w", err)
+		return zero, ManifestPaths{}, fmt.Errorf("lode: store factory failed: %w", err)
 	}
 	if isNilStore(store) {
-		return zero, pathNames{}, validate.Argument("store factory returned nil store")
+		return zero, ManifestPaths{}, validate.Argument("store factory returned nil store")
 	}
 	return store, names, nil
 }
@@ -140,79 +141,68 @@ type RootOption interface {
 	applyRoot(cfg *rootConfig) error
 }
 
-// rootConfig is the names a root's options set, and which were set.
+// rootConfig is the names a root's options set, and which options set them.
 type rootConfig struct {
-	names pathNames
+	names ManifestPaths
 	set   map[string]bool
 }
 
-// nameOption sets one named field of the path names.
+// nameOption sets one name of the convention.
 type nameOption struct {
-	option string // the option's name, for errors
-	field  func(n *pathNames) *string
-	value  string
+	field pathField
+	value string
 }
 
 func (o nameOption) applyRoot(cfg *rootConfig) error {
-	*o.field(&cfg.names) = o.value
-	cfg.set[o.option] = true
+	*o.field.of(&cfg.names) = o.value
+	cfg.set[o.field.option] = true
 	return nil
+}
+
+// nameOptionFor is the option, named option, that sets one name.
+func nameOptionFor(option, value string) RootOption {
+	i := slices.IndexFunc(pathFields, func(f pathField) bool { return f.option == option })
+	return nameOption{field: pathFields[i], value: value}
 }
 
 // flatOption selects flat paths.
 type flatOption struct{}
 
 func (flatOption) applyRoot(cfg *rootConfig) error {
-	cfg.names.flat = true
+	cfg.names.Flat = true
 	return nil
 }
 
 // WithDatasetsDir names the directory that holds every dataset (default
 // "datasets").
-func WithDatasetsDir(name string) RootOption {
-	return nameOption{"WithDatasetsDir", func(n *pathNames) *string { return &n.datasets }, name}
-}
+func WithDatasetsDir(name string) RootOption { return nameOptionFor("WithDatasetsDir", name) }
 
 // WithSnapshotsDir names the directory of an unpartitioned dataset's
 // snapshots (default "snapshots").
-func WithSnapshotsDir(name string) RootOption {
-	return nameOption{"WithSnapshotsDir", func(n *pathNames) *string { return &n.snapshots }, name}
-}
+func WithSnapshotsDir(name string) RootOption { return nameOptionFor("WithSnapshotsDir", name) }
 
 // WithPartitionsDir names the directory of a Hive dataset's partitions
 // (default "partitions").
-func WithPartitionsDir(name string) RootOption {
-	return nameOption{"WithPartitionsDir", func(n *pathNames) *string { return &n.partitions }, name}
-}
+func WithPartitionsDir(name string) RootOption { return nameOptionFor("WithPartitionsDir", name) }
 
 // WithSegmentsDir names the directory of a Hive dataset's snapshots, within
 // a partition and beside the canonical manifests (default "segments").
-func WithSegmentsDir(name string) RootOption {
-	return nameOption{"WithSegmentsDir", func(n *pathNames) *string { return &n.segments }, name}
-}
+func WithSegmentsDir(name string) RootOption { return nameOptionFor("WithSegmentsDir", name) }
 
 // WithManifestFile names every manifest file (default "manifest.json").
-func WithManifestFile(name string) RootOption {
-	return nameOption{"WithManifestFile", func(n *pathNames) *string { return &n.manifest }, name}
-}
+func WithManifestFile(name string) RootOption { return nameOptionFor("WithManifestFile", name) }
 
 // WithDataDir names the directory of a snapshot's data files (default
 // "data").
-func WithDataDir(name string) RootOption {
-	return nameOption{"WithDataDir", func(n *pathNames) *string { return &n.data }, name}
-}
+func WithDataDir(name string) RootOption { return nameOptionFor("WithDataDir", name) }
 
 // WithExpiredDir names the directory of a dataset's retention tombstones
 // (default "expired").
-func WithExpiredDir(name string) RootOption {
-	return nameOption{"WithExpiredDir", func(n *pathNames) *string { return &n.expired }, name}
-}
+func WithExpiredDir(name string) RootOption { return nameOptionFor("WithExpiredDir", name) }
 
 // WithStagedDir names the directory of a dataset's staged first manifest
 // (default "staged").
-func WithStagedDir(name string) RootOption {
-	return nameOption{"WithStagedDir", func(n *pathNames) *string { return &n.staged }, name}
-}
+func WithStagedDir(name string) RootOption { return nameOptionFor("WithStagedDir", name) }
 
 // WithFlatPaths selects flat paths, which place each dataset at the store
 // root and, without partitions, each snapshot directly under its dataset:
@@ -227,46 +217,28 @@ func WithFlatPaths() RootOption {
 }
 
 // resolveRootConfig applies opts over the default names and validates the
-// result.
-func resolveRootConfig(opts []RootOption) (pathNames, error) {
-	cfg := &rootConfig{names: defaultPathNames(), set: map[string]bool{}}
+// result. Flat paths omit the datasets and snapshots directories, so an
+// option that names one is rejected, and the defaults are cleared.
+func resolveRootConfig(opts []RootOption) (ManifestPaths, error) {
+	cfg := &rootConfig{names: defaultPaths(false), set: map[string]bool{}}
 	for _, opt := range opts {
 		if opt == nil {
-			return pathNames{}, validate.Argument("root option must not be nil")
+			return ManifestPaths{}, validate.Argument("root option must not be nil")
 		}
 		if err := opt.applyRoot(cfg); err != nil {
-			return pathNames{}, err
+			return ManifestPaths{}, err
 		}
 	}
-	if err := validateNames(cfg); err != nil {
-		return pathNames{}, err
+	if cfg.names.Flat {
+		if cfg.set["WithDatasetsDir"] || cfg.set["WithSnapshotsDir"] {
+			return ManifestPaths{}, validate.Argument("WithFlatPaths cannot be combined with WithDatasetsDir or WithSnapshotsDir: flat paths omit those directories")
+		}
+		cfg.names.Datasets, cfg.names.Snapshots = "", ""
+	}
+	if problem := cfg.names.problem(func(f pathField) string { return f.option }); problem != "" {
+		return ManifestPaths{}, validate.Argument("%s", problem)
 	}
 	return cfg.names, nil
-}
-
-// validateNames requires each name a root uses to be one canonical path
-// segment (storepath.Segment) without "=", other than the pointer's name,
-// and distinct from the others, so that every path parses to one meaning.
-func validateNames(cfg *rootConfig) error {
-	n := cfg.names
-	if n.flat && (cfg.set["WithDatasetsDir"] || cfg.set["WithSnapshotsDir"]) {
-		return validate.Argument("WithFlatPaths cannot be combined with WithDatasetsDir or WithSnapshotsDir: flat paths omit those directories")
-	}
-	named := []pathName{
-		{"WithPartitionsDir", n.partitions},
-		{"WithSegmentsDir", n.segments},
-		{"WithManifestFile", n.manifest},
-		{"WithDataDir", n.data},
-		{"WithExpiredDir", n.expired},
-		{"WithStagedDir", n.staged},
-	}
-	if !n.flat {
-		named = append(named, pathName{"WithDatasetsDir", n.datasets}, pathName{"WithSnapshotsDir", n.snapshots})
-	}
-	if problem := nameProblem(named); problem != "" {
-		return validate.Argument("%s", problem)
-	}
-	return nil
 }
 
 // pathName is one name of a convention, labeled by the option or manifest

@@ -59,25 +59,10 @@ func missingPaths(m *Manifest) error {
 	if legacy(m) {
 		return nil
 	}
-	p := m.Paths
-	if p == (ManifestPaths{}) {
+	if m.Paths == (ManifestPaths{}) {
 		return &validate.ManifestError{Field: "paths", Message: "is required from format version 1.1.0"}
 	}
-	if p.Flat && (p.Datasets != "" || p.Snapshots != "") {
-		return &validate.ManifestError{Field: "paths", Message: "of flat paths must not name the datasets or snapshots directory"}
-	}
-	names := []pathName{
-		{"partitions", p.Partitions},
-		{"segments", p.Segments},
-		{"manifest", p.Manifest},
-		{"data", p.Data},
-		{"expired", p.Expired},
-		{"staged", p.Staged},
-	}
-	if !p.Flat {
-		names = append(names, pathName{"datasets", p.Datasets}, pathName{"snapshots", p.Snapshots})
-	}
-	if problem := nameProblem(names); problem != "" {
+	if problem := m.Paths.problem(func(f pathField) string { return f.field }); problem != "" {
 		return &validate.ManifestError{Field: "paths", Message: problem}
 	}
 	return nil
@@ -91,9 +76,7 @@ func recordedPaths(m *Manifest, flat bool) ManifestPaths {
 	if !legacy(m) {
 		return m.Paths
 	}
-	names := defaultPathNames()
-	names.flat = flat
-	return names.convention()
+	return defaultPaths(flat)
 }
 
 // mismatch returns the first setting of m that differs from s, or nil. A
@@ -195,7 +178,7 @@ func rejectForeignManifest(ctx context.Context, store Store, id DatasetID, layou
 	if err != nil {
 		return fmt.Errorf("lode: failed to list the dataset: %w", err)
 	}
-	names := []string{layouts[0].manifestName(), defaultPathNames().manifest}
+	names := []string{layouts[0].manifestName(), defaultPaths(false).Manifest}
 	for _, k := range keys {
 		// A key no store accepts in this form was not persisted by a layout.
 		if key, ok := storepath.Key(k); !ok || key != k {

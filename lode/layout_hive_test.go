@@ -18,7 +18,7 @@ import "testing"
 // the grammar must read them as dataset IDs, not markers.
 
 func hiveForTest(*testing.T) *pathLayout {
-	return newPathLayout(defaultPathNames(), partitionScheme{name: "hive", keys: []string{"day"}})
+	return newPathLayout(defaultPaths(false), partitionScheme{name: "hive", keys: []string{"day"}})
 }
 
 func TestHiveLayout_Manifests(t *testing.T) {
