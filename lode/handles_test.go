@@ -47,9 +47,9 @@ func blobsOn(t testing.TB, store Store, id DatasetID, opts ...DatasetOption) Blo
 }
 
 // viewOn opens a view of dataset id's D records over store.
-func viewOn(t testing.TB, store Store, id DatasetID, opts ...ViewOption) RecordView[D] {
+func viewOn(t testing.TB, store Store, id DatasetID) RecordView[D] {
 	t.Helper()
-	v, err := OpenReadOnly(Use(store)).Records(t.Context(), id, JSONL[D](), opts...)
+	v, err := OpenReadOnly(Use(store)).Records(t.Context(), id, JSONL[D]())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,5 +237,31 @@ func TestRoots_RejectANilMapStore(t *testing.T) {
 	factory := Factory[mapStore](func() (mapStore, error) { return nilStore, nil })
 	if _, err := Open(factory).Records(t.Context(), "events", JSONL[D]()); !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("got %v, want ErrInvalidArgument", err)
+	}
+}
+
+func TestViews_HaveNoWriterMethods(t *testing.T) {
+	store := NewMemory()
+	if _, err := recordsOn(t, store, "logs").Write(t.Context(), R(D{"a": 1}), nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := blobsOn(t, store, "blobs").Write(t.Context(), []byte("x"), nil); err != nil {
+		t.Fatal(err)
+	}
+	blobView, err := OpenReadOnly(Use(store)).Blobs(t.Context(), "blobs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	views := map[string]any{"record view": viewOn(t, store, "logs"), "blob view": blobView}
+	for name, view := range views {
+		if _, ok := view.(Retention); ok {
+			t.Errorf("%s implements Retention", name)
+		}
+		if _, ok := view.(Records[D]); ok {
+			t.Errorf("%s implements Records", name)
+		}
+		if _, ok := view.(Blobs); ok {
+			t.Errorf("%s implements Blobs", name)
+		}
 	}
 }

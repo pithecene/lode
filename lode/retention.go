@@ -20,7 +20,7 @@ import (
 // Expire removes the selected snapshots, oldest first (CONTRACT_RETENTION
 // §Snapshot Expiry). The report is never nil and records every outcome
 // reached before an error.
-func (d *dataset) Expire(ctx context.Context, req ExpireRequest) (*ExpireReport, error) {
+func (d *writer) Expire(ctx context.Context, req ExpireRequest) (*ExpireReport, error) {
 	report := &ExpireReport{}
 	if err := d.validateExpire(req); err != nil {
 		return report, err
@@ -37,7 +37,7 @@ func (d *dataset) Expire(ctx context.Context, req ExpireRequest) (*ExpireReport,
 	if err != nil {
 		return report, err
 	}
-	run := expiryRun{ds: d, sel: sel, head: head, listed: listing.listed, dryRun: req.DryRun}
+	run := expiryRun{ds: d.dataset, sel: sel, head: head, listed: listing.listed, dryRun: req.DryRun}
 	for _, c := range listing.candidates {
 		outcome, err := run.expire(ctx, c)
 		report.record(outcome)

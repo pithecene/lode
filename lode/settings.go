@@ -32,16 +32,16 @@ type settings struct {
 }
 
 // settings are this writer's settings, as its manifests record them.
-func (d *dataset) settings() settings {
+func (d *writer) settings() settings {
 	s := settings{
-		codec:            d.codecName,
-		codecDescription: d.codecDescription,
-		compressor:       d.compressor.Name(),
+		codec:            d.codec.name,
+		codecDescription: d.codec.description,
+		compressor:       d.components.compressor.Name(),
 		partitioning:     d.layout.partitioning(),
 		paths:            d.layout.convention(),
 	}
-	if d.checksum != nil {
-		s.checksum = d.checksum.Name()
+	if d.components.checksum != nil {
+		s.checksum = d.components.checksum.Name()
 	}
 	return s
 }
@@ -52,7 +52,7 @@ func (d *dataset) settings() settings {
 func (s settings) record(m *Manifest) {
 	m.Codec, m.CodecDescription = s.codec, s.codecDescription
 	m.Compressor, m.ChecksumAlgorithm = s.compressor, s.checksum
-	m.Partitioner, m.PartitionKeys = s.partitioning.name, slices.Clone(s.partitioning.keys)
+	m.Partitioner, m.PartitionKeys = string(s.partitioning.name), slices.Clone(s.partitioning.keys)
 	m.Paths = s.paths
 }
 
@@ -71,7 +71,7 @@ func recordedSettings(m *Manifest, flat bool) (settings, error) {
 		codecDescription: m.CodecDescription,
 		compressor:       m.Compressor,
 		checksum:         m.ChecksumAlgorithm,
-		partitioning:     partitionScheme{name: m.Partitioner, keys: m.PartitionKeys},
+		partitioning:     partitionScheme{name: partitioner(m.Partitioner), keys: m.PartitionKeys},
 		paths:            m.Paths,
 		legacy:           legacy(m),
 	}
@@ -121,7 +121,7 @@ func (s settings) mismatch(have settings) error {
 		{"codec", s.codec, have.codec},
 		{"compressor", s.compressor, have.compressor},
 		{"checksum", s.checksum, have.checksum},
-		{"partitioner", s.partitioning.name, have.partitioning.name},
+		{"partitioner", string(s.partitioning.name), string(have.partitioning.name)},
 		{"path names", fmt.Sprintf("%#v", s.paths), fmt.Sprintf("%#v", have.paths)},
 	}
 	if !have.legacy {
@@ -146,7 +146,7 @@ func (s settings) mismatch(have settings) error {
 // commit may record a description that differs; the writer checks again
 // after a conflict. With no parent the dataset is empty, unless its
 // directory holds objects persisted under another layout.
-func (d *dataset) checkSettings(ctx context.Context, parent DatasetSnapshotID) error {
+func (d *writer) checkSettings(ctx context.Context, parent DatasetSnapshotID) error {
 	if d.settled {
 		return nil
 	}
@@ -181,7 +181,7 @@ func (d *dataset) checkSettings(ctx context.Context, parent DatasetSnapshotID) e
 // writer is still running, it persists its canonical manifest regardless,
 // and a writer that checks its settings meanwhile reads this writer's
 // manifest, which records the same settings.
-func (d *dataset) removeAdoptedStaged(ctx context.Context) {
+func (d *writer) removeAdoptedStaged(ctx context.Context) {
 	if d.adoptedStaged == "" {
 		return
 	}
@@ -194,7 +194,7 @@ func (d *dataset) removeAdoptedStaged(ctx context.Context) {
 // written under another layout, whose manifests the configured layout
 // cannot find. A writer that took the dataset for empty would otherwise
 // begin a second history beside it.
-func (d *dataset) rejectForeignHistory(ctx context.Context) error {
+func (d *writer) rejectForeignHistory(ctx context.Context) error {
 	return rejectForeignManifest(ctx, d.store, d.id, d.layout)
 }
 
@@ -236,7 +236,7 @@ func rejectForeignManifest(ctx context.Context, store Store, id DatasetID, layou
 // with no other manifest belongs to a pending first commit whose settings
 // are unknown, or to one abandoned before staging existed: the writer
 // conflicts rather than commit unchecked settings.
-func (d *dataset) settingsManifest(ctx context.Context, parent DatasetSnapshotID) (*Manifest, error) {
+func (d *writer) settingsManifest(ctx context.Context, parent DatasetSnapshotID) (*Manifest, error) {
 	loaders := []func() (*DatasetSnapshot, error){
 		func() (*DatasetSnapshot, error) { return fromHistory(d.history.Snapshot(ctx, parent)) },
 		func() (*DatasetSnapshot, error) {
@@ -269,7 +269,7 @@ func (d *dataset) settingsManifest(ctx context.Context, parent DatasetSnapshotID
 // head. A chain without files contains no partition path, so any keys are
 // consistent with it; a chain that ends at a missing or expired parent, or
 // repeats a snapshot, before a snapshot with files cannot be verified.
-func (d *dataset) verifyLegacyKeys(ctx context.Context, head *Manifest) error {
+func (d *writer) verifyLegacyKeys(ctx context.Context, head *Manifest) error {
 	want := d.layout.partitioning().keys
 	visited := map[DatasetSnapshotID]bool{}
 	for m := head; ; {
