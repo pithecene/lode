@@ -135,6 +135,15 @@ Lode does not coordinate distributed writers, execute queries, compact
 data, or remove anything without being asked; [the concepts
 guide](docs/guides/concepts.md#what-lode-guarantees) gives the details.
 
+Version 1.0 accepts two limitations. A backend without a
+conditional write serves writers in one process only, through
+`SingleProcess`, and writers in several processes then need external
+coordination ([Concurrency and
+CAS](PUBLIC_API.md#concurrency-and-cas)). On an S3-compatible service other
+than AWS S3, the guarantees depend on conditional writes and consistency
+that Lode does not verify ([Other S3-Compatible
+Services](PUBLIC_API.md#other-s3-compatible-services)).
+
 ---
 
 ## Documentation

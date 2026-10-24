@@ -365,28 +365,33 @@ nearest candidate is pithecene/quarry#255.
 > Summary: Partial. Needs AWS S3 and classified write failures.
 > Issue: —
 
-- [ ] Non-AWS backend caveat documented in README and PUBLIC_API.md as known v1.0 limitation
+- [x] Non-AWS backend caveat documented in README and PUBLIC_API.md as known v1.0 limitation
 
-> **Evidence:** _not yet recorded_
-> Date: — | Observer: — | Project: —
-> Summary: —
-> Issue: #___
+> **Evidence:** `PUBLIC_API.md` §Other S3-Compatible Services states the caveat as a known limitation of v1.0: the guarantees rest on strong read-after-write consistency, on `If-None-Match: *` for `PutObject` and `CompleteMultipartUpload`, and on an atomic `If-Match` for `PutObject`. It names the services that Lode exercises (LocalStack and RustFS in tests, Cloudflare R2 in production) and SeaweedFS 3.97 as a service that accepts concurrent `If-Match` writes of one ETag. README names the limitation and links to that section.
+> Date: 2026-10-24 | Observer: @pithecene | Project: lode
+> Summary: Met.
+> Issue: —
 
 ### 7. Known Limitations Accepted
 
-- [ ] Concurrency model documented in README + PUBLIC_API.md + contracts (single-writer when store lacks `ConditionalWriter`; CAS-based optimistic concurrency when available)
+- [x] Concurrency model documented in README + PUBLIC_API.md + contracts (single-writer when store lacks `ConditionalWriter`; CAS-based optimistic concurrency when available)
 
 > **Evidence:** CAS optimistic concurrency shipped in v0.8.0 (#135). Contracts, PUBLIC_API.md, and README document `ConditionalWriter`, `ErrSnapshotConflict`, and the adapter CAS capability matrix. PR #156 added the adapter CAS capability table to PUBLIC_API.md.
 > Date: 2026-02-25 | Observer: @pithecene | Project: lode
 > Summary: Concurrency model fully documented across README, PUBLIC_API.md, CONTRACT_WRITE_API.md, and CONTRACT_VOLUME.md. Adapter CAS capability matrix in PUBLIC_API.md.
 > Issue: #135
+>
+> **Evidence:** v0.11.0 changed the model that this criterion names: `Store` requires `ConditionalWriter`, and a backend without a conditional write is wrapped in `SingleProcess`, which serves writers in one process only. `PUBLIC_API.md` §Concurrency and CAS, CONTRACT_STORAGE §ConditionalWriter Capability, CONTRACT_WRITE_API §Concurrency, and CONTRACT_VOLUME §Concurrency state that model. README now states the limitation and links to `PUBLIC_API.md`.
+> Date: 2026-10-24 | Observer: @pithecene | Project: lode
+> Summary: Met for the model of v0.11.0 and later.
+> Issue: —
 
-- [ ] Context cancellation cleanup nondeterminism documented as best-effort, no correctness impact
+- [x] Context cancellation cleanup nondeterminism documented as best-effort, no correctness impact
 
-> **Evidence:** _not yet recorded_
-> Date: — | Observer: — | Project: —
-> Summary: —
-> Issue: #___
+> **Evidence:** `PUBLIC_API.md` §Cleanup Behavior states that the removal of partial objects is best-effort, that whether removal completes after a cancellation depends on the timing of the adapter, and that the difference has no effect on correctness, because an object that no manifest references belongs to no snapshot. CONTRACT_TEST_MATRIX §Residual Risk: STORE-CTX-CANCEL records the deterministic tests of the invariant that a canceled write leaves no manifest.
+> Date: 2026-10-24 | Observer: @pithecene | Project: lode
+> Summary: Met.
+> Issue: —
 
 - [ ] Deferred test gaps (ITER-LIFECYCLE, COMP-WRAPPER-ORDER, ERR-RANGE-NOT-SUPPORTED) accepted as non-blocking
 
