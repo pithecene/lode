@@ -1158,12 +1158,12 @@ create buckets.
 **This is a known limitation of v1.0.** Lode's guarantees on an
 S3-compatible service rest on three behaviors of the service:
 
-- Strong read-after-write consistency.
+- strong read-after-write consistency
 - `If-None-Match: *` on `PutObject` and on `CompleteMultipartUpload`,
   which refuses to replace an existing object, so that data files and
-  manifests remain immutable.
+  manifests remain immutable
 - `If-Match` on `PutObject`, applied atomically under concurrent writers,
-  which detects a conflicting commit.
+  which detects a conflicting commit
 
 AWS S3 provides all three. Lode's integration tests run against LocalStack
 and RustFS, and Cloudflare R2 serves a production consumer. Lode verifies
