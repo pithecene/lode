@@ -387,8 +387,7 @@ This document maps contract requirements to the tests that verify them.
 
 ### CONTRACT_VOLUME.md — Volume Persistence
 
-The tests reside in the package `lode/volume` (experimental;
-`V1_API_DECISIONS.md` D9). Argument-error cases, including those for the
+The tests reside in the package `lode/volume`. Argument-error cases, including those for the
 Volume retry options, are in `lode/volume/invalid_argument_test.go`.
 
 **Construction**
@@ -727,11 +726,13 @@ without a manifest violates `acknowledged-commits-persist`.
 ## Streaming Cancellation
 
 Whether the removal of a partial object completes after a cancellation
-depends on the timing of the adapter (CONTRACT_ERRORS.md). The tests assert
-the invariant, which does not depend on that timing: a canceled stream
-write persists no manifest.
+depends on the timing of the adapter (CONTRACT_ERRORS.md). The invariant
+does not depend on that timing.
 
 | Requirement | Test |
 |-------------|------|
-| A canceled stream write on the filesystem adapter leaves no snapshot | `TestFSAdapter_ContextCancel/stream_write_context_cancel_no_snapshot` |
-| A canceled stream write on the S3 adapter leaves no snapshot | `TestIntegration_Writes/stream_write_context_cancel` (requires `go test ./lode/s3/... -integration` against the docker-compose services) |
+| A stream write whose `Put` a cancellation aborts persists no manifest | `TestStreamWrite_PutFailure/blocked_put_context_cancel_no_manifest` |
+
+`TestFSAdapter_ContextCancel` and `TestIntegration_Writes/stream_write_context_cancel`
+exercise a cancellation on the filesystem and S3 adapters. Their outcome
+depends on timing, so they assert no invariant.

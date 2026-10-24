@@ -388,7 +388,7 @@ nearest candidate is pithecene/quarry#255.
 
 - [x] Context cancellation cleanup nondeterminism documented as best-effort, no correctness impact
 
-> **Evidence:** `PUBLIC_API.md` §Cleanup Behavior states that the removal of partial objects is best-effort, that whether removal completes after a cancellation depends on the timing of the adapter, and that the difference has no effect on correctness, because an object that no manifest references belongs to no snapshot. CONTRACT_TEST_MATRIX §Streaming Cancellation maps the invariant that a canceled stream write leaves no snapshot to its tests.
+> **Evidence:** `PUBLIC_API.md` §Cleanup Behavior states that the removal of partial objects is best-effort, that whether removal completes after a cancellation depends on the timing of the adapter, and that the difference has no effect on correctness, because an object that no manifest references belongs to no snapshot. CONTRACT_TEST_MATRIX §Streaming Cancellation maps the invariant that a stream write whose `Put` a cancellation aborts persists no manifest to its deterministic test.
 > Date: 2026-10-24 | Observer: @pithecene | Project: lode
 > Summary: Met.
 > Issue: —

@@ -155,13 +155,10 @@ Required behavior:
 
 ## Public API Surface
 
-Volume is **experimental** (`docs/V1_API_DECISIONS.md` D9). It resides in
-the package `lode/volume` and is excluded from the v1.0 compatibility
-commitment until it passes its own stability gate (`docs/V1_READINESS.md`
-§4). This contract governs its behavior in every release, but the shape of
-the API may change between releases. The persisted format (§Storage Layout,
-§Manifest Requirements) is not experimental: data written by any release
-remains readable.
+Volume resides in the package `lode/volume`. This contract governs its
+behavior in every release. Data that any release persisted remains readable,
+because the storage layout and the manifest format (§Storage Layout,
+§Manifest Requirements) are persisted formats.
 
 The public Volume API is explicit and minimal, and it is composed of the
 `Writer` and `Reader` interfaces (in the package `volume`; names prefixed
