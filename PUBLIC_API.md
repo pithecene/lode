@@ -882,7 +882,11 @@ On an abort, or on an error before commit:
   `Sweep` reclaims them once they are older than its grace period
   (§Retention).
 - Removal uses an independent context, to maximize the likelihood of
-  success even if the caller's context was canceled.
+  success even if the caller's context was canceled. Whether removal
+  completes after a cancellation depends on the timing of the adapter, so
+  the outcome can differ from one run to the next. The difference has no
+  effect on correctness, because an object that no manifest references
+  belongs to no snapshot.
 
 A failure to delete a partial object does not create a snapshot.
 
@@ -1149,8 +1153,26 @@ store, _ := s3.New(client, s3.Config{Bucket: "my-bucket"})
 **Bucket requirement:** the bucket must exist before use; Lode does not
 create buckets.
 
-**Consistency:** AWS S3 provides strong read-after-write consistency.
-Other backends may differ; consult their documentation.
+### Other S3-Compatible Services
+
+**This is a known limitation of v1.0.** Lode's guarantees on an
+S3-compatible service rest on three behaviors of the service:
+
+- Strong read-after-write consistency.
+- `If-None-Match: *` on `PutObject` and on `CompleteMultipartUpload`,
+  which refuses to replace an existing object, so that data files and
+  manifests remain immutable.
+- `If-Match` on `PutObject`, applied atomically under concurrent writers,
+  which detects a conflicting commit.
+
+AWS S3 provides all three. Lode's integration tests run against LocalStack
+and RustFS, and Cloudflare R2 serves a production consumer. Lode verifies
+no other service. A service that accepts a conditional header without
+enforcing it lets two writers replace each other's manifest or pointer
+without an error. SeaweedFS 3.97, for example, accepts several concurrent
+`If-Match` writes of one ETag. Before relying on another service, verify
+these behaviors, including the conditional completion of a multipart
+upload, which Lode uses for objects larger than 5 GB.
 
 ---
 
