@@ -290,8 +290,8 @@ statistics through `FileStats()` after each `Encode` call:
   float64, string, and timestamp.
 - `NullCount` for each column: the number of null values in a nullable
   column.
-- `DistinctCount`: not computed; the codec reports 0, which the manifest
-  omits.
+- `DistinctCount`: not computed; the codec reports zero, which the
+  manifest omits.
 - Boolean and byte columns report only `NullCount` (no minimum or maximum).
 - Statistics are computed during `Encode` from the Go record values, not
   from Parquet's internal metadata.

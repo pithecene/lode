@@ -300,7 +300,7 @@ are factories of `RangeStore`, and `NewFS` and `NewMemory` return one.
 - `FileStats`: the row count and column statistics of a file
 - `ColumnStats`: the minimum, maximum, null count, and distinct count of a
   column; the bundled Parquet codec does not compute the distinct count and
-  reports 0
+  reports zero
 
 **Range reads:**
 - `RangeReader`: the optional range-read capability of a store; a store
