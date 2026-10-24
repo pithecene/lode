@@ -1,0 +1,21 @@
+{
+  "schema_name": "lode-manifest",
+  "format_version": "1.0.0",
+  "dataset_id": "logs",
+  "snapshot_id": "1792797141732860014-0c01dc349eb894de",
+  "created_at": "2026-10-23T23:12:21.733096513Z",
+  "metadata": {
+    "batch": 1
+  },
+  "files": [
+    {
+      "path": "datasets/logs/snapshots/1792797141732860014-0c01dc349eb894de/data/data.gz",
+      "size_bytes": 44
+    }
+  ],
+  "parent_snapshot_id": "1792797141732156867-8c7f3410e2d63016",
+  "row_count": 1,
+  "codec": "jsonl",
+  "compressor": "gzip",
+  "partitioner": "noop"
+}

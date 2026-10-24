@@ -1,0 +1,3 @@
+# The compatibility fixtures are the bytes an earlier release wrote; a
+# line-ending conversion on checkout would change them.
+lode/testdata/v0.11.0/** -text

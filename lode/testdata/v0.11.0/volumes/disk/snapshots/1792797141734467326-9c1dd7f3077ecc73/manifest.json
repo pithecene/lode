@@ -1,0 +1,18 @@
+{
+  "schema_name": "lode-volume-manifest",
+  "format_version": "1.0.0",
+  "volume_id": "disk",
+  "snapshot_id": "1792797141734467326-9c1dd7f3077ecc73",
+  "created_at": "2026-10-23T23:12:21.734467916Z",
+  "metadata": {
+    "step": 1
+  },
+  "total_length": 1024,
+  "blocks": [
+    {
+      "offset": 0,
+      "length": 256,
+      "path": "volumes/disk/data/0-256.bin"
+    }
+  ]
+}

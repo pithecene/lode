@@ -1,0 +1,25 @@
+{
+  "schema_name": "lode-manifest",
+  "format_version": "1.0.0",
+  "dataset_id": "events",
+  "snapshot_id": "1792797141730980853-d2ac20bd8eb83fb4",
+  "created_at": "2026-10-23T23:12:21.731504111Z",
+  "metadata": {
+    "batch": 1
+  },
+  "files": [
+    {
+      "path": "datasets/events/partitions/day=2024-01-16/segments/1792797141730980853-d2ac20bd8eb83fb4/data/data",
+      "size_bytes": 44
+    },
+    {
+      "path": "datasets/events/partitions/day=2024-01-17/segments/1792797141730980853-d2ac20bd8eb83fb4/data/data",
+      "size_bytes": 44
+    }
+  ],
+  "parent_snapshot_id": "1792797141729178602-d0e610bdd013bd2e",
+  "row_count": 2,
+  "codec": "jsonl",
+  "compressor": "noop",
+  "partitioner": "hive"
+}
