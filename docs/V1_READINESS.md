@@ -195,12 +195,12 @@ partitions, one dataset on R2.
 > Summary: Met with v0.12.0.
 > Issue: —
 
-- [ ] `PUBLIC_API.md` matches exported symbols in `lode/api.go` with zero discrepancies
+- [x] `PUBLIC_API.md` matches exported symbols in `lode/api.go` with zero discrepancies
 
-> **Evidence:** _not yet recorded_
-> Date: — | Observer: — | Project: —
-> Summary: —
-> Issue: #___
+> **Evidence:** The comparison covers every exported top-level identifier of `lode`, `lode/s3`, and `lode/volume`, not only those in `lode/api.go`. Thirty-two were absent from the document's code, or appeared there only without the package that exports them, among them `DatasetSnapshot`, `SnapshotReader`, the reference and listing-option types, `SweepReport`, `ViewOption`, the Parquet option types, `s3.Store`, and the Volume types and retry options; each is now named where a caller meets it. No identifier that the document qualifies with a package is missing from that package. The tests in `internal/apidoc` fail when either direction drifts. Fields and methods remain documented in the Go doc comments.
+> Date: 2026-10-24 | Observer: @pithecene | Project: lode
+> Summary: Met; `internal/apidoc` enforces it.
+> Issue: —
 
 - [ ] Option surface of the v1.0-promised API has not expanded since v0.9.1 (experimental Volume options excluded, D9; freeze window reset: v0.9.1 added WithRetryObserver; v0.9.0 added WithRetryCount/BaseDelay/MaxDelay/Jitter, ErrOptionNotValidForVolume; removed VolumeOption, WithVolumeChecksum)
 
