@@ -22,7 +22,7 @@ It is authoritative for any Parquet codec implementation within Lode.
 - Automatic schema evolution or merging.
 - Partitioning by row group within Lode (external readers perform it).
 - Encryption or column-level access control.
-- Nested types (structs, lists, maps) in the initial implementation.
+- Nested types (structs, lists, maps); schemas are flat.
 
 ---
 
@@ -246,8 +246,7 @@ const (
 )
 ```
 
-Note: the initial implementation does not support Zstandard, because of
-constraints in the library.
+Note: the codec offers no Zstandard compression.
 
 ### Compression Layering
 
@@ -291,7 +290,8 @@ statistics through `FileStats()` after each `Encode` call:
   float64, string, and timestamp.
 - `NullCount` for each column: the number of null values in a nullable
   column.
-- `DistinctCount`: reserved for future use (reported as 0).
+- `DistinctCount`: not computed; the codec reports zero, which the
+  manifest omits.
 - Boolean and byte columns report only `NullCount` (no minimum or maximum).
 - Statistics are computed during `Encode` from the Go record values, not
   from Parquet's internal metadata.
@@ -501,22 +501,16 @@ this contract.
 
 ---
 
-## Open Questions
+## Scope Decisions
 
-The following decisions are deferred to future versions:
+Three decisions bound the codec.
 
-1. **Nested types**: should the codec support nested structs, lists, and
-   maps?
-   - Decision: not in the initial implementation, which supports flat
-     schemas only.
-
-2. **Schemas from struct tags**: should schemas be derivable from Go struct
-   tags?
-   - Decision: explicit schemas only; struct tags may be supported later.
-
-3. **Zstandard compression**: should Zstandard be added as a compression
-   option?
-   - Decision: deferred until library support has been verified.
+1. **Nested types:** the codec supports flat schemas only, without nested
+   structs, lists, or maps.
+2. **Schemas:** a schema is declared explicitly; the codec does not derive
+   one from Go struct tags.
+3. **Compression:** the codec offers Snappy, gzip, or no internal
+   compression, and no Zstandard.
 
 ---
 
