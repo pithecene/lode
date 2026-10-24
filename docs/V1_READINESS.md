@@ -197,7 +197,7 @@ partitions, one dataset on R2.
 
 - [x] `PUBLIC_API.md` matches exported symbols in `lode/api.go` with zero discrepancies
 
-> **Evidence:** The comparison covers every exported top-level identifier of `lode`, `lode/s3`, and `lode/volume`, not only those in `lode/api.go`. Twenty-four were absent from the document's code, among them `DatasetSnapshot`, `SnapshotReader`, the reference and listing-option types, `SweepReport`, `ViewOption`, and the Parquet option types; each is now named where a caller meets it. No identifier that the document qualifies with a package is missing from that package. The tests in `internal/apidoc` fail when either direction drifts. Fields and methods remain documented in the Go doc comments.
+> **Evidence:** The comparison covers every exported top-level identifier of `lode`, `lode/s3`, and `lode/volume`, not only those in `lode/api.go`. Thirty-two were absent from the document's code, or appeared there only without the package that exports them, among them `DatasetSnapshot`, `SnapshotReader`, the reference and listing-option types, `SweepReport`, `ViewOption`, the Parquet option types, `s3.Store`, and the Volume types and retry options; each is now named where a caller meets it. No identifier that the document qualifies with a package is missing from that package. The tests in `internal/apidoc` fail when either direction drifts. Fields and methods remain documented in the Go doc comments.
 > Date: 2026-10-24 | Observer: @pithecene | Project: lode
 > Summary: Met; `internal/apidoc` enforces it.
 > Issue: —

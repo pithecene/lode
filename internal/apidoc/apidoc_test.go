@@ -24,20 +24,27 @@ var packages = map[string]string{
 	"volume": "lode/volume",
 }
 
+// unqualified names the package whose identifiers the document may also
+// name without a qualifier.
+const unqualified = "lode"
+
 var (
 	// fence matches a fenced code block, and inline matches an inline code
 	// span; the document names identifiers only inside code.
 	fence  = regexp.MustCompile("(?s)```.*?```")
 	inline = regexp.MustCompile("`[^`\n]+`")
-	ident  = regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_]*`)
+	// reference matches an identifier with its optional qualifier. An
+	// identifier after any other selector, such as the field in snap.ID, is
+	// not a reference to a package's export.
+	reference = regexp.MustCompile(`(?:^|[^.\w])(?:([a-z][a-z0-9]*)\.)?([A-Za-z_][A-Za-z0-9_]*)`)
 )
 
 func TestEveryExportIsDocumented(t *testing.T) {
 	t.Parallel()
-	code := documentCode(t)
+	named := documentReferences(t)
 	for name, dir := range packages {
 		for _, export := range exports(t, dir) {
-			if !code[export] {
+			if !named[name+"."+export] {
 				t.Errorf("PUBLIC_API.md does not name %s.%s", name, export)
 			}
 		}
@@ -67,15 +74,20 @@ func readDocument(t *testing.T) string {
 	return string(data)
 }
 
-// documentCode returns every identifier inside the document's code blocks
-// and inline code.
-func documentCode(t *testing.T) map[string]bool {
+// documentReferences returns each package-qualified name that the
+// document's code blocks and inline code refer to, as "pkg.Name". An
+// unqualified name refers to the package named by unqualified.
+func documentReferences(t *testing.T) map[string]bool {
 	t.Helper()
 	doc := readDocument(t)
 	found := map[string]bool{}
 	for _, span := range append(fence.FindAllString(doc, -1), inline.FindAllString(fence.ReplaceAllString(doc, ""), -1)...) {
-		for _, id := range ident.FindAllString(span, -1) {
-			found[id] = true
+		for _, m := range reference.FindAllStringSubmatch(span, -1) {
+			pkg := m[1]
+			if pkg == "" {
+				pkg = unqualified
+			}
+			found[pkg+"."+m[2]] = true
 		}
 	}
 	return found

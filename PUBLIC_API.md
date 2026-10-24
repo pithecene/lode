@@ -141,9 +141,10 @@ snapshot's manifest names.
 `volume.New(id, factory, totalLength, opts...)` creates a sparse byte
 space, addressable by range, with manifest-driven commit semantics. It
 takes a `lode.Factory[lode.RangeStore]`, so a store without range reads does
-not compile there. It returns a `volume.Volume`, whose write and read methods form the
-`volume.Writer` and `volume.Reader` interfaces; a `volume.SnapshotID` identifies each of its
-snapshots.
+not compile there. It returns a `volume.Volume`, whose write and read
+methods form the `volume.Writer` and `volume.Reader` interfaces. The `id`
+is a `volume.ID`. `Commit` returns a `volume.Snapshot`, which holds its
+`volume.SnapshotID` and its `volume.Manifest`.
 
 A Dataset constructs complete objects before committing; a Volume commits
 data incrementally as sparse byte ranges. A Volume suits a byte object of
@@ -186,8 +187,9 @@ map.
 type; the Dataset options of `lode` do not compile as Volume options):
 - `volume.WithChecksum(c)`: integrity checksums on staged blocks (disabled
   by default)
-- `volume.WithRetryCount(n)`, `WithRetryBaseDelay(d)`,
-  `WithRetryMaxDelay(d)`, `WithRetryJitter(j)`, `WithRetryObserver(fn)`:
+- `volume.WithRetryCount(n)`, `volume.WithRetryBaseDelay(d)`,
+  `volume.WithRetryMaxDelay(d)`, `volume.WithRetryJitter(j)`,
+  `volume.WithRetryObserver(fn)`:
   CAS retries after a commit conflict, with the same defaults and
   validation as in `lode`
 
@@ -422,8 +424,8 @@ second time.
 
 `Parquet` takes options of type `ParquetOption`. `WithParquetCompression`
 selects the internal compression, a `ParquetCompression`:
-`ParquetCompressionNone` (the default), `ParquetCompressionSnappy`, or
-`ParquetCompressionGzip`.
+`ParquetCompressionSnappy` (the default), `ParquetCompressionGzip`, or
+`ParquetCompressionNone`.
 
 | Configuration | Result |
 |--------------|--------|
@@ -1053,7 +1055,7 @@ The `lode/s3` package provides an S3-compatible storage adapter.
 **Public API:**
 - `s3.Factory(client, config)`: a factory for `lode.Open`, which records
   a configuration error rather than return it
-- `s3.New(client, config)`: creates a store from an AWS SDK client
+- `s3.New(client, config)`: creates an `*s3.Store` from an AWS SDK client
 - `s3.Config{Bucket, Prefix}`: the store's configuration
 - `s3.API`: the subset of the AWS SDK client that the store calls, which
   the SDK's own client satisfies
