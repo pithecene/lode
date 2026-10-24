@@ -13,7 +13,8 @@ engines) that consumes data written by Lode.
    filesystems, and similar backends.
 2. **Manifest-driven planning**: planning decisions are made from metadata
    before any data is read.
-3. **Range reads**: adapters support efficient byte-range reads.
+3. **Range reads**: an adapter that offers range reads serves byte ranges
+   efficiently.
 4. **Streaming**: sequential scans and reads from the end of an object are
    straightforward.
 5. **Stable semantics**: the API exposes stored facts, not interpretations.
@@ -45,8 +46,9 @@ engines) that consumes data written by Lode.
 
 ## Storage Adapter Interface
 
-Adapters are the critical contract. Range reads must be genuine, not
-emulated.
+Adapters are the critical contract. An adapter that implements
+`RangeReader` reads genuine ranges and never emulates one by reading the
+whole object.
 
 The authoritative adapter shape is `Store` (see `lode/api.go` and
 `docs/contracts/CONTRACT_STORAGE.md`):
@@ -411,11 +413,13 @@ Reference shape:
 
 Every adapter must demonstrate:
 
-1. genuine range reads;
-2. efficient random access;
-3. prefix listing with pagination;
-4. inexpensive and accurate metadata queries; and
-5. documented consistency semantics.
+1. prefix listing with pagination;
+2. inexpensive and accurate metadata queries; and
+3. documented consistency semantics.
+
+An adapter that implements `RangeReader` must also demonstrate genuine
+range reads and efficient random access that is safe for concurrent reads
+(§Adapter Obligations (Read Path)).
 
 ---
 
