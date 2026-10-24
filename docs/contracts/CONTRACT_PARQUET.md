@@ -246,8 +246,7 @@ const (
 )
 ```
 
-Note: the codec does not support Zstandard, because of constraints in the
-library.
+Note: the codec offers no Zstandard compression.
 
 ### Compression Layering
 
@@ -510,8 +509,8 @@ Three decisions bound the codec.
    structs, lists, or maps.
 2. **Schemas:** a schema is declared explicitly; the codec does not derive
    one from Go struct tags.
-3. **Zstandard compression:** the codec does not offer Zstandard, because
-   its support in the library has not been verified.
+3. **Compression:** the codec offers Snappy, gzip, or no internal
+   compression, and no Zstandard.
 
 ---
 
