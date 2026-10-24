@@ -3,8 +3,6 @@
 This document defines the contract for the `Volume` persistence paradigm.
 It is authoritative for all Volume implementations.
 
-Status: **Active, experimental API** (v0.8.0; package `lode/volume` and experimental since D9)
-
 ---
 
 ## Goals
@@ -157,13 +155,10 @@ Required behavior:
 
 ## Public API Surface
 
-Volume is **experimental** (`docs/V1_API_DECISIONS.md` D9). It resides in
-the package `lode/volume` and is excluded from the v1.0 compatibility
-commitment until it passes its own stability gate (`docs/V1_READINESS.md`
-§4). This contract governs its behavior in every release, but the shape of
-the API may change between releases. The persisted format (§Storage Layout,
-§Manifest Requirements) is not experimental: data written by any release
-remains readable.
+Volume resides in the package `lode/volume`. This contract governs its
+behavior in every release. Data that any release persisted remains readable,
+because the storage layout and the manifest format (§Storage Layout,
+§Manifest Requirements) are persisted formats.
 
 The public Volume API is explicit and minimal, and it is composed of the
 `Writer` and `Reader` interfaces (in the package `volume`; names prefixed
@@ -305,12 +300,12 @@ The snapshot history of a Volume is linear.
 
 ### Volume Write Concurrency Matrix
 
-| Pattern | Writers | Blocks | History | Status |
-|---------|---------|--------|---------|--------|
-| Single writer | 1 process | Non-overlapping blocks | Linear (guaranteed) | ✅ Supported |
-| Multiple processes, serialized | N processes, external coordination | Non-overlapping blocks | Linear (enforced by the caller) | ✅ Supported (the caller provides coordination) |
-| Multiple processes, uncoordinated | N processes, no coordination | Non-overlapping blocks | Linear (enforced by CAS) | ✅ Supported; a later commit adopts an abandoned commit from its staged manifest (§Error Semantics) |
-| Multiple writers in one process, store wrapped with `lode.SingleProcess` | N goroutines, each with its own `Volume`, sharing one wrapped store | Non-overlapping blocks | Linear (enforced by the process lock) | ✅ Supported |
+| Pattern | Writers | Blocks | History | Supported |
+|---------|---------|--------|---------|-----------|
+| Single writer | 1 process | Non-overlapping blocks | Linear (guaranteed) | Yes |
+| Multiple processes, serialized | N processes, external coordination | Non-overlapping blocks | Linear (enforced by the caller) | Yes; the caller provides coordination |
+| Multiple processes, uncoordinated | N processes, no coordination | Non-overlapping blocks | Linear (enforced by CAS) | Yes; a later commit adopts an abandoned commit from its staged manifest (§Error Semantics) |
+| Multiple writers in one process, store wrapped with `lode.SingleProcess` | N goroutines, each with its own `Volume`, sharing one wrapped store | Non-overlapping blocks | Linear (enforced by the process lock) | Yes |
 
 ### Optimistic Concurrency (CAS)
 

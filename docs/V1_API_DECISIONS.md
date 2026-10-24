@@ -390,8 +390,9 @@ unprefixed names (`volume.New`, `volume.ID`, `volume.SnapshotID`,
 `volume.ErrOverlappingBlocks`). Shipping met the conditions this entry set:
 - the boundary exists: package `lode/volume`, its own `Option` type, and
   `ErrOptionNotValidForVolume` removed from `lode`;
-- `PUBLIC_API.md` (§Volume, §Compatibility scope) and `CONTRACT_VOLUME.md`
-  mark Volume experimental;
+- `PUBLIC_API.md` (§Volume, §Compatibility scope) marks Volume
+  experimental, and no contract restates that status (AGENTS.md §Contract
+  rules);
 - `PUBLIC_API.md` §Compatibility scope states which packages the v1.0
   promise covers.
 

@@ -267,9 +267,8 @@ See [CONTRACT_PARQUET.md](CONTRACT_PARQUET.md) for complete Parquet codec semant
 
 ### 9. Volume Errors
 
-These errors indicate failures specific to Volume. Volume is experimental
-and resides in the package `lode/volume` (`V1_API_DECISIONS.md` D9), so its
-two sentinels are declared there; the shared sentinels that it also returns
+These errors indicate failures specific to Volume. Volume resides in the
+package `lode/volume`, so its two sentinels are declared there; the shared sentinels that it also returns
 are those of `lode`.
 
 | Error | Source | Meaning |

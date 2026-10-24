@@ -1,7 +1,5 @@
 # Lode Complexity Bounds — Contract
 
-Status: Active (v0.8). All known violations have been resolved.
-
 ---
 
 ## Principle
@@ -191,43 +189,6 @@ inherent in the cumulative design.
 
 The block lookup in `ReadAt` MUST be O(log B + R). No read may verify the
 sort order of blocks.
-
----
-
-## Resolved Violations
-
-All known violations have been resolved. Four were corrected in code, and
-three were reclassified as inherent costs.
-
-| ID | Operation | Resolution |
-|----|-----------|------------|
-| CX-1 | Sort verification in `findCoveringBlocks` | Corrected: blocks are sorted at load time in `validateVolumeManifest` |
-| CX-2 | Validation Gets in `ListManifests` | Reclassified: required by CONTRACT_ERRORS.md |
-| CX-3 | Repeated deserialization in `ListPartitions` | Corrected: a single pass (1 List + M Gets) |
-| CX-4 | Degraded fallback of `Snapshot(id)` | Reclassified: a documented degraded path, not a hot-path violation |
-| CX-5 | Memory of a partitioned `Write` | Reclassified: O(R) interface aliases, not O(3R) copies |
-| CX-6 | Sort verification in `Volume.Snapshots` | Corrected: sorting at load time removes the redundant verification |
-| CX-7 | `Walk` versus `WalkDir` in `fsStore.List` | Corrected: `filepath.WalkDir` avoids an `os.Stat` per entry |
-
-### Reclassification Notes
-
-**CX-2** (validation Gets in `ListManifests`): CONTRACT_ERRORS.md requires
-that `ListManifests` return an error, rather than omit the manifest, when
-manifest validation fails, so the M Gets for validation are mandated by
-contract. Snapshot IDs are already extracted from paths; the Gets serve
-validation alone.
-
-**CX-4** (degraded fallback of `Snapshot(id)`): this contract classifies the
-fallback as a degraded path. The implementation first attempts the
-canonical path (an O(1) Get) and scans only for data written before
-canonical manifests were introduced. This behavior preserves backward
-compatibility and is not a hot-path violation.
-
-**CX-5** (memory of a partitioned `Write`): `partitionRecords` creates
-interface aliases of records, not copies. Peak memory is O(R) interface
-values plus the encoded output of each partition. The references in the
-partition map occupy 16 bytes per record, which is negligible relative to
-the record data.
 
 ---
 

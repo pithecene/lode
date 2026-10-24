@@ -25,8 +25,8 @@ import (
 // - Cleanup attempt occurred (best-effort delete)
 // - Deterministic assertions without race conditions
 //
-// These tests address the G3-4 residual risk by providing deterministic coverage
-// of failure paths that were previously only testable via timing-dependent scenarios.
+// These tests give deterministic coverage of failure paths that real adapters
+// reach only through timing (CONTRACT_TEST_MATRIX.md §Streaming Cancellation).
 
 // -----------------------------------------------------------------------------
 // StreamWrite Fault Tests
@@ -351,8 +351,8 @@ func TestStreamWriteRecords_Cleanup(t *testing.T) {
 // not deterministically testable with in-memory stores. The tests below use
 // blocking to create deterministic cancellation windows.
 //
-// This is the G3-4 residual risk in action: context cancellation semantics are
-// timing-sensitive and adapter-dependent. The blocked Put test provides
+// Context cancellation semantics are timing-sensitive and adapter-dependent
+// (CONTRACT_TEST_MATRIX.md §Streaming Cancellation). The blocked Put test provides
 // deterministic coverage; real-world cancellation behavior depends on adapter.
 
 func TestStreamWrite_PutFailure(t *testing.T) {

@@ -207,13 +207,12 @@ The snapshot history of a Dataset is linear.
 
 ### Dataset Write Concurrency Matrix
 
-| Pattern | Writers | Snapshots | History | Status |
-|---------|---------|-----------|---------|--------|
-| Single writer | 1 process | 1 per Write | Linear (guaranteed) | ✅ Supported |
-| Multiple processes, serialized | N processes, external coordination | N (one per writer) | Linear (enforced by the caller) | ✅ Supported (the caller provides coordination) |
-| Multiple processes, uncoordinated | N processes, no coordination | N (one per writer) | Linear (enforced by CAS) | ✅ Supported |
-| Multiple writers in one process, store wrapped with `SingleProcess` | N goroutines, each with its own `Dataset`, sharing one wrapped store | N (one per writer) | Linear (enforced by the process lock) | ✅ Supported |
-| Parallel staging, single commit | 1 process, N goroutines | 1 (all shards merged) | Linear (guaranteed) | ❌ Not available |
+| Pattern | Writers | Snapshots | History | Supported |
+|---------|---------|-----------|---------|-----------|
+| Single writer | 1 process | 1 per Write | Linear (guaranteed) | Yes |
+| Multiple processes, serialized | N processes, external coordination | N (one per writer) | Linear (enforced by the caller) | Yes; the caller provides coordination |
+| Multiple processes, uncoordinated | N processes, no coordination | N (one per writer) | Linear (enforced by CAS) | Yes |
+| Multiple writers in one process, store wrapped with `SingleProcess` | N goroutines, each with its own `Dataset`, sharing one wrapped store | N (one per writer) | Linear (enforced by the process lock) | Yes |
 
 Every store implements `ConditionalWriter` (CONTRACT_STORAGE). A writer that
 terminates after advancing the pointer and before persisting its manifest
@@ -303,16 +302,6 @@ CAS detects concurrent snapshot creation and returns
 that must write several blob files as part of a single logical operation
 should either serialize snapshot creation (one `Write` or `StreamWrite` per
 file, in sequence) or handle `ErrSnapshotConflict` by retrying.
-
-### Future Direction
-
-**Parallel staging (transaction API):**
-- Multiple goroutines stage data files concurrently within a single
-  write transaction.
-- A single atomic Commit produces one snapshot with all data files.
-- Parallelizes the internal write pipeline without altering the model.
-- Applies within a single process only; it does not address concurrency
-  across processes.
 
 ### Storage-Level Concurrency for Streaming Writes
 

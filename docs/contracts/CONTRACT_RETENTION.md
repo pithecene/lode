@@ -4,10 +4,6 @@ This document defines the contract for **snapshot expiry** and the
 **unreferenced-object sweep**. It is authoritative for any retention
 implementation.
 
-Status: **Active** (v0.11.0)
-
-Issue: [#174](https://github.com/pithecene/lode/issues/174)
-
 ---
 
 ## Goals
@@ -27,8 +23,8 @@ Issue: [#174](https://github.com/pithecene/lode/issues/174)
 - Scheduling or background execution. The caller invokes retention from its
   own scheduler.
 - Automatic compaction, rewriting of data files, or merging of snapshots.
-- Volume retention. Volume snapshots are cumulative, so their expiry
-  semantics differ; they are deferred to a later revision of this contract.
+- Volume retention. Volume snapshots are cumulative, and this contract does
+  not define their expiry.
 
 ---
 
@@ -118,7 +114,7 @@ later step, whether in the same run, in a repeated `Expire`, or in `Sweep`,
 operates on the tombstone and never on manifests that may already have been
 deleted. A tombstone records an intention, not an outcome; completion is
 observable only as the absence of the snapshot's manifests and objects.
-Tombstones are immutable once written, are never removed (§Deferred), and
+Tombstones are immutable once written, are never removed, and
 are the only persisted record of an expiry.
 
 ### Head
@@ -771,26 +767,18 @@ deletion, and options remain limited to opening (V1_API_DECISIONS D3).
 
 ---
 
-## Resolved Questions
+## Boundaries
 
 1. **Empty partition trees.** Lode deletes objects, not directories. On the
    filesystem store, directories that retention empties remain.
-2. **Expiring the only snapshot.** The head can never be expired, including
-   when it is the only snapshot. To remove a dataset entirely, delete its
+2. **The only snapshot.** The head is never expired, including when it is
+   the only snapshot. A dataset is removed entirely only by deleting its
    prefix through the store.
 3. **Caller-owned objects.** The caller reclaims them (§Caller-Owned
    Objects). A consumer that maintains auxiliary objects outside the data
    topology deletes them itself after `Expire` reports their snapshots as
    expired; objects inside a snapshot's data prefix are reclaimed with that
    snapshot.
-
-## Deferred
-
-- **Tombstone reclamation.** Tombstones are small but unbounded in number,
-  and they are what makes `ErrSnapshotExpired` durable. A later revision may
-  reclaim tombstones older than a second, longer grace period; until then
-  they are retained.
-- **Volume retention** (§Non-Goals).
 
 ---
 
