@@ -1166,14 +1166,19 @@ S3-compatible service rest on three behaviors of the service:
 - `If-Match` on `PutObject`, applied atomically under concurrent writers,
   which detects a conflicting commit
 
-AWS S3 provides all three. Lode's integration tests run against LocalStack
-and RustFS, and Cloudflare R2 serves a production consumer. Lode verifies
-no other service. A service that accepts a conditional header without
-enforcing it lets two writers replace each other's manifest or pointer
-without an error. SeaweedFS 3.97, for example, accepts several concurrent
-`If-Match` writes of one ETag. Before relying on another service, verify
-these behaviors, including the conditional completion of a multipart
-upload, which Lode uses for objects larger than 5 GB.
+AWS S3 provides all three. A service that accepts a conditional header
+without enforcing it lets two writers replace each other's manifest or
+pointer without an error, which forks a dataset's history.
+
+Lode's integration tests verify both conditional writes against LocalStack
+and RustFS: sixteen writers race on `CompareAndSwap` and on `Put`, and
+exactly one may win (`TestIntegration_ConditionalWrites`). Cloudflare R2
+serves a production consumer. SeaweedFS requires version 4.29 or later.
+Before 4.18 it accepts several concurrent conditional writes of one
+object, and from 4.18 through 4.28 it stalls conditional writes under
+contention. Lode verifies no other service. Before relying on one, run
+the same race against it, and verify the conditional completion of a
+multipart upload, which Lode uses for objects larger than 5 GB.
 
 ---
 

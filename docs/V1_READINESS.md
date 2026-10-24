@@ -367,7 +367,7 @@ nearest candidate is pithecene/quarry#255.
 
 - [x] Non-AWS backend caveat documented in README and PUBLIC_API.md as known v1.0 limitation
 
-> **Evidence:** `PUBLIC_API.md` §Other S3-Compatible Services states the caveat as a known limitation of v1.0: the guarantees rest on strong read-after-write consistency, on `If-None-Match: *` for `PutObject` and `CompleteMultipartUpload`, and on an atomic `If-Match` for `PutObject`. It names the services that Lode exercises (LocalStack and RustFS in tests, Cloudflare R2 in production) and SeaweedFS 3.97 as a service that accepts concurrent `If-Match` writes of one ETag. README names the limitation and links to that section.
+> **Evidence:** `PUBLIC_API.md` §Other S3-Compatible Services states the caveat as a known limitation of v1.0: the guarantees rest on strong read-after-write consistency, on `If-None-Match: *` for `PutObject` and `CompleteMultipartUpload`, and on an atomic `If-Match` for `PutObject`. It names the services that Lode verifies: `TestIntegration_ConditionalWrites` races sixteen writers on `CompareAndSwap` and `Put` against LocalStack and RustFS, and Cloudflare R2 serves a production consumer. It states that SeaweedFS requires 4.29 or later: before 4.18 several concurrent conditional writes of one object succeed, and from 4.18 through 4.28 conditional writes stall under contention, as a scan of each release with the same race showed. README names the limitation and links to that section.
 > Date: 2026-10-24 | Observer: @pithecene | Project: lode
 > Summary: Met.
 > Issue: —
