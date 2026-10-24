@@ -137,6 +137,7 @@ var retentionChecks = []check[*verifier]{
 	{"expired-snapshots-read-as-expired", (*verifier).expiredReadAsExpired},
 	{"failed-reads-were-expired", (*verifier).failedReadsWereExpired},
 	{"expiries-settled", (*verifier).expiriesSettled},
+	{"partition-index-restored", (*verifier).indexRestored},
 }
 
 // expiredReadAsExpired requires every snapshot an Expire report listed to
@@ -163,16 +164,16 @@ func (v *verifier) notExpired(ctx context.Context, ids []lode.DatasetSnapshotID,
 	return bad
 }
 
-// expiriesSettled requires the final sweep to have left nothing to reclaim:
-// a dry run with the same grace finds no expired snapshot to settle, no
-// object to delete and nothing it cannot parse.
+// expiriesSettled requires the final sweep to have left nothing to do: a dry
+// run with the same grace finds no expired snapshot to settle, no partition
+// index to restore, no object to delete and nothing it cannot parse.
 func (v *verifier) expiriesSettled(ctx context.Context) []string {
 	report, err := v.ds.Sweep(ctx, lode.SweepRequest{Grace: finalGrace, DryRun: true})
 	switch {
 	case err != nil:
 		return []string{fmt.Sprintf("dry-run Sweep: %v", err)}
-	case report.Objects > 0 || len(report.Settled) > 0 || len(report.Unparseable) > 0:
-		return []string{fmt.Sprintf("after the final sweep, a dry run would still settle %v and delete %d objects, and cannot parse %v", report.Settled, report.Objects, report.Unparseable)}
+	case report.Objects > 0 || len(report.Settled) > 0 || len(report.Reindexed) > 0 || len(report.Unparseable) > 0:
+		return []string{fmt.Sprintf("after the final sweep, a dry run would still settle %v, reindex %v, and delete %d objects, and cannot parse %v", report.Settled, report.Reindexed, report.Objects, report.Unparseable)}
 	}
 	return nil
 }
