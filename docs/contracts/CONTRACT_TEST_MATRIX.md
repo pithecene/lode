@@ -820,9 +820,15 @@ inherently nondeterministic.
 |-----|----------|------------|
 | ITER-LIFECYCLE | ITERATION | ObjectIterator not yet public |
 | COMP-WRAPPER-ORDER | COMPOSITION | Composition API not yet public |
-| ERR-RANGE-NOT-SUPPORTED | ERRORS | No non-range adapter exists |
 
-These gaps will be addressed when the relevant APIs are exposed.
+These gaps will be addressed when the relevant APIs are exposed. Neither API
+belongs to the v1.0 surface, so v1.0 accepts both gaps as non-blocking
+(`V1_READINESS.md` §7).
+
+A third gap, ERR-RANGE-NOT-SUPPORTED, is closed. It awaited a store without
+range reads, which v0.12.0 made possible by making `RangeReader` optional
+(D5). `TestRangeReader_IsOptional/ReaderAt_without_range_reads` now covers
+it, in the CONTRACT_STORAGE section of this matrix.
 
 ---
 
