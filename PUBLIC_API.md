@@ -94,7 +94,7 @@ root := lode.Open(lode.FS("/data"),
 ```
 
 The names are part of a dataset's address, as the store is. Each manifest
-records them, and a writer or view whose names differ from the dataset's is
+records them in its `ManifestPaths`, and a writer or view whose names differ from the dataset's is
 rejected with `ErrSettingsMismatch`.
 
 ### Record Datasets
@@ -102,7 +102,8 @@ rejected with `ErrSettingsMismatch`.
 `Root.Records[T](ctx, id, codec, opts...) (Records[T], error)` opens a
 dataset of records of type `T`, which the codec fixes. `Records[T]` reads
 (`Latest`, `Snapshot`, `Snapshots`, `Read`, and the listing methods),
-writes (`Write`, `StreamWrite`), and retains (`Expire`, `Sweep`).
+writes (`Write`, `StreamWrite`), and retains through the `Retention`
+interface (`Expire`, `Sweep`).
 `ReadRoot.Records[T](ctx, id, codec, opts...)` opens a `RecordView[T]`,
 which reads only.
 
@@ -140,7 +141,9 @@ snapshot's manifest names.
 `volume.New(id, factory, totalLength, opts...)` creates a sparse byte
 space, addressable by range, with manifest-driven commit semantics. It
 takes a `lode.Factory[lode.RangeStore]`, so a store without range reads does
-not compile there.
+not compile there. It returns a `volume.Volume`, whose write and read methods form the
+`volume.Writer` and `volume.Reader` interfaces; a `volume.SnapshotID` identifies each of its
+snapshots.
 
 A Dataset constructs complete objects before committing; a Volume commits
 data incrementally as sparse byte ranges. A Volume suits a byte object of
@@ -211,7 +214,8 @@ apply to a handle does not compile with it.
 | `WithRetryObserver(fn)` | `DatasetOption` | | ✅ | | A callback invoked on each retry, for observability |
 
 A view takes no layout or retry: the layout comes from the dataset's
-manifests, and a view never commits. Lode reconstructs the bundled
+manifests, and a view never commits. A view accepts a `ViewOption`, and
+every `ComponentOption` is one. Lode reconstructs the bundled
 compressors (`noop`, `gzip`, `zstd`) from the names manifests record; a
 custom compressor is passed to the view with `WithCompressor`. Volume has
 its own option type (see §Volume).
@@ -237,8 +241,8 @@ are factories of `RangeStore`, and `NewFS` and `NewMemory` return one.
 
 **Layouts:**
 - `Unpartitioned()`: no partitions (the default)
-- `Hive(keys...)`: a partition-first layout; records must be maps (`D`)
-  unless the layout is given a typed function with `By`
+- `Hive(keys...)`: a partition-first layout, of type `HiveLayout`; records
+  must be maps (`D`) unless the layout is given a typed function with `By`
 - `Hive(keys...).By(func(T) Partition)`: partition values of typed records
   by key name, without reflection
 
@@ -247,6 +251,7 @@ are factories of `RangeStore`, and `NewFS` and `NewMemory` return one.
 - `NewGzipCompressor()`: gzip compression
 - `NewZstdCompressor()`: Zstandard compression (a higher ratio and faster
   decompression)
+- `Compressor`: the interface of a custom compressor
 
 **Codecs** (each returns the `Codec[T]` interface, so that `T` is inferred):
 - `JSONL[T]()`: the JSON Lines format for records of any type `T`
@@ -257,6 +262,8 @@ are factories of `RangeStore`, and `NewFS` and `NewMemory` return one.
 
 **Checksums:**
 - `NewMD5Checksum()`: MD5 file checksums (disabled unless configured)
+- `Checksum`, `HashWriter`: the interface of a custom checksum, whose
+  `NewHasher` returns a `HashWriter` that accumulates a digest
 
 **Record helpers:**
 - `D`: an abbreviated alias for `map[string]any` at call sites and in
@@ -264,6 +271,19 @@ are factories of `RangeStore`, and `NewFS` and `NewMemory` return one.
 - `R(...)`: collects record literals into the `[]D` that `Records[D].Write`
   takes
 - `Partition`: a record's partition values by key name, for `Hive(...).By`
+
+**Identifiers, snapshots, and listings:**
+- `DatasetID`, `DatasetSnapshotID`: the identifiers of a dataset and of a
+  snapshot within it
+- `DatasetSnapshot`: a committed snapshot, which embeds its `Manifest`
+- `SnapshotReader`: the read surface that every dataset handle and view
+  shares
+- `ManifestRef`, `PartitionRef`: the references that `ListManifests` and
+  `ListPartitions` return
+- `ObjectRef`: a reference to a data object, which `OpenObject` and
+  `ReaderAt` take
+- `DatasetListOptions`, `ManifestListOptions`, `PartitionListOptions`: the
+  options of `ListDatasets`, `ListManifests`, and `ListPartitions`
 
 **Interfaces:**
 - `Codec[T]`, `StreamingCodec[T]`, `StreamEncoder[T]`: codecs and streaming
@@ -362,6 +382,8 @@ ds, err := root.Records(ctx, "analytics", lode.Parquet(schema))
 
 ### Supported Types
 
+Each field's `Type` is a `ParquetType`:
+
 | Type | Go Input Types | Decoded Type |
 |------|---------------|--------------|
 | `ParquetInt32` | `int`, `int32`, `int64`, `float64` | `int32` |
@@ -397,6 +419,11 @@ _, err := ds.StreamWrite(ctx, records, metadata)
 
 **Important:** Parquet compresses internally. Do not compress the output a
 second time.
+
+`Parquet` takes options of type `ParquetOption`. `WithParquetCompression`
+selects the internal compression, a `ParquetCompression`:
+`ParquetCompressionNone` (the default), `ParquetCompressionSnappy`, or
+`ParquetCompressionGzip`.
 
 | Configuration | Result |
 |--------------|--------|
@@ -922,6 +949,9 @@ report, err := ds.Sweep(ctx, lode.SweepRequest{Grace: 24 * time.Hour})
 // report.Settled, report.Reindexed, report.Objects, report.Bytes, report.Unsized, report.Orphans
 ```
 
+`Sweep` returns a `SweepReport` of what it reclaimed, or of what it would
+reclaim on a dry run.
+
 - **A partition index is restored.** On a Hive dataset, a commit persists
   its partition manifests after it is complete, so a writer that terminates
   first leaves a snapshot that a listing filtered by partition omits.
@@ -1025,6 +1055,8 @@ The `lode/s3` package provides an S3-compatible storage adapter.
   a configuration error rather than return it
 - `s3.New(client, config)`: creates a store from an AWS SDK client
 - `s3.Config{Bucket, Prefix}`: the store's configuration
+- `s3.API`: the subset of the AWS SDK client that the store calls, which
+  the SDK's own client satisfies
 
 The client is constructed with the AWS SDK directly. This keeps Lode's API
 surface minimal while leaving the caller full control over credentials,
