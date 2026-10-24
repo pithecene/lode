@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# release-notes.sh — Write the release notes that an annotated tag carries
+# release-notes.sh extracts the release notes from the message of an annotated tag.
 #
 # The notes of a release are the message of its annotated tag. A maintainer
 # writes them with verbatim cleanup, because Git otherwise strips each line
@@ -28,7 +28,7 @@ fi
 tag="$1"
 output="$2"
 
-# A lightweight tag has no message, so it cannot carry release notes.
+# A lightweight tag has no message, so it cannot contain release notes.
 if [ "$(git cat-file -t "refs/tags/${tag}" 2>/dev/null)" != "tag" ]; then
     echo "release-notes.sh: ${tag} is not an annotated tag" >&2
     exit 1

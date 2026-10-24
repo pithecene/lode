@@ -105,7 +105,7 @@ Example usage and integration references; `README.md` indexes them.
 Build and maintenance scripts.
 
 - `verify-snippets.sh` — validates runnable code fences in documentation
-- `release-notes.sh` — writes the release notes that an annotated tag carries
+- `release-notes.sh` — extracts the release notes from the message of an annotated tag
 - `fuzz.sh` — runs every Go fuzz target for a fixed duration (`task fuzz`)
 
 ---

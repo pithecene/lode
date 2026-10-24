@@ -34,7 +34,7 @@ jobs:
 
       - name: 🏷️ Fetch Annotated Tag
         # actions/checkout replaces an annotated tag with a lightweight one,
-        # which carries no notes, so the tag object is fetched again.
+        # which has no message, so the workflow fetches the tag object again.
         run: git fetch --quiet --force origin "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
 
       - name: 📝 Extract Release Notes
