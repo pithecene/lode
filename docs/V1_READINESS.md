@@ -45,7 +45,7 @@ Based on the full-history audit of the production dataset
 - **Renegotiated (D9):** Volume is experimental for v1.0. Volume dogfooding
   (§4) and `VolumeManifest` stability (§2) gate Volume leaving experimental,
   not the v1.0 tag. The boundary has shipped: package `lode/volume`, marked
-  experimental in `PUBLIC_API.md` and `CONTRACT_VOLUME.md` (D9).
+  experimental in `PUBLIC_API.md` (D9).
 - **Accepted limitations (GC and performance are out of scope):** 2.07 GB of
   unreferenced data objects, which `Dataset.Sweep` (v0.11.0, lode#174) can now
   reclaim; `ListManifests` and
