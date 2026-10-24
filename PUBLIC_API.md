@@ -298,8 +298,8 @@ are factories of `RangeStore`, and `NewFS` and `NewMemory` return one.
 
 **Types (per-file statistics):**
 - `FileStats`: the row count and column statistics of a file
-- `ColumnStats`: the minimum, maximum, null count, and distinct count of a
-  column
+- `ColumnStats`: the minimum, maximum, and null count of a column; its
+  distinct count is not computed and is reported as 0
 
 **Range reads:**
 - `RangeReader`: the optional range-read capability of a store; a store

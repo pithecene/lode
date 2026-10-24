@@ -409,12 +409,12 @@ nearest candidate is pithecene/quarry#255.
 > Summary: —
 > Issue: #___
 
-- [ ] All 13 contract files reviewed — no "planned"/"draft"/"future" language for shipped features
+- [x] All 13 contract files reviewed — no "planned"/"draft"/"future" language for shipped features
 
-> **Evidence:** _not yet recorded_
-> Date: — | Observer: — | Project: —
-> Summary: —
-> Issue: #___
+> **Evidence:** All 14 files in `docs/contracts/` were reviewed; CONTRACT_RETENTION was added after this criterion was written. Only CONTRACT_PARQUET described shipped behavior in provisional terms: it called the codec "the initial implementation" and `DistinctCount` "reserved for future use". It now states the codec's scope in the present tense, and `PUBLIC_API.md` no longer lists a distinct count among the statistics that are computed. The remaining forward-looking passages concern features that have not shipped: parallel staging (CONTRACT_WRITE_API §Future Direction), the non-normative layouts of CONTRACT_READ_API, and later revisions of CONTRACT_RETENTION.
+> Date: 2026-10-24 | Observer: @pithecene | Project: lode
+> Summary: Met.
+> Issue: —
 
 - [x] All examples pass (`task examples`)
 
