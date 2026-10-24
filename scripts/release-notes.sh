@@ -34,6 +34,17 @@ if [ "$(git cat-file -t "refs/tags/${tag}" 2>/dev/null)" != "tag" ]; then
     exit 1
 fi
 
-# The subject and the body omit any signature that a signed tag carries.
-git for-each-ref --format='%(contents:subject)%0a%0a%(contents:body)' \
-    "refs/tags/${tag}" > "${output}"
+# The complete message keeps every line break, which the subject field of
+# for-each-ref folds within its first paragraph. A signed tag appends its
+# signature to the message, so the notes end before the signature begins.
+# for-each-ref also ends each entry with a newline of its own, so trailing
+# blank lines are dropped.
+git for-each-ref --format='%(contents)' "refs/tags/${tag}" |
+    awk '
+        /^-----BEGIN [A-Z ]*SIGNATURE-----$/ { exit }
+        { lines[count++] = $0 }
+        END {
+            while (count > 0 && lines[count - 1] == "") count--
+            for (i = 0; i < count; i++) print lines[i]
+        }
+    ' > "${output}"
