@@ -504,14 +504,14 @@ this contract.
 
 ## Scope Decisions
 
-Three decisions bound the codec. A later version may revisit each of them.
+Three decisions bound the codec.
 
 1. **Nested types:** the codec supports flat schemas only, without nested
    structs, lists, or maps.
 2. **Schemas:** a schema is declared explicitly; the codec does not derive
    one from Go struct tags.
-3. **Zstandard compression:** the codec does not offer Zstandard until
-   library support has been verified.
+3. **Zstandard compression:** the codec does not offer Zstandard, because
+   its support in the library has not been verified.
 
 ---
 
