@@ -105,6 +105,7 @@ Example usage and integration references; `README.md` indexes them.
 Build and maintenance scripts.
 
 - `verify-snippets.sh` — validates runnable code fences in documentation
+- `release-notes.sh` — extracts the release notes from the message of an annotated tag
 - `fuzz.sh` — runs every Go fuzz target for a fixed duration (`task fuzz`)
 
 ---
@@ -125,6 +126,7 @@ CI/CD workflows (GitHub Actions).
 - `workflows/nightly.yml` — nightly checks (run on demand)
 - `workflows/chaos.yml` — chaos harness (run on demand)
 - `workflows/release.yml` — release automation
+- `actions/release-check/` — installs the internal release check at its pinned commit
 
 ---
 

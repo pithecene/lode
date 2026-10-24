@@ -21,10 +21,40 @@ jobs:
           text: ${{ github.ref_name }}
           regex: ^v[0-9]+\.[0-9]+\.[0-9]+$
 
+  release_check:
+    name: 🧾 Release Check
+    runs-on: ubuntu-latest
+    needs: [tag_check]
+    if: ${{ needs.tag_check.outputs.semver_match != '' }}
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: 🏷️ Fetch Annotated Tag
+        # actions/checkout replaces an annotated tag with a lightweight one,
+        # which has no message, so the workflow fetches the tag object again.
+        run: git fetch --quiet --force origin "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
+
+      - name: 📝 Extract Release Notes
+        run: scripts/release-notes.sh "${GITHUB_REF_NAME}" release-notes.md
+
+      - name: 🏗️ Install Release Check
+        uses: ./.github/actions/release-check
+        with:
+          ssh-key: ${{ secrets.BOSUN_DEPLOY_KEY }}
+
+      - name: 🧾 Check Changelog
+        run: .bosun/bin/release-gate check CHANGELOG.md
+
+      - name: 🧾 Check Release Notes
+        run: .bosun/bin/release-gate notes release-notes.md
+
   package:
     name: 📦 Package
     runs-on: ubuntu-latest
-    needs: [tag_check]
+    needs: [tag_check, release_check]
     if: ${{ needs.tag_check.outputs.semver_match != '' }}
     steps:
       - name: 📥 Checkout
@@ -60,6 +90,17 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: 🏷️ Fetch Annotated Tag
+        run: git fetch --quiet --force origin "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
+
+      - name: 📝 Extract Release Notes
+        run: scripts/release-notes.sh "${GITHUB_REF_NAME}" release-notes.md
+
       - name: ⬇️ Download Artifacts
         uses: actions/download-artifact@v4
         with:
@@ -71,5 +112,6 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           generate_release_notes: false
+          body_path: release-notes.md
           draft: true
           files: dist/*

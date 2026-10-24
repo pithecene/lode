@@ -82,35 +82,16 @@ jobs:
       (github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.user.login != 'dependabot[bot]')
     runs-on: ubuntu-latest
-    env:
-      # The commit of the release check that Lode adopts. Moving the pin adopts
-      # any revised rule.
-      BOSUN_REVISION: 34c156de5591e7d9327b5aa2790803f3257d7a8f
     steps:
       - name: 📥 Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
         with:
           persist-credentials: false
 
-      - name: 📥 Checkout Release Check
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
-        with:
-          repository: pithecene/bosun
-          ref: ${{ env.BOSUN_REVISION }}
-          ssh-key: ${{ secrets.BOSUN_DEPLOY_KEY }}
-          persist-credentials: false
-          path: .bosun-source
-
-      - name: 🧰 Setup Rust
-        # The check builds with the Rust version that its own repository pins,
-        # installed by the runner's rustup rather than by a third-party action.
-        run: |
-          version=$(awk -F'"' '/^rust = /{print $2}' .bosun-source/mise.toml)
-          rustup toolchain install "$version" --profile minimal
-          echo "RUSTUP_TOOLCHAIN=$version" >> "$GITHUB_ENV"
-
       - name: 🏗️ Install Release Check
-        run: .bosun-source/tools/install/install.sh .bosun-source .bosun release-gate
+        uses: ./.github/actions/release-check
+        with:
+          ssh-key: ${{ secrets.BOSUN_DEPLOY_KEY }}
 
       - name: 🧾 Check Changelog
         run: .bosun/bin/release-gate check CHANGELOG.md
