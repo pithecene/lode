@@ -128,7 +128,7 @@ This document maps contract requirements to the tests that verify them.
 | Close → cleanup attempted | `TestStreamWrite_Cleanup/close_without_commit_no_manifest_cleanup_attempted` |
 | Cleanup errors ignored | `TestStreamWrite_Cleanup/cleanup_error_ignored` |
 | Fast Put failure → error, no block | `TestStreamWrite_PutFailure/data_put_fails_fast_returns_error` |
-| Blocked Put + cancel → no manifest | `TestStreamWrite_PutFailure/blocked_put_context_cancel_no_manifest` |
+| Cancellation during a blocked pointer `CompareAndSwap` persists no manifest | `TestStreamWrite_PutFailure/blocked_put_context_cancel_no_manifest` |
 
 **Records.StreamWrite**
 
@@ -731,7 +731,7 @@ does not depend on that timing.
 
 | Requirement | Test |
 |-------------|------|
-| A stream write whose `Put` a cancellation aborts persists no manifest | `TestStreamWrite_PutFailure/blocked_put_context_cancel_no_manifest` |
+| A stream write canceled while its commit waits on the pointer's `CompareAndSwap` persists no manifest | `TestStreamWrite_PutFailure/blocked_put_context_cancel_no_manifest` |
 
 `TestFSAdapter_ContextCancel` and `TestIntegration_Writes/stream_write_context_cancel`
 exercise a cancellation on the filesystem and S3 adapters. Their outcome
