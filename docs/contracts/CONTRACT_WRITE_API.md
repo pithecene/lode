@@ -304,16 +304,6 @@ that must write several blob files as part of a single logical operation
 should either serialize snapshot creation (one `Write` or `StreamWrite` per
 file, in sequence) or handle `ErrSnapshotConflict` by retrying.
 
-### Future Direction
-
-**Parallel staging (transaction API):**
-- Multiple goroutines stage data files concurrently within a single
-  write transaction.
-- A single atomic Commit produces one snapshot with all data files.
-- Parallelizes the internal write pipeline without altering the model.
-- Applies within a single process only; it does not address concurrency
-  across processes.
-
 ### Storage-Level Concurrency for Streaming Writes
 
 Streaming writes (`Blobs.StreamWrite`, `Records.StreamWrite`) that produce large

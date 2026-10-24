@@ -44,7 +44,7 @@ Plans, contracts, and research notes. Contracts define **system behavior**.
 - `contracts/CONTRACT_PARQUET.md` — Parquet codec semantics and schema rules
 - `contracts/CONTRACT_READ_API.md` — read API contract and adapter obligations
 - `contracts/CONTRACT_ERRORS.md` — error taxonomy and handling guidelines
-- `contracts/CONTRACT_TEST_MATRIX.md` — contract-to-test traceability and coverage gaps
+- `contracts/CONTRACT_TEST_MATRIX.md` — contract-to-test traceability
 - `contracts/CONTRACT_EXAMPLES.md` — example and callsite conventions
 - `contracts/CONTRACT_VOLUME.md` — contract for Volume persistence model
 - `contracts/CONTRACT_COMPLEXITY.md` — complexity bounds for all public operations

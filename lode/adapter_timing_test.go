@@ -21,7 +21,7 @@ import (
 // Key principle: assert on core invariants (no manifest = no visible snapshot),
 // but don't make timing-dependent assertions that could flake.
 //
-// Contract reference: CONTRACT_TEST_MATRIX.md (G3-4 residual risk)
+// Contract reference: CONTRACT_TEST_MATRIX.md §Streaming Cancellation
 
 func TestFSAdapter_ContextCancel(t *testing.T) {
 	// TestFSAdapter_StreamWrite_ContextCancel_NoSnapshot verifies that when context

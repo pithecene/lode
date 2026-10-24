@@ -91,6 +91,14 @@ Differences between backends must be handled by composition, not flags.
 
 ---
 
+## Contract rules
+
+- A contract (`docs/contracts/CONTRACT_*.md`) states invariants only
+- A contract holds no status, progress, plans, resolved questions, or deferred work
+- Status belongs in `docs/V1_READINESS.md` or `CHANGELOG.md`, and history in git, pull requests, and issues
+
+---
+
 ## Metadata rules
 
 - Metadata must be explicit

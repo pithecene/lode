@@ -388,7 +388,7 @@ nearest candidate is pithecene/quarry#255.
 
 - [x] Context cancellation cleanup nondeterminism documented as best-effort, no correctness impact
 
-> **Evidence:** `PUBLIC_API.md` §Cleanup Behavior states that the removal of partial objects is best-effort, that whether removal completes after a cancellation depends on the timing of the adapter, and that the difference has no effect on correctness, because an object that no manifest references belongs to no snapshot. CONTRACT_TEST_MATRIX §Residual Risk: STORE-CTX-CANCEL records the deterministic tests of the invariant that a canceled write leaves no manifest.
+> **Evidence:** `PUBLIC_API.md` §Cleanup Behavior states that the removal of partial objects is best-effort, that whether removal completes after a cancellation depends on the timing of the adapter, and that the difference has no effect on correctness, because an object that no manifest references belongs to no snapshot. CONTRACT_TEST_MATRIX §Streaming Cancellation maps the invariant that a canceled stream write leaves no snapshot to its tests.
 > Date: 2026-10-24 | Observer: @pithecene | Project: lode
 > Summary: Met.
 > Issue: —
@@ -411,7 +411,7 @@ nearest candidate is pithecene/quarry#255.
 
 - [x] All fourteen contract files reviewed — no "planned"/"draft"/"future" language for shipped features
 
-> **Evidence:** All fourteen files in `docs/contracts/` were reviewed. The criterion named thirteen before CONTRACT_RETENTION was added. Only CONTRACT_PARQUET described shipped behavior in provisional terms: it called the codec "the initial implementation" and `DistinctCount` "reserved for future use". It now states the codec's scope in the present tense, and `PUBLIC_API.md` states that the bundled Parquet codec reports a distinct count of zero. The remaining forward-looking passages concern features that have not shipped: parallel staging (CONTRACT_WRITE_API §Future Direction), the non-normative layouts of CONTRACT_READ_API, and later revisions of CONTRACT_RETENTION.
+> **Evidence:** All fourteen files in `docs/contracts/` were reviewed. The criterion named thirteen before CONTRACT_RETENTION was added. Only CONTRACT_PARQUET described shipped behavior in provisional terms: it called the codec "the initial implementation" and `DistinctCount` "reserved for future use". It now states the codec's scope in the present tense, and `PUBLIC_API.md` states that the bundled Parquet codec reports a distinct count of zero. The contracts held further passages about features that have not shipped, and status that belongs outside a contract: `Status:` headers, resolved violations and questions, deferred work, plans, and coverage gaps. Those passages are removed, so each contract states invariants only.
 > Date: 2026-10-24 | Observer: @pithecene | Project: lode
 > Summary: Met.
 > Issue: —

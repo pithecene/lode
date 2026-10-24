@@ -3,8 +3,6 @@
 This document defines the contract for the `Volume` persistence paradigm.
 It is authoritative for all Volume implementations.
 
-Status: **Active, experimental API** (v0.8.0; package `lode/volume` and experimental since D9)
-
 ---
 
 ## Goals

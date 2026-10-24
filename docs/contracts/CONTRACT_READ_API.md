@@ -383,9 +383,7 @@ Manifest-driven discovery is a **pattern**, not a distinct layout:
 discovery is always manifest-driven, but layouts still define how manifests
 are found and how dataset and segment IDs are parsed from paths.
 
-Additional layouts (spatial tiling, temporal hierarchies, range
-partitioning) are valid future extensions, but they MUST observe the same
-invariants.
+Any additional layout MUST observe the same invariants.
 
 #### Default Layout
 
@@ -406,68 +404,6 @@ Reference shape:
     /data/
       file.<ext>
 ```
-
-### Future Extensions (Exploratory Matrix)
-
-The following layout strategies and partition semantics are
-**non-normative** examples intended to guide future exploration. The
-current implementation does not require them.
-
-**Layout Strategy (Topology and Placement Rules)**
-- Anchored at segments: `.../<segment>/data/<partition...>/file`
-- Anchored at partitions: `.../<partition...>/<segment>/file`
-- Manifest only: only manifests have structure; data objects are opaque
-  paths listed in the manifest
-- Flat: no partition directories; everything under a segment is flat
-- Keyed envelope: partitions encoded in the file name rather than the path
-  (for example, `file__day=...__region=...`)
-
-**Partition Semantics**
-- Attribute key/value (Hive style: `day=`, `region=`)
-- Range (`ts_range=2026-01-01_2026-01-07`)
-- Hash bucket (`bucket=42`)
-- Spatial tile (`h3=...`, `quadkey=...`)
-- Temporal hierarchy (`2026/02/02` or `year=2026/month=02`)
-- Prefix (`prefix=ab`)
-- None (unpartitioned)
-
-**Discouraged Pairings (Non-normative)**
-
-Some combinations are deliberately discouraged because they degrade
-discovery semantics or pruning. This is a principal reason that the public
-interface exposes a **unified layout** rather than components that can be
-combined freely.
-
-Examples of discouraged pairings:
-- Anchored at partitions with hash buckets (high fan-out and poor locality
-  for discovery).
-- Flat with attribute key/value partitions (conceals partitions from
-  listing and compels discovery through manifests alone).
-- Keyed envelope with spatial tiles (opaque to prefix listing and to typical
-  spatial tools).
-
----
-
-## Implementation Phases
-
-### R1: Storage Adapters
-- Local filesystem
-- S3 (HTTP range requests)
-- `ReaderAt` cache
-
-### R2: Enumeration
-- Listing of datasets, partitions, and segments
-- Parsing of canonical paths
-- Enforcement of the commit rule
-
-### R3: Manifest Handling
-- Schema, parser, and validator
-- Opening of objects and random access
-
-### R4: Reference Helpers (Optional)
-- Pruning helpers based on manifests
-- Parquet footer reader
-- Block index reader
 
 ---
 
