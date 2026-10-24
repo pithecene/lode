@@ -395,7 +395,7 @@ nearest candidate is pithecene/quarry#255.
 
 - [x] Deferred test gaps (ITER-LIFECYCLE, COMP-WRAPPER-ORDER, ERR-RANGE-NOT-SUPPORTED) accepted as non-blocking
 
-> **Evidence:** ITER-LIFECYCLE and COMP-WRAPPER-ORDER test `ObjectIterator` and store composition, neither of which belongs to the v1.0 surface, so v1.0 accepts both as non-blocking; CONTRACT_TEST_MATRIX §Deferred: Requires API Exposure records the acceptance. ERR-RANGE-NOT-SUPPORTED is closed rather than deferred: v0.12.0 made `RangeReader` optional (D5), and `TestRangeReader_IsOptional/ReaderAt_without_range_reads` checks that a handle or view over a store without range reads returns `ErrRangeReadNotSupported`.
+> **Evidence:** ITER-LIFECYCLE and COMP-WRAPPER-ORDER test `ObjectIterator` and store composition, neither of which belongs to the v1.0 surface, so v1.0 accepts both as non-blocking. ERR-RANGE-NOT-SUPPORTED is closed rather than deferred: v0.12.0 made `RangeReader` optional (D5), and `TestRangeReader_IsOptional/ReaderAt_without_range_reads` checks that a handle or view over a store without range reads returns `ErrRangeReadNotSupported`.
 > Date: 2026-10-24 | Observer: @pithecene | Project: lode
 > Summary: Met; one gap closed and two accepted.
 > Issue: —
