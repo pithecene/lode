@@ -70,7 +70,7 @@ entire file. `Records.StreamWrite` with a Parquet codec MUST return
 ### Decode
 
 - `Decode(r)` MUST read a complete Parquet file from `r`.
-- It returns records as `[]D`, each a `map[string]any`.
+- `Decode` returns records as `[]D`, each a `map[string]any`.
 - The codec maps field types according to the table in §Type Mapping.
 - `Decode` MUST support files written by this codec and by standard Parquet
   writers.
@@ -99,7 +99,7 @@ ds, err := root.Records(ctx, "events", codec) // returns a schema error
 
 ### Schema Construction Validation
 
-`Parquet` validates the schema and records an error that matches
+`Parquet` validates the schema and, when validation fails, records an error that matches
 `ErrSchemaViolation`. `Root.Records` and `ReadRoot.Records` return that
 error, and so do `Encode` and `Decode` when a caller invokes them directly.
 Validation fails for:
@@ -153,7 +153,7 @@ types that common decoders produce:
 
 1. **Conversion of JSON numbers**: the codec accepts `float64` for integer
    fields, because `encoding/json` decodes every number as `float64`. This
-   coercion allows interoperation with records decoded from JSONL.
+   coercion lets the codec encode records that a JSONL decoder produces.
 
 2. **Parsing of timestamp strings**: the codec accepts RFC 3339 and
    RFC 3339 (nanosecond) strings for timestamp fields. An invalid timestamp
@@ -234,7 +234,7 @@ does not expose it.
 
 ## Compression
 
-Parquet supports internal compression of each column chunk.
+Parquet supports internal column-chunk compression.
 
 ### Supported Compression Options
 
@@ -278,8 +278,8 @@ The implementation MAY extract the following statistics and record them in
 manifests:
 
 - `RowCount`: the total number of rows in the file (from Parquet metadata).
-- `MinTimestamp` and `MaxTimestamp`: when the caller designates a timestamp
-  column.
+- `MinTimestamp` and `MaxTimestamp`: the earliest and latest values of the
+  timestamp column that the caller designates.
 
 ### Per-File Statistics
 
@@ -289,16 +289,17 @@ statistics through `FileStats()` after each `Encode` call:
 - `RowCount`: the total number of rows encoded in the file.
 - `Min` and `Max` for each column of an ordered type: int32, int64, float32,
   float64, string, and timestamp.
-- `NullCount` for each column: the number of null values in a nullable
-  column.
+- `NullCount` for each column: the number of null values, which only a
+  nullable column can hold.
 - `DistinctCount`: not computed. The codec reports zero, which the
   manifest omits.
-- Boolean and byte columns report only `NullCount` (no minimum or maximum).
+- For Boolean and byte columns, the codec reports only `NullCount`, with no
+  minimum or maximum.
 - The codec computes statistics during `Encode` from the Go record values,
   not from Parquet's internal metadata.
 - Minimum and maximum values use the same Go types as the input records.
-  When serialized to JSON, a `time.Time` becomes an RFC 3339 string with
-  nanosecond precision, and consumers must interpret values according to the
+  JSON serialization renders a `time.Time` as an RFC 3339 string with
+  nanosecond precision, so consumers must interpret values according to the
   schema.
 
 ---
@@ -340,9 +341,9 @@ var ErrInvalidFormat = errInvalidFormat{}
 | Empty file                   | `ErrInvalidFormat`              |
 | Row read failure             | `ErrInvalidFormat` (wrapped)    |
 
-The codec wraps errors in reading individual rows with `ErrInvalidFormat`,
-because they indicate problems with the format (corrupt row data, a
-truncated file, and similar defects).
+The codec wraps row-read errors with `ErrInvalidFormat`, because such errors
+indicate a malformed file: corrupt row data, a truncated file, or a similar
+defect.
 
 ---
 
@@ -446,7 +447,8 @@ behavior is acceptable because:
 
 1. The panic is unreachable in normal use, since validation rejects every
    invalid input.
-2. It provides a clear failure if code inadvertently circumvents validation.
+2. The panic halts execution visibly if code inadvertently circumvents
+   validation.
 3. Returning errors from internal functions would add unnecessary
    complexity.
 
@@ -456,7 +458,7 @@ This contract recommends the `parquet-go` library
 (github.com/parquet-go/parquet-go):
 - It consists entirely of Go code.
 - It supports schema-based encoding.
-- It is actively maintained.
+- Its maintainers continue active development.
 
 ### Alternative Libraries
 
@@ -492,8 +494,8 @@ govern it.
 
 ### External Reader Tests (Optional)
 
-- Read the files with DuckDB (if available in CI).
-- Read the files with PyArrow (if available in CI).
+- Reading of the files with DuckDB, when the CI environment provides DuckDB.
+- Reading of the files with PyArrow, when the CI environment provides PyArrow.
 
 ### Contract Compliance Tests
 

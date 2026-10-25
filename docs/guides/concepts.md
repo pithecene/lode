@@ -1,8 +1,7 @@
 # Lode Storage and Commit Model
 
-This guide describes Lode's purpose, the arrangement of a dataset in
-storage, the sequence that makes a commit visible, and the selection of a
-write API. The guide explains the design, and the contracts under
+This guide describes Lode's purpose, the dataset layout in storage, the
+sequence that makes a commit visible, and write API selection. The guide explains the design, and the contracts under
 [`docs/contracts/`](../contracts/) define the normative rules, principally
 [`CONTRACT_CORE.md`](../contracts/CONTRACT_CORE.md) and
 [`CONTRACT_WRITE_API.md`](../contracts/CONTRACT_WRITE_API.md).
@@ -21,7 +20,7 @@ Lode excludes the following roles:
 - a query planner or execution runtime
 - a distributed system or background service
 
-Lode governs the *structure and lifecycle* of data, not its execution, so
+Lode governs *data structure and lifecycle*, not query execution, so
 callers supply their own query engines and process scheduling.
 
 ## Undisciplined Object Storage
@@ -70,7 +69,8 @@ sequenceDiagram
     Note over W,S: readers see the snapshot once its manifest exists
 ```
 
-If another writer advanced the pointer first, the CAS fails with
+If another writer advanced the pointer first, the compare-and-swap (CAS)
+fails with
 `ErrSnapshotConflict`. With `WithRetry`, Lode reads the head again and
 retries the commit with the same staged data, and the retry may still
 publish the snapshot. If the commit fails permanently, the data files that
@@ -84,19 +84,19 @@ write reported an error.
 
 | Handle | API | Use Case | Codec | Partitioning |
 |----------|-----|----------|-------|--------------|
-| `Records[T]` | `Write` | Records in memory, batches | ✅ Fixes `T` | ✅ Supported |
-| `Records[T]` | `StreamWrite` | Large streams of records (`iter.Seq2[T, error]`) | ✅ Must stream | ❌ Not supported |
+| `Records[T]` | `Write` | Records in memory, batches | ✅ Set by `T` | ✅ Supported |
+| `Records[T]` | `StreamWrite` | Large streams of records (`iter.Seq2[T, error]`) | ✅ Streaming codec required | ❌ Not supported |
 | `Blobs` | `Write` | One blob in memory | ❌ Raw bytes | ❌ Not applicable |
 | `Blobs` | `StreamWrite` | Large binary payloads (gigabytes or more) | ❌ Raw bytes | ❌ Not applicable |
 | Volume (experimental) | `StageWriteAt` + `Commit` | Sparse, resumable byte ranges | ❌ Raw bytes | ❌ Not applicable |
 
 The following procedure selects a write API:
 1. If the data is records already in memory, use `Records.Write`.
-2. If it is a large, unstructured binary object, use `Blobs.StreamWrite`
-   (or `Blobs.Write` for one in memory).
-3. If it is a large stream of records, use `Records.StreamWrite` with a
+2. If the data is a large, unstructured binary object, use
+   `Blobs.StreamWrite` (or `Blobs.Write` for an object held in memory).
+3. If the data is a large stream of records, use `Records.StreamWrite` with a
    streaming codec.
-4. If it is a sparse, resumable byte address space, use `volume.Volume`
+4. If the data is a sparse, resumable byte address space, use `volume.Volume`
    (experimental).
 
 ```mermaid
@@ -123,8 +123,8 @@ A typical Lode workflow has the following configuration:
 
 Each write produces a new snapshot, and every read targets a snapshot
 explicitly. A reader opens a view, which reads the layout, codec name, and
-compressor from the dataset's manifests, so the caller does not repeat
-them.
+compressor from the dataset's manifests, so the caller need not specify
+them again.
 
 ## Guarantees and Non-Goals
 

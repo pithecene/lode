@@ -144,7 +144,7 @@ These errors indicate failures in the storage layer.
 | Atomic (at or below the threshold) | Conditional write | Always detected |
 | Multipart (above the threshold) | Conditional completion (if supported) or a preliminary check | Atomic (conditional) or best-effort (preliminary check only) |
 
-When the backend supports conditional completion of multipart uploads (for
+When the backend can complete multipart uploads conditionally (for
 example, S3 with `If-None-Match`), both paths detect an existing object
 atomically. If only the preliminary check is available, a
 time-of-check-to-time-of-use (TOCTOU) interval exists, and callers must use
@@ -188,9 +188,9 @@ not apply is a compile error rather than a run-time one.
 
 A dataset ID MUST be one canonical path segment: not empty, `.`, or `..`,
 without `/` or a backslash, and not beginning with the reserved prefix
-`.lode-tmp-` (CONTRACT_STORAGE §Put). Lode cleans the paths it builds from
-an ID, so an ID such as `a/../events` would otherwise address the dataset
-`events`. `=` is permitted. Every operation that takes a dataset ID, the
+`.lode-tmp-` (CONTRACT_STORAGE §Put). Because Lode cleans the paths that it
+builds from an ID, an ID such as `a/../events` would, without this rule,
+address the dataset `events`. The rule permits `=`. Every operation that takes a dataset ID, the
 views included, rejects an invalid one before any store call.
 CONTRACT_STORAGE §Names in Keys states the rule for every name that Lode
 builds into a key, including volume and snapshot IDs.
@@ -219,8 +219,8 @@ configuration.
   component, rather than silently corrupt output.
 - `Records.StreamWrite` returns `ErrCodecNotStreamable` if the codec is not
   a `StreamingCodec`.
-- A writer returns `ErrSettingsMismatch` when it opens or before it
-  commits, and the error names the setting that differs. A retry cannot
+- A writer returns `ErrSettingsMismatch` on opening or before committing,
+  and the error names the differing setting. A retry cannot
   succeed until the caller corrects that setting.
 
 ---
@@ -232,7 +232,7 @@ These errors indicate invalid use of the streaming write APIs.
 | Error | Source | Meaning |
 |-------|--------|---------|
 | `lode.ErrNilIterator` | `Records.StreamWrite` | The caller supplied a `nil` iterator |
-| `lode.ErrPartitioningNotSupported` | `Records.StreamWrite` | The caller called `Records.StreamWrite` on a partitioned layout |
+| `lode.ErrPartitioningNotSupported` | `Records.StreamWrite` | The caller invoked `Records.StreamWrite` on a partitioned layout |
 
 #### Behavior
 - `Blobs.StreamWrite` streams one blob. A blob dataset has no codec, so
@@ -287,8 +287,9 @@ See [CONTRACT_PARQUET.md](CONTRACT_PARQUET.md) for complete Parquet codec semant
 
 ### 9. Volume Errors
 
-These errors indicate failures specific to Volume. Volume resides in the
-package `lode/volume`, so that package declares its two sentinels. It also
+These errors indicate failures specific to Volume. The package
+`lode/volume` holds Volume, so that package declares its two sentinels.
+Volume also
 returns the shared sentinels of `lode`.
 
 | Error | Source | Meaning |
@@ -346,7 +347,7 @@ detects during a commit.
 `WithRetry(n)`, or `volume.WithRetryCount(n)` for a Volume, performs this
 procedure within the commit path. Lode writes data files once and retries
 only two steps: it reassigns the manifest's parent and swaps the pointer
-with CAS ([`CONTRACT_WRITE_API.md`](CONTRACT_WRITE_API.md) §Optimistic
+with a compare-and-swap (CAS) operation ([`CONTRACT_WRITE_API.md`](CONTRACT_WRITE_API.md) §Optimistic
 Concurrency (CAS)).
 
 ---
@@ -359,7 +360,7 @@ Snapshot expiry and the sweep of unreferenced objects
 | Error | Source | Meaning |
 |-------|--------|---------|
 | `lode.ErrSnapshotExpired` | `Snapshot`, `Read` (handles, views) | `Expire` expired the snapshot, and the error also matches `ErrNotFound` |
-| `lode.ErrHeadUncommitted` | `Expire`, `Sweep` | The head is not yet committed: the latest pointer names a snapshot whose manifest has not been persisted (`Expire`), or the pointer is absent while snapshots exist (both) |
+| `lode.ErrHeadUncommitted` | `Expire`, `Sweep` | No commit has completed the head: the latest pointer names a snapshot whose manifest the writer has not yet persisted (`Expire` only), or the pointer is absent while snapshots exist (both `Expire` and `Sweep`) |
 | `lode.ErrInvalidArgument` | `Expire`, `Sweep` | An `ExpireRequest` without a selector field, or a `SweepRequest.Grace` that is zero or negative |
 | `lode.ErrInvalidPath` | `Expire` | `ExpireRequest.Partition` is not a canonical relative partition path |
 | `lode.ErrPartitionPrefixNotSupported` | `Expire` | The caller specified `ExpireRequest.Partition` on a layout without partitions |
@@ -368,12 +369,11 @@ Snapshot expiry and the sweep of unreferenced objects
 - Selecting the head snapshot is not an error: `Expire` retains it and
   reports it in `ExpireReport.RetainedHead`.
 - `ErrHeadUncommitted` is retryable: the caller can retry once the pending
-  commit completes. The next commit replaces any pointer that an abandoned
-  commit left, because `Latest` never replaces an existing pointer
-  (CONTRACT_CORE
-  §Head Pointer).
-- `Expire` and `Sweep` return a non-nil report with every error, describing
-  the work completed before the error. After a retryable failure, `Sweep`,
+  commit completes. `Latest` never replaces an existing pointer, so a
+  pointer that an abandoned commit left remains until the next commit
+  replaces it (CONTRACT_CORE §Head Pointer).
+- With every error, `Expire` and `Sweep` return a non-nil report that
+  describes the work completed before the error. After a retryable failure, `Sweep`,
   or an `Expire` that names the affected IDs, completes the remainder.
   Corruption (an invalid or contradicted tombstone, or an invalid manifest)
   recurs until an operator repairs it (CONTRACT_RETENTION §Accounting).
@@ -439,8 +439,8 @@ that names the component in which the failure originated.
    context without a prefix. That error already names its source, and only
    the code that creates an error knows its source.
 
-A message therefore names its source once, after the context that the
-callers added: `failed to write data file: fs: put: open …: permission
+A message therefore names its source once, after the context that each
+wrapping function added: `failed to write data file: fs: put: open …: permission
 denied`. An error returned by a custom store or codec is the caller's own,
 and Lode adds context to it but no prefix.
 
@@ -449,7 +449,7 @@ package under `lode/` and `internal/` and fails on any call to `fmt.Errorf`
 or `errors.New` that breaks them. The test lists, with its reason, each
 function that Lode declares but that stands for code outside Lode, such as
 the filesystem store's `openRead`. The test does not
-detect an error from outside Lode that is returned without being wrapped.
+detect an error from outside Lode that Lode returns without wrapping it.
 
 ---
 
@@ -488,7 +488,7 @@ root.ListDatasets(ctx, opts)
   → return nil, ErrDatasetsNotModeled
 ```
 
-### GetManifest with Invalid Schema
+### `GetManifest` with a Missing Schema Name
 ```
 view.GetManifest(ctx, ref)
   → store.Get(manifestPath)

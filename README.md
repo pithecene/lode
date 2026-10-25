@@ -16,7 +16,7 @@ Lode is an embeddable Go persistence framework that provides snapshots,
 metadata, and safe write semantics on object storage, without requiring a
 database. It offers **Datasets**, which hold structured collections of
 named objects, and **Volumes**, which store sparse, resumable byte ranges
-in an experimental package (`lode/volume`).
+and reside in an experimental package (`lode/volume`).
 
 ---
 
@@ -95,9 +95,10 @@ view, _ := lode.OpenReadOnly(lode.FS("/tmp/lode-demo")).Records(ctx, "events", l
 Lode stores data on the filesystem (`lode.FS`), in memory (`lode.Memory`),
 or on S3-compatible storage (`s3.Factory`). The storage location must exist
 before the caller opens a dataset (see [Storage
-Prerequisites](PUBLIC_API.md#storage-prerequisites)). Streaming writes and
-the experimental Volume API are described in [`PUBLIC_API.md`](PUBLIC_API.md),
-and complete programs are listed in [`examples/`](examples/).
+Prerequisites](PUBLIC_API.md#storage-prerequisites)).
+[`PUBLIC_API.md`](PUBLIC_API.md) describes streaming writes and the
+experimental Volume API, and [`examples/`](examples/) contains complete
+programs.
 
 ---
 
@@ -110,9 +111,9 @@ A **Dataset**, which holds structured collections, follows these rules:
 - A caller chooses storage, format, compression, and partitioning
   independently of one another.
 
-A **Volume**, which stores sparse byte ranges in the experimental package
-`lode/volume`, follows these rules:
-- A volume is a sparse, resumable byte address space.
+A **Volume**, which stores sparse byte ranges and resides in the
+experimental package `lode/volume`, follows these rules:
+- A Volume is a sparse, resumable byte address space.
 - Commits record which ranges exist, and Lode never fills a gap with zeros.
 - Each commit produces a cumulative manifest.
 
@@ -139,9 +140,9 @@ data, or delete objects unless the caller requests deletion. [The concepts
 guide](docs/guides/concepts.md#guarantees-and-non-goals) defines each guarantee
 and each exclusion.
 
-Lode has two limitations by design. A backend without a conditional write
-serves writers in one process only, through `SingleProcess`, so writers in
-several processes on that backend need external coordination ([Concurrency and
+Lode has two limitations by design. A backend that lacks conditional writes
+supports writers in one process only, through `SingleProcess`, so writers
+in separate processes require external coordination ([Concurrency and
 CAS](PUBLIC_API.md#concurrency-and-cas)). On an S3-compatible service other
 than AWS S3, the guarantees depend on conditional writes and consistency
 that Lode does not verify ([Other S3-Compatible
@@ -167,8 +168,7 @@ Services](PUBLIC_API.md#other-s3-compatible-services)).
 
 ## Status
 
-Lode is at **v0.12.0** and under active development. Its APIs are
-stabilizing. [`docs/plans/V1_API_DECISIONS.md`](docs/plans/V1_API_DECISIONS.md)
+The current release of Lode is **v0.12.0**. [`docs/plans/V1_API_DECISIONS.md`](docs/plans/V1_API_DECISIONS.md)
 lists the breaking changes still under consideration for v1.0, and
 [`CHANGELOG.md`](CHANGELOG.md) describes each release.
 
@@ -179,5 +179,6 @@ lists the breaking changes still under consideration for v1.0, and
 Pithecene LLC distributes Lode under the Apache License 2.0 (see
 [`LICENSE`](LICENSE)). Copyright © 2026 Pithecene LLC.
 
-Pithecene answers inquiries at contact@pithecene.sh. To report a vulnerability, follow
-[`SECURITY.md`](SECURITY.md).
+Pithecene answers inquiries at contact@pithecene.sh.
+[`SECURITY.md`](SECURITY.md) describes the procedure for reporting a
+vulnerability.

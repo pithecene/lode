@@ -15,9 +15,9 @@ normative rules and prevails wherever the two documents differ.
 | Typical frequency | Whenever the retention policy designates data as obsolete | Periodically, for example daily |
 
 Both operations accept a `DryRun` flag. With the flag set, an operation
-reports exactly what a real run would do and modifies nothing. Each operation always returns a
-report that describes the work completed, including when it also returns an
-error.
+reports exactly what a real run would do and modifies nothing. Each
+operation always returns a report of the work completed, even when it also
+returns an error.
 
 Lode never initiates removal: no background process runs, and Lode removes
 nothing unless the caller invokes one of these operations. The retention
@@ -73,19 +73,19 @@ exists, the same run, the next `Expire` that names the ID, or `Sweep`
 completes the expiry. The tombstone makes expiry **resumable**. Without it, a failure between deletions would leave data that
 no manifest describes and no record explains. With it, every later step
 operates on the inventory that the tombstone contains, never on manifests
-that may already have been deleted. The recorded sizes also allow a resumed
+that an earlier step may already have deleted. The recorded sizes also allow a resumed
 run to report `Bytes`.
 
 Lode never removes a tombstone. It records an expiry by creating a new
 object, never by modifying an existing one. Retention thereby preserves
-Lode's rule that committed state is never rewritten.
+Lode's rule that no operation rewrites committed state.
 
 A tombstone governs only a manifest that it **describes**, that is, one with
 the same `CreatedAt` and the same file list. Lode reports a tombstone that
 it cannot read, or that contradicts a manifest still present
 (`SweepReport.Unparseable` or an `Expire` error), and never acts on it.
-To recover, it never rewrites or removes a tombstone. An operator is
-responsible for resolving the corruption.
+Recovery from the fault never rewrites or removes such a tombstone, and an
+operator resolves the corruption.
 
 ## Snapshot Removal by `Expire`
 
@@ -136,7 +136,7 @@ succeeds. Repeating the request after a newer commit removes the formerly
 retained head.
 
 Only the pointer identifies the head. Retention never infers the head from
-snapshot IDs, because a clock that has been set back can assign the most
+snapshot IDs, because a clock that jumps backward can assign the most
 recent commit the smaller ID. `Expire` therefore returns
 `ErrHeadUncommitted` in two cases:
 
@@ -144,18 +144,18 @@ recent commit the smaller ID. `Expire` therefore returns
   indicates a pending commit ([CONTRACT_CORE §Head
   Pointer](../contracts/CONTRACT_CORE.md#head-pointer)). Retry once the
   commit completes. If `Expire` detects this condition before the run
-  begins, nothing is expired. If it detects the condition at the check that
-  precedes a later snapshot, the snapshots already expired remain expired,
-  and the report lists them. A pointer left by an abandoned commit remains
+  begins, it expires nothing. If it detects the condition partway through
+  the run, the snapshots already expired remain expired, and the report
+  lists them. A pointer left by an abandoned commit remains
   until the next commit replaces it: `Latest` never replaces a pointer, because no
   persisted state distinguishes an abandoned commit from a pending one.
 - The dataset has snapshots or tombstones but no pointer, because its
-  snapshots predate the pointer. Nothing is expired. Any
-  commit creates the pointer, after which retention proceeds.
+  snapshots predate the pointer. `Expire` expires nothing. Any commit
+  creates the pointer, after which retention proceeds.
 
-Retention treats a pointer as corrupt when it does not contain a snapshot
-ID that Lode could have generated, and it fails rather than rely on the
-pointer.
+Retention treats a pointer as corrupt when the pointer does not contain a
+snapshot ID that Lode could have generated, and retention then fails rather
+than rely on the pointer.
 
 ## Residual Data Reclamation by `Sweep`
 
@@ -172,13 +172,13 @@ data:
   writes a tombstone for the head
 - every tombstone while a commit is pending, because the head is then
   undetermined
-- a tombstone that is invalid or contradicts a manifest copy, which `Sweep`
-  reports in `Unparseable`
+- a tombstone that is invalid or contradicts a manifest copy, because Lode
+  cannot rely on it, and which `Sweep` reports in `Unparseable`
 
 **It reclaims orphaned data.** `Sweep` deletes every data object that is
 older than `Grace` and whose snapshot has neither a manifest nor a
 tombstone. Such an object belongs to a write that never committed, such as
-an aborted stream or a terminated process.
+a write from an aborted stream or a terminated process.
 
 ```mermaid
 flowchart TD
@@ -208,8 +208,8 @@ lists the object, and deletes every object under a settled snapshot's
 prefix.
 Apart from the manifests of the snapshots it settles, `Sweep` modifies
 nothing outside the layout's data paths: auxiliary files such as
-`partitions/<k=v>/run.json` remain the caller's responsibility, and the
-pointer and tombstones are never deleted.
+`partitions/<k=v>/run.json` remain the caller's responsibility, and `Sweep`
+never deletes the pointer or a tombstone.
 
 ### Choosing a Grace Period
 
@@ -251,11 +251,11 @@ The runnable version is [`examples/retention`](../../examples/retention).
 | `ExpireReport.Expired` | Snapshots expired (or, on a dry run, those that would be expired) |
 | `ExpireReport.Mixed` | Snapshots retained because they have files outside `Partition` |
 | `ExpireReport.RetainedHead` | The head, if the selection included it |
-| `ExpireReport.Skipped` | Inventory paths that are not data objects of the snapshot, which are left in place |
-| `SweepReport.Settled` | Interrupted expiries whose remaining manifests this run found and removed. An expiry whose manifests were already deleted has its data reclaimed without appearing here. |
+| `ExpireReport.Skipped` | Inventory paths that are not data objects of the snapshot, which `Expire` leaves in place |
+| `SweepReport.Settled` | Interrupted expiries whose remaining manifests this run found and removed. When an earlier run has already deleted an expiry's manifests, this run reclaims the expiry's data but omits the expiry from this list. |
 | `SweepReport.Orphans` | Objects of writes that never committed |
-| `SweepReport.Unparseable` | Tombstones that Lode cannot rely on, and objects whose ID contains no instant. Nothing listed here is deleted. |
-| `Objects`, `Bytes`, `Unsized` | The objects deleted, as the run's listing reported them. Sizes are taken from tombstone inventories, and objects without a recorded size are counted in `Unsized`. |
+| `SweepReport.Unparseable` | Tombstones that Lode cannot trust, and objects whose ID contains no instant. Lode deletes nothing listed here. |
+| `Objects`, `Bytes`, `Unsized` | The objects deleted, as the run's listing reported them. Lode takes sizes from tombstone inventories and counts objects without a recorded size in `Unsized`. |
 
 The counts are only as exact as the store's listing. Concurrent runs can
 both count the same object, and a run deletes but does not count an object

@@ -34,7 +34,7 @@ numbers, because an ID in the current form is not a number.
 The instant nevertheless remains legible, so `ExpireRequest.Before` can
 select snapshots from a listing without loading any manifest.
 
-## How IDs Are Ordered
+## Snapshot ID Order
 
 String comparison orders IDs by instant, because the instant has a fixed
 length of nineteen digits from 2001-09-09 01:46:40 UTC until 64-bit
@@ -76,8 +76,8 @@ A tombstone declares that retention is removing every object under its ID,
 so retention could mistake a later snapshot that reuses the ID for the
 expired one. An ID derived from the clock alone repeats whenever the clock
 repeats an instant. Three conditions make a clock repeat an instant: coarse
-resolution, a backward NTP adjustment, and the restoration of a virtual
-machine from a snapshot. Two hosts that write in the same nanosecond also
+resolution, a backward NTP adjustment, and the restore of a virtual
+machine from a saved image. Two hosts that write in the same nanosecond also
 obtain the same instant. The nonce removes this dependence on the clock.
 
 ## Collisions
@@ -85,8 +85,8 @@ obtain the same instant. The nonce removes this dependence on the clock.
 Two IDs coincide only when two writes begin in the same nanosecond **and**
 draw the same 64-bit nonce. Each such pair of writes collides with a
 probability of 1 in 2⁶⁴.
-Lode does not reserve IDs against existing ones, so if a collision occurs,
-the consequences are as follows:
+Lode does not check a new ID against existing IDs, so a collision has the
+following consequences:
 
 - **While the earlier snapshot exists**, the colliding write fails at the
   first path that both writes share. If that path is a data file, the write
@@ -94,21 +94,23 @@ the consequences are as follows:
   If the writes target different partitions, their data paths differ, and
   the write instead fails at its create-only manifest write. Lode writes
   the pointer before the manifest, so the failed write has already advanced
-  the `latest` pointer. The pointer can then continue to name the
-  earlier snapshot until the next commit.
+  the `latest` pointer. The pointer then names the shared ID, which
+  resolves to the earlier snapshot, until the next commit.
 - **After the earlier snapshot has expired**, its tombstone records that
   snapshot's commit time and file list, and retention applies a tombstone
-  only to a manifest that the tombstone describes. Retention preserves the
-  new snapshot while it is the head, as it preserves any head. Once a later
-  commit supersedes the new snapshot, an `Expire` that names the ID returns an error, and `Sweep`
-  reports the tombstone in `Unparseable` and retains the data. The exception
-  is the case in which both commits also completed in the same nanosecond
-  with the same files: the old tombstone then describes the new snapshot,
-  which can therefore be removed. The new write is also exposed while it
-  stages data, before its manifest exists. Nothing yet distinguishes that
+  only to a manifest that the tombstone describes. Retention preserves every
+  head, including the new snapshot while that snapshot remains the head.
+  Once a later commit supersedes the new snapshot, an `Expire` that names
+  the ID returns an error, and `Sweep` reports the tombstone in
+  `Unparseable` and retains the data. In one exception, both commits also
+  completed in the same nanosecond with the same files: the old tombstone
+  then describes the new snapshot, so retention can remove that snapshot.
+  Retention can also delete the new write's staged data before the write
+  commits its manifest. Nothing yet distinguishes that
   data from the expired snapshot's residual objects, so a `Sweep`, or an
   `Expire` that names the ID, can delete it.
 
 Instant-only IDs collided whenever two writes began in the same nanosecond,
 with the same consequences. The nonce reduces the probability of such a
-collision to 2⁻⁶⁴ for each pair.
+collision from certainty to 2⁻⁶⁴ for each pair of writes that obtain the
+same instant.

@@ -17,8 +17,8 @@ This document defines the deterministic behavior of store composition.
 - The **user defines** the order in which wrappers apply, and the
   composition applies them in that order.
 - Reordering wrappers MUST NOT affect the correctness of reads or writes.
-- Wrapper order MAY affect observability, such as metrics, and
-  performance, such as caching, but not results.
+- Wrapper order MAY affect observability, such as recorded metrics, and
+  performance, such as cache hit rate, but not results.
 
 ---
 

@@ -1,9 +1,9 @@
 # Lode Read API Contract
 
 This document defines the **Lode Read API**: its goals, non-goals, adapter
-contracts, and implementation considerations. It is authoritative for any
-storage adapter or higher-level system (the Quarry CLI, user interfaces,
-and query engines) that consumes data that Lode writes.
+contracts, and implementation considerations. It binds every storage
+adapter that serves Lode's data and every higher-level system (the Quarry
+CLI, user interfaces, and query engines) that consumes that data.
 
 ---
 
@@ -36,8 +36,8 @@ and query engines) that consumes data that Lode writes.
 
 - **Dataset**: a logical collection (for example, `nyc-rent/items`), **when
   the layout models datasets**.
-- **Partition**: an organization encoded in paths, **as defined by the
-  layout**.
+- **Partition**: a grouping of objects that **the layout encodes in
+  paths**.
 - **Segment**: an immutable unit of appended data (often a run, an attempt,
   or a time interval).
 - **Object**: an immutable blob (a data file, index, manifest, or artifact).
@@ -96,8 +96,9 @@ use `CompareAndSwap` (CONTRACT_STORAGE §ConditionalWriter Capability).
 ### Range-Read Access Paths
 
 Every dataset handle and view provides `ReaderAt(ctx, ObjectRef)` for
-random access. It MUST return `ErrRangeReadNotSupported` when the store does
-not implement `RangeReader`. Lode's store wrappers (`SingleProcess` and the
+random access. Each handle's `ReaderAt` MUST return
+`ErrRangeReadNotSupported` when the store does not implement
+`RangeReader`. Lode's store wrappers (`SingleProcess` and the
 store of a read-only root) MUST implement `RangeReader` exactly when the
 wrapped store implements it. Callers that need direct byte-range reads have two
 options:
@@ -119,7 +120,7 @@ Go interface that existing libraries already accept.
 
 - Page size: 256 KiB to 1 MiB
 - Cache size: 32 to 256 pages
-- Optional sequential prefetching
+- Prefetching: optional and sequential
 - Metrics: range calls and bytes fetched
 
 Caching is essential for Parquet footers, Arrow metadata, and block
@@ -130,9 +131,10 @@ indexes.
 ## Lode Read API (Views)
 
 A view reads one dataset. `ReadRoot.Records(ctx, id, codec, opts...)` and
-`ReadRoot.Blobs(ctx, id, opts...)` open one over any `ObjectStore`, and
-writer handles (`Records`, `Blobs`) embed the same read surface. The root
-lists datasets.
+`ReadRoot.Blobs(ctx, id, opts...)` open a view over any `ObjectStore`, and
+writer handles (`Records`, `Blobs`) embed the same read surface. Dataset
+enumeration, by contrast, belongs to the root, which lists datasets rather
+than reading one.
 
 ```go
 // On Root and ReadRoot:
@@ -155,40 +157,41 @@ ReaderAt(ctx context.Context, obj ObjectRef) (io.ReaderAt, error)
 // RecordView[T]: Read(ctx, id) ([]T, error); BlobView: Read(ctx, id) ([]byte, error)
 ```
 
-This layer understands Lode's layout and semantics but performs **no
-interpretation**.
+This layer resolves paths according to Lode's layout and semantics but
+does **not interpret** the data.
 
 ### Opening a View
 
 - A view MUST resolve the dataset's head without writing. It reads the
-  pointer and the manifest the pointer names, under the snapshots
-  directory and then the segments directory. The pointer does not say which
+  pointer and then looks for the manifest that the pointer names, first
+  under the snapshots directory and then under the segments directory. The pointer does not say which
   layout wrote it, and at most one such manifest exists. When the pointer is
   absent or names no persisted manifest, the view scans as `Latest` does
   instead. It MUST NOT create a missing pointer (CONTRACT_CORE §Head Pointer), so it
   needs no `CompareAndSwap`.
-- A view MUST take the dataset's layout from the head's manifest, and it
-  takes no layout option.
-- A dataset without snapshots MUST yield `ErrNotFound` when the view opens.
+- A view MUST read the dataset's layout from the head's manifest, and it
+  accepts no layout option.
+- Opening a view of a dataset without snapshots MUST yield `ErrNotFound`.
 - A view MUST validate the head's manifest (§Manifests), and an invalid
   manifest yields `ErrManifestInvalid`.
-- The view's codec MUST match the codec name that the head's manifest
-  records. Unless the manifest's format version is 1.0.0, the codec MUST
+- The name of the view's codec MUST match the codec name that the head's
+  manifest records. Unless the manifest's format version is 1.0.0, the codec MUST
   also match the recorded codec description. The root's path names MUST
   match the manifest's. A mismatch yields
   `ErrSettingsMismatch`.
 - A view MUST read each snapshot with the compressor that the snapshot's
-  manifest names. That compressor is either a bundled compressor
-  reconstructed by name or a custom compressor, passed with
-  `WithCompressor`, whose name matches. Reading a snapshot whose compressor
+  manifest names. That compressor is either a bundled compressor, which the
+  view reconstructs from the recorded name, or a custom compressor that the
+  caller supplies with `WithCompressor`. A custom compressor's name MUST
+  match the recorded name. Reading a snapshot whose compressor
   is neither yields `ErrSettingsMismatch`, and reading a snapshot written
   with another codec yields `ErrSettingsMismatch`.
 
 ### Read API Error Semantics
 
-- `ListDatasets` MUST return `ErrDatasetsNotModeled` for a root with flat
-  paths, which have no datasets directory (not a generic "not supported"
-  error).
+- `ListDatasets` MUST return `ErrDatasetsNotModeled`, not a generic "not
+  supported" error, for a root with flat paths, because flat paths have no
+  datasets directory.
 - `ListDatasets` MUST return an empty list only when storage contains no
   datasets.
 
@@ -200,14 +203,15 @@ read API imposes its own order:
 - `ListDatasets` MUST return results in lexicographic order of `DatasetID`.
 - `ListPartitions` MUST return results in lexicographic order of
   `PartitionRef.Path`.
-- `ListManifests` MUST return results ordered by `(Partition, ID)`,
-  lexicographically. When a snapshot has several partition manifests, the
+- `ListManifests` MUST return results in lexicographic order of
+  `(Partition, ID)`. When a snapshot has several partition manifests, the
   returned `ManifestRef` MUST carry the lexicographically smallest
   partition, so that the same storage state always yields the same
   references.
-- An unfiltered listing on a Hive layout MUST report a committed snapshot
-  that has no partition manifest through its canonical manifest, with the
-  empty partition in its `ManifestRef`. `ListPartitions` MUST then report
+- On a Hive layout, an unfiltered listing MUST report each committed
+  snapshot that lacks a partition manifest through the snapshot's canonical
+  manifest and MUST set the empty partition in that reference's
+  `ManifestRef`. `ListPartitions` MUST then report
   the partitions of that manifest's files. Such a snapshot has no files, or
   its writer terminated before persisting its partition manifests
   (CONTRACT_CORE §Head Pointer). Once its writer persists a partition
@@ -224,7 +228,7 @@ A cursor is a position in this order, not in commit order. Within one
 partition, `(Partition, ID)` order is snapshot ID order, and a snapshot ID
 records when its write began (CONTRACT_CORE §Snapshot ID), so a snapshot
 can commit after a snapshot with a larger ID. A consumer that passes its
-last reference as `StartAfter` to read new snapshots therefore MAY skip a
+last reference as `StartAfter` to read new snapshots can therefore skip a
 snapshot permanently. Version 1.0 offers no cursor over commits. A
 consumer that must observe every commit reconciles against `Snapshots`,
 which enumerates canonical manifests (V1_API_DECISIONS D10a). A listing
@@ -245,7 +249,8 @@ and `PartitionListOptions.StartAfter` use this type.
 - The empty string MUST parse to the zero value, which denotes the dataset
   root (no partition).
 - `String` MUST return the path as it appears in storage keys.
-- A `PartitionPath` MUST encode as text (`MarshalText`) as its string, and
+- A `PartitionPath` MUST encode as text (`MarshalText`) to its string form,
+  and
   `UnmarshalText` MUST parse as `ParsePartitionPath` does, so that encoded
   listing results and cursors retain their partition.
 - A listing MUST return only canonical partition paths. A manifest whose
@@ -270,8 +275,8 @@ it implies no key or value boundary (`day=2026-10` matches `day=2026-10-18`).
 - An empty result under a prefix means that no partition matches. A
   listing returns `ErrNotFound` only when it has no prefix and the dataset
   has no manifests (a view of such a dataset does not open).
-- On layouts without partitions, a non-empty prefix MUST return
-  `ErrPartitionPrefixNotSupported`.
+- On layouts without partitions, a listing with a non-empty prefix MUST
+  return `ErrPartitionPrefixNotSupported`.
 - The prefix MUST be a canonical fragment of a relative partition path, with
   no leading `/`, no `\` anywhere, and no empty, `.`, or `..` segment (a
   trailing `/` is permitted). The listing resolves the prefix beneath the
@@ -283,7 +288,8 @@ it implies no key or value boundary (`day=2026-10` matches `day=2026-10-18`).
 
 ## Manifests
 
-Manifests are immutable and authoritative.
+Manifests are immutable, and they are the authoritative record of a
+snapshot's contents.
 
 ### Minimum Required Fields
 
@@ -297,11 +303,11 @@ Manifests are immutable and authoritative.
 A blob dataset's reads (`BlobView.Read`, `Blobs.Read`) MUST return the raw
 bytes of the object that the manifest references.
 
-A manifest must be readable in a single fetch of a small object.
+A reader must be able to fetch a manifest in a single small-object read.
 
 ---
 
-## Range Read Use Cases
+## Range-Read Use Cases
 
 ### Columnar Formats (Parquet, Arrow)
 
@@ -336,18 +342,17 @@ Ownership). The root's **path names** govern the topology: the datasets,
 snapshots, partitions, segments, data, expired, and staged directories and
 the manifest file. The dataset's **Layout** governs partitioning
 (`Unpartitioned` or `Hive` with its keys). Together they govern:
-- how manifests are discovered (commit visibility)
-- how snapshot IDs are parsed from manifest paths
-- whether datasets are modeled (flat paths model no datasets), and how
-  dataset IDs are discovered
-- whether and how partitions are encoded in object paths
+- manifest discovery (commit visibility)
+- snapshot ID parsing from manifest paths
+- dataset modeling (flat paths model no datasets) and dataset ID discovery
+- partition encoding in object paths, if any
 
 Implementations compose the two internally and MUST reject incoherent
 combinations (an invalid or duplicate name, flat paths with a datasets
 directory).
 
-The library does **not strictly enforce** a directory topology. Users may
-configure layout strategies through an abstraction layer. The following is
+The library does **not strictly enforce** a directory topology, because
+users configure both the dataset's layout and the root's path names. The following is
 a **reference layout suitable for new users** (not a canonical one):
 
 ```
@@ -362,7 +367,7 @@ a **reference layout suitable for new users** (not a canonical one):
 
 Alternative layouts are valid provided that:
 - manifests remain discoverable through listing,
-- object paths recorded in manifests are accurate and resolvable, and
+- the object paths that manifests record are accurate and resolvable, and
 - the layout preserves the commit protocol of CONTRACT_CORE §Head Pointer.
 
 The layout abstraction enables efficient prefix listing and pruning on
@@ -381,7 +386,7 @@ information explicitly in manifests so that consumers can interpret it.
 The library SHOULD provide a **small, curated set** of layout
 implementations that combine soundly, to simplify adoption and avoid
 incoherent pairings. Examples include:
-- the default layout, suitable for new users
+- the default layout (dataset-scoped snapshots with flat data paths)
 - the Hive-style layout (key/value partitions encoded in paths)
 - the flat layout (minimal topology, without dataset enumeration)
 
@@ -390,7 +395,8 @@ discovery is always manifest-driven, but each layout still defines where
 discovery finds manifests and how it parses dataset and segment IDs from
 paths.
 
-Any additional layout MUST observe the same invariants.
+Any additional layout MUST satisfy the three conditions that §Layout states
+for alternative layouts.
 
 #### Default Layout
 

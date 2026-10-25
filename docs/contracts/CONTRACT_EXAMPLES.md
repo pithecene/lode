@@ -83,7 +83,7 @@ when a write carries no metadata, pass `nil`.
 | Variable | Purpose |
 |----------|---------|
 | `root` | A `*lode.Root` (or `readRoot` for a `*lode.ReadRoot`) |
-| `records` | A slice of records for `Write` or for backing an iterator |
+| `records` | A slice of records that a caller passes to `Write` or that backs an iterator |
 | `metadata` | A metadata value (a struct, a `lode.D`, or `nil`) |
 | `snapshot` | The snapshot returned by a write operation |
 | `ds` | A dataset handle (`Records[T]` or `Blobs`) |
@@ -97,7 +97,7 @@ when a write carries no metadata, pass `nil`.
 The project permits an ergonomic change before v1, such as reordering
 parameters, only when:
 
-1. the PR that changes the behavior also updates the contract,
+1. the PR that makes the change also updates the contract,
 2. the same PR updates [`PUBLIC_API.md`](../../PUBLIC_API.md),
 3. the same PR updates all tests,
 4. the same PR updates all examples, and
@@ -110,7 +110,7 @@ After the change, no call site may retain the former form.
 ## Agent Behavior
 
 Agents must:
-- stop and ask the maintainer if an example diverges from the conventions
+- stop and ask the maintainer when an example diverges from the conventions
   of [`PUBLIC_API.md`](../../PUBLIC_API.md)
 - stop and ask the maintainer before introducing a call-site pattern that
   this contract does not address

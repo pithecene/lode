@@ -24,20 +24,19 @@ data without reporting the conflict.
 - MUST write data to the given path.
 - Paths are slash-separated on every platform. A path that is empty, escapes
   the root, or contains a backslash MUST cause `Put` to return
-  `ErrInvalidPath`. Adapters
-  MUST NOT read a backslash as a separator. A path whose final segment
-  begins with the reserved prefix `.lode-tmp-` MUST also return
-  `ErrInvalidPath` on every adapter, because the filesystem adapter names
+  `ErrInvalidPath`. Adapters MUST NOT read a backslash as a separator. If
+  a path's final segment begins with the reserved prefix `.lode-tmp-`, `Put`
+  MUST also return `ErrInvalidPath` on every adapter, because the filesystem adapter names
   its temporary files with that prefix (below).
-- If it detects an existing path, it MUST return `ErrPathExists`.
+- If `Put` detects an existing path, it MUST return `ErrPathExists`.
 - The detection mechanism and its guarantee vary by upload path (see the
   table below).
-- On paths with a time-of-check-to-time-of-use (TOCTOU) interval, an
-  existing object may go undetected under concurrent writers.
-- It MUST be atomic wherever the adapter knows the outcome. On an error that
+- On upload paths with a time-of-check-to-time-of-use (TOCTOU) interval, a
+  concurrent writer can overwrite an existing object without detection.
+- `Put` MUST be atomic wherever the adapter knows the outcome. On an error that
   the adapter can observe, including an error from the supplied reader, the
-  adapter MUST leave the path as it was before the call. A `Put` that created an
-  object and then failed MUST remove it. If that removal itself fails, `Put`
+  adapter MUST leave the path as it was before the call. A `Put` that
+  created an object and then failed MUST remove it. If that removal itself fails, `Put`
   MUST return an error that reports both failures.
 - An object MUST become visible to `Get`, `Exists`, and `List` only once it
   is complete: a concurrent reader observes the whole object or none of it.
@@ -50,8 +49,8 @@ data without reporting the conflict.
   process umask. Temporary names begin with the
   reserved prefix `.lode-tmp-`, and `List` omits them. The adapter
   removes the temporary name after publishing. If that removal fails, or the
-  process ends first, an inert temporary file remains that no Lode operation
-  observes, and an operator may delete it.
+  process ends first, an inert temporary file remains. No Lode operation
+  observes it, and an operator may delete it.
 - A remote backend can accept an object and then lose the response (through
   a network or context timeout). The adapter MUST NOT attempt to resolve
   such an indeterminate outcome by deleting the key, because it cannot know
@@ -89,7 +88,8 @@ and the backend's capabilities:
 - SHOULD use conditional completion (for example, S3 `If-None-Match` on
   `CompleteMultipartUpload`) where the backend supports it, to guarantee
   atomically that the upload overwrites no existing object.
-- MAY perform a preliminary existence check so that it fails early.
+- MAY perform a preliminary existence check so that `Put` fails before the
+  upload when the path exists.
 - If the backend does not support conditional completion, MUST perform a
   preliminary existence check.
 - If the preliminary check detects an existing path, MUST return
@@ -140,15 +140,16 @@ Adapters MUST document:
 `ReadRange` and `ReaderAt` form the optional `RangeReader` interface
 (V1_API_DECISIONS D5). `RangeStore` is a `Store` that implements it. The
 built-in stores and the S3 adapter are `RangeStore`s, and their
-constructors and factories return that type. An adapter that cannot
-read ranges MUST NOT implement it, rather than implement methods that only
-return `ErrRangeReadNotSupported`.
+constructors and factories return that type. An adapter that cannot read
+ranges MUST omit the `RangeReader` interface rather than implement methods
+that only return `ErrRangeReadNotSupported`.
 
 Where a store's capability is static, the store's type expresses it, and a
 function that requires range reads takes a `RangeStore` parameter. Only
-code that accepts an arbitrary `Store` discovers the capability when it
-runs, and it MUST do so with a checked type assertion that reports
-`ErrRangeReadNotSupported`, never one that can panic.
+code that accepts an arbitrary `Store` discovers the capability at run
+time. Such code MUST use a checked type assertion, never one that can
+panic, and MUST report `ErrRangeReadNotSupported` when the assertion
+fails.
 
 ### `ReadRange`
 - MUST return bytes from `[offset, offset+length)` for the given path.
@@ -213,9 +214,9 @@ Separate constraints bound the remaining values that reach a key:
 ## Commit Semantics
 
 CONTRACT_CORE §Head Pointer states the commit protocol, including the point
-at which a commit is complete. An adapter's obligation is that `Put` makes an
-object visible only once it is complete (§Put), so that a manifest a reader
-observes is whole.
+at which a commit is complete. `Put` MUST make each object visible only
+once it is complete (§Put). A reader therefore never observes a partial
+manifest.
 
 ## Streamed Writes
 
@@ -223,8 +224,8 @@ observes is whole.
   commits the manifest.
 - Adapters MUST NOT provide any implicit commit signal beyond the commit
   protocol of CONTRACT_CORE §Head Pointer.
-- The guarantee against overwriting applies according to the `Put` path
-  (see §Put Upload Paths).
+- The guarantee against overwriting depends on the `Put` upload path (see
+  §Put Upload Paths).
 - Adapters MUST allow callers to remove partial objects through `Delete`.
 
 ### Streaming Write Atomicity
@@ -270,8 +271,9 @@ type ConditionalWriter interface {
 
 - The operation MUST be atomic: concurrent `CompareAndSwap` calls on the same
   path MUST NOT both succeed.
-- `expected == ""` means that the path must not exist or must be empty.
-  This rule accommodates the first commit.
+- An empty `expected` matches a path that does not exist or an object whose
+  content is empty. The first commit relies on this rule to create the
+  latest pointer.
 
 ### Implementation Notes
 
@@ -286,8 +288,8 @@ type ConditionalWriter interface {
 
 **S3 adapter:**
 - The conditional `PutObject` decides every outcome: `If-None-Match: *`
-  creates the object, and `If-Match` replaces exactly the version that was
-  compared. The adapter infers no outcome from its earlier records.
+  creates the object, and `If-Match` replaces exactly the version whose ETag
+  the adapter compared. The adapter infers no outcome from its earlier records.
 - When `expected` is empty, call `PutObject` with `If-None-Match: *` at
   once.
 - When the adapter itself replaced the object (with `If-Match`) and
@@ -295,13 +297,13 @@ type ConditionalWriter interface {
   on the ETag that S3 returned for that write, without reading the object
   first. The adapter records only versions that it wrote by replacement,
   one per object, each identified by a digest of the content. Objects that
-  are created once and never replaced, such as tombstones, therefore leave
-  no record. The adapter holds a bounded number of such records and evicts
+  the adapter creates once and never replaces, such as tombstones,
+  therefore leave no record. The adapter holds a bounded number of such records and evicts
   one when it reaches the limit. `Delete` discards the record of the
   deleted object. Neither eviction nor discarding affects any outcome.
 - Otherwise, call `GetObject` to read the current content and its ETag.
-  Also call `GetObject` when either conditional write reports that its
-  precondition failed or that the object no longer exists. Then compare
+  Also call `GetObject` when either conditional write reports a failed
+  precondition or a missing object. Then compare
   the content with `expected`, and call `PutObject` with `If-Match` on that
   ETag, or with `If-None-Match: *` if the object does not exist. The
   outcome is therefore the one that reading first would give: an
@@ -322,8 +324,9 @@ type ConditionalWriter interface {
 A backend that offers no conditional write cannot implement
 `CompareAndSwap` atomically across processes. `lode.SingleProcess(store)`
 converts its `ObjectStore` into a `Store` by serializing `CompareAndSwap`
-calls under a lock held by the process. `lode.SingleProcess` returns a
-store that already implements `ConditionalWriter` unchanged. Its `CompareAndSwap` MUST follow
+calls under a lock held by the process. `lode.SingleProcess` returns
+unchanged any store that already implements `ConditionalWriter`. Its
+`CompareAndSwap` MUST follow
 the semantics table above. It serializes only callers that share the
 returned value within one process, and its replacement is a `Delete`
 followed by a `Put`, so a failed `Put` leaves the path absent. Reads
@@ -360,7 +363,7 @@ definitions.
 | `ReaderAt` | 1 to open, and 1 per `ReadAt` call | O(L) per call |
 | `List` | ⌈N/page⌉ | **O(N), fully materialized** |
 
-### Full Materialization of List
+### Full `List` Materialization
 
 `Store.List` returns a `[]string`, so all matching keys accumulate in
 memory. Full materialization is a **documented constraint of the

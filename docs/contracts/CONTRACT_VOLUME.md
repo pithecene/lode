@@ -34,30 +34,30 @@ A Volume is a logical byte address space `[0..N)`, identified by `ID` and
 
 A snapshot is an immutable commit that records the **cumulative** set of
 all verified, committed blocks across the volume's history. Each snapshot is
-self-contained: its manifest is the sole authority for read visibility at
-that point in time.
+self-contained: its manifest alone determines which data a reader of that
+snapshot can read.
 
 ### SnapshotID
 
-A `SnapshotID` is a stable identifier for a committed Volume snapshot,
-generated in the same form as `DatasetSnapshotID` (CONTRACT_CORE §Snapshot
-ID).
+A `SnapshotID` is a stable identifier for a committed Volume snapshot.
+Volume generates it in the same form as `DatasetSnapshotID` (CONTRACT_CORE
+§Snapshot ID).
 
 ### BlockRef
 
 A `BlockRef` references a staged or committed byte block by offset, length,
 and object path. A block is not committed until a snapshot manifest includes it.
 
-Note: `BlockRef` is a Volume concept. The dataset read API uses
+`BlockRef` is a Volume type. The dataset read API uses
 `ManifestRef` for dataset manifest locators.
 
 ### Volume Manifest
 
 A Volume manifest is the authoritative description of a snapshot's
 committed blocks. Manifests are **cumulative**: each manifest contains the
-complete set of committed blocks, not only the blocks added in that commit,
-so a reader can interpret every snapshot independently, without traversing
-the chain.
+complete set of committed blocks, not only the blocks that its own commit
+added, so a reader can interpret any snapshot without traversing the
+chain.
 
 ---
 
@@ -67,7 +67,7 @@ Volume manifests MUST include at least:
 - the schema name and version
 - the volume ID
 - the snapshot ID
-- the parent snapshot ID, when applicable
+- the parent snapshot ID, except in the first snapshot
 - the total length
 - the creation time
 - an explicit metadata object
@@ -81,8 +81,8 @@ Each committed block MUST record:
 - checksum metadata, when configured
 
 Manifests are cumulative:
-- Each manifest contains the complete set of committed blocks from all
-  prior commits, plus the blocks added in this commit.
+- Each manifest contains every block that earlier commits committed, plus
+  the blocks that its own commit adds.
 - A single manifest suffices to determine complete read visibility.
 - Interpreting a snapshot requires no traversal of the chain.
 
@@ -94,7 +94,7 @@ Absence is meaningful:
 
 ## Write Lifecycle
 
-The Volume write lifecycle is explicit:
+The Volume write lifecycle consists of three explicit steps:
 
 1. **Stage**: the caller writes data to its final storage path. Staged data is not
    visible to readers, because no manifest references it. Staged data files
@@ -104,7 +104,7 @@ The Volume write lifecycle is explicit:
 3. **Commit**: Volume records the verified blocks in a new immutable
    snapshot manifest, together with all previously committed blocks.
 
-Rules:
+The following rules govern the write lifecycle:
 - Unverified or uncommitted blocks MUST NOT appear in committed manifests.
 - Commit visibility is manifest-driven, as for Datasets.
 - Snapshots are immutable once committed.
@@ -123,8 +123,8 @@ readers, exactly as for a Dataset's partial writes.
 
 - Abandoned staged data, which no commit references, is harmless but may
   remain in storage.
-- Removing orphaned staged data is the caller's responsibility.
-- No Volume-level `Abort` API is required.
+- The caller removes abandoned staged data.
+- This contract requires no Volume-level `Abort` API.
 - Volume performs no implicit background removal.
 
 ### Resumption Semantics
@@ -145,11 +145,11 @@ Volume serves reads by byte range:
 - `ReadAt(snapshotID, offset, length)` succeeds only if committed blocks
   cover the entire requested range.
 
-Required behavior:
+A range read MUST behave as follows:
 - If any part of the range is missing, the read returns an explicit
   missing-range error.
 - A read never fills missing bytes with zeros.
-- A committed read path never succeeds partially.
+- A read of committed data never succeeds partially.
 - A read of a snapshot MUST reflect exactly the state of its manifest at
   commit time.
 
@@ -231,8 +231,8 @@ func New(id ID, storeFactory lode.Factory[lode.RangeStore], totalLength int64, o
 ### Volume Options
 
 Volume has its own `Option` type. Dataset options (`DatasetOption`,
-`ViewOption`, and `RootOption`) are different types, so the compiler
-rejects them. Volume provides the following options:
+`ViewOption`, and `RootOption`) have different types, so the compiler
+rejects them as Volume options. Volume provides the following options:
 
 - `WithChecksum(c lode.Checksum)`: integrity checksums on staged blocks
   (disabled by default).
@@ -250,7 +250,7 @@ Dataset.
 
 ### API Constraints
 
-- `StageWriteAt` MUST NOT make anything visible in a snapshot.
+- `StageWriteAt` MUST NOT make any block visible in a snapshot.
 - `Commit` MUST make blocks visible only through the manifest and MUST
   produce an immutable snapshot.
 - `Commit` MUST include at least one new block.
@@ -283,12 +283,13 @@ Dataset.
   does not prevent later commits.
 - The pointer can name a snapshot that has neither a canonical manifest
   nor a staged copy. This state arises when a release earlier than v0.11.0
-  persisted the commit or when someone edited the pointer manually. Commit
-  MUST then return `lode.ErrSnapshotConflict`, because it cannot merge the
-  parent's blocks. If the caller configures retries, Commit retries. Commits return
-  `lode.ErrSnapshotConflict` until the pointer names a snapshot that has a
-  manifest: either the missing manifest is persisted, or an operator sets
-  the pointer to an earlier snapshot. A `Volume` value that remembers an
+  persisted the commit or when an operator edited the pointer manually.
+  Commit MUST then return `lode.ErrSnapshotConflict`, because it cannot
+  merge the parent's blocks. If the caller configures retries, Commit
+  retries. Commits return `lode.ErrSnapshotConflict` until the pointer
+  names a snapshot that has a manifest: either an operator persists the
+  missing manifest, or an operator sets the pointer to an earlier
+  snapshot. A `Volume` value that remembers an
   earlier head continues to expect that head's pointer content. After the
   repair, the caller MUST therefore call `Latest` or open the volume again,
   unless retries are configured (each retry refreshes the head).
@@ -316,9 +317,10 @@ The snapshot history of a Volume is linear.
 
 Volume detects concurrent commits and returns `ErrSnapshotConflict`.
 
-Volume detects conflicts as a Dataset does (see [`CONTRACT_WRITE_API.md`](CONTRACT_WRITE_API.md)
-§Optimistic Concurrency (CAS)), and only the snapshot ID of a retry
-differs. Conflict detection consists of three steps:
+Volume detects conflicts as a Dataset does (see
+[`CONTRACT_WRITE_API.md`](CONTRACT_WRITE_API.md) §Optimistic Concurrency
+(CAS)). The two differ only in how a retry assigns the snapshot ID.
+Conflict detection consists of three steps:
 - `Commit` records the expected parent when it resolves the parent.
 - `Commit` updates the pointer with `CompareAndSwap`.
 - An obsolete parent produces `ErrSnapshotConflict`.
@@ -348,7 +350,7 @@ not retryable. If the caller configures `WithRetryObserver(fn)`, `Commit`
 calls `fn` once per retry, before step 1. When `Commit` exhausts all
 retries, it returns `ErrSnapshotConflict` as it does without retries.
 
-**Single-writer compatibility:**
+Optimistic concurrency preserves compatibility with single-writer workflows:
 - Single-writer workflows are unaffected.
 - External coordination remains valid but is not required.
 
@@ -403,7 +405,7 @@ have distinct semantics:
 A workflow that requires sparse, resumable, out-of-order, or range-verified
 data belongs to `Volume`, not to `Dataset`.
 
-Design discipline:
+Two design principles maintain this boundary:
 - Adapters remain minimal, and lifecycle semantics remain in the Lode core.
 - Policy that depends on the runtime (scheduling, peer management, execution
   strategy) belongs in consuming systems, not in Lode.
@@ -465,8 +467,8 @@ committed blocks and do not store it as a separate flag.
 The following invariants MUST hold:
 
 1. A snapshot's manifest is the sole authority for read visibility.
-2. Each manifest is self-contained (its blocks are cumulative, so no
-   traversal of the chain is needed).
+2. Each manifest is self-contained: its blocks are cumulative, so a reader
+   need not traverse the chain.
 3. No data is readable unless a committed snapshot references it.
 4. All committed blocks are immutable.
 5. Committed blocks within a snapshot MUST NOT overlap.

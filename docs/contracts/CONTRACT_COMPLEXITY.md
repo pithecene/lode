@@ -35,10 +35,11 @@ scale with the size of a dataset's or volume's history.
 
 ### Path Classification
 
-- Hot path: incurred on every read or write. A cost of O(S), O(B), or O(M)
+- Hot path: the path that every read or write takes. A cost of O(S), O(B), or O(M)
   is a defect.
 - Cold path: explicit listing (`Snapshots()`, `ListDatasets`). This
-  contract documents the cost and acknowledges its scaling.
+  contract documents the cost and permits it to grow with the dataset's
+  history.
 - Degraded path: a fallback for backward compatibility (a scan when the
   pointer is absent). This contract documents the cost, and the next commit
   restores the pointer.
@@ -75,12 +76,13 @@ Parent resolution incurs the following store calls:
   adds 1 tombstone `Get` per snapshot scanned, and 1 `Exists` of the
   canonical manifest for each scanned snapshot that has a tombstone. It
   proceeds from the newest snapshot until it finds one that is not
-  expired. The scan creates a missing pointer but never replaces an
-  existing one (CONTRACT_CORE §Head Pointer).
+  expired. The scan creates the pointer when it is absent but never
+  replaces an existing pointer (CONTRACT_CORE §Head Pointer).
 
 Parent resolution MUST NOT use `List` when a valid pointer exists.
 
-The following exceptions each occur once (CONTRACT_WRITE_API §Settings):
+The following one-time costs add to the fixed counts in the table above
+(CONTRACT_WRITE_API §Settings):
 - A dataset's first commit adds 1 `Put` and 1 `Delete` for its staged manifest.
 - A writer's settings check, before its first commit, costs 1 `Get` of the
   manifest that the pointer names, or 2 `Get` calls while a first commit is
@@ -114,14 +116,16 @@ The following exceptions each occur once (CONTRACT_WRITE_API §Settings):
 | `Root.Records`, `Root.Blobs` (warm: the pointer names a manifest) | 1 `Get` of the pointer + 1 `Get` of the manifest |
 | `Root.Records`, `Root.Blobs` (empty dataset) | 1 `Get` of the pointer + the scan fallback + 1 `List` of the dataset's directory |
 | `ReadRoot.Records`, `ReadRoot.Blobs` (warm) | 1 `Get` of the pointer + at most 2 `Get` calls of the manifest |
-| `ReadRoot.Records`, `ReadRoot.Blobs` (no pointer) | 1 `Get` of the pointer + the scan fallback of each grammar |
+| `ReadRoot.Records`, `ReadRoot.Blobs` (no pointer) | 1 `Get` of the pointer + the scan fallback under each manifest directory (snapshots and segments) |
 
 A view cannot determine whether the dataset is partitioned before it reads
 a manifest. It therefore reads the canonical manifest under the snapshots
-directory first and under the segments directory second. At most one
-exists. Opening writes nothing. A writer's open check is the settings check
-of CONTRACT_WRITE_API §Settings Check. After that check completes, commits
-maintain the bounds above.
+directory first and under the segments directory second. Because at most
+one of the two manifests exists, the view needs no further reads, and
+opening a handle writes nothing to the store. A writer's open check is the
+settings check of CONTRACT_WRITE_API §Settings Check. After that check
+completes, each commit incurs only the costs in the Dataset Write
+Operations table.
 
 ---
 
@@ -137,8 +141,8 @@ maintain the bounds above.
 
 `ListManifests` MUST extract snapshot IDs from paths, and CONTRACT_ERRORS.md
 requires manifest validation. `ListPartitions` MUST NOT deserialize any
-manifest twice. On layouts that model partitions, `Prefix` reduces N and M
-to the matching subtree. The listing applies `StartAfter` and `Limit` after
+manifest twice. On layouts that model partitions, `Prefix` limits N and M
+to the keys and manifests in the matching subtree. The listing applies `StartAfter` and `Limit` after
 enumeration, so they bound the result set but not the store calls. Sorting
 adds O(N log N) CPU and no store calls.
 
@@ -170,8 +174,8 @@ The store calls of `Sweep`, with T tombstones and D objects deleted
 - at most 1 `Exists` per manifest path of each unlisted-manifest group
   older than the grace period
 - D `Delete` calls
-- 1 `Get`, 1 `Put` per missing partition copy, and 1 tombstone `Get` for
-  each unindexed snapshot older than the grace period
+- for each unindexed snapshot older than the grace period, 1 `Get`, 1
+  `Put` per missing partition copy, and 1 tombstone `Get`
 
 `Expire` with `Partition` lists only that partition's subtree. Otherwise, N
 counts every key under the snapshot prefix. Without a pointer, retention

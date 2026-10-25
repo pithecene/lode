@@ -32,10 +32,11 @@ head when it opens (§Settings).
 ### Required Behavior
 
 - `Write(ctx, data, metadata)` MUST create a new snapshot on success.
-- Metadata MUST encode as a JSON object (a struct, a map, or `nil`). The
-  writer MUST reject with `ErrInvalidArgument`, before any store call, a
-  value that does not encode as a JSON object. `nil` metadata MUST be persisted as `{}`.
-- Empty metadata is valid and MUST be persisted explicitly.
+- Metadata MUST encode as a JSON object (a struct, a map, or `nil`). Before
+  any store call, the writer MUST reject with `ErrInvalidArgument` any
+  value that does not encode as a JSON object. The writer MUST persist
+  `nil` metadata as `{}`.
+- Empty metadata is valid, and the writer MUST persist it explicitly.
 - The new snapshot MUST reference the previous snapshot, if any, as its parent.
 - Writes MUST NOT mutate existing snapshots or manifests.
 - The manifest MUST include all required fields defined in [`CONTRACT_CORE.md`](CONTRACT_CORE.md)
@@ -54,18 +55,18 @@ are the codec name and description (`Codec.Describe`), the compressor, the
 checksum algorithm, the partitioner and its keys, and the path names.
 
 - When it opens, and again before its first commit, a writer MUST compare
-  its settings with one manifest, found in this order:
+  its settings with the first of the following manifests that exists:
   1. the manifest of the snapshot that the pointer names
   2. that snapshot's staged copy (CONTRACT_CORE §Head Pointer)
-  3. when the pointer is absent or names neither, the newest manifest, as
-     `Latest` selects it
+  3. the newest manifest, as `Latest` selects it, when the pointer is
+     absent or neither preceding manifest exists
 
   With no pointer and no manifest, the dataset is empty, and the writer's
   first commit records the writer's settings, unless the dataset directory
   holds a manifest that the writer's layout does not persist.
-- A dataset directory that holds such a manifest, when no manifest is found
-  under the writer's layout, contains a history persisted under another
-  layout. The writer MUST be rejected with `ErrSettingsMismatch` rather
+- When the writer finds no manifest under its own layout and the dataset
+  directory holds such a manifest, the directory contains a history
+  persisted under another layout. The writer MUST be rejected with `ErrSettingsMismatch` rather
   than begin a second history beside it. The writer recognizes a manifest
   by its file name alone, without reading any object. That name is either
   the writer's own manifest name or the default name, which every manifest
@@ -78,17 +79,18 @@ checksum algorithm, the partitioner and its keys, and the path names.
   either commits. A dataset under another datasets directory (the flat
   layout's `<id>` rather than `datasets/<id>`) is another dataset
   (V1_API_DECISIONS D11).
-- Lode MUST reject, with `ErrSettingsMismatch`, a writer whose settings
-  differ, and the writer MUST NOT commit. Lode does not
-  retry after this rejection.
+- Lode MUST reject with `ErrSettingsMismatch` a writer whose settings
+  differ from those of the manifest it checks, and the writer MUST NOT
+  commit. Lode does not retry after this rejection.
 - A pointer that names a snapshot with neither a manifest nor a staged copy,
   in a dataset with no other manifest, belongs to a first commit whose
   settings are unknown. The writer MUST return `ErrSnapshotConflict` rather
   than commit unchecked settings. Only a first commit persisted before
   format version 1.1.0, or a pointer edited by hand, produces that state.
-- Two first commits with conflicting settings are serialized by the
-  pointer's `CompareAndSwap`: the losing writer is checked against the
-  winner's manifest after it refreshes the head, and is rejected. A writer
+- The pointer's `CompareAndSwap` serializes two first commits with
+  conflicting settings: after the losing writer refreshes the head, Lode
+  checks its settings against the winner's manifest and rejects the
+  writer. A writer
   can lose a commit conflict before Lode has compared it with any manifest.
   Lode then compares the writer's settings with the winner's manifest,
   whatever the writer's retry budget, and returns the conflict only when
@@ -100,10 +102,11 @@ checksum algorithm, the partitioner and its keys, and the path names.
   manifest compares fewer settings, so a writer checks again after a
   conflict.
 - A manifest written before format version 1.1.0 records no partition keys.
-  For such a dataset with a Hive partitioner, Lode MUST verify the writer's
-  keys, by name and in order, against the partition path of the first
-  snapshot with files. The writer finds that snapshot by following parents
-  from the head. A chain without files back to its root accepts any keys.
+  When such a dataset uses a Hive partitioner, Lode MUST verify the names
+  and order of the writer's keys against the partition path of the first
+  snapshot that has files. The writer finds that snapshot by following parents
+  from the head. When no snapshot back to the root has files, Lode accepts
+  any keys.
   When the chain ends at a missing or expired parent, or repeats a
   snapshot, before it reaches a snapshot with files, Lode cannot verify the
   keys and MUST reject the write with `ErrSettingsMismatch`.
@@ -117,7 +120,7 @@ checksum algorithm, the partitioner and its keys, and the path names.
   unit.
 - `StreamWriter.Commit(ctx)` MUST write the manifest and return the new snapshot.
 - A snapshot MUST NOT be visible before `Commit` writes the manifest.
-- `StreamWriter.Abort(ctx)` MUST ensure that no manifest is written.
+- `StreamWriter.Abort(ctx)` MUST NOT write a manifest.
 - `StreamWriter.Close()` without a preceding `Commit` MUST behave as `Abort`.
 - Streamed writes MUST be single-pass writes to the final object path.
 - Streamed writes MUST NOT mutate existing objects, so every write targets a
@@ -126,18 +129,18 @@ checksum algorithm, the partitioner and its keys, and the path names.
 - When the caller configures a checksum component, the writer MUST compute
   the checksum during streaming and record it in the manifest for each file
   that it writes.
-- The store's `Put` can return before consuming the stream, for example
-  with `ErrPathExists`. Every `Write` call issued after `Put` returned, and
-  `Commit`, MUST then fail with that error, even when a compressor would
-  buffer the bytes. These calls MUST NOT block.
+- The store's `Put` can return an error, such as `ErrPathExists`, before
+  consuming the stream. Every later `Write` call and the `Commit` call MUST
+  then fail with that error without blocking, even when a compressor would
+  buffer the bytes.
 - After a failed `Put`, the writer MUST NOT access the data path. `Put` is
   atomic ([`CONTRACT_STORAGE.md`](CONTRACT_STORAGE.md) §Put), so a failed stream leaves no object
   of its own, and a path whose `Put` returned `ErrPathExists` belongs to
   another writer. The writer removes a data object only when its `Put`
   succeeded and its commit failed before the writer attempted any manifest
-  write. A failed manifest write does not show whether the store persisted
-  the manifest, because the store may persist it and lose only the
-  response, so the snapshot may be visible. The writer MUST then retain the
+  write. A failed manifest write leaves the outcome unknown: the store may
+  have persisted the manifest and lost only the response, in which case
+  the snapshot is visible. The writer MUST then retain the
   data object, and `Sweep` reclaims it if the commit did fail.
 
 ### Records.StreamWrite Semantics
@@ -158,17 +161,17 @@ checksum algorithm, the partitioner and its keys, and the path names.
   targets a new path.
 - On success, `Records.StreamWrite` writes the manifest and returns the new
   snapshot.
-- On error (an iterator failure, a codec error, or a storage error), no
-  manifest is written. A failed `Put` leaves no object ([`CONTRACT_STORAGE.md`](CONTRACT_STORAGE.md)
-  §Put). The writer attempts to delete a data object whose `Put` succeeded
-  if the commit failed before the writer attempted any manifest write, and
-  it retains the object otherwise, as for `Blobs.StreamWrite`.
+- On error (an iterator failure, a codec error, or a storage error),
+  `Records.StreamWrite` writes no manifest. A failed `Put` leaves no object ([`CONTRACT_STORAGE.md`](CONTRACT_STORAGE.md)
+  §Put). If the commit fails before any manifest write, the writer attempts
+  to delete the data object from its successful `Put`. Otherwise, the
+  writer retains the object, as it does for `Blobs.StreamWrite`.
 - If the store's `Put` returns before consuming the stream,
   `Records.StreamWrite` MUST return that error in preference to any iterator
   or finalization error reported afterward, and MUST NOT block on the store
   or the pipe. `Records.StreamWrite` examines the `Put` result before the
-  first record, after the iterator produces each result, after it writes
-  each record, and after the iterator ends. Lode cannot interrupt the
+  first record, after the iterator produces each result, after
+  `Records.StreamWrite` writes each record, and after the iterator ends. Lode cannot interrupt the
   caller's iterator: while the iterator blocks to produce a result,
   `Records.StreamWrite` blocks as well, and it reports the storage error
   when the iterator returns. The writer MUST NOT
@@ -185,7 +188,7 @@ checksum algorithm, the partitioner and its keys, and the path names.
 
 - When records implement the `Timestamped` interface, `Records.Write` MUST
   compute `MinTimestamp` and `MaxTimestamp` from the data. Lode decides
-  once, when the handle opens, whether the record type can implement the
+  once, when the handle opens, whether the record type implements the
   interface.
 - `Records.Write` extracts timestamps by calling `Timestamp()` on each
   record that implements the interface.
@@ -239,8 +242,8 @@ Lode detects concurrent commits and returns `ErrSnapshotConflict`.
 The commit detects concurrent writers in three steps:
 - At commit time, the writer records the expected parent snapshot ID.
 - The commit writes the latest pointer with `CompareAndSwap`.
-- If the pointer content differs from the expected parent (because another
-  writer committed after `Latest()` was read), the commit returns
+- If the pointer content differs from the expected parent because another
+  writer committed after this writer read `Latest()`, the commit returns
   `ErrSnapshotConflict`.
 
 A caller retries a commit manually in four steps:
@@ -281,22 +284,22 @@ retry.
 - The writer calls `fn` exactly once per retry attempt, after it receives
   `ErrSnapshotConflict` and before the backoff interval.
 - `fn` receives the retry attempt number, counted from 1.
-- `fn` is never called for the initial attempt, so the number of calls
-  equals the number of retries performed.
-- `fn` is called synchronously on the committing goroutine and MUST NOT
-  block.
+- The writer never calls `fn` for the initial attempt, so the number of
+  calls equals the number of retries performed.
+- The writer calls `fn` synchronously on the committing goroutine, and the
+  callback MUST NOT block.
 - `fn` has no effect on retry decisions or results.
 - The constructor rejects a `nil` `fn`.
 
 CAS requires no activation:
 - CAS is always enabled, because every store implements
   `ConditionalWriter`.
-- No configuration is required.
+- CAS requires no configuration.
 
 CAS remains compatible with single-writer use:
 - Single-writer workflows are unaffected. CAS succeeds on every commit
   when no concurrent writer is active.
-- External coordination remains valid but is not required.
+- Callers may still coordinate externally, but CAS does not require it.
 
 ### Concurrent Blob Write Safety
 
@@ -304,7 +307,7 @@ A caller may safely issue `Store.Put` calls to distinct paths concurrently.
 Each data file has a unique path within its snapshot, and the writer never
 modifies a data file after persisting it.
 
-However, each `Write` or `StreamWrite` call creates a new snapshot, which
+However, each `Write` or `StreamWrite` call creates a new snapshot and
 updates the latest pointer. **The serialization point is the pointer update,
 not the data write.**
 
@@ -323,10 +326,10 @@ Backends that support conditional completion, such as S3 with
 `If-None-Match`, provide two guarantees:
 - Both the atomic and the multipart paths check atomically that the upload
   overwrites no existing object.
-- No coordination beyond the adapter is required.
+- The caller needs no coordination beyond the adapter.
 
-Backends that do not support conditional completion impose two
-conditions:
+Backends that do not support conditional completion carry a risk and an
+obligation for the caller:
 - The multipart path has a time-of-check-to-time-of-use (TOCTOU) interval
   between the preliminary check and completion.
 - Callers MUST therefore either ensure single-writer semantics for each
@@ -371,8 +374,8 @@ and a glossary of variables.
 
 - In-memory cache (within a process): **0 store calls**.
 - Persistent pointer (cold start): **1 store call** (1 `Get`). The
-  snapshot that the pointer names is the parent even when its manifest has
-  not been persisted, because it may belong to a pending commit. Adopting
+  snapshot that the pointer names is the parent even without a persisted
+  manifest, because it may belong to a pending commit. Adopting
   any other parent would fork the history (CONTRACT_CORE §Head Pointer).
 - Scan fallback (absent pointer, for backward compatibility): **O(N) through
   List**. The commit then creates the pointer.

@@ -39,8 +39,8 @@ A dataset's paths have two sources (V1_API_DECISIONS D11).
   not empty, `.`, or `..`, without `/` or a backslash, and not beginning
   with `.lode-tmp-`. A name MUST NOT contain `=`, which marks a partition
   segment.
-- The names a root uses MUST be distinct, and none MAY be `latest`, the
-  pointer's name. The pointer's name is not configurable. The writers of a
+- The names a root uses MUST be distinct, and each name MUST differ from
+  `latest`, the pointer's name. The pointer's name is not configurable. The writers of a
   dataset coordinate at the pointer, and a second pointer name would let
   two roots commit independent histories over shared snapshot paths.
 - Flat paths omit the datasets and snapshots directories, so a root MUST
@@ -52,14 +52,15 @@ A dataset's paths have two sources (V1_API_DECISIONS D11).
 - The names are part of a dataset's address, as the store is. Each manifest
   records them (CONTRACT_CORE §Manifest Requirements). Lode MUST reject
   with `ErrSettingsMismatch` any writer or view whose names differ from
-  those that the dataset's head manifest records. A manifest of format version 1.0.0
-  records no names: it was persisted under the default names, flat or not
-  according to where it lies, and a root with other names MUST be rejected
-  by it.
+  those that the dataset's head manifest records. A manifest of format
+  version 1.0.0 records no names. Lode reads such a manifest as persisted
+  under the default names, in the flat or the default structure according
+  to its location, and MUST reject any root whose names differ.
 - A root whose datasets directory differs addresses another prefix and sees
-  another dataset. A root whose other names differ shares the pointer. If
-  that root finds the manifest that the pointer names, the names recorded
-  in that manifest reject the root. If it does not, a writer returns `ErrSnapshotConflict`, as for a
+  another dataset. A root whose other names differ shares the pointer.
+  When that root finds the pointer's manifest, Lode compares the names
+  that the manifest records and rejects the root. If the root does not find
+  that manifest, a writer returns `ErrSnapshotConflict`, as for a
   pending commit, and never appends.
 - Lode recognizes another history's manifest by its file name, from a
   listing alone. That name is either the root's manifest name or the
@@ -128,7 +129,7 @@ The following rules also apply:
   by description (`Codec.Describe`), a deterministic, canonical form of its
   configuration. Equal configurations MUST yield equal descriptions. A
   description omits settings that affect neither the records in a file nor
-  their decoding, such as the internal compression of a Parquet file.
+  their decoding, such as a Parquet file's internal compression.
 
 ---
 
@@ -137,7 +138,7 @@ The following rules also apply:
 - Canonical NoOp implementations MUST exist.
 - A Dataset configuration MUST NEVER use a `nil` partitioner or compressor.
 - Manifests MUST record `partitioner = "noop"` and `compression = "noop"`
-  when applicable.
+  when the dataset uses the corresponding NoOp partitioner or compressor.
 - When a dataset configures no codec, manifests MUST omit codec fields.
 
 ---
