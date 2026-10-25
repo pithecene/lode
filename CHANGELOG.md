@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- **A volume ID must be one path segment**: `volume.New` returns `ErrInvalidArgument` for an ID that is empty, `.`, or `..`, that contains `/` or a backslash, or that begins with `.lode-tmp-`, as a dataset ID does. Lode cleaned the paths it built from an ID, so an ID such as `../datasets/events` addressed objects outside the volume's directory, including a dataset's pointer, and an ID such as `a/data` addressed the objects of the volume `a`.
+- **A compressor's extension must not contain `/` or a backslash**: `WithCompressor` on a writer returns `ErrInvalidArgument` for such an extension. A writer appends the extension to each data file's name, so an extension such as `/../x` placed data files outside the snapshot's directory.
+
+### Fixed
+
+- **A snapshot ID can no longer reach another dataset**: `Snapshot`, `Read`, and `GetManifest` return `ErrNotFound` for a snapshot ID that is not one path segment, because no snapshot has such an ID. Lode cleaned the paths it built from the ID, so an ID such as `../../b/snapshots/<id>`, given to the handle of the dataset `a`, read the dataset `b`. Volume's `Snapshot` and `ReadAt` apply the same rule.
+
+### Upgrade Notes
+
+- **Volume IDs**: open a volume under an ID that is one path segment. A volume persisted under an ID that contains `/` no longer opens.
+- **Custom compressors**: give a compressor an extension without `/` or a backslash.
+
 ---
 
 ## [0.12.0] - 2026-10-23

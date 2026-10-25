@@ -98,6 +98,11 @@ func WithCompressor(c Compressor) ComponentOption {
 			if validate.Nil(c) {
 				return validate.Argument("compressor must not be nil")
 			}
+			// A writer names each data file by its role and this extension
+			// (CONTRACT_STORAGE §Names in Keys).
+			if ext := c.Extension(); !storepath.Segment(dataFile + ext) {
+				return validate.Argument("WithCompressor: extension %q must keep a data file name %s", ext, storepath.SegmentRule)
+			}
 			cfg.compressor = c
 			return nil
 		},
@@ -358,6 +363,9 @@ func (d *dataset) ID() DatasetID {
 // An expired snapshot is reported before that scan: its partition manifests
 // may outlive the canonical one, and the scan would resurrect it.
 func (d *dataset) Snapshot(ctx context.Context, id DatasetSnapshotID) (*DatasetSnapshot, error) {
+	if err := validateSnapshotID(id); err != nil {
+		return nil, err
+	}
 	s, err := d.history.Snapshot(ctx, id)
 	if errors.Is(err, ErrNotFound) {
 		if expired := d.tombstones().expiredError(ctx, id); expired != nil {
@@ -531,12 +539,22 @@ func (d *dataset) matchChecksum(m *Manifest) error {
 }
 
 // validateDatasetID rejects an ID that is not one canonical path segment
-// (storepath.Segment): Lode cleans the paths it builds from an ID, so that
-// "a/../events" would otherwise address "events" (CONTRACT_ERRORS §Dataset
-// IDs).
+// (CONTRACT_STORAGE §Names in Keys): Lode cleans the paths it builds from an
+// ID, so that "a/../events" would otherwise address "events".
 func validateDatasetID(id DatasetID) error {
 	if !storepath.Segment(string(id)) {
-		return validate.Argument("dataset ID %q must be one path segment: not empty, \".\" or \"..\", without \"/\" or a backslash, and not beginning with %q", id, storepath.ReservedPrefix)
+		return validate.Argument("dataset ID %q must be %s", id, storepath.SegmentRule)
+	}
+	return nil
+}
+
+// validateSnapshotID reports ErrNotFound for a snapshot ID that is not one
+// canonical path segment (CONTRACT_STORAGE §Names in Keys): no snapshot has
+// such an ID, and a handle builds the paths of a snapshot from its ID, so
+// "../../b/snapshots/<id>" would otherwise read the dataset b.
+func validateSnapshotID(id DatasetSnapshotID) error {
+	if !storepath.Segment(string(id)) {
+		return fmt.Errorf("lode: snapshot %q: a snapshot ID is %s: %w", id, storepath.SegmentRule, ErrNotFound)
 	}
 	return nil
 }

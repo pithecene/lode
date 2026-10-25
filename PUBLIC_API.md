@@ -547,7 +547,11 @@ data.
 - A partition that names other keys than the layout's fails the write.
 - `Hive` requires at least one key; each key must be one path segment
   without `=`.
-- A dataset ID must be one path segment; `=` is permitted.
+- A dataset ID must be one path segment; `=` is permitted. A volume ID must
+  be one path segment as well, and a snapshot ID that is not one segment
+  names no snapshot (`ErrNotFound`).
+- A custom compressor's extension must not contain `/` or a backslash,
+  because a writer appends it to each data file's name.
 - `ListDatasets` returns `ErrNoManifests` when storage has objects but no
   manifests, and `ErrDatasetsNotModeled` for flat paths.
 - `ListDatasets` results are in lexicographic order of ID, `ListPartitions`

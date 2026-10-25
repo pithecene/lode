@@ -165,7 +165,8 @@ The public Volume API is explicit and minimal, and it is composed of the
 with `lode.` denote the shared types that it uses):
 
 ```go
-// ID uniquely identifies a volume.
+// ID uniquely identifies a volume. It is one path segment
+// (CONTRACT_STORAGE §Names in Keys).
 type ID string
 
 // SnapshotID uniquely identifies an immutable volume snapshot.

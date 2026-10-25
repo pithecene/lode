@@ -37,6 +37,11 @@ func TestErrInvalidArgument_Classification(t *testing.T) {
 	}{
 		{"New nil factory", func() error { _, err := New("v", nil, 1); return err }, "store factory"},
 		{"New empty ID", func() error { _, err := New("", factory, 1); return err }, "volume ID"},
+		{"New ID escaping the volumes directory", func() error { _, err := New("../datasets/events", factory, 1); return err }, "volume ID"},
+		{"New ID with a slash", func() error { _, err := New("a/data", factory, 1); return err }, "volume ID"},
+		{"New dot ID", func() error { _, err := New("..", factory, 1); return err }, "volume ID"},
+		{"New ID with a backslash", func() error { _, err := New(`a\b`, factory, 1); return err }, "volume ID"},
+		{"New ID with the reserved prefix", func() error { _, err := New(".lode-tmp-x", factory, 1); return err }, "volume ID"},
 		{"New non-positive length", func() error { _, err := New("v", factory, 0); return err }, "total length"},
 		{"New nil store", func() error { _, err := New("v", nilStore, 1); return err }, "nil store"},
 		{"WithRetryCount negative", func() error { _, err := New("v", factory, 1, WithRetryCount(-1)); return err }, "WithRetryCount: n must be non-negative"},

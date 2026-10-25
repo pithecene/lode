@@ -181,6 +181,15 @@ This document maps contract requirements to the tests that verify them.
 
 ### CONTRACT_STORAGE.md — Storage Adapter
 
+**Names in Keys**
+
+| Requirement | Test |
+|-------------|------|
+| Every entry point of `lode` that takes a dataset or snapshot name reaches no key outside its own dataset's directory; a dataset ID that is not one segment returns `ErrInvalidArgument` before any store call, and such a snapshot ID returns `ErrNotFound` | `TestKeyScope_EveryEntryPoint` (`lode`) |
+| Every entry point of `lode/volume` that takes a volume or snapshot name reaches no key outside its own volume's directory, with the same errors | `TestKeyScope_EveryEntryPoint` (`lode/volume`) |
+| The cases of each test match the entry points that its package declares, so a new entry point without a case fails the test | `TestKeyScope_EveryEntryPoint` (`lode`, `lode/volume`) |
+| A writer's compressor whose extension is not part of one path segment is rejected before any store call | `TestKeyScope_CompressorExtension` |
+
 **Put**
 
 | Requirement | Test |

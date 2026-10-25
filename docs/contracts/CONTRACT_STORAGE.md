@@ -174,6 +174,39 @@ runs, and it MUST do so with a checked type assertion that reports
 
 ---
 
+## Names in Keys
+
+Lode builds keys from names and cleans them, so a name that is not one path
+segment moves its key to another object. Through the dataset `a`, the
+snapshot ID `../../b/snapshots/<id>` would address a snapshot of the dataset
+`b`. The key rules of §Put cannot detect such a key, because it stays within
+the store.
+
+Every name that Lode builds into a key from a caller's value MUST therefore
+be one canonical path segment: not empty, `.`, or `..`, without `/` or a
+backslash, and not beginning with the reserved prefix `.lode-tmp-`. Lode
+checks each name before any store call:
+
+| Name | Where Lode checks it | When the name is not one segment |
+|------|----------------------|----------------------------------|
+| Dataset ID | `Root.Records`, `Root.Blobs`, `ReadRoot.Records`, `ReadRoot.Blobs` | `ErrInvalidArgument` |
+| Volume ID | `volume.New` | `ErrInvalidArgument` |
+| Path name | Each path-name root option (`WithDatasetsDir` and the others), which also excludes `=` | `ErrInvalidArgument` |
+| Hive key | `Hive`, which also excludes `=` | `ErrInvalidArgument` |
+| Compressor extension | `WithCompressor` on a writer, which names each data file by its role and the extension | `ErrInvalidArgument` |
+| Snapshot ID | `Snapshot`, `Read`, and `GetManifest`; Volume's `Snapshot` and `ReadAt` | `ErrNotFound`, because no snapshot has such an ID |
+
+The other values that reach a key are bounded in other ways:
+
+- A Hive partition value is escaped and follows its key and `=`, so its
+  segment is never `.` or `..`.
+- `Expire` derives paths only from IDs that its own listing parsed, or from
+  IDs in the generated form (CONTRACT_RETENTION §Selection).
+- `OpenObject` and `ReaderAt` read only a data object of the handle's
+  dataset (CONTRACT_READ_API §Storage Adapter Interface).
+
+---
+
 ## Commit Semantics
 
 The commit protocol, including when a commit is complete, is stated in

@@ -15,6 +15,7 @@ import (
 
 	"github.com/pithecene/lode/internal/history"
 	"github.com/pithecene/lode/internal/retry"
+	"github.com/pithecene/lode/internal/storepath"
 	"github.com/pithecene/lode/internal/validate"
 	"github.com/pithecene/lode/lode"
 )
@@ -101,13 +102,34 @@ var historyErrors = history.Errors{
 	SnapshotConflict: lode.ErrSnapshotConflict,
 }
 
+// validateID rejects a volume ID that is not one canonical path segment
+// (CONTRACT_STORAGE §Names in Keys). Every path of a volume is built from
+// its ID and cleaned, so "../datasets/x" would otherwise address a
+// dataset's objects, and "a/data" the objects of volume "a".
+func validateID(id ID) error {
+	if !storepath.Segment(string(id)) {
+		return validate.Argument("volume ID %q must be %s", id, storepath.SegmentRule)
+	}
+	return nil
+}
+
+// validateSnapshotID reports lode.ErrNotFound for a snapshot ID that is not
+// one canonical path segment (CONTRACT_STORAGE §Names in Keys): no snapshot
+// has such an ID, and a read never builds a path outside the volume.
+func validateSnapshotID(id SnapshotID) error {
+	if !storepath.Segment(string(id)) {
+		return fmt.Errorf("lode: snapshot %q: a snapshot ID is %s: %w", id, storepath.SegmentRule, lode.ErrNotFound)
+	}
+	return nil
+}
+
 // New creates a volume with a fixed total length.
 func New(id ID, storeFactory lode.Factory[lode.RangeStore], totalLength int64, opts ...Option) (Volume, error) {
 	if storeFactory == nil {
 		return nil, validate.Argument("store factory must not be nil")
 	}
-	if id == "" {
-		return nil, validate.Argument("volume ID must not be empty")
+	if err := validateID(id); err != nil {
+		return nil, err
 	}
 	if totalLength <= 0 {
 		return nil, validate.Argument("total length must be positive")
@@ -372,6 +394,9 @@ func validateNoOverlaps(blocks []BlockRef) error {
 
 // ReadAt reads a fully committed range from a snapshot.
 func (v *volume) ReadAt(ctx context.Context, snapshotID SnapshotID, offset, length int64) ([]byte, error) {
+	if err := validateSnapshotID(snapshotID); err != nil {
+		return nil, err
+	}
 	if offset < 0 {
 		return nil, validate.Argument("offset must be non-negative")
 	}
@@ -484,6 +509,9 @@ func (v *volume) Snapshots(ctx context.Context) ([]*Snapshot, error) {
 
 // Snapshot loads a snapshot by ID.
 func (v *volume) Snapshot(ctx context.Context, id SnapshotID) (*Snapshot, error) {
+	if err := validateSnapshotID(id); err != nil {
+		return nil, err
+	}
 	s, err := v.history.Snapshot(ctx, id)
 	if err != nil {
 		if errors.Is(err, lode.ErrNotFound) {
