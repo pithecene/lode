@@ -157,7 +157,7 @@ Services](PUBLIC_API.md#other-s3-compatible-services)).
 | Normative behavior | [`docs/contracts/`](docs/contracts/) |
 | Runnable programs | [`examples/`](examples/) |
 | Performance | [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) |
-| Test traceability and documentation conventions, for maintainers | [`docs/maintainers/`](docs/maintainers/) |
+| Documentation conventions, for maintainers | [`docs/maintainers/`](docs/maintainers/) |
 
 ---
 

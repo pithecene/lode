@@ -46,7 +46,6 @@ Contracts (`contracts/`), by subject:
 
 Maintainers (`maintainers/`):
 
-- `TEST_MATRIX.md` — contract-to-test traceability, for maintainers and review agents
 - `SNIPPET_POLICY.md` — markdown code fence conventions
 
 Plans and records (`plans/`):
@@ -118,9 +117,10 @@ Build and maintenance scripts.
 
 ## ai/
 
-AI governance: repo-local skill definitions.
+AI governance: repo-local skill definitions and agent bookkeeping.
 
 - `skills/repo-convention-enforcer/v1/` — structural convention validator (SKILL.md format)
+- `TEST_MATRIX.md` — contract-to-test traceability that agents maintain with each contract or test change
 
 ---
 
