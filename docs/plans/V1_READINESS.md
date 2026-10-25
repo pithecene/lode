@@ -388,7 +388,7 @@ nearest candidate is pithecene/quarry#255.
 
 - [x] Context cancellation cleanup nondeterminism documented as best-effort, no correctness impact
 
-> **Evidence:** `PUBLIC_API.md` §Cleanup Behavior states that the removal of partial objects is best-effort, that whether removal completes after a cancellation depends on the timing of the adapter, and that the difference has no effect on correctness, because an object that no manifest references belongs to no snapshot. docs/maintainers/TEST_MATRIX.md §Streaming Cancellation maps the invariant that a stream write canceled while its commit waits on the pointer's `CompareAndSwap` persists no manifest to its deterministic test.
+> **Evidence:** `PUBLIC_API.md` §Cleanup Behavior states that the removal of partial objects is best-effort, that whether removal completes after a cancellation depends on the timing of the adapter, and that the difference has no effect on correctness, because an object that no manifest references belongs to no snapshot. ai/TEST_MATRIX.md §Streaming Cancellation maps the invariant that a stream write canceled while its commit waits on the pointer's `CompareAndSwap` persists no manifest to its deterministic test.
 > Date: 2026-10-24 | Observer: @pithecene | Project: lode
 > Summary: Met.
 > Issue: —
@@ -501,5 +501,5 @@ These may become goals for v1.1+ but must not gate the initial stability release
 - `docs/contracts/CONTRACT_READ_API.md` — read API contract
 - `docs/contracts/CONTRACT_VOLUME.md` — Volume persistence model
 - `docs/contracts/CONTRACT_ERRORS.md` — error taxonomy
-- `docs/maintainers/TEST_MATRIX.md` — contract-to-test traceability
+- `ai/TEST_MATRIX.md` — contract-to-test traceability
 - `docs/contracts/CONTRACT_STORAGE.md` — storage adapter obligations
