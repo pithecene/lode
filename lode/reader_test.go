@@ -237,15 +237,15 @@ func TestView_GetManifest_InvalidManifest(t *testing.T) {
 			Compressor:  "noop",
 			Partitioner: "noop",
 		}
-		writeManifest(ctx, t, store, manifest)
-		// A valid sibling is the head, so the view opens; the manifest
-		// without an ID is reached by its empty reference.
+		// The manifest without an ID lies at a snapshot's path, where a
+		// reference to that snapshot reaches it.
+		writeManifestAt(t, store, "datasets/test-ds/snapshots/snap-1/manifest.json", manifest)
+		// A valid sibling is the head, so the view opens.
 		valid := validTestManifest()
 		valid.SnapshotID = "snap-0"
 		writeManifest(ctx, t, store, valid)
 
-		// Use empty ManifestRef since manifest has no ID
-		err := manifestErr(t, store, ManifestRef{ID: ""})
+		err := manifestErr(t, store, ManifestRef{ID: "snap-1"})
 		if !errors.Is(err, ErrManifestInvalid) {
 			t.Errorf("expected ErrManifestInvalid, got: %v", err)
 		}

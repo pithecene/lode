@@ -38,6 +38,9 @@ func Reserved(key string) bool {
 	return strings.HasPrefix(path.Base(key), ReservedPrefix)
 }
 
+// SegmentRule states the rule of Segment, for the error that rejects a name.
+const SegmentRule = `one path segment: not empty, "." or "..", without "/" or a backslash, and not beginning with "` + ReservedPrefix + `"`
+
 // Segment reports whether s is one canonical path segment that every
 // adapter accepts as a component of a key: not empty, "." or "..", without
 // a slash or backslash, and not beginning with ReservedPrefix. A name built

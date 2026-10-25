@@ -36,6 +36,9 @@ These errors indicate that a requested resource does not exist.
   manifests.
 - `GetManifest` returns `ErrNotFound` when the manifest path does not exist.
 - `Snapshot` returns `ErrNotFound` when the snapshot ID does not exist.
+- `Snapshot`, `Read`, and `GetManifest` return `ErrNotFound` for a snapshot
+  ID that is not one path segment, because no snapshot has such an ID
+  (CONTRACT_STORAGE §Names in Keys).
 - `ListDatasets` returns `ErrNoManifests` when storage contains objects but
   no valid manifests.
 
@@ -155,9 +158,9 @@ They are not safe to retry: the call itself must be corrected.
 | Error | Source | Meaning |
 |-------|--------|---------|
 | `lode.ErrInvalidArgument` | Roots (`Open`, `OpenReadOnly`), recorded and returned by every root method | A `nil` store factory, a factory that returned a `nil` store, a `nil` root option, or a path name that is invalid, duplicated, or `latest`, or flat paths with a datasets or snapshots directory (CONTRACT_LAYOUT §Path Names) |
-| `lode.ErrInvalidArgument` | Opening a handle or view (`Records`, `Blobs`) | A dataset ID that is not one path segment (§Dataset IDs); a `nil` codec or option; a `nil` layout or compressor; a Hive layout without keys or with a key that is not one path segment or contains `=`; a Hive layout without `By` for records that are not maps, or with a `By` function for another record type; a blob dataset with a partitioned layout; an option value out of range (`WithRetry*`) |
+| `lode.ErrInvalidArgument` | Opening a handle or view (`Records`, `Blobs`) | A dataset ID that is not one path segment (§Dataset IDs); a `nil` codec or option; a `nil` layout or compressor; a Hive layout without keys or with a key that is not one path segment or contains `=`; a Hive layout without `By` for records that are not maps, or with a `By` function for another record type; a blob dataset with a partitioned layout; a writer's compressor whose extension is not part of one path segment (CONTRACT_STORAGE §Names in Keys); an option value out of range (`WithRetry*`) |
 | `lode.ErrInvalidArgument` | `Write`, `StreamWrite` | Metadata that does not encode as a JSON object |
-| `lode.ErrInvalidArgument` | Volume | A negative offset, a length that is not positive, an empty block, a block or read outside the address space, a block path not produced by the volume, or a commit without a new block |
+| `lode.ErrInvalidArgument` | Volume | A volume ID that is not one path segment (CONTRACT_STORAGE §Names in Keys); a negative offset, a length that is not positive, an empty block, a block or read outside the address space, a block path not produced by the volume, or a commit without a new block |
 
 Each option type has one target (`RootOption`, `DatasetOption`,
 `ViewOption`, and Volume's own `Option`), so an option used where it does
@@ -178,6 +181,8 @@ without `/` or a backslash, and not beginning with the reserved prefix
 an ID, so an ID such as `a/../events` would otherwise address the dataset
 `events`. `=` is permitted. Every operation that takes a dataset ID, the
 views included, rejects an invalid one before any store call.
+CONTRACT_STORAGE §Names in Keys states the rule for every name that Lode
+builds into a key, including volume and snapshot IDs.
 
 ---
 

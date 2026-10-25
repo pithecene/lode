@@ -323,6 +323,9 @@ func cursorWindow[T any](items []T, after func(T) bool, limit int) []T {
 
 // GetManifest loads and validates the manifest a reference names.
 func (d *dataset) GetManifest(ctx context.Context, ref ManifestRef) (*Manifest, error) {
+	if err := validateSnapshotID(ref.ID); err != nil {
+		return nil, err
+	}
 	return d.loadManifest(ctx, d.layout.manifestPathInPartition(d.id, ref.ID, ref.Partition.path))
 }
 
