@@ -294,6 +294,9 @@ infers `T`):
   shares
 - `ManifestRef`, `PartitionRef`: the references that `ListManifests` and
   `ListPartitions` return
+- `PartitionPath`: a canonical partition path, which `ParsePartitionPath`
+  constructs or a listing returns, and whose zero value names the dataset
+  root
 - `ObjectRef`: a reference to a data object, which `OpenObject` and
   `ReaderAt` take
 - `DatasetListOptions`, `ManifestListOptions`, `PartitionListOptions`: the
