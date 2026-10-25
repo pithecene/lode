@@ -236,7 +236,7 @@ Manifests are immutable once written.
 
 ---
 
-## History & Immutability
+## History and Immutability
 
 - Snapshot history is strictly linear, with a single head.
 - Snapshots are immutable after commit.
