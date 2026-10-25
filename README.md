@@ -151,7 +151,8 @@ Services](PUBLIC_API.md#other-s3-compatible-services)).
 | Topic | Where |
 |-------|-------|
 | Storage model, commits, and choosing a write API | [Concepts guide](docs/guides/concepts.md) |
-| Complete API usage, options, and common pitfalls | [`PUBLIC_API.md`](PUBLIC_API.md) |
+| Rules of the API that most often surprise a caller | [Usage pitfalls guide](docs/guides/pitfalls.md) |
+| Complete API usage and options | [`PUBLIC_API.md`](PUBLIC_API.md) |
 | Expiring snapshots and reclaiming residual data | [Retention guide](docs/guides/retention.md) |
 | Snapshot ID format and ordering | [Snapshot ID guide](docs/guides/snapshot-ids.md) |
 | Normative behavior | [`docs/contracts/`](docs/contracts/) |

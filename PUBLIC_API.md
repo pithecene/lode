@@ -282,6 +282,9 @@ are factories of `RangeStore`, and `NewFS` and `NewMemory` return one.
   shares
 - `ManifestRef`, `PartitionRef`: the references that `ListManifests` and
   `ListPartitions` return
+- `PartitionPath`: a canonical partition path, which `ParsePartitionPath`
+  constructs or a listing returns, and whose zero value names the dataset
+  root
 - `ObjectRef`: a reference to a data object, which `OpenObject` and
   `ReaderAt` take
 - `DatasetListOptions`, `ManifestListOptions`, `PartitionListOptions`: the
@@ -540,52 +543,8 @@ data.
 
 ## Usage Pitfalls
 
-- `nil` metadata persists as `{}`; metadata must encode as a JSON object.
-- A Hive layout without `By` requires map records (`D`, or `any` holding
-  maps); typed records partition with `Hive(...).By(...)`, and a `By`
-  function for another record type is rejected when the dataset opens.
-- A partition that names other keys than the layout's fails the write.
-- `Hive` requires at least one key; each key must be one path segment
-  without `=`.
-- A dataset ID must be one path segment; `=` is permitted. A volume ID must
-  be one path segment as well, and a snapshot ID that is not one segment
-  names no snapshot (`ErrNotFound`).
-- A custom compressor's extension must not contain `/` or a backslash,
-  because a writer appends it to each data file's name.
-- `ListDatasets` returns `ErrNoManifests` when storage has objects but no
-  manifests, and `ErrDatasetsNotModeled` for flat paths.
-- `ListDatasets` results are in lexicographic order of ID, `ListPartitions`
-  results in lexicographic order of `Path`, and `ListManifests` results in
-  order of `(Partition, ID)`. `StartAfter` resumes strictly after a previous
-  result; `Limit` bounds the results, not the store calls.
-- A partition path is a `PartitionPath`, built with `ParsePartitionPath`
-  (which returns `ErrInvalidPath` for a leading `/`, a backslash, or an
-  empty, `.`, or `..` segment) or taken from a listing. The zero value is
-  the dataset root: `ListManifests(ctx, lode.PartitionPath{}, opts)` lists
-  every snapshot. It encodes as text (and therefore in JSON) as its string,
-  and decoding validates it.
-- On a Hive dataset, a snapshot is listed under the smallest partition
-  whose manifest copy exists. A commit persists those copies after it is
-  complete, so one whose writer terminated first, or one without files, is
-  listed under the dataset root, and a listing filtered by partition omits
-  it there.
-- `PartitionListOptions.Prefix` is a raw path prefix (`day=2026-10` matches
-  `day=2026-10-18`) and requires a partitioned dataset (otherwise
-  `ErrPartitionPrefixNotSupported` is returned). It must be a canonical
-  relative fragment, with no leading `/` and no `.`, `..`, or empty segment;
-  otherwise `ErrInvalidPath` is returned. An empty result under a prefix is
-  not an error.
-- `ReaderAt` may return an `io.ReaderAt` that also implements `io.Closer`;
-  close it after use.
-- Checksums are computed and recorded in manifests only when configured.
-- Concurrent writes to the same dataset through separate handles are safe:
-  every store implements `ConditionalWriter`, so commits detect one another
-  and return `ErrSnapshotConflict`. See [`CONTRACT_WRITE_API.md`](docs/contracts/CONTRACT_WRITE_API.md)
-  §Concurrent Blob Write Safety.
-- `Records.StreamWrite` requires a codec that streams, and does not support
-  partitioning.
-- An aborted stream leaves no snapshot, but partial objects may remain (see
-  §Safety Guarantees).
+The rules of this API that most often surprise a caller are collected in
+the [usage pitfalls guide](docs/guides/pitfalls.md).
 
 ---
 
