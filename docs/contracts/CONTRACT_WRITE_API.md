@@ -37,7 +37,7 @@ checks the writer's settings against the dataset's head (§Settings).
 - Empty metadata is valid and MUST be persisted explicitly.
 - The new snapshot MUST reference the previous snapshot, if any, as its parent.
 - Writes MUST NOT mutate existing snapshots or manifests.
-- The manifest MUST include all required fields defined in `CONTRACT_CORE.md`
+- The manifest MUST include all required fields defined in [`CONTRACT_CORE.md`](CONTRACT_CORE.md)
   (including the row or event count and, when applicable, the minimum and
   maximum timestamps).
 - When the codec implements `StatisticalCodec`, per-file statistics MUST be
@@ -123,7 +123,7 @@ manifest records them (CONTRACT_CORE §Manifest Requirements).
   `Commit`, MUST fail with that error, even when a compressor would buffer
   the bytes; these calls MUST NOT block.
 - After a failed `Put`, the writer MUST NOT access the data path. `Put` is
-  atomic (`CONTRACT_STORAGE.md` §Put), so a failed stream leaves no object
+  atomic ([`CONTRACT_STORAGE.md`](CONTRACT_STORAGE.md) §Put), so a failed stream leaves no object
   of its own, and a path whose `Put` returned `ErrPathExists` belongs to
   another writer. Removal of data files applies only to objects whose `Put`
   succeeded and whose commit then failed before any manifest write was
@@ -150,7 +150,7 @@ manifest records them (CONTRACT_CORE §Manifest Requirements).
   targets a new path.
 - On success, the manifest is written and the new snapshot is returned.
 - On error (an iterator failure, a codec error, or a storage error), no
-  manifest is written. A failed `Put` leaves no object (`CONTRACT_STORAGE.md`
+  manifest is written. A failed `Put` leaves no object ([`CONTRACT_STORAGE.md`](CONTRACT_STORAGE.md)
   §Put). A data object whose `Put` succeeded is deleted on a best-effort
   basis if the commit failed before any manifest write was attempted, and
   retained otherwise, as for `Blobs.StreamWrite`.
@@ -321,7 +321,7 @@ payloads may use the storage adapter's multipart (chunked) upload path.
   object path or use external coordination (distributed locks, queues, or
   similar mechanisms).
 
-See `CONTRACT_STORAGE.md` for adapter-specific thresholds and guarantees.
+See [`CONTRACT_STORAGE.md`](CONTRACT_STORAGE.md) for adapter-specific thresholds and guarantees.
 
 ---
 
@@ -346,7 +346,7 @@ Implementations MUST use the following error sentinels where applicable:
   dataset's (§Settings)
 
 Streaming-specific error taxonomy and handling guidance are defined in
-`CONTRACT_ERRORS.md`.
+[`CONTRACT_ERRORS.md`](CONTRACT_ERRORS.md).
 
 ---
 

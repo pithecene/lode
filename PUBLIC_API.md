@@ -17,8 +17,8 @@ Execution, scheduling, and query planning are outside its scope.
 
 The v1.0 compatibility commitment covers the packages `lode` and `lode/s3`.
 The package `lode/volume` is **experimental** and is excluded until it
-passes its own stability gate (`docs/plans/V1_API_DECISIONS.md` D9;
-`docs/plans/V1_READINESS.md` §4). Persisted data is covered in either case: no
+passes its own stability gate ([`docs/plans/V1_API_DECISIONS.md`](docs/plans/V1_API_DECISIONS.md) D9;
+[`docs/plans/V1_READINESS.md`](docs/plans/V1_READINESS.md) §4). Persisted data is covered in either case: no
 release renders unreadable the data that an earlier release wrote (D8).
 
 ---
@@ -134,7 +134,7 @@ snapshot's manifest names.
 > **Experimental.** Volume resides in the package
 > `github.com/pithecene/lode/lode/volume` and is excluded from the v1.0
 > compatibility commitment until it passes its own stability gate
-> (`docs/plans/V1_READINESS.md` §4, `docs/plans/V1_API_DECISIONS.md` D9). Its API may
+> ([`docs/plans/V1_READINESS.md`](docs/plans/V1_READINESS.md) §4, [`docs/plans/V1_API_DECISIONS.md`](docs/plans/V1_API_DECISIONS.md) D9). Its API may
 > change in any release. Data that it has persisted remains readable,
 > because its path grammar and manifest format are persisted formats (D8).
 
@@ -580,7 +580,7 @@ data.
 - Checksums are computed and recorded in manifests only when configured.
 - Concurrent writes to the same dataset through separate handles are safe:
   every store implements `ConditionalWriter`, so commits detect one another
-  and return `ErrSnapshotConflict`. See `CONTRACT_WRITE_API.md`
+  and return `ErrSnapshotConflict`. See [`CONTRACT_WRITE_API.md`](docs/contracts/CONTRACT_WRITE_API.md)
   §Concurrent Blob Write Safety.
 - `Records.StreamWrite` requires a codec that streams, and does not support
   partitioning.
@@ -875,7 +875,7 @@ single-writer semantics in the application.
 On an abort, or on an error before commit:
 - If the failure occurs before any manifest is written, the snapshot does
   not exist.
-- A failed `Put` leaves no object (`CONTRACT_STORAGE.md` §Put is atomic),
+- A failed `Put` leaves no object ([`CONTRACT_STORAGE.md`](docs/contracts/CONTRACT_STORAGE.md) §Put is atomic),
   and the writer never deletes anything after a failed `Put`.
 - A stream's data object whose commit failed before any manifest write is
   deleted on a best-effort basis and may remain in storage.
@@ -906,7 +906,7 @@ handle (`Records` or `Blobs`), removes the snapshots that the caller
 selects, and `Sweep` reclaims the residual data of interrupted writes and
 expiries. Views do not retain: removal is a write. Which
 snapshots to retain, for how long, and when to run either operation are
-matters of the caller's policy (`CONTRACT_RETENTION.md`).
+matters of the caller's policy ([`CONTRACT_RETENTION.md`](docs/contracts/CONTRACT_RETENTION.md)).
 
 <!-- illustrative -->
 ```go

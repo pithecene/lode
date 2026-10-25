@@ -17,7 +17,7 @@ components that layouts govern: partitioners, compressors, and codecs.
 
 Path names and layouts are **specific to datasets**. They do not apply to
 Volume, which uses a fixed internal path scheme defined in
-`CONTRACT_VOLUME.md`. The root's path options and `WithLayout` apply
+[`CONTRACT_VOLUME.md`](CONTRACT_VOLUME.md). The root's path options and `WithLayout` apply
 exclusively to dataset handles and views.
 
 ---

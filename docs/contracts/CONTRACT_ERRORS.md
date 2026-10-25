@@ -234,7 +234,7 @@ These errors indicate invalid use of the streaming write APIs.
 - On an abort, or on an error before commit, no manifest is written.
 - Partial data objects may remain in storage; their removal is best-effort.
 - Callers should not rely on the automatic removal of partial objects
-  (`Sweep` reclaims them; see `CONTRACT_RETENTION.md`).
+  (`Sweep` reclaims them; see [`CONTRACT_RETENTION.md`](CONTRACT_RETENTION.md)).
 - A failure to delete a partial object does not create a snapshot.
 
 ---
@@ -329,14 +329,14 @@ optimistic concurrency control.
 **Automatic Retry**: `WithRetryCount(n)` performs this procedure
 automatically within the commit path. Data files are written once; only the
 reassignment of the manifest's parent and the pointer CAS are retried. See
-`CONTRACT_WRITE_API.md` §Optimistic Concurrency (CAS).
+[`CONTRACT_WRITE_API.md`](CONTRACT_WRITE_API.md) §Optimistic Concurrency (CAS).
 
 ---
 
 ### 11. Retention Errors
 
 These errors are returned by snapshot expiry and by the sweep of
-unreferenced objects (`CONTRACT_RETENTION.md`).
+unreferenced objects ([`CONTRACT_RETENTION.md`](CONTRACT_RETENTION.md)).
 
 | Error | Source | Meaning |
 |-------|--------|---------|
@@ -377,7 +377,7 @@ unreferenced objects (`CONTRACT_RETENTION.md`).
 - `ErrPathExists`: a logic error in the caller (an attempt to write the same
   path twice). Retention's creation of a tombstone is the exception: there
   the error means that another run recorded the expiry first, which
-  retention verifies and accepts (`CONTRACT_RETENTION.md` §Order of
+  retention verifies and accepts ([`CONTRACT_RETENTION.md`](CONTRACT_RETENTION.md) §Order of
   Operations).
 - `ErrOverlappingBlocks`: a logic error in the caller (overlapping byte
   ranges).
@@ -440,7 +440,7 @@ Errors MUST NOT imply:
 - Partial success (writes are atomic through the manifest). Retention is
   the single exception: `Expire` and `Sweep` report the work completed
   before an error, and every step they perform is idempotent
-  (`CONTRACT_RETENTION.md`).
+  ([`CONTRACT_RETENTION.md`](CONTRACT_RETENTION.md)).
 
 All operations provide:
 - **Idempotent reads**: the same input yields the same output, subject to
@@ -450,8 +450,8 @@ All operations provide:
 
   Retention (`Expire`, `Sweep`) is not a snapshot commit. Apart from the
   copies of a canonical manifest with which `Sweep` restores a partition
-  index (`CONTRACT_RETENTION.md` §Definition, step 3), its only writes
-  are tombstones, created with create-only semantics (`CONTRACT_RETENTION.md`
+  index ([`CONTRACT_RETENTION.md`](CONTRACT_RETENTION.md) §Definition, step 3), its only writes
+  are tombstones, created with create-only semantics ([`CONTRACT_RETENTION.md`](CONTRACT_RETENTION.md)
   §Order of Operations); every other action it performs is an idempotent
   deletion.
 
