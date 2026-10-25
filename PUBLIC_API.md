@@ -8,25 +8,27 @@ the call site.
 
 ## Scope
 
-Lode concerns the structure of persistence: datasets, snapshots,
-manifests, metadata, and safe write semantics.
+Lode defines the persistence structure: datasets, snapshots, manifests,
+metadata, and safe write semantics.
 
 Execution, scheduling, and query planning are outside its scope.
 
 ### Compatibility Scope
 
 The v1.0 compatibility commitment covers the packages `lode` and `lode/s3`.
-The package `lode/volume` is **experimental** and is excluded until it
-passes its own stability gate ([`docs/plans/V1_API_DECISIONS.md`](docs/plans/V1_API_DECISIONS.md) D9 and
-[`docs/plans/V1_READINESS.md`](docs/plans/V1_READINESS.md) §4). Persisted data is covered in either case: no
-release renders unreadable the data that an earlier release wrote (D8).
+The package `lode/volume` is **experimental**, and the commitment omits that
+package until the package passes its own stability gate
+([`docs/plans/V1_API_DECISIONS.md`](docs/plans/V1_API_DECISIONS.md) D9 and
+[`docs/plans/V1_READINESS.md`](docs/plans/V1_READINESS.md) §4). The
+commitment covers persisted data in every package: no release renders
+unreadable the data that an earlier release wrote (D8).
 
 ---
 
 ## Construction Overview
 
-Lode is opened at a **root**: one store and the names its dataset paths
-use. A root opens **dataset handles**, typed by the records they hold, and
+A caller opens Lode at a **root**, which consists of one store and the
+names that its dataset paths use. A root opens **dataset handles**, typed by the records they hold, and
 a read-only root opens **views**.
 
 <!-- illustrative -->
@@ -57,9 +59,10 @@ view, err := lode.OpenReadOnly(lode.FS("/data")).Records(ctx, "events", lode.JSO
   `CompareAndSwap`. `OpenReadOnly(factory, opts...) *ReadRoot` opens a root
   over any `ObjectStore`, and its views never write. A factory of a store
   without `CompareAndSwap` does not compile with `Open`.
-- Each calls the factory once, and every dataset of the root shares the
-  one store value. A factory error, or an invalid path option, is recorded and
-  returned by every method of the root, so a caller checks one error.
+- Each root constructor calls the factory once, and every dataset of the
+  root shares the one store value. The root records a factory error or an
+  invalid path option and returns it from every method, so a caller checks
+  one error.
 - Factories: `FS(root)`, `Memory()`, `Use(store)` (a store the caller
   holds, for sharing one value), and `s3.Factory(client, config)`.
   Constructing a factory performs no I/O.
@@ -81,8 +84,8 @@ Each name has one root option, which replaces that name only:
 `WithDatasetsDir`, `WithSnapshotsDir`, `WithPartitionsDir`,
 `WithSegmentsDir`, `WithManifestFile`, `WithDataDir`, `WithExpiredDir`, and
 `WithStagedDir`. `WithFlatPaths()` places each dataset at the store root
-and, without partitions, each snapshot directly under its dataset. It
-cannot be combined with `WithDatasetsDir` or `WithSnapshotsDir`. Each name
+and, without partitions, each snapshot directly under its dataset. A
+caller cannot combine it with `WithDatasetsDir` or `WithSnapshotsDir`. Each name
 must be one path segment without `=`, and the names must be distinct and
 other than `latest`, the pointer's name, which is not configurable.
 
@@ -93,9 +96,9 @@ root := lode.Open(lode.FS("/data"),
     lode.WithManifestFile("_manifest.json"))
 ```
 
-The names are part of a dataset's address, as the store is. Each manifest
-records them in its `ManifestPaths`, and a writer or view whose names differ from the dataset's is
-rejected with `ErrSettingsMismatch`.
+The names, like the store, are part of a dataset's address. Each manifest
+records them in its `ManifestPaths`, and Lode returns `ErrSettingsMismatch`
+for any writer or view whose names differ from the dataset's.
 
 ### Record Datasets
 
@@ -110,9 +113,11 @@ which reads only.
 ### Blob Datasets
 
 `Root.Blobs(ctx, id, opts...) (Blobs, error)` opens a dataset whose
-snapshots each hold one blob: `Write(ctx, data []byte, metadata)`,
-`Read` returns `[]byte`, and `StreamWrite(ctx, metadata)` streams one blob.
-A blob has no fields to partition by, so its layout is `Unpartitioned`.
+snapshots each hold one blob: `Write(ctx, data []byte, metadata)` writes
+one blob, `Read` returns `[]byte`, and `StreamWrite(ctx, metadata)` streams
+one blob.
+A blob has no fields on which a layout can partition, so its layout is
+`Unpartitioned`.
 `ReadRoot.Blobs(ctx, id, opts...)` opens a `BlobView`.
 
 ### Opening a Dataset
@@ -120,9 +125,10 @@ A blob has no fields to partition by, so its layout is `Unpartitioned`.
 Opening a writer reads the dataset's head (one `Get` of the pointer and one
 of its manifest) and checks the writer's settings against it. Those
 settings are the codec and its description, the compressor, the checksum,
-the layout and its keys, and the path names. A writer whose settings differ is rejected with
-`ErrSettingsMismatch` when it opens, or at its commit if the conflicting
-commit happened after it opened. Opening writes nothing.
+the layout and its keys, and the path names. Lode returns
+`ErrSettingsMismatch` when the writer opens if the head's settings differ
+from the writer's. If another writer commits conflicting settings after the
+writer opens, Lode returns `ErrSettingsMismatch` at the writer's commit. Opening writes nothing.
 
 Opening a view reads the head without creating a missing pointer, takes the
 layout from the head's manifest, and returns `ErrNotFound` for a dataset
@@ -135,22 +141,23 @@ snapshot's manifest names.
 > `github.com/pithecene/lode/lode/volume` and is excluded from the v1.0
 > compatibility commitment until it passes its own stability gate
 > ([`docs/plans/V1_READINESS.md`](docs/plans/V1_READINESS.md) §4, [`docs/plans/V1_API_DECISIONS.md`](docs/plans/V1_API_DECISIONS.md) D9). Its API may
-> change in any release. Data that it has persisted remains readable,
-> because its path grammar and manifest format are persisted formats (D8).
+> change in any release. Data that Volume has persisted remains readable,
+> because the D8 commitment on persisted formats covers its path grammar and
+> manifest format.
 
 The constructor `volume.New(id, factory, totalLength, opts...)` creates a
 sparse byte space, addressable by range, with manifest-driven commit
-semantics. The constructor takes a `lode.Factory[lode.RangeStore]`, so a store without range reads does
-not compile there. It returns a `volume.Volume`, whose write and read
+semantics. The constructor takes a `lode.Factory[lode.RangeStore]`, so a
+call that passes a store without range reads does not compile. It returns a `volume.Volume`, whose write and read
 methods form the `volume.Writer` and `volume.Reader` interfaces. The `id`
 is a `volume.ID`. `Commit` returns a `volume.Snapshot`, which holds its
 `volume.SnapshotID` and its `volume.Manifest`.
 
 A Dataset constructs complete objects before committing, whereas a Volume
 commits data incrementally as sparse byte ranges. A Volume suits a byte
-object of known length, immutable once written, that is filled in pieces
-(in parallel, out of order, or across restarts). Committed ranges never
-overlap.
+object of known length that writers fill in pieces (in parallel, out of
+order, or across restarts). Each committed range is immutable, and
+committed ranges never overlap.
 
 <!-- illustrative -->
 ```go
@@ -183,8 +190,9 @@ names, `Layout`, and settings recorded in manifests are specific to
 datasets and do not apply to Volume, whose metadata is a `volume.Metadata`
 map.
 
-**Volume options** (in the package `volume`, with a separate `volume.Option`
-type, so the Dataset options of `lode` do not compile as Volume options):
+The package `volume` defines its own option type, `volume.Option`, so the
+Dataset options of `lode` do not compile as Volume options. Volume accepts
+the following options:
 - `volume.WithChecksum(c)`: integrity checksums on staged blocks (disabled
   by default)
 - `volume.WithRetryCount(n)`, `volume.WithRetryBaseDelay(d)`,
@@ -199,8 +207,8 @@ type, so the Dataset options of `lode` do not compile as Volume options):
 
 ## Configuration Options
 
-Options are optional and composable. When supplied, they replace default
-components. Each option type has one target, so an option that does not
+A caller may omit or combine options. Each supplied option replaces a
+default component. An option type has one target, so an option that does not
 apply to a handle does not compile with it.
 
 | Option | Type | Root | Writer (`Records`, `Blobs`) | View | Notes |
@@ -236,16 +244,17 @@ includes a curated set of components:
 - `FS(root)`: filesystem storage
 - `Memory()`: in-memory storage (a new store per root)
 - `Use(store)`: a store the caller holds
-- `s3.Factory(client, config)`: S3-compatible storage (see below)
+- `s3.Factory(client, config)`: S3-compatible storage (§S3 Storage Adapter)
 
-The stores themselves: `NewFS(root)`, `NewMemory()`, `s3.New(client,
+The store types are `NewFS(root)`, `NewMemory()`, `s3.New(client,
 config)`, and `SingleProcess(objectStore)`. `FS`, `Memory`, and `s3.Factory`
-are factories of `RangeStore`, and `NewFS` and `NewMemory` return one.
+are factories of `RangeStore`, and `NewFS` and `NewMemory` each return a
+`RangeStore`.
 
 **Layouts:**
 - `Unpartitioned()`: no partitions (the default)
-- `Hive(keys...)`: a partition-first layout, of type `HiveLayout`, whose
-  records must be maps (`D`) unless the layout is given a typed function
+- `Hive(keys...)`: a partition-first layout, of type `HiveLayout`, which
+  requires map records (`D`) unless the caller supplies a typed function
   with `By`
 - `Hive(keys...).By(func(T) Partition)`: partition values of typed records
   by key name, without reflection
@@ -253,16 +262,17 @@ are factories of `RangeStore`, and `NewFS` and `NewMemory` return one.
 **Compressors:**
 - `NewNoOpCompressor()`: no compression (the default)
 - `NewGzipCompressor()`: gzip compression
-- `NewZstdCompressor()`: Zstandard compression (a higher ratio and faster
-  decompression)
+- `NewZstdCompressor()`: Zstandard compression (a higher ratio than gzip
+  and faster decompression)
 - `Compressor`: the interface of a custom compressor
 
-**Codecs** (each returns the `Codec[T]` interface, so that `T` is inferred):
-- `JSONL[T]()`: the JSON Lines format for records of any type `T`, which
-  streams and supports `Records.StreamWrite`
+**Codecs** (each returns the `Codec[T]` interface, so that the compiler
+infers `T`):
+- `JSONL[T]()`: the JSON Lines format, which streams and supports
+  `Records.StreamWrite`, for records of any type `T`
 - `Parquet(schema, opts...) Codec[D]`: the Apache Parquet columnar format
-  for map records (does not stream). An invalid schema is recorded and
-  returned when the dataset opens.
+  for map records, which does not stream. Lode records an invalid-schema
+  error and returns it when the dataset opens.
 
 **Checksums:**
 - `NewMD5Checksum()`: MD5 file checksums (disabled unless configured)
@@ -272,8 +282,8 @@ are factories of `RangeStore`, and `NewFS` and `NewMemory` return one.
 **Record helpers:**
 - `D`: an abbreviated alias for `map[string]any` at call sites and in
   examples
-- `R(...)`: collects record literals into the `[]D` that `Records[D].Write`
-  takes
+- `R(...)`: a helper that collects record literals into the `[]D` that
+  `Records[D].Write` takes
 - `Partition`: a record's partition values by key name, for `Hive(...).By`
 
 **Identifiers, snapshots, and listings:**
@@ -294,8 +304,8 @@ are factories of `RangeStore`, and `NewFS` and `NewMemory` return one.
 
 **Interfaces:**
 - `Codec[T]`, `StreamingCodec[T]`, `StreamEncoder[T]`: codecs and streaming
-  encoders of records of type `T`, where a custom codec implements
-  `Describe`, which returns its configuration in a canonical form
+  encoders of records of type `T`. A custom codec implements `Describe`,
+  which returns the codec's configuration in canonical form.
 - `Timestamped`: an optional interface for records with timestamps (see
   below)
 - `StatisticalCodec`: an optional interface of codecs and stream encoders
@@ -310,8 +320,8 @@ are factories of `RangeStore`, and `NewFS` and `NewMemory` return one.
 **Range reads:**
 - `RangeReader`: the optional range-read capability of a store, which a
   store that cannot read ranges does not implement
-- `RangeStore`: a `Store` that is also a `RangeReader`, which the built-in
-  stores and the S3 adapter are
+- `RangeStore`: a `Store` that is also a `RangeReader`, a type that the
+  built-in stores and the S3 adapter implement
 - `RangeReader.ReadRange(ctx, path, offset, length)`: reads a byte range
   from an object
 - `RangeReader.ReaderAt(ctx, path)`: returns an `io.ReaderAt` for random
@@ -319,8 +329,8 @@ are factories of `RangeStore`, and `NewFS` and `NewMemory` return one.
 - `ReaderAt(ctx, obj)` on a dataset handle or view: returns an
   `io.ReaderAt` for a data object, or `ErrRangeReadNotSupported` when the
   store does not implement `RangeReader`
-- `volume.New` takes a factory of `RangeStore`, so the requirement is
-  checked when the program compiles
+- `volume.New`: a constructor that takes a factory of `RangeStore`, so that
+  the compiler rejects a store that cannot read ranges
 
 Range reads provide efficient access to columnar formats (Parquet footers),
 block-indexed logs, and partial previews of artifacts.
@@ -339,11 +349,12 @@ type Timestamped interface {
 }
 ```
 
-When the records a `Records` handle writes implement this interface,
+When a `Records` handle writes records that implement this interface,
 `Write` and `StreamWrite` compute `MinTimestamp` and `MaxTimestamp` from the
-data and record them in the manifest, which allows query engines to prune by
-time range. Whether a record type implements it is decided once, when the
-handle opens, so a type that does not costs nothing per record.
+data and record them in the manifest. Query engines use these bounds to
+prune by time range. Lode determines once, when the handle opens, whether the
+record type implements the interface, so a type without the interface
+incurs no cost per record.
 
 Example:
 <!-- illustrative -->
@@ -361,9 +372,9 @@ events, _ := root.Records(ctx, "events", lode.JSONL[Event]())
 events.Write(ctx, []Event{{...}, {...}}, nil)
 ```
 
-Records that do not implement `Timestamped` (including `lode.D`) result in
-`nil` timestamp fields in the manifest, which is valid and indicates that
-timestamps do not apply to that snapshot.
+Records that do not implement `Timestamped` (including `lode.D`) leave the
+manifest's timestamp fields `nil`. A `nil` value is valid and indicates
+that timestamps do not apply to the snapshot.
 
 ---
 
@@ -407,11 +418,11 @@ Each field's `Type` is a `ParquetType`:
 
 **The Parquet codec does not support streaming.**
 
-Parquet files require a footer that references every row group, which
-makes genuine streaming impossible. `Records.StreamWrite` with a Parquet
+A Parquet file ends with a footer that references every row group, so an
+encoder cannot emit the file in one pass. `Records.StreamWrite` with a Parquet
 codec returns `ErrCodecNotStreamable`.
 
-Use `Records.Write` for Parquet encoding:
+A caller encodes Parquet records with `Records.Write`:
 
 <!-- illustrative -->
 ```go
@@ -425,8 +436,8 @@ _, err := ds.StreamWrite(ctx, records, metadata)
 
 ### Compression Layering
 
-**Important:** Parquet compresses internally. Do not compress the output a
-second time.
+Parquet compresses its output internally, so a second compressor adds cost
+without benefit.
 
 `Parquet` takes options of type `ParquetOption`. `WithParquetCompression`
 selects the internal compression, a `ParquetCompression`:
@@ -437,7 +448,7 @@ selects the internal compression, a `ParquetCompression`:
 |--------------|--------|
 | Parquet + `NewNoOpCompressor()` | ✅ Correct: Parquet performs compression internally |
 | Parquet + `NewGzipCompressor()` | ❌ Wasteful: the output is compressed twice for minimal benefit |
-| Parquet + `WithParquetCompression(lode.ParquetCompressionSnappy)` | ✅ Correct: uses Parquet's internal Snappy compression |
+| Parquet + `WithParquetCompression(lode.ParquetCompressionSnappy)` | ✅ Correct: Parquet compresses internally with Snappy |
 
 ### Error Handling
 
@@ -468,13 +479,13 @@ for _, f := range snap.Files {
 }
 ```
 
-Statistics are computed from the Go record values during encoding. Ordered
-types (int32, int64, float32, float64, string, timestamp) receive a minimum
-and a maximum, and every column receives a null count. Boolean and byte
+The codec computes statistics from the Go record values during encoding.
+Columns of ordered types (int32, int64, float32, float64, string,
+timestamp) receive a minimum and a maximum, and every column receives a null count. Boolean and byte
 columns have no minimum or maximum.
 
 Codecs that do not implement `StatisticalCodec` (for example, JSONL)
-produce no statistics: `FileRef.Stats` is `nil` and is omitted from the
+produce no statistics: `FileRef.Stats` is `nil`, and Lode omits it from the
 manifest's JSON.
 
 ---
@@ -483,8 +494,8 @@ manifest's JSON.
 
 `Write` and `StreamWrite` take metadata as any value that encodes as a JSON
 object: a struct, a map such as `lode.D`, or `nil`, which persists as `{}`.
-A value that does not encode as an object returns `ErrInvalidArgument`
-before any store call.
+For a value that does not encode as an object, each method returns
+`ErrInvalidArgument` before any store call.
 
 `Manifest.Metadata` is a `Metadata`, which retains the persisted JSON and
 decodes it on request: `snap.Metadata.Decode(&v)`. A struct target receives
@@ -508,8 +519,8 @@ aborts the write.
 `Blobs.StreamWrite(ctx, metadata)` returns a `StreamWriter` for a
 single-pass streaming write of one blob. `StreamWriter.Write` streams bytes,
 `Commit` finalizes the write and returns a snapshot, and `Abort` discards
-the write. If `Close` is called before `Commit`, the stream is aborted and
-no snapshot is created. The row count of a blob snapshot is `1`.
+the write. A call to `Close` before `Commit` aborts the stream and creates
+no snapshot. The row count of a blob snapshot is `1`.
 
 ### Streaming Constraints
 
@@ -520,9 +531,9 @@ no snapshot is created. The row count of a blob snapshot is `1`.
 | Row count | Always `1` | The number of records consumed |
 | `nil` iterator | Not applicable | Returns `ErrNilIterator` |
 
-**Why partitioning is unavailable:** single-pass streaming cannot buffer
-records to partition them by key. Use `Write` for partitioned
-data.
+`Records.StreamWrite` does not partition, because single-pass streaming
+cannot buffer records to group them by key. Partitioned data requires
+`Write`.
 
 *Contract reference: [`CONTRACT_WRITE_API.md`](docs/contracts/CONTRACT_WRITE_API.md) §Blobs.StreamWrite Semantics, §Records.StreamWrite Semantics*
 
@@ -535,9 +546,9 @@ data.
 | `ErrPartitioningNotSupported` | `Records.StreamWrite` | The layout is partitioned | Use `Write` for partitioned data |
 
 **On failure:**
-- No manifest is written, so the snapshot does not exist.
+- Lode writes no manifest, so the snapshot does not exist.
 - Partial data may remain in storage (its removal is best-effort).
-- Use `errors.Is()` to test for the sentinel errors.
+- A caller tests for the sentinel errors with `errors.Is()`.
 
 *Contract reference: [`CONTRACT_ERRORS.md`](docs/contracts/CONTRACT_ERRORS.md)*
 
@@ -545,8 +556,8 @@ data.
 
 ## Usage Pitfalls
 
-The rules of this API that most often surprise a caller are collected in
-the [usage pitfalls guide](docs/guides/pitfalls.md).
+The [usage pitfalls guide](docs/guides/pitfalls.md) collects the rules of
+this API that most often surprise a caller.
 
 ---
 
@@ -555,12 +566,12 @@ the [usage pitfalls guide](docs/guides/pitfalls.md).
 **A Lode manifest records only the files written through Lode's write
 path.**
 
-Files written directly through `Store.Put()`, bypassing the handles'
-`Write` and `StreamWrite`, are not recorded in the manifest and cannot be
-discovered through `Snapshots()`, `Read()`, or any other dataset API.
+The manifest does not record files that a caller writes directly through
+`Store.Put()`, bypassing the handles' `Write` and `StreamWrite`. Neither
+`Snapshots()`, `Read()`, nor any other dataset API can discover them.
 
 This behavior is deliberate. The manifest is authoritative because Lode
-produced the files that it describes: Lode knows their sizes, computed
+produced the files that it describes: Lode recorded their sizes, computed
 their checksums (when configured), and applied the configured codec and
 compressor. Files that Lode did not write cannot carry these guarantees.
 
@@ -568,7 +579,7 @@ compressor. Files that Lode did not write cannot carry these guarantees.
 
 | Pattern | When to Use | Completeness |
 |---------|-------------|-------------|
-| `Blobs.StreamWrite` per file | Each sidecar file is its own snapshot of a blob dataset, recorded by its manifest | Complete: `Snapshots()` enumerates every committed blob |
+| `Blobs.StreamWrite` per file | Large sidecar files that the caller streams once, each as its own snapshot of a blob dataset | Complete: `Snapshots()` enumerates every committed blob |
 | `Blobs.Write` | Small blobs that fit in memory | Complete: the manifest records the file |
 | File inventory in `Metadata` | The caller manages storage, and Lode records the inventory | Verified by the caller: paths are listed in metadata, and the caller confirms their existence |
 
@@ -584,7 +595,7 @@ snapshot, _ := sw.Commit(ctx)
 // snapshot.Files[0] records the blob with its size and checksum.
 ```
 
-### File Inventory in Metadata (When Managing Storage Directly)
+### File Inventory in Metadata for Caller-Managed Storage
 
 <!-- illustrative -->
 ```go
@@ -599,10 +610,10 @@ snapshot, _ := ds.Write(ctx, records, Sidecars{
 // enumerate the files, but must verify their existence independently.
 ```
 
-**Pattern to avoid:** writing files through `Store.Put()` without recording
-them in metadata or using a blob dataset, and then expecting the manifest
-to enumerate them. Lode's on-disk paths are not an interface for building
-such paths: a caller that needs its own files beside Lode's keeps them under
+A caller that writes files through `Store.Put()` without recording them in
+metadata or in a blob dataset cannot expect the manifest to enumerate
+them. Lode's on-disk paths form no interface for callers, so
+a caller that needs its own files beside Lode's stores them under
 a prefix it owns, or in a blob dataset.
 
 ---
@@ -614,7 +625,7 @@ a prefix it owns, or in a blob dataset.
 - Use `Records.StreamWrite` for large streams of records with a codec that
   streams (without partitioning).
 - Use `Blobs.Write` for one blob in memory, and `Blobs.StreamWrite` for a
-  large blob that should be streamed once.
+  large blob that the caller streams once.
 
 ---
 
@@ -627,11 +638,12 @@ a prefix it owns, or in a blob dataset.
 | `NewZstdCompressor()` | The best ratio or fast decompression is required | A better ratio than gzip and faster decompression |
 
 **Notes:**
-- The choice of compressor is recorded in manifests, and a writer must use
-  the dataset's. A view reads each snapshot with the compressor its
+- Each manifest records the compressor, and a writer must use the
+  dataset's compressor. A view reads each snapshot with the compressor its
   manifest names: a bundled one by name, or a custom one passed with
   `WithCompressor`.
-- Compression is applied after codec encoding, if any.
+- When a dataset has a codec, Lode compresses data after the codec encodes
+  it.
 - Streaming writes compress data as they stream it.
 
 *Contract reference: [`CONTRACT_LAYOUT.md`](docs/contracts/CONTRACT_LAYOUT.md) §Compressor*
@@ -640,19 +652,19 @@ a prefix it owns, or in a blob dataset.
 
 ## Storage Prerequisites
 
-**Ensure that storage exists before opening a dataset, volume, or view.**
+**Storage must exist before a caller opens a dataset, volume, or view.**
 
-Lode does not create storage infrastructure (directories, buckets). This
-is deliberate:
+Lode does not create storage infrastructure (directories or buckets), and
+the omission is deliberate for three reasons:
 
 - **No concealed side effects**: opening a handle does not modify external
   state.
-- **Explicit provisioning**: callers control when and how storage is
-  created.
+- **Explicit provisioning**: callers control when and how they create
+  storage.
 - **Uniformity across backends**: the same pattern applies to the
   filesystem, S3, and other adapters.
 
-### Required Setup
+### Storage Requirements by Backend
 
 | Backend | Prerequisite | Example |
 |---------|--------------|---------|
@@ -675,7 +687,8 @@ func OpenFS(dir string) (*lode.Root, error) {
 }
 ```
 
-This arrangement keeps opening free of side effects and predictable.
+Because provisioning remains outside Lode, opening a root has no side
+effects and behaves predictably.
 
 *Contract reference: [`CONTRACT_STORAGE.md`](docs/contracts/CONTRACT_STORAGE.md)*
 
@@ -685,25 +698,26 @@ This arrangement keeps opening free of side effects and predictable.
 
 ### Commit Semantics
 
-**The presence of a manifest signifies that a commit is complete.**
+**A persisted manifest signifies a complete commit.**
 
-A snapshot becomes visible only after its manifest has been written to
-storage. Data files may exist before the manifest, but they cannot be
-discovered until the manifest references them.
+A snapshot becomes visible only after Lode persists its manifest. Data
+files may exist before the manifest, but no read discovers them until the
+manifest references them.
 
 - `StreamWriter.Commit()` writes the manifest, and the snapshot is
   invisible until then.
-- `StreamWriter.Abort()`, or `Close()` without `Commit()`, ensures that no
-  manifest is written.
-- On an error during streaming, no manifest is written, and the write is
-  as though it never occurred.
+- `StreamWriter.Abort()`, or `Close()` without `Commit()`, writes no
+  manifest.
+- If streaming fails, Lode writes no manifest, and the write has no visible
+  effect.
 
 *Contract reference: [`CONTRACT_WRITE_API.md`](docs/contracts/CONTRACT_WRITE_API.md) §Read-After-Write Visibility, [`CONTRACT_STORAGE.md`](docs/contracts/CONTRACT_STORAGE.md) §Commit Semantics*
 
 ### Concurrency and CAS
 
-Lode uses optimistic concurrency control (CAS) to detect conflicting
-writes. Whether CAS is available depends on the storage adapter:
+Lode uses optimistic concurrency control, implemented with compare-and-swap
+(CAS), to detect conflicting writes. CAS availability depends on the storage
+adapter:
 
 #### Adapter CAS Support
 
@@ -716,14 +730,14 @@ writes. Whether CAS is available depends on the storage adapter:
 | **Custom adapter** | ✅ (required: `ConditionalWriter` is part of `Store`) | Safe without coordination | `ErrSnapshotConflict`, after which the caller retries from `Latest()` |
 | **`SingleProcess` over a backend without CAS** | ✅ within one process | Safe for writers in this process that share the wrapped store | `ErrSnapshotConflict`, after which the caller retries from `Latest()` |
 
-CAS is always enabled, and no configuration is required.
+Lode always enables CAS and requires no configuration for it.
 
 #### Concurrent Writers
 
 Several **separate processes** (or separate handles or `Volume` values)
-MAY write to the same dataset or volume safely without external
-coordination. A single handle or `Volume` value is NOT safe for concurrent
-use by several goroutines, but a `Root` is.
+may write to the same dataset or volume safely without external
+coordination. A single handle or `Volume` value is **not** safe for
+concurrent use by several goroutines, but a `Root` is safe for such use.
 
 A writer that terminates after advancing the `latest` pointer and before
 persisting its manifest leaves an *abandoned commit*. The history remains
@@ -732,24 +746,26 @@ next Volume commit adopts the abandoned commit from its staged manifest and
 merges its blocks (CONTRACT_CORE §Head Pointer, CONTRACT_VOLUME §Error
 Semantics). Only a pointer that names a commit persisted by a release
 earlier than v0.11.0, or a pointer edited by hand, blocks Volume commits
-until an operator repairs it. After such a repair, call `Latest` on an
-existing `Volume` value, or open the volume again, before committing,
-unless retries are configured.
+until an operator repairs it. After such a repair, a caller without
+configured retries calls `Latest` on an existing `Volume` value, or opens
+the volume again, before committing.
 
 On a conflict, with manual retries:
 1. Receive `ErrSnapshotConflict`.
 2. Read the state again through `Latest()`.
-3. Merge or reconstruct, and then commit again.
+3. Merge the changes into the new state, or reconstruct them, and then
+   commit again.
 
-On a conflict, with automatic retries: configure `WithRetry(n)` when the
-dataset opens. The commit path then refreshes its state and
+With automatic retries, the caller configures `WithRetry(n)` when the
+dataset opens. On a conflict, the commit path then refreshes its state and
 assigns the manifest a new parent automatically, with an exponential
 backoff and jitter between attempts. Lode writes data files once and
-retries only the manifest and the pointer CAS. Configure the backoff with
-`WithRetryBaseDelay`, `WithRetryMaxDelay`, and `WithRetryJitter`. Observe
-retries (for example, to count them in a metric) with
-`WithRetryObserver(fn)`: `fn(attempt)` is called synchronously once per
-retry, before the backoff interval, with the attempt number counted from 1.
+retries only the manifest and the pointer CAS. A caller configures the
+backoff with `WithRetryBaseDelay`, `WithRetryMaxDelay`, and
+`WithRetryJitter`. It observes retries (for example, to count them in a
+metric) with `WithRetryObserver(fn)`, and Lode calls `fn(attempt)`
+synchronously once per retry, before the backoff interval, with the attempt
+number counted from 1.
 
 Data files are immutable and already persisted, so the cost of a retry is
 one manifest write plus one pointer swap.
@@ -758,8 +774,8 @@ one manifest write plus one pointer swap.
 
 `Store` requires `CompareAndSwap`. A backend that offers no conditional
 write implements `lode.ObjectStore` (the object operations alone). When
-every writer runs in one process, wrap it once with `lode.SingleProcess` and
-give the result to every handle:
+every writer runs in one process, the caller wraps the backend once with
+`lode.SingleProcess` and passes the result to every handle:
 
 ```go
 store := lode.SingleProcess(customStore) // one value, shared by all writers
@@ -769,22 +785,23 @@ root := lode.Open(lode.Use(store))
 `SingleProcess` implements `CompareAndSwap` with a lock held by the process,
 so writers in that process commit as they would with CAS. Reads through the
 returned value wait for a replacement in progress, so they never observe a
-replaced object as absent. It does not coordinate writers or readers in
-other processes, nor a second `SingleProcess` around the same backend. With
+replaced object as absent. `SingleProcess` does not coordinate writers or
+readers in other processes, nor a second `SingleProcess` around the same
+backend. With
 writers in several processes, such a backend requires external
-coordination, such as locks, queues, or leader election. A store that already implements
-`ConditionalWriter` is returned unchanged.
+coordination, such as locks, queues, or leader election. `SingleProcess`
+returns unchanged any store that already implements `ConditionalWriter`.
 
 *Contract reference: [`CONTRACT_WRITE_API.md`](docs/contracts/CONTRACT_WRITE_API.md) §Concurrency, [`CONTRACT_VOLUME.md`](docs/contracts/CONTRACT_VOLUME.md) §Concurrency, [`CONTRACT_STORAGE.md`](docs/contracts/CONTRACT_STORAGE.md) §ConditionalWriter Capability*
 
 ### Performance
 
-Before CAS was required, a store without `ConditionalWriter` updated the
+Before Lode required CAS, a store without `ConditionalWriter` updated the
 pointer with Delete+Put (two store calls). A single `CompareAndSwap` reduces
 both latency and the number of allocations relative to that path.
 
-Benchmarks on the in-memory adapter (twenty sequential writes per
-iteration, AMD Ryzen 9 5900XT):
+The following benchmarks ran on the in-memory adapter, with twenty
+sequential writes per iteration, on an AMD Ryzen 9 5900XT:
 
 | Metric | Delete+Put | CAS (ConditionalWriter) | Delta |
 |--------|------------|-------------------------|-------|
@@ -794,22 +811,22 @@ iteration, AMD Ryzen 9 5900XT):
 
 ### Large Upload Guarantees
 
-The storage adapter has an atomic threshold, such as 5 GB for S3. For an
-upload above it, the S3 adapter uses conditional completion
+S3 completes a single PUT atomically only for objects of at most 5 GB. For
+a larger upload, the S3 adapter uses conditional completion
 (`If-None-Match` on `CompleteMultipartUpload`) to provide the same atomic
 guarantee against overwriting as for small uploads.
 
-Both upload paths therefore guarantee atomically that nothing is
-overwritten:
+Both upload paths therefore refuse, atomically, to overwrite an existing
+object:
 - **Small uploads** (at most 5 GB): atomic through `PutObject` with
   `If-None-Match`
 - **Large uploads** (above 5 GB): atomic through `CompleteMultipartUpload`
   with `If-None-Match`
 
-A preliminary existence check is retained so that an upload fails early,
-before uploading parts for an object that already exists.
+The adapter also checks for an existing object first, so that an upload
+to an existing key fails before the adapter sends any parts.
 
-**Caveat Regarding Backend Compatibility:**
+Backend compatibility limits the atomic guarantee for large uploads.
 
 The atomic guarantee for large uploads (above 5 GB) depends on the
 backend's support for `If-None-Match` on `CompleteMultipartUpload`:
@@ -822,33 +839,35 @@ backend's support for `If-None-Match` on `CompleteMultipartUpload`:
 | MinIO | Unknown | ⚠️ Not tested |
 | LocalStack | Unknown | ⚠️ Test backend only |
 
-The backends marked ⚠️ are used for integration testing only. Before
-deploying against a backend that is not listed as verified, test large
-uploads (above 5 GB) before relying on the multipart path, or ensure
-single-writer semantics in the application.
+Lode's integration tests use the backends marked ⚠️ only as test
+environments. A deployment on a backend that the table does not list as
+verified requires a test of large uploads (above 5 GB) before it relies on
+the multipart path, or single-writer semantics in the application.
 
 *Contract reference: [`CONTRACT_STORAGE.md`](docs/contracts/CONTRACT_STORAGE.md) §Put Upload Paths, [`CONTRACT_WRITE_API.md`](docs/contracts/CONTRACT_WRITE_API.md) §Storage-Level Concurrency*
 
 ### Cleanup Behavior
 
-**The removal of partial objects is best-effort, not guaranteed.**
+**Lode removes partial objects on a best-effort basis and does not
+guarantee their removal.**
 
 On an abort, or on an error before commit:
-- If the failure occurs before any manifest is written, the snapshot does
+- If the failure occurs before Lode writes any manifest, the snapshot does
   not exist.
 - A failed `Put` leaves no object ([`CONTRACT_STORAGE.md`](docs/contracts/CONTRACT_STORAGE.md) §Put is atomic),
   and the writer never deletes anything after a failed `Put`.
-- A stream's data object whose commit failed before any manifest write is
-  deleted on a best-effort basis and may remain in storage.
-- If a manifest write fails, the manifest may nevertheless have been
-  stored (when the network lost only the response), so the snapshot may be
-  visible. Lode therefore retains the data object, and if the commit did
+- When a stream's commit fails before any manifest write, Lode attempts to
+  delete the stream's data object, which may remain in storage.
+- If a manifest write returns an error, the store may nevertheless have
+  persisted the manifest (when the network lost only the response), so the
+  snapshot may be visible. Lode therefore retains the data object, and if the commit did
   fail, `Sweep` reclaims it.
-- Callers should not rely on the automatic removal of partial objects.
+- Callers should not rely on Lode to remove partial objects
+  automatically.
   `Sweep` reclaims them once they are older than its grace period
   (§Retention).
-- Removal uses an independent context, to maximize the likelihood of
-  success even if the caller's context was canceled. Whether removal
+- Removal uses an independent context, so that it can succeed even after the
+  caller cancels its own context. Whether removal
   completes after a cancellation depends on the timing of the adapter, so
   the outcome can differ from one run to the next. The difference has no
   effect on correctness, because an object that no manifest references
@@ -865,9 +884,9 @@ A failure to delete a partial object does not create a snapshot.
 Lode never removes anything on its own initiative. `Expire`, on a writer
 handle (`Records` or `Blobs`), removes the snapshots that the caller
 selects, and `Sweep` reclaims the residual data of interrupted writes and
-expiries. Views do not retain: removal is a write. Which
-snapshots to retain, for how long, and when to run either operation are
-matters of the caller's policy ([`CONTRACT_RETENTION.md`](docs/contracts/CONTRACT_RETENTION.md)).
+expiries. Views cannot expire or sweep, because removal is a write. The
+caller's policy determines which snapshots to retain, for how long, and
+when to run either operation ([`CONTRACT_RETENTION.md`](docs/contracts/CONTRACT_RETENTION.md)).
 
 <!-- illustrative -->
 ```go
@@ -883,22 +902,23 @@ if report.RetainedHead != "" {
 }
 ```
 
-The fields of `ExpireRequest` intersect, and at least one of them must be
-set:
+Each field of `ExpireRequest` selects a set of snapshots, `Expire` removes
+the intersection of those sets, and the caller must set at least one
+field:
 
 | Field | Selects |
 |-------|---------|
 | `IDs` | The named snapshots |
 | `Partition` | Snapshots in this partition or beneath it, matched by whole segment (`run_id=r1` never matches `run_id=r10`), in Hive layouts only |
-| `Before` | Snapshots whose write began before this instant (derived from the snapshot ID, so selection loads no manifest) |
+| `Before` | Snapshots whose write began before this instant (Lode derives the start time from the snapshot ID, so selection loads no manifest) |
 
-- **The head is never expired.** When the selection includes the head, it
-  is retained and reported in `ExpireReport.RetainedHead`, which is not an
-  error.
-- **Mixed snapshots are retained.** A snapshot selected by `Partition` that
-  also has files outside the partition is reported in `Mixed`. Name it in
+- **Lode never expires the head.** When the selection includes the head,
+  `Expire` retains the head and reports it in `ExpireReport.RetainedHead`
+  without returning an error.
+- **Lode retains mixed snapshots.** When `Partition` selects a snapshot that
+  also has files outside the partition, `Expire` reports it in `Mixed`. Name it in
   `IDs` to expire it.
-- **Expiry is recorded.** `Snapshot` and `Read` on an expired ID return
+- **Lode records each expiry.** `Snapshot` and `Read` on an expired ID return
   `ErrSnapshotExpired`, which also matches `ErrNotFound`.
 - **Expiry is resumable.** The report is non-nil on error and lists the
   work completed. The expiry's tombstone records the snapshot's files, so
@@ -906,8 +926,9 @@ set:
   does `Sweep`. `Objects` and `Bytes` count what each run deleted, and the
   totals across runs sum correctly.
 - **Lode deletes only what it wrote.** Objects that a caller placed beside
-  the dataset through `Store.Put` (sidecar files) are never deleted by
-  `Expire`. Delete them after their snapshots have expired.
+  the dataset through `Store.Put` (sidecar files) remain, because `Expire`
+  never deletes them. The caller deletes them after their snapshots
+  expire.
 - **A read in progress may fail.** A `Read` that loaded a manifest before
   its expiry began can encounter `ErrNotFound` on a data file. Lode
   provides no read lease.
@@ -924,38 +945,40 @@ report, err := ds.Sweep(ctx, lode.SweepRequest{Grace: 24 * time.Hour})
 `Sweep` returns a `SweepReport` of what it reclaimed, or of what it would
 reclaim on a dry run.
 
-- **A partition index is restored.** On a Hive dataset, a commit persists
-  its partition manifests after it is complete, so a writer that terminates
-  first leaves a snapshot that a listing filtered by partition omits.
+- **`Sweep` restores a missing partition index.** On a Hive dataset, a
+  commit persists its partition manifests after it persists the canonical
+  manifest. A writer that terminates before that step leaves a snapshot
+  that listings filtered by partition omit.
   `Sweep` copies the canonical manifest to each missing partition path once
   the snapshot is older than `Grace`, and reports it in `Reindexed`.
 
-- **A grace period is required.** An object of a snapshot that never
-  committed is deleted only once its write began longer ago than `Grace`,
-  so a write in progress is never reclaimed. `Grace` must exceed the
-  duration of the longest write, and a zero or negative value returns
-  `ErrInvalidArgument`.
-- **Reclamation operates per snapshot.** Objects in a live snapshot's data
-  prefix are retained whether or not its `Files[]` lists them. Once the
-  snapshot has expired, all of them are deleted.
-- **Bytes are counted only where recorded.** `Bytes` is the sum of the
+- **A grace period is required.** `Sweep` deletes an object of an
+  uncommitted snapshot only when its write began longer ago than `Grace`,
+  so it never reclaims a write in progress. `Grace` must exceed the
+  duration of the longest write, and `Sweep` returns `ErrInvalidArgument`
+  for a zero or negative value.
+- **Reclamation operates per snapshot.** `Sweep` retains every object in a
+  live snapshot's data prefix, whether or not its `Files[]` lists the
+  object, and deletes all of them once the snapshot expires.
+- **`Bytes` counts only recorded sizes.** `Bytes` is the sum of the
   sizes that an expiry's tombstone recorded for the objects deleted.
   Objects without a recorded size (orphaned objects, and objects that a
-  snapshot's `Files[]` never listed) are counted in `Unsized` and never
-  estimated.
-- **Objects outside the data topology are never modified.** Sidecar files,
-  the pointer, and tombstones are neither reported nor deleted.
+  snapshot's `Files[]` never listed) are counted in `Unsized`, and the report
+  never estimates their sizes.
+- **`Sweep` never modifies objects outside the data topology.** It neither
+  reports nor deletes sidecar files, the pointer, or tombstones.
 
 ---
 
 ## Errors
 
-Errors are returned for invalid configuration, storage failures, and
-missing objects. Their semantics are stable and documented.
+Lode returns errors for invalid configuration, storage failures, and
+missing objects, and the sentinel table below defines the meaning of each
+error.
 
 ### Sentinel Errors
 
-Use `errors.Is()` to check for sentinel errors:
+A caller checks for sentinel errors with `errors.Is()`:
 
 <!-- illustrative -->
 ```go
@@ -972,7 +995,7 @@ if errors.Is(err, lode.ErrNoSnapshots) {
 | `ErrNoManifests` | Storage has objects but no valid manifests | `ListDatasets` |
 | `ErrPathExists` | A write to an existing path (a violation of immutability) | Storage |
 | `ErrInvalidPath` | The key escapes the root or is empty, the prefix or partition path is not canonical, or the `ReadRange` bounds are invalid | Storage, listing, `ParsePartitionPath` |
-| `ErrInvalidArgument` | A value supplied by the caller cannot be used (a `nil` factory, an invalid dataset ID or path name, metadata that is not a JSON object, an invalid offset, and so on) | Roots, handles, Volume |
+| `ErrInvalidArgument` | Lode rejects a value that the caller supplied (a `nil` factory, an invalid dataset ID or path name, metadata that is not a JSON object, an invalid offset, and so on) | Roots, handles, Volume |
 | `ErrDatasetsNotModeled` | Flat paths do not support dataset enumeration | `ListDatasets` |
 | `ErrPartitionPrefixNotSupported` | `Prefix` was specified on a dataset without partitions | `ListPartitions` |
 | `ErrManifestInvalid` | A manifest fails validation | Views, listing |
@@ -995,17 +1018,17 @@ manifest). It also returns the shared sentinels above where they apply.
 
 ### Error Handling Guidelines
 
-**Safe to retry:**
+A caller may retry the following errors:
 - Storage I/O errors (network failures, timeouts): the caller may retry.
 - `ErrNotFound` during a race: the caller may retry if the store is
   eventually consistent.
 - `ErrSnapshotConflict`: call `Latest()` again, merge state, and commit
   again (or use `WithRetry` for automatic retries).
 - `ErrHeadUncommitted`: retry `Expire` or `Sweep` once the pending commit
-  completes. A dataset written before the pointer was introduced requires
-  one commit, which creates the pointer.
+  completes. A dataset that predates the pointer requires one commit, which
+  creates the pointer.
 
-**Not to be retried (configuration or logic errors):**
+A caller should not retry the following configuration and logic errors:
 - `ErrDatasetsNotModeled`: list datasets under a root with a datasets
   directory.
 - `ErrInvalidArgument`: correct the value that the message names.
@@ -1024,15 +1047,16 @@ The `lode/s3` package provides an S3-compatible storage adapter.
 
 **Public API:**
 - `s3.Factory(client, config)`: a factory for `lode.Open`, which records
-  a configuration error rather than return it
-- `s3.New(client, config)`: creates an `*s3.Store` from an AWS SDK client
+  a configuration error instead of returning it
+- `s3.New(client, config)`: a constructor that creates an `*s3.Store` from
+  an AWS SDK client
 - `s3.Config{Bucket, Prefix}`: the store's configuration
 - `s3.API`: the subset of the AWS SDK client that the store calls, which
   the SDK's own client satisfies
 
-The client is constructed with the AWS SDK directly. This keeps Lode's API
-surface minimal while leaving the caller full control over credentials,
-endpoints, and options.
+The caller constructs the client directly with the AWS SDK, so Lode's API
+surface remains minimal and the caller retains full control over
+credentials, endpoints, and options.
 
 ### AWS S3
 
@@ -1116,13 +1140,14 @@ client := awss3.NewFromConfig(cfg, func(o *awss3.Options) {
 store, _ := s3.New(client, s3.Config{Bucket: "my-bucket"})
 ```
 
-**Bucket requirement:** the bucket must exist before use, because Lode
-does not create buckets.
+**Bucket requirement:** the bucket must exist before the first storage
+operation, such as opening a dataset or view, listing datasets, or calling
+a Volume method, because Lode does not create buckets.
 
 ### Other S3-Compatible Services
 
-**This is a known limitation of v1.0.** Lode's guarantees on an
-S3-compatible service rest on three behaviors of the service:
+**Lode v1.0 verifies few S3-compatible services.** Its guarantees on such a
+service rest on three behaviors of the service:
 
 - strong read-after-write consistency
 - `If-None-Match: *` on `PutObject` and on `CompleteMultipartUpload`,
@@ -1133,17 +1158,18 @@ S3-compatible service rest on three behaviors of the service:
 
 AWS S3 provides all three. A service that accepts a conditional header
 without enforcing it lets two writers replace each other's manifest or
-pointer without an error, which forks a dataset's history.
+pointer without an error, and that replacement forks the dataset's
+history.
 
 Lode's integration tests verify both conditional writes against LocalStack
 and RustFS: sixteen writers race on `CompareAndSwap` and on `Put`, and
-exactly one may win (`TestIntegration_ConditionalWrites`). Cloudflare R2
+exactly one succeeds (`TestIntegration_ConditionalWrites`). Cloudflare R2
 serves a production consumer. SeaweedFS requires version 4.29 or later.
 Before 4.18 it accepts several concurrent conditional writes of one
 object, and from 4.18 through 4.28 it stalls conditional writes under
-contention. Lode verifies no other service. Before relying on one, run
-the same race against it, and verify the conditional completion of a
-multipart upload, which Lode uses for objects larger than 5 GB.
+contention. Lode verifies no other service. A caller who relies on one
+first runs the same race against it and verifies the conditional
+completion of a multipart upload, which Lode uses for objects larger than 5 GB.
 
 ---
 

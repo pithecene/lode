@@ -1,7 +1,6 @@
 # Lode Parquet Codec Contract
 
-This document defines the required semantics for the integration of the
-Parquet codec.
+This document defines the required semantics of Parquet codec integration.
 It is authoritative for any Parquet codec implementation within Lode.
 
 ---
@@ -11,7 +10,7 @@ It is authoritative for any Parquet codec implementation within Lode.
 1. A columnar storage format for efficient analytical queries.
 2. Interoperability with common external readers (tested with primitive
    types).
-3. Encoding with an explicit schema (no schema is inferred from data).
+3. Encoding with an explicit schema (the codec infers no schema from data).
 4. Conformance of the codec interface to Lode's existing abstractions.
 
 ---
@@ -56,23 +55,23 @@ entire file. `Records.StreamWrite` with a Parquet codec MUST return
 ### Name
 
 - `Name()` MUST return `"parquet"`.
-- This name is recorded in manifests.
+- Manifests record this name.
 
 ### Encode
 
 - `Encode(w, records)` MUST write a valid Parquet file to `w`.
 - The Parquet file MUST include the footer, which requires buffering all
   data.
-- Records MUST be encoded according to the configured schema.
+- The codec MUST encode records according to the configured schema.
 - An empty set of records (`len(records) == 0`) MUST produce a valid Parquet
   file with zero rows.
-- Encoding errors MUST be returned, never ignored.
+- The codec MUST return encoding errors and never ignore them.
 
 ### Decode
 
 - `Decode(r)` MUST read a complete Parquet file from `r`.
-- It returns records as `[]D`, each a `map[string]any`.
-- Field types are mapped according to the table in §Type Mapping.
+- `Decode` returns records as `[]D`, each a `map[string]any`.
+- The codec maps field types according to the table in §Type Mapping.
 - `Decode` MUST support files written by this codec and by standard Parquet
   writers.
 
@@ -81,11 +80,11 @@ entire file. `Records.StreamWrite` with a Parquet codec MUST return
 ## Schema Requirements
 
 Parquet requires a schema. The Lode Parquet codec MUST support explicit
-configuration of the schema.
+schema configuration.
 
 ### Schema Definition
 
-Schemas are defined when the codec is constructed:
+The caller defines the schema when constructing the codec:
 
 ```go
 codec := lode.Parquet(lode.ParquetSchema{
@@ -100,14 +99,15 @@ ds, err := root.Records(ctx, "events", codec) // returns a schema error
 
 ### Schema Construction Validation
 
-`Parquet` validates the schema and records an error, matching
-`ErrSchemaViolation`, which `Root.Records` and `ReadRoot.Records` return,
-and which `Encode` and `Decode` return if called directly, for:
+`Parquet` validates the schema and, when validation fails, records an error that matches
+`ErrSchemaViolation`. `Root.Records` and `ReadRoot.Records` return that
+error, and so do `Encode` and `Decode` when a caller invokes them directly.
+Validation fails for:
 
 - invalid `ParquetType` values (out of range),
 - empty field names, and
-- duplicate field names (which would cause columns to be dropped without
-  notice).
+- duplicate field names (which would cause the codec to drop columns
+  without notice).
 
 All schema validation errors wrap `ErrSchemaViolation`.
 
@@ -115,17 +115,17 @@ All schema validation errors wrap `ErrSchemaViolation`.
 
 - Records MUST contain every required (non-nullable) field defined in the
   schema.
-- **Additional fields**: fields in records that are absent from the schema
-  MUST be ignored without error. This rule preserves forward compatibility
+- **Additional fields**: the codec MUST ignore, without error, record
+  fields that are absent from the schema. This rule preserves forward compatibility
   when record producers add fields.
 - A missing required field MUST produce `ErrSchemaViolation`.
-- A type mismatch that remains after coercion is attempted MUST produce
+- A type mismatch that remains after attempted coercion MUST produce
   `ErrSchemaViolation`.
 
 ### No Schema Inference
 
 - The codec MUST NOT infer a schema from record data.
-- An explicit schema is required for predictable, portable output.
+- Predictable, portable output requires an explicit schema.
 - This rule accords with Lode's principle that it "stores facts, not
   interpretations."
 
@@ -148,22 +148,22 @@ All schema validation errors wrap `ErrSchemaViolation`.
 
 ### Explicit Type Coercion
 
-The codec performs **explicit, documented type coercions** to support
-common patterns:
+The codec performs **explicit, documented type coercions** to accept input
+types that common decoders produce:
 
-1. **Conversion of JSON numbers**: `float64` is accepted for integer fields,
-   because `encoding/json` decodes every number as `float64`. This
-   coercion allows interoperation with records decoded from JSONL.
+1. **Conversion of JSON numbers**: the codec accepts `float64` for integer
+   fields, because `encoding/json` decodes every number as `float64`. This
+   coercion lets the codec encode records that a JSONL decoder produces.
 
-2. **Parsing of timestamp strings**: RFC 3339 and RFC 3339 (nanosecond)
-   strings are accepted for timestamp fields. An invalid timestamp string
-   produces `ErrSchemaViolation`.
+2. **Parsing of timestamp strings**: the codec accepts RFC 3339 and
+   RFC 3339 (nanosecond) strings for timestamp fields. An invalid timestamp
+   string produces `ErrSchemaViolation`.
 
-3. **Bytes from strings**: `string` is accepted for byte fields (converted
-   with `[]byte(s)`).
+3. **Conversion of strings to bytes**: the codec accepts `string` for byte
+   fields and converts it with `[]byte(s)`.
 
 These coercions are **not inference**: the schema still determines the
-output type. Coercion affects only which input types are accepted.
+output type. Coercion affects only which input types the codec accepts.
 
 ### Numeric Overflow Protection
 
@@ -179,12 +179,12 @@ When coercing `float64` to integer types, the codec validates:
   represents integers exactly). A value outside this range produces
   `ErrSchemaViolation`.
 
-These checks prevent the undetected corruption of data through numeric
-overflow or loss of precision.
+These checks prevent undetected data corruption through numeric overflow
+or precision loss.
 
 ### Nullable Fields
 
-- Fields MAY be marked as nullable in the schema.
+- The schema MAY mark fields as nullable.
 - Nullable fields accept `nil` values and encode them as Parquet nulls.
 - A non-nullable field with a `nil` or missing value MUST produce
   `ErrSchemaViolation`.
@@ -193,8 +193,8 @@ overflow or loss of precision.
 
 ## Streaming Limitations
 
-Parquet files require a footer that references the metadata of each row
-group, which makes genuine streaming impossible.
+Each Parquet file requires a footer that references the metadata of every
+row group. This footer makes genuine streaming impossible.
 
 ### Memory Behavior
 
@@ -223,18 +223,18 @@ Row groups affect read performance and memory use.
 
 ### Defaults
 
-- The size of a row group is defined by the implementation (typically the
-  library's default).
+- The implementation defines the row-group size (typically the library's
+  default).
 - A single row group is acceptable for small datasets.
 
-Row-group configuration is an implementation detail and is not exposed in
-the public API.
+Row-group configuration is an implementation detail, and the public API
+does not expose it.
 
 ---
 
 ## Compression
 
-Parquet supports internal compression of each column chunk.
+Parquet supports internal column-chunk compression.
 
 ### Supported Compression Options
 
@@ -246,14 +246,13 @@ const (
 )
 ```
 
-Note: the codec offers no Zstandard compression.
+The codec offers no Zstandard compression.
 
 ### Compression Layering
 
-**Important**: Parquet's internal compression is separate from Lode's
-`Compressor`.
+Parquet's internal compression is separate from Lode's `Compressor`.
 
-- When using the Parquet codec, set Lode's compressor to `"noop"`.
+- A caller that uses the Parquet codec sets Lode's compressor to `"noop"`.
 - Compressing twice (with Parquet and with Lode's compressor) consumes CPU
   for minimal benefit.
 - The manifest records Lode's compressor (`"noop"`), not Parquet's internal
@@ -261,10 +260,10 @@ Note: the codec offers no Zstandard compression.
 
 ### Manifest Recording
 
-- Lode's `Compressor` field records the external compressor (`"noop"` is
-  recommended).
-- Parquet's internal compression is part of the file format and is not
-  recorded in the manifest.
+- Lode's `Compressor` field records the external compressor (this contract
+  recommends `"noop"`).
+- Parquet's internal compression is part of the file format, and the
+  manifest does not record it.
 
 ---
 
@@ -275,10 +274,12 @@ and row counts).
 
 ### Manifest Integration
 
-The following statistics MAY be extracted and recorded in manifests:
+The implementation MAY extract the following statistics and record them in
+manifests:
 
 - `RowCount`: the total number of rows in the file (from Parquet metadata).
-- `MinTimestamp` and `MaxTimestamp`: when a timestamp column is designated.
+- `MinTimestamp` and `MaxTimestamp`: the earliest and latest values of the
+  timestamp column that the caller designates.
 
 ### Per-File Statistics
 
@@ -288,16 +289,17 @@ statistics through `FileStats()` after each `Encode` call:
 - `RowCount`: the total number of rows encoded in the file.
 - `Min` and `Max` for each column of an ordered type: int32, int64, float32,
   float64, string, and timestamp.
-- `NullCount` for each column: the number of null values in a nullable
-  column.
+- `NullCount` for each column: the number of null values, which only a
+  nullable column can hold.
 - `DistinctCount`: not computed. The codec reports zero, which the
   manifest omits.
-- Boolean and byte columns report only `NullCount` (no minimum or maximum).
-- Statistics are computed during `Encode` from the Go record values, not
-  from Parquet's internal metadata.
+- For Boolean and byte columns, the codec reports only `NullCount`, with no
+  minimum or maximum.
+- The codec computes statistics during `Encode` from the Go record values,
+  not from Parquet's internal metadata.
 - Minimum and maximum values use the same Go types as the input records.
-  When serialized to JSON, a `time.Time` becomes an RFC 3339 string with
-  nanosecond precision, and consumers must interpret values according to the
+  JSON serialization renders a `time.Time` as an RFC 3339 string with
+  nanosecond precision, so consumers must interpret values according to the
   schema.
 
 ---
@@ -306,7 +308,7 @@ statistics through `FileStats()` after each `Encode` call:
 
 ### Error Sentinels
 
-The following errors MUST be defined in `lode/api.go` so that callers can
+The file `lode/api.go` MUST define the following errors so that callers can
 match them:
 
 ```go
@@ -323,11 +325,11 @@ var ErrInvalidFormat = errInvalidFormat{}
 |------------------------------|---------------------------------|
 | Missing required field       | `ErrSchemaViolation`            |
 | Type mismatch after coercion | `ErrSchemaViolation`            |
-| Nil value for non-nullable   | `ErrSchemaViolation`            |
+| Nil value for a non-nullable field | `ErrSchemaViolation`            |
 | Invalid timestamp string     | `ErrSchemaViolation`            |
 | Float64 with fractional part | `ErrSchemaViolation`            |
 | Int32 overflow               | `ErrSchemaViolation`            |
-| Int64 safe range exceeded    | `ErrSchemaViolation`            |
+| Value outside the int64 safe range | `ErrSchemaViolation`            |
 | Write failure                | The underlying I/O error        |
 
 ### Decoding Errors
@@ -339,9 +341,9 @@ var ErrInvalidFormat = errInvalidFormat{}
 | Empty file                   | `ErrInvalidFormat`              |
 | Row read failure             | `ErrInvalidFormat` (wrapped)    |
 
-Note: errors in reading individual rows are wrapped with `ErrInvalidFormat`,
-because they indicate problems with the format (corrupt row data, a
-truncated file, and similar defects).
+The codec wraps row-read errors with `ErrInvalidFormat`, because such errors
+indicate a malformed file: corrupt row data, a truncated file, or a similar
+defect.
 
 ---
 
@@ -404,8 +406,8 @@ const (
 
 ### Scope
 
-Parquet files produced by this codec are **tested with**, and **expected to
-work with**:
+The project tests this codec's Parquet files against the following
+readers and expects each of them to read the files:
 - Apache Arrow and PyArrow
 - DuckDB
 - Apache Spark
@@ -419,7 +421,7 @@ work with**:
   and no custom extensions.
 - **No encryption**: files are unencrypted.
 
-### Not Guaranteed
+### Features Without a Compatibility Guarantee
 
 - Complex nested schemas
 - Custom annotations of logical types
@@ -440,29 +442,32 @@ work with**:
 The implementation validates all schema constraints in `Parquet`.
 Internal functions that process validated schemas may panic on invalid
 types as a secondary safeguard. Such a panic indicates a programming error
-(validation that was circumvented), not an error in user input. This
+(circumvented validation), not an error in user input. This
 behavior is acceptable because:
 
 1. The panic is unreachable in normal use, since validation rejects every
    invalid input.
-2. It provides a clear failure if validation is inadvertently circumvented.
+2. The panic halts execution visibly if code inadvertently circumvents
+   validation.
 3. Returning errors from internal functions would add unnecessary
    complexity.
 
 ### Recommended Library
 
-The `parquet-go` library (github.com/parquet-go/parquet-go) is recommended:
-- It is implemented entirely in Go.
+This contract recommends the `parquet-go` library
+(github.com/parquet-go/parquet-go):
+- It consists entirely of Go code.
 - It supports schema-based encoding.
-- It is actively maintained.
+- Its maintainers continue active development.
 
 ### Alternative Libraries
 
-- `github.com/xitongsys/parquet-go`: older and less actively maintained.
+- `github.com/xitongsys/parquet-go`: an older library with less active
+  maintenance.
 - `github.com/apache/arrow-go`: a heavier dependency with more features.
 
-The choice of library is an implementation detail and is not governed by
-this contract.
+Library selection is an implementation detail, and this contract does not
+govern it.
 
 ---
 
@@ -477,7 +482,7 @@ this contract.
 - Type coercion (JSON numbers, timestamp strings).
 - Protection against numeric overflow (int32 range, int64 safe range,
   truncation).
-- Additional fields are ignored (forward compatibility).
+- Handling of additional fields (forward compatibility).
 - Handling of an empty set of records.
 - Large batches of records (to verify row-group behavior).
 
@@ -490,14 +495,14 @@ this contract.
 
 ### External Reader Tests (Optional)
 
-- Read the files with DuckDB (if available in CI).
-- Read the files with PyArrow (if available in CI).
+- Reading of the files with DuckDB, when the CI environment provides DuckDB.
+- Reading of the files with PyArrow, when the CI environment provides PyArrow.
 
 ### Contract Compliance Tests
 
 - `Name()` returns `"parquet"`.
 - Manifests record the codec as `"parquet"`.
-- The error sentinels are returned for the documented conditions.
+- The codec returns the error sentinels for the documented conditions.
 
 ---
 

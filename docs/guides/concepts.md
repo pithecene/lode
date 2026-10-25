@@ -1,29 +1,29 @@
-# How Lode Stores and Commits Data
+# Lode Storage and Commit Model
 
-This guide describes what Lode is, how a dataset is arranged in storage,
-how a commit becomes visible, and how to choose among the write APIs. It is
-explanatory, and the normative rules are defined in the contracts under
-[`docs/contracts/`](../contracts/), principally
+This guide describes Lode's purpose, the dataset layout in storage, the
+sequence that makes a commit visible, and write API selection. The guide explains the design, and the contracts under
+[`docs/contracts/`](../contracts/) define the normative rules, principally
 [`CONTRACT_CORE.md`](../contracts/CONTRACT_CORE.md) and
 [`CONTRACT_WRITE_API.md`](../contracts/CONTRACT_WRITE_API.md).
 
-## What Lode Is and Is Not
+## Scope and Exclusions of Lode
 
-**Lode is:**
+Lode has the following characteristics:
 - an embeddable Go library
 - a persistence framework for structured data and sparse byte ranges
 - a provider of snapshots, atomic commits, and metadata guarantees that
-  would otherwise have to be implemented by hand on raw storage APIs
-- explicit and predictable by design
+  callers would otherwise implement by hand on raw storage APIs
+- a library with explicit and predictable behavior by design
 
-**Lode is not:**
+Lode excludes the following roles:
 - a database or storage engine
 - a query planner or execution runtime
 - a distributed system or background service
 
-Lode governs *structure and lifecycle*, not execution.
+Lode governs *data structure and lifecycle*, not query execution, so
+callers supply their own query engines and process scheduling.
 
-## Why Lode Exists
+## Undisciplined Object Storage
 
 Many systems already use object storage as their primary persistence layer:
 
@@ -31,19 +31,19 @@ Many systems already use object storage as their primary persistence layer:
 - Parquet files on a filesystem
 - analytics data deposited according to informal convention
 
-What such systems usually lack is discipline:
-- no clear snapshots or versions
-- no guarantees about metadata
+Such systems usually lack discipline and show the following faults:
+- absent snapshots or versions
+- absent metadata guarantees
 - accidental overwrites
 - improvised directory layouts
-- uncertain safety of reads and writes
+- uncertain read and write safety
 
-Lode formalizes what should be formalized and declines to do anything
-else.
+Lode formalizes snapshots, commits, metadata, and directory layout, and it
+leaves execution, coordination, and compaction to the caller.
 
 ## Storage and Commits
 
-A dataset in storage, in the default layout:
+The following diagram shows a dataset in storage under the default layout:
 
 ```mermaid
 flowchart LR
@@ -69,32 +69,33 @@ sequenceDiagram
     Note over W,S: readers see the snapshot once its manifest exists
 ```
 
-If another writer advanced the pointer first, the CAS fails with
-`ErrSnapshotConflict`. With `WithRetryCount`, Lode reads the head again and
-retries with the same staged data, which may still publish the snapshot. If
-the commit fails permanently, the data files that a buffered write staged
-remain as orphaned objects until `Sweep` reclaims them. A stream
-write deletes its object on a best-effort basis if the commit failed before
-any manifest write, and retains it otherwise, because a manifest whose
-write reported an error may still have been stored.
+If another writer advanced the pointer first, the compare-and-swap (CAS)
+fails with `ErrSnapshotConflict`. When the caller enables `WithRetry`, Lode
+reads the head again, retries the commit with the same staged data, and
+publishes the snapshot if the retry succeeds. If the commit fails
+permanently, a buffered write's staged data files remain as orphaned
+objects until `Sweep` reclaims them. A stream write deletes its object on a best-effort basis if the
+commit fails before any manifest write. Otherwise, the stream write retains
+the object, because the store may have persisted a manifest even when its
+write reported an error.
 
 ## Choosing a Write API
 
 | Handle | API | Use Case | Codec | Partitioning |
 |----------|-----|----------|-------|--------------|
-| `Records[T]` | `Write` | Records in memory, batches | ✅ Fixes `T` | ✅ Supported |
-| `Records[T]` | `StreamWrite` | Large streams of records (`iter.Seq2[T, error]`) | ✅ Must stream | ❌ Not supported |
+| `Records[T]` | `Write` | Records in memory, batches | ✅ Set by `T` | ✅ Supported |
+| `Records[T]` | `StreamWrite` | Large streams of records (`iter.Seq2[T, error]`) | ✅ Streaming codec required | ❌ Not supported |
 | `Blobs` | `Write` | One blob in memory | ❌ Raw bytes | ❌ Not applicable |
 | `Blobs` | `StreamWrite` | Large binary payloads (gigabytes or more) | ❌ Raw bytes | ❌ Not applicable |
-| Volume (experimental) | `StageWriteAt` + `Commit` | Sparse, resumable byte ranges | ❌ Raw only | ❌ Not applicable |
+| Volume (experimental) | `StageWriteAt` + `Commit` | Sparse, resumable byte ranges | ❌ Raw bytes | ❌ Not applicable |
 
-**Decision procedure:**
+The following procedure selects a write API:
 1. If the data is records already in memory, use `Records.Write`.
-2. If it is a large, unstructured binary object, use `Blobs.StreamWrite`
-   (or `Blobs.Write` for one in memory).
-3. If it is a large stream of records, use `Records.StreamWrite` with a
+2. If the data is a large, unstructured binary object, use
+   `Blobs.StreamWrite` (or `Blobs.Write` for an object held in memory).
+3. If the data is a large stream of records, use `Records.StreamWrite` with a
    streaming codec.
-4. If it is a sparse, resumable byte address space, use `volume.Volume`
+4. If the data is a sparse, resumable byte address space, use `volume.Volume`
    (experimental).
 
 ```mermaid
@@ -120,10 +121,11 @@ A typical Lode workflow has the following configuration:
 - Backend: filesystem or S3
 
 Each write produces a new snapshot, and every read targets a snapshot
-explicitly. A reader opens a view, which takes the layout, codec name, and
-compressor from the dataset's manifests rather than repeating them.
+explicitly. A reader opens a view, which reads the layout, codec name, and
+compressor from the dataset's manifests, so the caller need not specify
+them again.
 
-## What Lode Guarantees
+## Guarantees and Non-Goals
 
 Lode guarantees the following:
 
@@ -131,9 +133,9 @@ Lode guarantees the following:
 |-----------|--------|
 | **Immutable snapshots** | Once written, data files and manifests never change |
 | **Atomic commits** | The presence of a manifest signifies a commit, and nothing is partially visible |
-| **Explicit metadata** | Every snapshot carries metadata supplied by the caller (never inferred) |
-| **Safe writes** | Overwrites are prevented, atomically for standard writes on every built-in adapter. Large uploads (above 5 GB) are atomic when the backend supports conditional completion of multipart uploads, and best-effort otherwise ([details](../../PUBLIC_API.md#large-upload-guarantees)). |
-| **Independence from the backend** | The same semantics on the filesystem, in memory, or on S3 |
+| **Explicit metadata** | Every snapshot carries metadata that the caller supplies, and Lode never infers metadata |
+| **Safe writes** | Lode prevents overwrites atomically for standard writes on every built-in adapter. Large uploads (above 5 GB) are atomic when the backend supports conditional multipart-upload completion, and best-effort otherwise ([details](../../PUBLIC_API.md#large-upload-guarantees)). |
+| **Backend independence** | The same semantics on the filesystem, in memory, or on S3 |
 
 Lode explicitly does **not** provide the following:
 
@@ -142,6 +144,6 @@ Lode explicitly does **not** provide the following:
 | Distributed coordination | Lode detects conflicts (CAS) but provides no locks, consensus, or leader election |
 | Query execution | Lode structures data, and query engines consume it |
 | Background compaction | Lode performs no implicit mutation, and callers control the lifecycle |
-| Automatic removal | Nothing is removed implicitly, and `Expire` and `Sweep` remove snapshots and residual data when the caller invokes them (see [the retention guide](retention.md)) |
+| Automatic removal | Lode removes nothing implicitly, and `Expire` and `Sweep` remove snapshots and residual data when the caller invokes them (see [the retention guide](retention.md)) |
 
 The complete contracts are in [`docs/contracts/`](../contracts/).

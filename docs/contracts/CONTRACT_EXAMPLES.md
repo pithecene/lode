@@ -17,9 +17,9 @@ in Lode.
 
 ## Record Construction Conventions
 
-### Preferred: Typed Records
+### Typed Records as the Preferred Form
 
-When a record has a known shape, define a struct and let the codec fix the
+When a record has a known shape, define a struct and let the codec set the
 handle's record type:
 
 ```go
@@ -29,7 +29,7 @@ snapshot, err := events.Write(ctx, []Event{{...}, {...}}, RunInfo{RunID: id})
 
 Partition typed records with `lode.Hive(keys...).By(func(Event) lode.Partition)`.
 
-### Map Records: `lode.R(...)`
+### Map Records with `lode.R(...)`
 
 Use `lode.R(...)` with `lode.JSONL[lode.D]()` for inline map record literals:
 
@@ -41,10 +41,10 @@ records := lode.R(
 snapshot, err := ds.Write(ctx, records, nil)
 ```
 
-**Rationale:** `R(...)` is concise, reads naturally, and constructs the
-`[]lode.D` that `Records[lode.D].Write` takes.
+Examples use `R(...)` because it states records concisely and constructs
+the `[]lode.D` that `Records[lode.D].Write` takes.
 
-### Allowed: `[]lode.D` for Iterator Backing
+### `[]lode.D` as Permitted Iterator Backing
 
 Use a `[]lode.D` literal when the slice backs an iterator for
 `Records.StreamWrite`:
@@ -63,7 +63,7 @@ the iterator.
 
 ### Blobs
 
-For blobs, open a blob dataset and pass the bytes:
+For blobs, open a blob dataset and pass the bytes to its `Write` method:
 
 ```go
 blobs, err := root.Blobs(ctx, "artifacts")
@@ -72,9 +72,9 @@ snapshot, err := blobs.Write(ctx, blobData, nil)
 
 ### Metadata
 
-Pass metadata as a struct when its shape is known, and decode it with
-`snapshot.Metadata.Decode(&v)`. For ad hoc keys, pass a `lode.D`, and for
-no metadata, pass `nil`.
+Pass metadata as a struct when the caller knows its shape, and decode it
+with `snapshot.Metadata.Decode(&v)`. For ad hoc keys, use a `lode.D`, and
+when a write carries no metadata, pass `nil`.
 
 ---
 
@@ -83,7 +83,7 @@ no metadata, pass `nil`.
 | Variable | Purpose |
 |----------|---------|
 | `root` | A `*lode.Root` (or `readRoot` for a `*lode.ReadRoot`) |
-| `records` | A slice of records for `Write` or for backing an iterator |
+| `records` | A slice of records that a caller passes to `Write` or that backs an iterator |
 | `metadata` | A metadata value (a struct, a `lode.D`, or `nil`) |
 | `snapshot` | The snapshot returned by a write operation |
 | `ds` | A dataset handle (`Records[T]` or `Blobs`) |
@@ -94,13 +94,14 @@ no metadata, pass `nil`.
 
 ## Pre-v1 Ergonomics Changes
 
-Changes to ergonomics before v1 (for example, reordering parameters) are
-permitted only when:
+The project permits an ergonomic change before v1, such as reordering
+parameters, only when:
 
-1. the contract is updated in the same PR as the behavior change,
-2. [`PUBLIC_API.md`](../../PUBLIC_API.md) is updated,
-3. all tests are updated,
-4. all examples are updated, and
+1. the PR that makes the change also updates every contract that describes
+   the changed call,
+2. the same PR updates [`PUBLIC_API.md`](../../PUBLIC_API.md),
+3. the same PR updates all tests,
+4. the same PR updates all examples, and
 5. the CHANGELOG includes a migration note.
 
 After the change, no call site may retain the former form.
@@ -110,9 +111,10 @@ After the change, no call site may retain the former form.
 ## Agent Behavior
 
 Agents must:
-- stop and ask if an example diverges from the conventions of
-  [`PUBLIC_API.md`](../../PUBLIC_API.md)
-- stop and ask before introducing a call-site pattern not covered here
+- stop and ask the maintainer when an example diverges from the conventions
+  of [`PUBLIC_API.md`](../../PUBLIC_API.md)
+- stop and ask the maintainer before introducing a call-site pattern that
+  this contract does not address
 - prefer editing existing examples to creating new ones
 
 ---
