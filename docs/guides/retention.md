@@ -87,7 +87,7 @@ it cannot read, or that contradicts a manifest still present
 To recover, it never rewrites or removes a tombstone. An operator is
 responsible for resolving the corruption.
 
-## The `Expire` Removal Sequence
+## Snapshot Removal by `Expire`
 
 ```mermaid
 sequenceDiagram
