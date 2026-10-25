@@ -2,6 +2,13 @@
 
 This document maps contract requirements to the tests that verify them.
 
+It serves maintainers and review agents, not readers who adopt Lode. A change
+to a contract or to a test consults it to confirm that each requirement keeps
+a test. Each section names a contract, each table names the requirements of
+one part of that contract, and each row pairs a requirement with the tests,
+by Go test name, that verify it. The guides and the contracts describe the
+behavior itself.
+
 ---
 
 ## Coverage by Contract

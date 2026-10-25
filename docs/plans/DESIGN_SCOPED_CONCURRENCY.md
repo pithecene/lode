@@ -467,4 +467,4 @@ This is analogous to partition prefix comparison for Dataset.
 - `docs/contracts/CONTRACT_CORE.md` — linear history invariant
 - `docs/contracts/CONTRACT_WRITE_API.md` — concurrency model
 - `docs/contracts/CONTRACT_STORAGE.md` — ConditionalWriter capability
-- `docs/V1_READINESS.md` — v1.0 release criteria
+- `docs/plans/V1_READINESS.md` — v1.0 release criteria

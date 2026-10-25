@@ -10,7 +10,7 @@
 //
 // Volume lives in package lode/volume and is experimental: outside Lode's
 // v1.0 compatibility promise until it passes its own stability gate
-// (docs/V1_API_DECISIONS.md D9). Dataset builds complete objects before
+// (docs/plans/V1_API_DECISIONS.md D9). Dataset builds complete objects before
 // committing; Volume commits truth incrementally via sparse byte ranges.
 //
 // Run with: go run ./examples/volume_sparse

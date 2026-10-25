@@ -26,7 +26,7 @@ import (
 // - Deterministic assertions without race conditions
 //
 // These tests give deterministic coverage of failure paths that real adapters
-// reach only through timing (CONTRACT_TEST_MATRIX.md §Streaming Cancellation).
+// reach only through timing (docs/maintainers/TEST_MATRIX.md §Streaming Cancellation).
 
 // -----------------------------------------------------------------------------
 // StreamWrite Fault Tests
@@ -352,7 +352,7 @@ func TestStreamWriteRecords_Cleanup(t *testing.T) {
 // blocking to create deterministic cancellation windows.
 //
 // Context cancellation semantics are timing-sensitive and adapter-dependent
-// (CONTRACT_TEST_MATRIX.md §Streaming Cancellation). The blocked Put test provides
+// (docs/maintainers/TEST_MATRIX.md §Streaming Cancellation). The blocked Put test provides
 // deterministic coverage; real-world cancellation behavior depends on adapter.
 
 func TestStreamWrite_PutFailure(t *testing.T) {

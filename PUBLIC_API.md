@@ -17,8 +17,8 @@ Execution, scheduling, and query planning are outside its scope.
 
 The v1.0 compatibility commitment covers the packages `lode` and `lode/s3`.
 The package `lode/volume` is **experimental** and is excluded until it
-passes its own stability gate (`docs/V1_API_DECISIONS.md` D9;
-`docs/V1_READINESS.md` §4). Persisted data is covered in either case: no
+passes its own stability gate (`docs/plans/V1_API_DECISIONS.md` D9;
+`docs/plans/V1_READINESS.md` §4). Persisted data is covered in either case: no
 release renders unreadable the data that an earlier release wrote (D8).
 
 ---
@@ -134,7 +134,7 @@ snapshot's manifest names.
 > **Experimental.** Volume resides in the package
 > `github.com/pithecene/lode/lode/volume` and is excluded from the v1.0
 > compatibility commitment until it passes its own stability gate
-> (`docs/V1_READINESS.md` §4, `docs/V1_API_DECISIONS.md` D9). Its API may
+> (`docs/plans/V1_READINESS.md` §4, `docs/plans/V1_API_DECISIONS.md` D9). Its API may
 > change in any release. Data that it has persisted remains readable,
 > because its path grammar and manifest format are persisted formats (D8).
 

@@ -170,7 +170,7 @@ partitions, one dataset on R2.
 > Summary: Not met.
 > Issue: —
 
-- [x] Every candidate in `docs/V1_API_DECISIONS.md` is marked accepted (and shipped) or rejected; none is left open
+- [x] Every candidate in `docs/plans/V1_API_DECISIONS.md` is marked accepted (and shipped) or rejected; none is left open
 
 > **Evidence:** D1–D8 all Open. D9 accepted and shipped: Volume is experimental in package `lode/volume`, and `PUBLIC_API.md` / `CONTRACT_VOLUME.md` say so. Dogfooding now bears on D8: `private-A` reads the on-disk path grammar directly (audit F8), so the path-compatibility policy has a real consumer.
 > Date: 2026-10-20 | Observer: @pithecene | Project: lode, private-A
@@ -494,12 +494,12 @@ These may become goals for v1.1+ but must not gate the initial stability release
 ## References
 
 - `PUBLIC_API.md` — public API shape and defaults
-- `docs/V1_API_DECISIONS.md` — breaking API candidates held for v1.0
-- `docs/dogfood_audit_2026-10.md` — full-history production audit (evidence for §2, §3, §6, §10)
+- `docs/plans/V1_API_DECISIONS.md` — breaking API candidates held for v1.0
+- `docs/plans/dogfood_audit_2026-10.md` — full-history production audit (evidence for §2, §3, §6, §10)
 - `docs/contracts/CONTRACT_CORE.md` — core model invariants
 - `docs/contracts/CONTRACT_WRITE_API.md` — write API semantics
 - `docs/contracts/CONTRACT_READ_API.md` — read API contract
 - `docs/contracts/CONTRACT_VOLUME.md` — Volume persistence model
 - `docs/contracts/CONTRACT_ERRORS.md` — error taxonomy
-- `docs/contracts/CONTRACT_TEST_MATRIX.md` — contract-to-test traceability
+- `docs/maintainers/TEST_MATRIX.md` — contract-to-test traceability
 - `docs/contracts/CONTRACT_STORAGE.md` — storage adapter obligations
