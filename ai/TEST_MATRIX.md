@@ -2,6 +2,13 @@
 
 This document maps contract requirements to the tests that verify them.
 
+It is bookkeeping for agents, not documentation for people. An agent that
+changes a contract or a test updates it, so that each requirement keeps a
+test. Each section names a contract, each table names the requirements of one
+part of that contract, and each row pairs a requirement with the tests, by Go
+test name, that verify it. A person reads the contracts for the behavior and
+the tests for its verification.
+
 ---
 
 ## Coverage by Contract

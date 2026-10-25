@@ -29,30 +29,35 @@ Do not update for internal refactors.
 
 ## docs/
 
-Plans, contracts, and research notes. Contracts define **system behavior**.
+Documentation, grouped by audience. Contracts define **system behavior**.
+
+Readers:
+
+- `guides/` — explanatory guides (non-normative): `concepts.md` (storage model, commits, choosing a write API), `retention.md` (expiry, tombstones, sweep), `snapshot-ids.md` (ID format, ordering, uniqueness)
+- `BENCHMARKS.md` — benchmark results and performance baselines
+
+Contracts (`contracts/`), by subject:
+
+- Data model: `CONTRACT_CORE.md` (core model invariants and immutability), `CONTRACT_VOLUME.md` (Volume persistence model)
+- Writing and reading: `CONTRACT_WRITE_API.md` (write semantics), `CONTRACT_READ_API.md` (read semantics and adapter obligations), `CONTRACT_ITERATION.md` (object iterator lifecycle), `CONTRACT_RETENTION.md` (snapshot expiry and unreferenced-object sweep)
+- Storage and formats: `CONTRACT_STORAGE.md` (storage adapter obligations), `CONTRACT_COMPOSITION.md` (store composition determinism), `CONTRACT_LAYOUT.md` (layout, partitioning, and component rules), `CONTRACT_PARQUET.md` (Parquet codec semantics and schema rules)
+- Errors and bounds: `CONTRACT_ERRORS.md` (error taxonomy), `CONTRACT_COMPLEXITY.md` (complexity bounds for all public operations)
+- Repository conventions: `CONTRACT_EXAMPLES.md` (example and callsite conventions)
+
+Maintainers (`maintainers/`):
+
+- `SNIPPET_POLICY.md` — markdown code fence conventions
+
+Plans and records (`plans/`):
 
 - `IMPLEMENTATION_PLAN.md` — contract-first, phased implementation plan
 - `V1_READINESS.md` — v1.0 release criteria and dogfooding evidence
-- `dogfood_audit_2026-10.md` — full-history production dataset audit (evidence for `V1_READINESS.md`)
 - `V1_API_DECISIONS.md` — breaking API changes held for v1.0, decided once
-- `contracts/CONTRACT_CORE.md` — core model invariants and immutability
-- `contracts/CONTRACT_WRITE_API.md` — write API semantics and errors
-- `contracts/CONTRACT_STORAGE.md` — storage adapter obligations
-- `contracts/CONTRACT_LAYOUT.md` — layout, partitioning, and component rules
-- `contracts/CONTRACT_ITERATION.md` — object iterator lifecycle semantics
-- `contracts/CONTRACT_COMPOSITION.md` — store composition determinism
-- `contracts/CONTRACT_PARQUET.md` — Parquet codec semantics and schema rules
-- `contracts/CONTRACT_READ_API.md` — read API contract and adapter obligations
-- `contracts/CONTRACT_ERRORS.md` — error taxonomy and handling guidelines
-- `contracts/CONTRACT_TEST_MATRIX.md` — contract-to-test traceability
-- `contracts/CONTRACT_EXAMPLES.md` — example and callsite conventions
-- `contracts/CONTRACT_VOLUME.md` — contract for Volume persistence model
-- `contracts/CONTRACT_COMPLEXITY.md` — complexity bounds for all public operations
-- `contracts/CONTRACT_RETENTION.md` — snapshot expiry and unreferenced-object sweep
-- `BENCHMARKS.md` — benchmark results and performance baselines
+- `dogfood_audit_2026-10.md` — full-history production dataset audit (evidence for `V1_READINESS.md`)
 - `DESIGN_SCOPED_CONCURRENCY.md` — scoped concurrency design for non-overlapping writers
-- `SNIPPET_POLICY.md` — markdown code fence conventions
-- `guides/` — explanatory guides (non-normative): `concepts.md` (storage model, commits, choosing a write API), `retention.md` (expiry, tombstones, sweep), `snapshot-ids.md` (ID format, ordering, uniqueness)
+
+Assets:
+
 - `assets/` — README banner (light and dark PNG); `assets/source/` holds `plate.py` (the engraved section), `banner.html`, and `render.sh` that regenerate it
 
 Contracts are authoritative over code.
@@ -112,9 +117,10 @@ Build and maintenance scripts.
 
 ## ai/
 
-AI governance: repo-local skill definitions.
+AI governance: repo-local skill definitions and agent bookkeeping.
 
 - `skills/repo-convention-enforcer/v1/` — structural convention validator (SKILL.md format)
+- `TEST_MATRIX.md` — contract-to-test traceability that agents maintain with each contract or test change
 
 ---
 

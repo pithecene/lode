@@ -403,5 +403,5 @@ Additional resolved items:
 ### PR6 — Documentation Finalization + Release Prep
 - [x] Remove all "planned"/"draft" language from shipped Volume features
 - [x] Update README with Volume overview
-- [x] Update `CONTRACT_TEST_MATRIX.md` with Volume coverage
+- [x] Update `ai/TEST_MATRIX.md` with Volume coverage
 - [x] Final cross-reference validation across all docs

@@ -51,7 +51,7 @@ unleash:
   # test file header next to the code it mutates, needs multi-TB inputs (S3
   # object-size and part-scaling bounds), or sits in lode/s3/mock.go — the
   # S3 test double, exported from the built package for compatibility
-  # (docs/V1_API_DECISIONS.md D7) and not chased. Gates sit under baseline;
+  # (docs/plans/V1_API_DECISIONS.md D7) and not chased. Gates sit under baseline;
   # raise as tests improve.
   #
   # gremlins v0.6.0 fails when actual <= threshold (report.go assess), so a

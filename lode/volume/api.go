@@ -2,8 +2,8 @@
 // immutable, cumulative snapshots.
 //
 // Experimental: this package is outside Lode's v1.0 compatibility promise
-// (docs/V1_API_DECISIONS.md D9). Its API may change in any release until it
-// passes the Volume stability gate (docs/V1_READINESS.md §4). Data it has
+// (docs/plans/V1_API_DECISIONS.md D9). Its API may change in any release until it
+// passes the Volume stability gate (docs/plans/V1_READINESS.md §4). Data it has
 // persisted stays readable across those changes: the on-disk path grammar
 // and manifest format are covered by the persisted-format rule (D8).
 //
