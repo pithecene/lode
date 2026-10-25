@@ -125,31 +125,49 @@ the highest figure observed across `go test -count=120`.
 
 ### S3 (Docker-local)
 
-| Benchmark | Machine | ns/op | B/op | allocs/op |
-|-----------|---------|------:|-----:|----------:|
-| `BenchmarkS3_WriteRoundTrip/LocalStack` | Workstation | 10,190,000 ± 5% | 471,757 ± 1% | 4,261 |
-| | CI (v0.10.0) | 8,247,000 ± 3% | 355,202 ± 1% | 2,965 |
-| `BenchmarkS3_WriteRoundTrip/RustFS` | Workstation | 33,280,000 ± 5% | 469,504 ± 1% | 4,157 |
-| | CI | Not yet measured | | |
+| Benchmark | Machine | ns/op | B/op | allocs/op | S3 requests/op |
+|-----------|---------|------:|-----:|----------:|---------------:|
+| `BenchmarkS3_FirstWrite/LocalStack` | Workstation | 18,980,000 ± 7% | 734,748 ± 1% | 7,540 | 13 |
+| `BenchmarkS3_FirstWrite/RustFS` | Workstation | 104,200,000 ± 5% | 722,866 ± 2% | 7,352 | 13 |
+| `BenchmarkS3_SteadyWrite/LocalStack` | Workstation | 7,364,000 ± 5% | 319,836 ± 2% | 2,919 | 5 |
+| `BenchmarkS3_SteadyWrite/RustFS` | Workstation | 36,140,000 ± 6% | 309,648 ± 2% | 2,873 | 5 |
 
-The workstation figures are medians of ten runs on an AMD Ryzen 9 5900XT.
-The CI figure for LocalStack is an older baseline, and RustFS has no CI
-figure yet.
+The figures are medians of ten runs on an AMD Ryzen 9 5900XT, measured on
+Lode v0.12.0 with Go 1.27.3. Neither benchmark has a CI figure yet.
 
-Each iteration opens a new dataset, so the benchmark measures a dataset's
-first commit and one read: seven S3 requests (a pointer Get that finds no
-pointer, a List, the data and manifest writes, the pointer write, and two
-Gets for the read). Nearly all allocations occur in the AWS SDK, at about six
-hundred per request, so the allocation count follows the request count.
-It rose from 2,970 in February to 4,904 when the persistent `latest`
-pointer (#127) and CAS pointer updates (#135) added requests to this path;
-`CompareAndSwap` then read the pointer before every conditional write. The
-S3 adapter now omits that read when it creates the pointer and when it
-replaces a pointer that it last replaced itself. This change reduced the
-benchmark from eight requests to seven, which lowered its allocations by
-13 percent and, on LocalStack, its duration by 9 percent. Each commit after
-the second through the same store issues three requests instead of four;
-the benchmark does not measure such commits.
+Both benchmarks write three records and read them back in each iteration,
+and each reports its S3 requests per iteration beside its allocations.
+Nearly all allocations occur in the AWS SDK, at about five hundred and fifty
+per request, so the allocation count follows the request count. The
+request count does not vary with the machine, so a change in it identifies
+a change in Lode's protocol, while the allocation count also moves with the
+toolchain and the SDK.
+
+- `BenchmarkS3_FirstWrite` opens a new dataset in each iteration, so it
+  measures a dataset's first commit. Opening the dataset reads the pointer
+  and, finding none, lists the snapshots and the dataset's directory to
+  check the writer's settings and to detect a history under another layout
+  (CONTRACT_WRITE_API §Settings). The commit writes the data object,
+  repeats that check, stages a copy of the manifest so that a later commit
+  can adopt an abandoned first commit (CONTRACT_CORE §Head Pointer), creates
+  the pointer, writes the manifest, and deletes the staged copy. The read
+  takes two Gets. The total is thirteen requests.
+- `BenchmarkS3_SteadyWrite` writes through one handle after the dataset's
+  first two commits, which is the common case. Each commit writes the data
+  object, replaces the pointer, and writes the manifest; the adapter knows
+  the pointer's version from its own last replacement, so it does not read
+  the pointer first. The read takes two Gets, for five requests in all. The
+  second commit reads the pointer once more, because the adapter records a
+  pointer's version when it replaces the pointer but not when it creates
+  it, so both commits precede the timer.
+
+The single benchmark that these replace, `BenchmarkS3_WriteRoundTrip`,
+measured only the first commit. Its allocations rose from 2,970 in
+February to 4,904 when the persistent `latest` pointer (#127) and CAS
+pointer updates (#135) added requests, and fell to 4,261 when the adapter
+stopped reading a pointer whose version it knew (#246). The staged first
+commit and the settings checks of v0.11.0 and v0.12.0 then raised a first
+commit to thirteen requests, which is the figure above.
 
 > **Note:** S3 numbers reflect Docker-local round-trip latency, not production S3.
 > The `SequentialWrites` benchmarks inject 1 ms of latency on `List` and `Get`
@@ -167,8 +185,8 @@ the benchmark does not measure such commits.
 |-----------|----------|---------|--------|
 | `BenchmarkDataset_SequentialWrites` | `lode/dataset_bench_test.go` | In-memory (latency-injected) | Done |
 | `BenchmarkDataset_SequentialWrites_StoreCallCount` | `lode/dataset_bench_test.go` | In-memory (fault store) | Done |
-| `BenchmarkS3_WriteRoundTrip/LocalStack` | `lode/s3/bench_integration_test.go` | LocalStack | Done |
-| `BenchmarkS3_WriteRoundTrip/RustFS` | `lode/s3/bench_integration_test.go` | RustFS | Done |
+| `BenchmarkS3_FirstWrite/LocalStack`, `BenchmarkS3_FirstWrite/RustFS` | `lode/s3/bench_integration_test.go` | LocalStack, RustFS | Done |
+| `BenchmarkS3_SteadyWrite/LocalStack`, `BenchmarkS3_SteadyWrite/RustFS` | `lode/s3/bench_integration_test.go` | LocalStack, RustFS | Done |
 | `BenchmarkDataset_Read` | `lode/bench_test.go` | In-memory | Done |
 | `BenchmarkDataset_StreamWrite` | `lode/bench_test.go` | In-memory | Done |
 | `BenchmarkVolume_ReadAt` | `lode/volume/bench_test.go` | In-memory (10 committed blocks) | Done |
