@@ -156,7 +156,7 @@ whole snapshot prefix even for a `Partition` request, in order to
 distinguish an empty dataset from one that it must refuse. Selection by
 `Before` reads snapshot IDs from paths and loads no manifest beyond the K
 selected. The complete bounds and their derivation are given in
-`CONTRACT_RETENTION.md` §Complexity Bounds.
+[`CONTRACT_RETENTION.md`](CONTRACT_RETENTION.md) §Complexity Bounds.
 
 ---
 

@@ -247,7 +247,7 @@ Manifests are immutable once written.
   expiry of a committed snapshot is recorded by a new object (a tombstone),
   and retention never reassigns a snapshot ID. Objects of writes that never
   committed are reclaimed without a record, because no snapshot ever
-  existed (`CONTRACT_RETENTION.md`).
+  existed ([`CONTRACT_RETENTION.md`](CONTRACT_RETENTION.md)).
 
 ---
 

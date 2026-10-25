@@ -239,7 +239,7 @@ time. The options are:
 - `WithRetryBaseDelay(d)`, `WithRetryMaxDelay(d)`, `WithRetryJitter(j)`:
   configuration of the backoff between CAS retries.
 - `WithRetryObserver(fn)`: a callback invoked on each retry, with the same
-  semantics as for a Dataset (see `CONTRACT_WRITE_API.md` §Optimistic
+  semantics as for a Dataset (see [`CONTRACT_WRITE_API.md`](CONTRACT_WRITE_API.md) §Optimistic
   Concurrency (CAS)).
 
 Retry options share the Dataset defaults and validation: an out-of-range
@@ -312,7 +312,7 @@ The snapshot history of a Volume is linear.
 
 Volume detects concurrent commits and returns `ErrSnapshotConflict`.
 
-Conflict detection is the same as for a Dataset (see `CONTRACT_WRITE_API.md`
+Conflict detection is the same as for a Dataset (see [`CONTRACT_WRITE_API.md`](CONTRACT_WRITE_API.md)
 §Optimistic Concurrency (CAS)); only the snapshot ID of a retry differs:
 - `Commit` records the expected parent when it resolves the parent.
 - The pointer is updated with `CompareAndSwap`.

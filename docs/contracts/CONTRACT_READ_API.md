@@ -51,7 +51,7 @@ Adapters are the critical contract. An adapter that implements
 whole object.
 
 The authoritative adapter shape is `Store` (see `lode/api.go` and
-`docs/contracts/CONTRACT_STORAGE.md`):
+[`docs/contracts/CONTRACT_STORAGE.md`](CONTRACT_STORAGE.md)):
 
 ```go
 type Store interface {
@@ -90,7 +90,7 @@ The read path uses the `ObjectStore` methods; commits and retention also use
 - `ReaderAt` must provide random-access reads and be safe for concurrent
   reads at different offsets.
 - Adapters must document their consistency guarantees and mitigations (see
-  `CONTRACT_STORAGE.md` for the complete obligations).
+  [`CONTRACT_STORAGE.md`](CONTRACT_STORAGE.md) for the complete obligations).
 
 ### Range-Read Access Paths
 

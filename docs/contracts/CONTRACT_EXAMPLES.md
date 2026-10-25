@@ -7,10 +7,10 @@ in Lode.
 
 ## Authority
 
-- `PUBLIC_API.md` is canonical for call-site conventions and API
+- [`PUBLIC_API.md`](../../PUBLIC_API.md) is canonical for call-site conventions and API
   signatures.
-- Example code must not diverge from `PUBLIC_API.md`.
-- If an example and `PUBLIC_API.md` conflict, `PUBLIC_API.md` is
+- Example code must not diverge from [`PUBLIC_API.md`](../../PUBLIC_API.md).
+- If an example and [`PUBLIC_API.md`](../../PUBLIC_API.md) conflict, [`PUBLIC_API.md`](../../PUBLIC_API.md) is
   authoritative.
 
 ---
@@ -98,7 +98,7 @@ Changes to ergonomics before v1 (for example, reordering parameters) are
 permitted only when:
 
 1. the contract is updated in the same PR as the behavior change;
-2. `PUBLIC_API.md` is updated;
+2. [`PUBLIC_API.md`](../../PUBLIC_API.md) is updated;
 3. all tests are updated;
 4. all examples are updated; and
 5. the CHANGELOG includes a migration note.
@@ -111,7 +111,7 @@ After the change, no call site may retain the former form.
 
 Agents must:
 - stop and ask if an example diverges from the conventions of
-  `PUBLIC_API.md`;
+  [`PUBLIC_API.md`](../../PUBLIC_API.md);
 - stop and ask before introducing a call-site pattern not covered here; and
 - prefer editing existing examples to creating new ones.
 

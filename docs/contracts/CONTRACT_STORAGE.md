@@ -56,13 +56,13 @@ without reporting it.
   such an indeterminate outcome by deleting the key, because it cannot know
   whether the object at the key is its own. The object is then orphaned: no
   manifest references it, and readers cannot see it. The retention sweep
-  reclaims it (`CONTRACT_RETENTION.md`).
+  reclaims it ([`CONTRACT_RETENTION.md`](CONTRACT_RETENTION.md)).
 - Callers never remove anything after a failed `Put`: they MUST NOT access a
   path whose `Put` returned an error. A path whose `Put` returned
   `ErrPathExists` belongs to another writer. The single exception is
   retention's creation of a tombstone, which reads the existing tombstone to
   verify that it records the same expiry and never writes or deletes it
-  (`CONTRACT_RETENTION.md` §Order of Operations).
+  ([`CONTRACT_RETENTION.md`](CONTRACT_RETENTION.md) §Order of Operations).
 
 #### Put Upload Paths
 
