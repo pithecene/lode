@@ -67,7 +67,7 @@ sequenceDiagram
     participant W2 as write B (ID X again)
     W1->>W1: commits snapshot X
     R->>R: expires X, retaining the tombstone and deleting the files
-    W2->>W2: reuses X; the paths are vacant, so the write succeeds
+    W2->>W2: reuses X, whose paths are vacant, so the write succeeds
     Note over R,W2: the tombstone now names a live snapshot
 ```
 
