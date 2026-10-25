@@ -1140,8 +1140,8 @@ client := awss3.NewFromConfig(cfg, func(o *awss3.Options) {
 store, _ := s3.New(client, s3.Config{Bucket: "my-bucket"})
 ```
 
-**Bucket requirement:** the bucket must exist before a caller opens a root,
-because Lode does not create buckets.
+**Bucket requirement:** the bucket must exist before the first dataset or
+view operation, because Lode does not create buckets.
 
 ### Other S3-Compatible Services
 
