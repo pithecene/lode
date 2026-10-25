@@ -1,4 +1,4 @@
-# Lode Layout & Components — Contract
+# Lode Layouts and Components — Contract
 
 This document defines the ownership of layouts and the behavior of the
 components that layouts govern: partitioners, compressors, and codecs.
