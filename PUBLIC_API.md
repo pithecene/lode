@@ -538,7 +538,7 @@ data.
 
 ---
 
-## Usage Pitfalls (Important)
+## Usage Pitfalls
 
 - `nil` metadata persists as `{}`; metadata must encode as a JSON object.
 - A Hive layout without `By` requires map records (`D`, or `any` holding

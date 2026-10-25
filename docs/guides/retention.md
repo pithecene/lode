@@ -6,7 +6,7 @@ why it does so. The guide is explanatory. The normative rules are defined in
 [`CONTRACT_RETENTION.md`](../contracts/CONTRACT_RETENTION.md), which
 prevails wherever the two documents differ.
 
-## The two operations
+## The Two Operations
 
 | | `Expire` | `Sweep` |
 |---|---|---|
