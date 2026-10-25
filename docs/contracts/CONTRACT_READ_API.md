@@ -193,7 +193,7 @@ does **not interpret** the data.
   supported" error, for a root with flat paths, because flat paths have no
   datasets directory.
 - `ListDatasets` MUST return an empty list only when storage contains no
-  datasets.
+  objects at all.
 
 ### Listing Order and Cursors
 
