@@ -49,8 +49,8 @@ errors by reading this guide before writing.
 - `StartAfter` resumes strictly after a previous result. `Limit` bounds the
   results, not the store calls.
 - On a Hive dataset, a listing places a snapshot under the smallest
-  partition whose manifest copy exists. A commit persists those copies
-  after it is complete. A listing therefore places a snapshot under the
+  partition whose manifest copy exists. A writer persists those copies
+  after the commit completes. A listing therefore places a snapshot under the
   dataset root when the snapshot has no files or when its writer terminated
   before persisting the copies. A listing filtered by partition omits such
   a snapshot.
@@ -69,8 +69,9 @@ errors by reading this guide before writing.
 ## Writes
 
 - Concurrent writes to the same dataset through separate handles are safe.
-  Every store implements `ConditionalWriter`, so commits detect one another
-  and return `ErrSnapshotConflict`
+  Every store implements `ConditionalWriter`, so a commit that conflicts
+  with a concurrent commit detects the conflict and returns
+  `ErrSnapshotConflict`
   ([`CONTRACT_WRITE_API.md`](../contracts/CONTRACT_WRITE_API.md)
   §Concurrent Blob Write Safety).
 - `Records.StreamWrite` requires a codec that streams, and it does not

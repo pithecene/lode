@@ -50,7 +50,7 @@ scale with the size of a dataset's or volume's history.
 
 | Method | Calls | Memory | Notes |
 |--------|-------|--------|-------|
-| `Put` | 1 | O(payload) | Atomic, and the multipart path adds a preliminary check |
+| `Put` | 1 | O(payload) | Atomic, with a preliminary check on the multipart path |
 | `Get` | 1 | O(1) stream | Returns an `io.ReadCloser` |
 | `Exists` | 1 | O(1) | |
 | `Delete` | 1 | O(1) | |
@@ -71,13 +71,14 @@ scale with the size of a dataset's or volume's history.
 
 Parent resolution incurs the following store calls:
 - In-memory cache: 0 calls
-- Pointer: 1 call (2 calls for a Volume, which also loads the parent's manifest)
+- Pointer: 1 call, or 2 calls for a Volume, because Volume parent resolution
+  also loads the parent's manifest
 - Scan fallback (degraded): O(N) through `List`. For a Dataset, the scan
   adds 1 tombstone `Get` per snapshot scanned, and 1 `Exists` of the
   canonical manifest for each scanned snapshot that has a tombstone. It
   proceeds from the newest snapshot until it finds one that is not
-  expired. The scan creates the pointer when it is absent but never
-  replaces an existing pointer (CONTRACT_CORE §Head Pointer).
+  expired. The scan creates the head pointer when none exists but never
+  replaces an existing head pointer (CONTRACT_CORE §Head Pointer).
 
 Parent resolution MUST NOT use `List` when a valid pointer exists.
 
@@ -121,8 +122,8 @@ The following one-time costs add to the fixed counts in the table above
 A view cannot determine whether the dataset is partitioned before it reads
 a manifest. It therefore reads the canonical manifest under the snapshots
 directory first and under the segments directory second. Because at most
-one of the two manifests exists, the view needs no further reads, and
-opening a handle writes nothing to the store. A writer's open check is the
+one of the two manifests exists, the view needs no further reads. Opening
+a handle writes nothing to the store. A writer's open check is the
 settings check of CONTRACT_WRITE_API §Settings Check. After that check
 completes, each commit incurs only the costs in the Dataset Write
 Operations table.
@@ -174,8 +175,8 @@ The store calls of `Sweep`, with T tombstones and D objects deleted
 - at most 1 `Exists` per manifest path of each unlisted-manifest group
   older than the grace period
 - D `Delete` calls
-- for each unindexed snapshot older than the grace period, 1 `Get`, 1
-  `Put` per missing partition copy, and 1 tombstone `Get`
+- 1 `Get`, 1 `Put` per missing partition copy, and 1 tombstone `Get` for
+  each unindexed snapshot older than the grace period
 
 `Expire` with `Partition` lists only that partition's subtree. Otherwise, N
 counts every key under the snapshot prefix. Without a pointer, retention

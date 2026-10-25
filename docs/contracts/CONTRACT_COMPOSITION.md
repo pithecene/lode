@@ -14,8 +14,7 @@ This document defines the deterministic behavior of store composition.
 ## Required Semantics
 
 - A composition requires exactly one base store.
-- The **user defines** the order in which wrappers apply, and the
-  composition applies them in that order.
+- The composition applies wrappers in the order that the **user defines**.
 - Reordering wrappers MUST NOT affect the correctness of reads or writes.
 - Wrapper order MAY affect observability, such as recorded metrics, and
   performance, such as cache hit rate, but not results.

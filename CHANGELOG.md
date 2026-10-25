@@ -57,7 +57,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`Codec` gains `Describe`**: a custom codec returns its configuration in a canonical form, or `""` when it has none.
 - **Volume takes the new factory type**: `volume.New` takes a `lode.Factory[lode.RangeStore]`, and Volume metadata is `volume.Metadata`.
 - **Range reads are an optional capability**: `ReadRange` and `ReaderAt` move from `ObjectStore` to the new `RangeReader` interface. An adapter that cannot read ranges omits them instead of returning `ErrRangeReadNotSupported`, and a handle's `ReaderAt` returns that error for such a store. `RangeStore` is a `Store` that reads ranges: `NewFS` and `NewMemory` return one, `FS`, `Memory`, and `s3.Factory` are factories of one, and `volume.New` takes one. Code that passes a store without range reads to these functions therefore does not compile. Code that called `ReadRange` on a `Store` it built holds a `RangeStore` instead.
-- **Partition paths are typed**: the `ListManifests` parameter, `PartitionRef.Path`, `ManifestRef.Partition`, and `PartitionListOptions.StartAfter` are a `PartitionPath`, built with `ParsePartitionPath` (which returns `ErrInvalidPath` for a path that is not canonical) or taken from a listing. Pass `lode.PartitionPath{}` where `""` was passed, and call `String()` where a string is needed. A `PartitionPath` encodes as text, and therefore in JSON, as its string, and for a manifest that names a noncanonical partition, a listing reports `ErrManifestInvalid`. `PartitionListOptions.Prefix` remains a string.
+- **Partition paths are typed**: the `ListManifests` parameter, `PartitionRef.Path`, `ManifestRef.Partition`, and `PartitionListOptions.StartAfter` are a `PartitionPath`, built with `ParsePartitionPath` (which returns `ErrInvalidPath` for a path that is not canonical) or taken from a listing. Code passes `lode.PartitionPath{}` where it formerly passed `""`, and it calls `String()` where it needs a string. A `PartitionPath` encodes as its string in text and therefore in JSON. For a manifest that names a noncanonical partition, a listing reports `ErrManifestInvalid`. `PartitionListOptions.Prefix` remains a string.
 - **The S3 test double is no longer exported**: `s3.MockS3Client` and `s3.NewMockS3Client` exist only in the adapter's tests. A test that needs an in-memory S3 can copy the double or target an emulator such as LocalStack or MinIO.
 - **A dataset ID must be one path segment**: Lode rejects with `ErrInvalidArgument` an ID that is empty, is `.` or `..`, contains `/` or a backslash, or begins with `.lode-tmp-`. `=` remains permitted.
 
@@ -73,7 +73,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Error messages name their source once**: a message begins with the prefix of the component in which the failure originated. When Lode wraps one of its own errors, it adds context without repeating a prefix, so a message no longer reads `lode: failed to write data: lode: …`. The filesystem store reports as `fs:` and the in-memory store as `memory:`, and the messages of `ErrSchemaViolation` and `ErrInvalidFormat` no longer begin with `parquet:`. Matching under `errors.Is` and `errors.As` is unchanged. Code that matches message text may need to change (CONTRACT_ERRORS §Error Messages).
+- **Error messages name their source once**: a message begins with the prefix of the component in which the failure originated. When Lode wraps one of its own errors, it adds context without repeating a prefix, so a message no longer reads `lode: failed to write data: lode: …`. Messages from the filesystem store begin with `fs:`, messages from the in-memory store begin with `memory:`, and the messages of `ErrSchemaViolation` and `ErrInvalidFormat` no longer begin with `parquet:`. Matching under `errors.Is` and `errors.As` is unchanged. Code that matches message text may need to change (CONTRACT_ERRORS §Error Messages).
 
 ### Fixed
 
@@ -86,11 +86,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Custom codecs**: implement `Describe`, which returns the codec's configuration in a canonical form, or `""` when the codec has none.
 - **Custom store adapters**: move `ReadRange` and `ReaderAt` to the `RangeReader` interface, or omit them when the backend cannot read ranges.
 - **Volume**: pass a `lode.Factory[lode.RangeStore]` to `volume.New`, and use `volume.Metadata` for Volume metadata.
-- **Partition paths**: pass `lode.PartitionPath{}` where `""` was passed, build a path with `ParsePartitionPath`, and call `String()` where a string is needed.
+- **Partition paths**: pass `lode.PartitionPath{}` where the code formerly passed `""`, build a path with `ParsePartitionPath`, and call `String()` where the code needs a string.
 - **Dataset IDs**: use an ID of one path segment that does not begin with `.lode-tmp-`.
 - **Tests that used the S3 double**: copy the double from the adapter's tests, or target an emulator such as LocalStack or MinIO.
 - **Error text**: check code that matches message text against the new wording.
-- **No data migration required**: a dataset written by an earlier release opens under the default path names. Tests confirm that data written by v0.11.0 remains usable: every dataset and the volume read back, the record datasets and the volume accept new commits, and the Hive dataset lists, expires, and sweeps.
+- **No data migration required**: a dataset written by an earlier release opens under the default path names. Tests confirm that fixtures written by v0.11.0 remain usable: Lode reads every fixture dataset and the volume, commits to the record datasets and the volume, and lists, expires, and sweeps the Hive dataset.
 
 ---
 
@@ -98,7 +98,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking Changes
 
-- **Every `Store` must implement `CompareAndSwap`**: `Store` now combines `ObjectStore` with `ConditionalWriter`, and this release removes the Delete+Put pointer update, which could fork a history under concurrent writers. For an adapter without a conditional write, `lode.SingleProcess` provides one, provided that every writer runs in one process and uses the same wrapped store. On platforms without file locks, such as Plan 9, the filesystem store's `CompareAndSwap` returns an error that matches `errors.ErrUnsupported`.
+- **Every `Store` must implement `CompareAndSwap`**: `Store` now combines `ObjectStore` with `ConditionalWriter`, and this release removes the Delete+Put pointer update, which could fork a history under concurrent writers. For an adapter without a conditional write, `lode.SingleProcess` supplies one, provided that every writer runs in one process and uses the same wrapped store. On platforms without file locks, such as Plan 9, the filesystem store's `CompareAndSwap` returns an error that matches `errors.ErrUnsupported`.
 - **`Store.Get` must return `ErrNotFound` for a missing path**: Lode now distinguishes an absent object from a failed read. The bundled adapters already comply.
 - **Go 1.27.3 is the minimum Go version**: Go 1.25 no longer receives security fixes.
 - **The module path is `github.com/pithecene/lode`**: it replaces `github.com/pithecene-io/lode`, under which releases up to v0.10.0 remain available.
@@ -118,7 +118,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Snapshot expiry**: `Dataset.Expire` removes the snapshots selected by ID, by partition (on Hive layouts), or by age, and `DryRun` previews the result. `Expire` never expires the head, and it retains a snapshot with files outside the selected partition and reports that snapshot in `ExpireReport.Mixed`. Reading an expired snapshot returns the new `ErrSnapshotExpired`, which also matches `ErrNotFound`. The new `ErrHeadUncommitted` reports that expiry cannot proceed for one of two reasons: an uncommitted head, or a dataset with snapshots but no `latest` pointer. Any commit creates the pointer. ([#174](https://github.com/pithecene/lode/issues/174))
-- **Sweep of unreferenced objects**: `Dataset.Sweep` completes interrupted expiries and reclaims the data of snapshots that never committed once they are older than a grace period. ([#174](https://github.com/pithecene/lode/issues/174))
+- **Sweep of unreferenced objects**: `Dataset.Sweep` completes interrupted expiries and, once an uncommitted snapshot is older than a grace period, reclaims its data. ([#174](https://github.com/pithecene/lode/issues/174))
 - **`lode.SingleProcess`**: this wrapper adds `CompareAndSwap` to a store without a conditional write by serializing its calls under an in-process lock. The wrapper serializes writers only if they use the same returned store, and it does not coordinate writers in other processes.
 - **Concurrent writers on Windows**: the filesystem store implements `CompareAndSwap` on Windows, so several processes may write to one dataset or volume.
 - **Documentation**: `CONTRACT_RETENTION.md`, the guides in `docs/guides/`, the example `examples/retention/`, and a security policy in `SECURITY.md`.
@@ -133,7 +133,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **A history no longer forks around an uncommitted head** ([#208](https://github.com/pithecene/lode/issues/208)): a commit adopts as its parent the snapshot that the `latest` pointer names, even before the store persists that snapshot's manifest. `Latest` no longer replaces the pointer, and it returns a failed read of the head instead of treating the head as absent. These two code paths caused the only fork observed in production under compare-and-swap commits.
+- **A history no longer forks around an uncommitted head** ([#208](https://github.com/pithecene/lode/issues/208)): a commit adopts as its parent the snapshot that the `latest` pointer names, even before the store persists that snapshot's manifest. `Latest` no longer replaces the pointer, and it returns a failed read of the head instead of treating the head as absent. The former behavior of these two code paths caused the only fork observed in production under compare-and-swap commits.
 - **An abandoned Volume commit no longer stalls the volume**: a commit persists a staged copy of its manifest before it advances the pointer, so the next commit can adopt a parent whose writer terminated. Each commit makes two more store calls, to persist and then remove the staged copy.
 - **The filesystem store publishes objects atomically**: a concurrent reader can no longer open an empty object. The filesystem store now requires hard links, and every store rejects a key whose final segment begins with `.lode-tmp-`.
 - **A stream write retains the data of a snapshot that may be visible**: after a manifest write fails, the writer deletes the data object only if the store cannot have persisted the manifest. If the commit failed, `Dataset.Sweep` reclaims the retained object. If the store persisted the manifest, the snapshot is live and its data remains.
@@ -188,7 +188,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Retry observer**: `WithRetryObserver(fn)` registers a function that Lode calls once for each commit retry, before the backoff, on Datasets and Volumes, for example to count retries in a metric. ([#171](https://github.com/pithecene/lode/pull/171), closes [#169](https://github.com/pithecene/lode/issues/169))
+- **Retry observer**: On Datasets and Volumes, `WithRetryObserver(fn)` registers a function that Lode calls before the backoff of each commit retry, so that a caller can count retries in a metric. ([#171](https://github.com/pithecene/lode/pull/171), closes [#169](https://github.com/pithecene/lode/issues/169))
 
 ### Security
 

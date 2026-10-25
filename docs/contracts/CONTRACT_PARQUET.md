@@ -462,7 +462,8 @@ This contract recommends the `parquet-go` library
 
 ### Alternative Libraries
 
-- `github.com/xitongsys/parquet-go`: older and less actively maintained.
+- `github.com/xitongsys/parquet-go`: an older library with less active
+  maintenance.
 - `github.com/apache/arrow-go`: a heavier dependency with more features.
 
 Library selection is an implementation detail, and this contract does not

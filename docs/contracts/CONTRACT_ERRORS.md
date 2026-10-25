@@ -160,8 +160,8 @@ repeats the failure, so the caller must correct the call.
 
 | Error | Source | Meaning |
 |-------|--------|---------|
-| `lode.ErrInvalidArgument` | Roots (`Open`, `OpenReadOnly`), recorded and returned by every root method | A `nil` store factory, a factory that returned a `nil` store, or a `nil` root option |
-| `lode.ErrInvalidArgument` | Roots (`Open`, `OpenReadOnly`), recorded and returned by every root method | A path name that is invalid, duplicated, or `latest`, or flat paths with a datasets or snapshots directory (CONTRACT_LAYOUT §Path Names) |
+| `lode.ErrInvalidArgument` | Roots (`Open`, `OpenReadOnly`), and every root method records and returns the error | A `nil` store factory, a factory that returned a `nil` store, or a `nil` root option |
+| `lode.ErrInvalidArgument` | Roots (`Open`, `OpenReadOnly`), and every root method records and returns the error | A path name that is invalid, duplicated, or `latest`, or flat paths with a datasets or snapshots directory (CONTRACT_LAYOUT §Path Names) |
 | `lode.ErrInvalidArgument` | Opening a handle or view (`Records`, `Blobs`) | A dataset ID that is not one path segment (§Dataset IDs) |
 | `lode.ErrInvalidArgument` | Opening a handle or view (`Records`, `Blobs`) | A `nil` codec, option, layout, or compressor |
 | `lode.ErrInvalidArgument` | Opening a handle or view (`Records`, `Blobs`) | A Hive layout without keys, or with a key that is not one path segment or contains `=` |
@@ -197,7 +197,7 @@ builds into a key, including volume and snapshot IDs.
 
 ---
 
-### 6. Codec/Component Mismatch Errors
+### 6. Codec and Component Mismatch Errors
 
 These errors indicate a mismatch between stored data and the current
 configuration.
@@ -213,8 +213,9 @@ configuration.
 | `lode.ErrSettingsMismatch` | Opening a writer, `Write`, `StreamWrite` | Lode cannot verify the writer's Hive keys against a dataset written before format version 1.1.0 (CONTRACT_WRITE_API §Settings) |
 
 #### Behavior
-- `Read` validates each snapshot's codec against the handle's before
-  reading, and reads it with the compressor its manifest names.
+- `Read` validates each snapshot's codec against the handle's codec before
+  reading the snapshot, and reads the snapshot with the compressor that its
+  manifest names.
 - A mismatch produces a descriptive error that names the setting or
   component, rather than silently corrupt output.
 - `Records.StreamWrite` returns `ErrCodecNotStreamable` if the codec is not
@@ -288,7 +289,8 @@ See [CONTRACT_PARQUET.md](CONTRACT_PARQUET.md) for complete Parquet codec semant
 ### 9. Volume Errors
 
 These errors indicate failures specific to Volume. The package
-`lode/volume` holds Volume, so that package declares its two sentinels.
+`lode/volume` defines Volume, so that package declares the two Volume
+sentinels.
 Volume also
 returns the shared sentinels of `lode`.
 
@@ -300,7 +302,8 @@ returns the shared sentinels of `lode`.
 #### `ErrRangeMissing` Behavior
 - `ReadAt` returns `ErrRangeMissing` if any part of the range is
   uncommitted.
-- A committed read path MUST NOT return partial data.
+- A read MUST NOT return partial data for a range that is partly
+  uncommitted.
 
 #### `ErrOverlappingBlocks` Behavior
 - `Commit` validates the complete cumulative set of blocks (existing and new).
@@ -330,7 +333,7 @@ detects during a commit.
 | Error | Source | Meaning |
 |-------|--------|---------|
 | `lode.ErrSnapshotConflict` | `Write`, `StreamWrite` (`Records`, `Blobs`), Volume.Commit | Another writer committed after this writer resolved the parent |
-| `lode.ErrSnapshotConflict` | `Volume.Commit` | The parent's manifest has not been persisted |
+| `lode.ErrSnapshotConflict` | `Volume.Commit` | No writer has yet persisted the parent's manifest |
 | `lode.ErrSnapshotConflict` | `Write`, `StreamWrite` (`Records`, `Blobs`) | The pointer names a snapshot whose settings no manifest records (CONTRACT_WRITE_API §Settings) |
 
 #### `ErrSnapshotConflict` Behavior
@@ -386,10 +389,10 @@ Snapshot expiry and the sweep of unreferenced objects
 - Storage I/O errors (network failures, timeouts): the caller may retry.
 - `ErrNotFound` during a race: the caller may retry if the store is
   eventually consistent.
-- `ErrSnapshotConflict`: call `Latest()` again, merge state, and commit
-  again.
+- `ErrSnapshotConflict`: the caller may call `Latest()` again, merge state,
+  and commit again.
 
-### Non-Retry Errors
+### Non-Retryable Errors
 - `ErrDatasetsNotModeled`: list datasets under a root with a datasets
   directory.
 - `ManifestValidationError`: the data is corrupt, so investigate its
@@ -401,7 +404,7 @@ Snapshot expiry and the sweep of unreferenced objects
   Operations).
 - `ErrOverlappingBlocks`: a logic error in the caller (overlapping byte
   ranges).
-- A component mismatch: reconfigure the dataset or read a snapshot with
+- A component mismatch: reconfigure the handle or read a snapshot with
   matching components.
 - `ErrSettingsMismatch`: configure the writer with the settings that the
   dataset's manifests record.
@@ -446,18 +449,19 @@ and Lode adds context to it but no prefix.
 
 The test in `internal/errprefix` enforces these rules. It type-checks every
 package under `lode/` and `internal/` and fails on any call to `fmt.Errorf`
-or `errors.New` that breaks them. The test lists, with its reason, each
-function that Lode declares but that stands for code outside Lode, such as
-the filesystem store's `openRead`. The test does not
-detect an error from outside Lode that Lode returns without wrapping it.
+or `errors.New` that breaks them. The test lists each function that Lode
+declares but that stands for code outside Lode, such as the filesystem
+store's `openRead`, and gives the reason for exempting it. The test does
+not detect an error from outside Lode that Lode returns without wrapping
+it.
 
 ---
 
 ## Immutability Invariants
 
 Errors MUST NOT imply:
-- Mutable state (no semantics of an "update failed").
-- Background recovery (no semantics of "retry later").
+- Mutable state (no error reports that an update failed).
+- Background recovery (no error asks the caller to retry later).
 - Partial success (writes are atomic through the manifest). Retention is
   the single exception: `Expire` and `Sweep` report the work completed
   before an error, and every step they perform is idempotent
@@ -497,7 +501,7 @@ view.GetManifest(ctx, ref)
   → return nil, ManifestValidationError{Field: "SchemaName", ...}
 ```
 
-### ListManifests with Corrupt Manifest
+### ListManifests with a Corrupt Manifest
 ```
 view.ListManifests(ctx, partition, opts)
   → for each manifest path:

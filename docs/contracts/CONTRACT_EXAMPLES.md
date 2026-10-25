@@ -97,7 +97,8 @@ when a write carries no metadata, pass `nil`.
 The project permits an ergonomic change before v1, such as reordering
 parameters, only when:
 
-1. the PR that makes the change also updates the contract,
+1. the PR that makes the change also updates every contract that describes
+   the changed call,
 2. the same PR updates [`PUBLIC_API.md`](../../PUBLIC_API.md),
 3. the same PR updates all tests,
 4. the same PR updates all examples, and

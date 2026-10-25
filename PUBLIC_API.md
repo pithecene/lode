@@ -125,10 +125,10 @@ A blob has no fields on which a layout can partition, so its layout is
 Opening a writer reads the dataset's head (one `Get` of the pointer and one
 of its manifest) and checks the writer's settings against it. Those
 settings are the codec and its description, the compressor, the checksum,
-the layout and its keys, and the path names. When a writer's settings
-differ from the head's, Lode returns `ErrSettingsMismatch` as the writer
-opens, or at the writer's commit if the conflicting
-commit happened after it opened. Opening writes nothing.
+the layout and its keys, and the path names. Lode returns
+`ErrSettingsMismatch` when the writer opens if the head's settings differ
+from the writer's. If another writer commits conflicting settings after the
+writer opens, Lode returns `ErrSettingsMismatch` at the writer's commit. Opening writes nothing.
 
 Opening a view reads the head without creating a missing pointer, takes the
 layout from the head's manifest, and returns `ErrNotFound` for a dataset
@@ -156,8 +156,8 @@ is a `volume.ID`. `Commit` returns a `volume.Snapshot`, which holds its
 A Dataset constructs complete objects before committing, whereas a Volume
 commits data incrementally as sparse byte ranges. A Volume suits a byte
 object of known length that writers fill in pieces (in parallel, out of
-order, or across restarts) and that remains immutable once written. Committed ranges never
-overlap.
+order, or across restarts). Each committed range is immutable, and
+committed ranges never overlap.
 
 <!-- illustrative -->
 ```go
@@ -282,8 +282,8 @@ infers `T`):
 **Record helpers:**
 - `D`: an abbreviated alias for `map[string]any` at call sites and in
   examples
-- `R(...)`: collects record literals into the `[]D` that `Records[D].Write`
-  takes
+- `R(...)`: a helper that collects record literals into the `[]D` that
+  `Records[D].Write` takes
 - `Partition`: a record's partition values by key name, for `Hive(...).By`
 
 **Identifiers, snapshots, and listings:**
@@ -329,8 +329,8 @@ infers `T`):
 - `ReaderAt(ctx, obj)` on a dataset handle or view: returns an
   `io.ReaderAt` for a data object, or `ErrRangeReadNotSupported` when the
   store does not implement `RangeReader`
-- `volume.New` takes a factory of `RangeStore`, so the compiler rejects a
-  store that cannot read ranges
+- `volume.New`: a constructor that takes a factory of `RangeStore`, so that
+  the compiler rejects a store that cannot read ranges
 
 Range reads provide efficient access to columnar formats (Parquet footers),
 block-indexed logs, and partial previews of artifacts.
@@ -579,7 +579,7 @@ compressor. Files that Lode did not write cannot carry these guarantees.
 
 | Pattern | When to Use | Completeness |
 |---------|-------------|-------------|
-| `Blobs.StreamWrite` per file | Each sidecar file is its own snapshot of a blob dataset, recorded by its manifest | Complete: `Snapshots()` enumerates every committed blob |
+| `Blobs.StreamWrite` per file | Large sidecar files that the caller streams once, each as its own snapshot of a blob dataset | Complete: `Snapshots()` enumerates every committed blob |
 | `Blobs.Write` | Small blobs that fit in memory | Complete: the manifest records the file |
 | File inventory in `Metadata` | The caller manages storage, and Lode records the inventory | Verified by the caller: paths are listed in metadata, and the caller confirms their existence |
 
@@ -716,7 +716,8 @@ manifest references them.
 ### Concurrency and CAS
 
 Lode uses optimistic concurrency control, implemented with compare-and-swap
-(CAS), to detect conflicting writes. Whether CAS is available depends on the storage adapter:
+(CAS), to detect conflicting writes. CAS availability depends on the storage
+adapter:
 
 #### Adapter CAS Support
 
@@ -745,9 +746,9 @@ next Volume commit adopts the abandoned commit from its staged manifest and
 merges its blocks (CONTRACT_CORE §Head Pointer, CONTRACT_VOLUME §Error
 Semantics). Only a pointer that names a commit persisted by a release
 earlier than v0.11.0, or a pointer edited by hand, blocks Volume commits
-until an operator repairs it. After such a repair, call `Latest` on an
-existing `Volume` value, or open the volume again, before committing,
-unless retries are configured.
+until an operator repairs it. After such a repair, a caller without
+configured retries calls `Latest` on an existing `Volume` value, or opens
+the volume again, before committing.
 
 On a conflict, with manual retries:
 1. Receive `ErrSnapshotConflict`.
@@ -785,10 +786,11 @@ root := lode.Open(lode.Use(store))
 so writers in that process commit as they would with CAS. Reads through the
 returned value wait for a replacement in progress, so they never observe a
 replaced object as absent. `SingleProcess` does not coordinate writers or
-readers in other processes, nor a second `SingleProcess` around the same backend. With
+readers in other processes, nor a second `SingleProcess` around the same
+backend. With
 writers in several processes, such a backend requires external
-coordination, such as locks, queues, or leader election. A store that already implements
-`ConditionalWriter` is returned unchanged.
+coordination, such as locks, queues, or leader election. `SingleProcess`
+returns unchanged any store that already implements `ConditionalWriter`.
 
 *Contract reference: [`CONTRACT_WRITE_API.md`](docs/contracts/CONTRACT_WRITE_API.md) §Concurrency, [`CONTRACT_VOLUME.md`](docs/contracts/CONTRACT_VOLUME.md) §Concurrency, [`CONTRACT_STORAGE.md`](docs/contracts/CONTRACT_STORAGE.md) §ConditionalWriter Capability*
 
@@ -850,7 +852,7 @@ the multipart path, or single-writer semantics in the application.
 guarantee their removal.**
 
 On an abort, or on an error before commit:
-- If the failure occurs before any manifest is written, the snapshot does
+- If the failure occurs before Lode writes any manifest, the snapshot does
   not exist.
 - A failed `Put` leaves no object ([`CONTRACT_STORAGE.md`](docs/contracts/CONTRACT_STORAGE.md) §Put is atomic),
   and the writer never deletes anything after a failed `Put`.
@@ -864,8 +866,8 @@ On an abort, or on an error before commit:
   automatically.
   `Sweep` reclaims them once they are older than its grace period
   (§Retention).
-- Removal uses an independent context, to maximize the likelihood of
-  success even if the caller's context was canceled. Whether removal
+- Removal uses an independent context, so that it can succeed even after the
+  caller cancels its own context. Whether removal
   completes after a cancellation depends on the timing of the adapter, so
   the outcome can differ from one run to the next. The difference has no
   effect on correctness, because an object that no manifest references
@@ -943,10 +945,10 @@ report, err := ds.Sweep(ctx, lode.SweepRequest{Grace: 24 * time.Hour})
 `Sweep` returns a `SweepReport` of what it reclaimed, or of what it would
 reclaim on a dry run.
 
-- **`Sweep` restores a missing partition index.** On a Hive dataset, a commit persists
-  its partition manifests after it completes. A writer that terminates
-  before that step leaves a snapshot that listings filtered by partition
-  omit.
+- **`Sweep` restores a missing partition index.** On a Hive dataset, a
+  commit persists its partition manifests after it persists the canonical
+  manifest. A writer that terminates before that step leaves a snapshot
+  that listings filtered by partition omit.
   `Sweep` copies the canonical manifest to each missing partition path once
   the snapshot is older than `Grace`, and reports it in `Reindexed`.
 
@@ -961,8 +963,8 @@ reclaim on a dry run.
 - **`Bytes` counts only recorded sizes.** `Bytes` is the sum of the
   sizes that an expiry's tombstone recorded for the objects deleted.
   Objects without a recorded size (orphaned objects, and objects that a
-  snapshot's `Files[]` never listed) are counted in `Unsized` and never
-  estimated.
+  snapshot's `Files[]` never listed) are counted in `Unsized`, and the report
+  never estimates their sizes.
 - **`Sweep` never modifies objects outside the data topology.** It neither
   reports nor deletes sidecar files, the pointer, or tombstones.
 
@@ -976,7 +978,7 @@ error.
 
 ### Sentinel Errors
 
-Use `errors.Is()` to check for sentinel errors:
+A caller checks for sentinel errors with `errors.Is()`:
 
 <!-- illustrative -->
 ```go
@@ -1155,7 +1157,8 @@ service rest on three behaviors of the service:
 
 AWS S3 provides all three. A service that accepts a conditional header
 without enforcing it lets two writers replace each other's manifest or
-pointer without an error, which forks a dataset's history.
+pointer without an error, and that replacement forks the dataset's
+history.
 
 Lode's integration tests verify both conditional writes against LocalStack
 and RustFS: sixteen writers race on `CompareAndSwap` and on `Put`, and

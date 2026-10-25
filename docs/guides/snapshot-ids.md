@@ -53,7 +53,7 @@ Parent resolution makes it only when the pointer is missing or does not
 contain a snapshot ID. Retention never makes the assumption and declines to
 run without a reliable pointer.
 
-## Uniqueness Under Retention
+## Uniqueness under Retention
 
 Before retention existed, Lode detected a repeated ID immediately: the
 second write encountered the first write's manifest and failed with
@@ -76,8 +76,8 @@ A tombstone declares that retention is removing every object under its ID,
 so retention could mistake a later snapshot that reuses the ID for the
 expired one. An ID derived from the clock alone repeats whenever the clock
 repeats an instant. Three conditions make a clock repeat an instant: coarse
-resolution, a backward NTP adjustment, and the restore of a virtual
-machine from a saved image. Two hosts that write in the same nanosecond also
+clock resolution, a backward NTP adjustment, and a virtual-machine restore
+from a saved image. Two hosts that write in the same nanosecond also
 obtain the same instant. The nonce removes this dependence on the clock.
 
 ## Collisions
@@ -92,7 +92,7 @@ following consequences:
   first path that both writes share. If that path is a data file, the write
   fails with `ErrPathExists` during staging, before it modifies the pointer.
   If the writes target different partitions, their data paths differ, and
-  the write instead fails at its create-only manifest write. Lode writes
+  the colliding write instead fails when it creates its manifest. Lode writes
   the pointer before the manifest, so the failed write has already advanced
   the `latest` pointer. The pointer then names the shared ID, which
   resolves to the earlier snapshot, until the next commit.
@@ -102,8 +102,9 @@ following consequences:
   head, including the new snapshot while that snapshot remains the head.
   Once a later commit supersedes the new snapshot, an `Expire` that names
   the ID returns an error, and `Sweep` reports the tombstone in
-  `Unparseable` and retains the data. In one exception, both commits also
-  completed in the same nanosecond with the same files: the old tombstone
+  `Unparseable` and retains the data. One exception applies when both
+  commits also complete in the same nanosecond and contain the same files:
+  the old tombstone
   then describes the new snapshot, so retention can remove that snapshot.
   Retention can also delete the new write's staged data before the write
   commits its manifest. Nothing yet distinguishes that
@@ -111,6 +112,6 @@ following consequences:
   `Expire` that names the ID, can delete it.
 
 Instant-only IDs collided whenever two writes began in the same nanosecond,
-with the same consequences. The nonce reduces the probability of such a
-collision from certainty to 2⁻⁶⁴ for each pair of writes that obtain the
-same instant.
+with the same consequences. For each pair of writes that obtain the same
+instant, the nonce reduces the collision probability from certainty to
+2⁻⁶⁴.

@@ -123,8 +123,8 @@ Go interface that existing libraries already accept.
 - Prefetching: optional and sequential
 - Metrics: range calls and bytes fetched
 
-Caching is essential for Parquet footers, Arrow metadata, and block
-indexes.
+A cache avoids repeated range calls when a reader parses Parquet footers,
+Arrow metadata, and block indexes.
 
 ---
 
@@ -157,14 +157,15 @@ ReaderAt(ctx context.Context, obj ObjectRef) (io.ReaderAt, error)
 // RecordView[T]: Read(ctx, id) ([]T, error); BlobView: Read(ctx, id) ([]byte, error)
 ```
 
-This layer resolves paths according to Lode's layout and semantics but
-does **not interpret** the data.
+Views resolve paths according to Lode's layout and semantics but do **not
+interpret** the data.
 
 ### Opening a View
 
 - A view MUST resolve the dataset's head without writing. It reads the
   pointer and then looks for the manifest that the pointer names, first
-  under the snapshots directory and then under the segments directory. The pointer does not say which
+  under the snapshots directory and then under the segments directory. The
+  pointer does not record which
   layout wrote it, and at most one such manifest exists. When the pointer is
   absent or names no persisted manifest, the view scans as `Latest` does
   instead. It MUST NOT create a missing pointer (CONTRACT_CORE §Head Pointer), so it
@@ -210,7 +211,7 @@ read API imposes its own order:
   references.
 - On a Hive layout, an unfiltered listing MUST report each committed
   snapshot that lacks a partition manifest through the snapshot's canonical
-  manifest and MUST set the empty partition in that reference's
+  manifest and MUST set the empty partition in the returned reference's
   `ManifestRef`. `ListPartitions` MUST then report
   the partitions of that manifest's files. Such a snapshot has no files, or
   its writer terminated before persisting its partition manifests
@@ -278,11 +279,12 @@ it implies no key or value boundary (`day=2026-10` matches `day=2026-10-18`).
 - On layouts without partitions, a listing with a non-empty prefix MUST
   return `ErrPartitionPrefixNotSupported`.
 - The prefix MUST be a canonical fragment of a relative partition path, with
-  no leading `/`, no `\` anywhere, and no empty, `.`, or `..` segment (a
-  trailing `/` is permitted). The listing resolves the prefix beneath the
+  no leading `/`, no `\` anywhere, and no empty, `.`, or `..` segment,
+  although it may end with `/`. The listing resolves the prefix beneath the
   dataset's partitions directory, so any other value could address another
   dataset.
-  Such a prefix MUST return `ErrInvalidPath` before any store call.
+  A listing with such a prefix MUST return `ErrInvalidPath` before any
+  store call.
 
 ---
 
@@ -371,8 +373,8 @@ Alternative layouts are valid provided that:
 - the layout preserves the commit protocol of CONTRACT_CORE §Head Pointer.
 
 The layout abstraction enables efficient prefix listing and pruning on
-particular backends, but a layout may also adopt manifest-driven discovery
-when no path topology exists.
+backends that list by prefix, and discovery remains manifest-driven when
+no path topology exists.
 
 ### Partition Semantics
 
@@ -436,7 +438,7 @@ range reads and efficient random access that is safe for concurrent reads
 
 ## Complexity Bounds
 
-See [CONTRACT_COMPLEXITY.md](CONTRACT_COMPLEXITY.md) for complete definitions
+[CONTRACT_COMPLEXITY.md](CONTRACT_COMPLEXITY.md) gives complete definitions
 and a glossary of variables.
 
 ### Enumeration

@@ -66,8 +66,9 @@ checksum algorithm, the partitioner and its keys, and the path names.
   holds a manifest that the writer's layout does not persist.
 - When the writer finds no manifest under its own layout and the dataset
   directory holds such a manifest, the directory contains a history
-  persisted under another layout. The writer MUST be rejected with `ErrSettingsMismatch` rather
-  than begin a second history beside it. The writer recognizes a manifest
+  persisted under another layout. Lode MUST reject the writer with
+  `ErrSettingsMismatch` rather than let it begin a second history beside
+  the existing one. The writer recognizes a manifest
   by its file name alone, without reading any object. That name is either
   the writer's own manifest name or the default name, which every manifest
   bore before manifest names became root options. The writer does not
@@ -162,9 +163,10 @@ checksum algorithm, the partitioner and its keys, and the path names.
 - On success, `Records.StreamWrite` writes the manifest and returns the new
   snapshot.
 - On error (an iterator failure, a codec error, or a storage error),
-  `Records.StreamWrite` writes no manifest. A failed `Put` leaves no object ([`CONTRACT_STORAGE.md`](CONTRACT_STORAGE.md)
-  §Put). If the commit fails before any manifest write, the writer attempts
-  to delete the data object from its successful `Put`. Otherwise, the
+  `Records.StreamWrite` writes no manifest. A failed `Put` leaves no object
+  ([`CONTRACT_STORAGE.md`](CONTRACT_STORAGE.md) §Put). If the commit fails
+  before any manifest write, the writer attempts to delete the data object
+  that its successful `Put` persisted. Otherwise, the
   writer retains the object, as it does for `Blobs.StreamWrite`.
 - If the store's `Put` returns before consuming the stream,
   `Records.StreamWrite` MUST return that error in preference to any iterator
@@ -242,8 +244,8 @@ Lode detects concurrent commits and returns `ErrSnapshotConflict`.
 The commit detects concurrent writers in three steps:
 - At commit time, the writer records the expected parent snapshot ID.
 - The commit writes the latest pointer with `CompareAndSwap`.
-- If the pointer content differs from the expected parent because another
-  writer committed after this writer read `Latest()`, the commit returns
+- If another writer committed after this writer read `Latest()`, the pointer
+  content differs from the expected parent, and the commit returns
   `ErrSnapshotConflict`.
 
 A caller retries a commit manually in four steps:
@@ -255,7 +257,8 @@ A caller retries a commit manually in four steps:
 Data files are immutable and already persisted, so the cost of a retry is
 one manifest write plus one pointer swap.
 
-Lode also supports automatic retry, which is disabled by default.
+Lode also supports automatic retry, and the default configuration performs
+no retries.
 `WithRetry(n)` enables a bounded number of automatic retries within the
 commit path. On `ErrSnapshotConflict`, the writer:
 1. Waits for an exponential backoff interval with jitter.
@@ -336,7 +339,8 @@ obligation for the caller:
   object path or use external coordination (distributed locks, queues, or
   similar mechanisms).
 
-See [`CONTRACT_STORAGE.md`](CONTRACT_STORAGE.md) for adapter-specific thresholds and guarantees.
+[`CONTRACT_STORAGE.md`](CONTRACT_STORAGE.md) defines adapter-specific
+thresholds and guarantees.
 
 ---
 
@@ -347,15 +351,15 @@ Implementations MUST use the following error sentinels where applicable:
 - `ErrNoSnapshots` for an empty history
 - `ErrNotFound` for a missing snapshot ID
 - `ErrPathExists` for an attempt to write to an existing path
-- `ErrCodecNotStreamable` when the codec used by `Records.StreamWrite` is not
-  a `StreamingCodec`
-- `ErrNilIterator` when `Records.StreamWrite` is called with a `nil`
-  iterator
-- `ErrPartitioningNotSupported` when `Records.StreamWrite` is used on a
-  partitioned layout
+- `ErrCodecNotStreamable` when the codec that `Records.StreamWrite` uses is
+  not a `StreamingCodec`
+- `ErrNilIterator` when a caller passes a `nil` iterator to
+  `Records.StreamWrite`
+- `ErrPartitioningNotSupported` when a caller invokes `Records.StreamWrite`
+  on a partitioned layout
 - `ErrInvalidArgument` for metadata that does not encode as a JSON object
-- `ErrSnapshotConflict` when another writer committed after the parent was
-  resolved, or when the pointer names a snapshot whose settings no
+- `ErrSnapshotConflict` when another writer committed after this writer
+  resolved its parent, or when the pointer names a snapshot whose settings no
   manifest records (§Settings)
 - `ErrSettingsMismatch` when the writer's settings differ from the
   dataset's (§Settings)
@@ -367,8 +371,8 @@ error taxonomy and the handling guidance.
 
 ## Complexity Bounds
 
-See [CONTRACT_COMPLEXITY.md](CONTRACT_COMPLEXITY.md) for complete definitions
-and a glossary of variables.
+[CONTRACT_COMPLEXITY.md](CONTRACT_COMPLEXITY.md) provides complete
+definitions and a glossary of variables.
 
 ### Parent Resolution
 
@@ -406,7 +410,7 @@ Each run of the check costs the following store calls:
 | `Blobs.StreamWrite` | 4 fixed | O(1) streaming |
 | `Records.StreamWrite` | 4 fixed | O(1) streaming |
 
-A dataset's first commit adds **1 Put and 1 Delete** for its staged
+A dataset's first commit adds **one `Put` and one `Delete`** for its staged
 manifest (CONTRACT_CORE §Head Pointer).
 
 A commit may incur **one additional read**: `CompareAndSwap` reads the current pointer before the

@@ -45,8 +45,8 @@ data without reporting the conflict.
   under a temporary name in the same directory and publishes it with a hard
   link, which fails if the path exists. The adapter therefore requires a
   filesystem that supports hard links, and on one that does not, `Put`
-  returns an error. A published object has mode 0644 as modified by the
-  process umask. Temporary names begin with the
+  returns an error. A published object has mode 0644, which the process
+  umask then modifies. Temporary names begin with the
   reserved prefix `.lode-tmp-`, and `List` omits them. The adapter
   removes the temporary name after publishing. If that removal fails, or the
   process ends first, an inert temporary file remains. No Lode operation
@@ -172,8 +172,7 @@ fails.
 - MUST return an `io.ReaderAt` for random access.
 - If the path does not exist, MUST return `ErrNotFound`.
 - The returned `ReaderAt` MUST support concurrent reads at different offsets.
-- Callers are responsible for closing the underlying resource if it
-  implements `io.Closer`.
+- Callers close the underlying resource if it implements `io.Closer`.
 
 ---
 
@@ -195,7 +194,7 @@ checks each name before any store call:
 |------|----------------------|----------------------------------|
 | Dataset ID | `Root.Records`, `Root.Blobs`, `ReadRoot.Records`, `ReadRoot.Blobs` | `ErrInvalidArgument` |
 | Volume ID | `volume.New` | `ErrInvalidArgument` |
-| Path name | Each path-name root option (`WithDatasetsDir` and the others), which also excludes `=` | `ErrInvalidArgument` |
+| Path name | Each path-name root option, such as `WithDatasetsDir`, which also excludes `=` | `ErrInvalidArgument` |
 | Hive key | `Hive`, which also excludes `=` | `ErrInvalidArgument` |
 | Compressor extension | `WithCompressor` on a writer, which names each data file by its role and the extension | `ErrInvalidArgument` |
 | Snapshot ID | `Snapshot`, `Read`, and `GetManifest`, and Volume's `Snapshot` and `ReadAt` | `ErrNotFound`, because no snapshot has such an ID |
@@ -290,12 +289,12 @@ type ConditionalWriter interface {
 - The conditional `PutObject` decides every outcome: `If-None-Match: *`
   creates the object, and `If-Match` replaces exactly the version whose ETag
   the adapter compared. The adapter infers no outcome from its earlier records.
-- When `expected` is empty, call `PutObject` with `If-None-Match: *` at
-  once.
-- When the adapter itself replaced the object (with `If-Match`) and
-  `expected` equals the content it wrote, call `PutObject` with `If-Match`
-  on the ETag that S3 returned for that write, without reading the object
-  first. The adapter records only versions that it wrote by replacement,
+- When `expected` is empty, call `PutObject` with `If-None-Match: *`
+  immediately, without reading the object first.
+- When the adapter itself replaced the object with `If-Match`, it records
+  the ETag that S3 returned. If `expected` equals the content of that
+  write, call `PutObject` with `If-Match` on that ETag without reading the
+  object first. The adapter records only versions that it wrote by replacement,
   one per object, each identified by a digest of the content. Objects that
   the adapter creates once and never replaces, such as tombstones,
   therefore leave no record. The adapter holds a bounded number of such records and evicts
@@ -306,15 +305,15 @@ type ConditionalWriter interface {
   precondition or a missing object. Then compare
   the content with `expected`, and call `PutObject` with `If-Match` on that
   ETag, or with `If-None-Match: *` if the object does not exist. The
-  outcome is therefore the one that reading first would give: an
+  outcome therefore matches the outcome of a read before every write: an
   empty existing object satisfies an empty `expected`, and an object that
   another writer replaced yields `ErrSnapshotConflict`.
 - The adapter returns `ErrSnapshotConflict` when S3 refuses the
   precondition on the final write. It also returns `ErrSnapshotConflict`
   when an `If-Match` write finds the object deleted after the read, a
   condition that S3 reports as not found.
-- After any failed write the adapter discards what it knew of the object's
-  version, because a lost response may hide a completed write.
+- After any failed write, the adapter discards its record of the object's
+  ETag, because a lost response may hide a completed write.
 
 **Memory adapter:**
 - Read, compare, and write under a mutex.
@@ -323,11 +322,11 @@ type ConditionalWriter interface {
 
 A backend that offers no conditional write cannot implement
 `CompareAndSwap` atomically across processes. `lode.SingleProcess(store)`
-converts its `ObjectStore` into a `Store` by serializing `CompareAndSwap`
-calls under a lock held by the process. `lode.SingleProcess` returns
-unchanged any store that already implements `ConditionalWriter`. Its
-`CompareAndSwap` MUST follow
-the semantics table above. It serializes only callers that share the
+converts an `ObjectStore` into a `Store` by serializing `CompareAndSwap`
+calls under a process-local lock. `lode.SingleProcess` returns unchanged
+any store that already implements `ConditionalWriter`. The
+`CompareAndSwap` of the returned value MUST follow the semantics table
+above. It serializes only callers that share the
 returned value within one process, and its replacement is a `Delete`
 followed by a `Put`, so a failed `Put` leaves the path absent. Reads
 through the returned value (`Get`, `Exists`, `List`, `ReadRange`, and

@@ -27,8 +27,8 @@ It is authoritative for all Volume implementations.
 
 ### Volume
 
-A Volume is a logical byte address space `[0..N)`, identified by `ID` and
-`TotalLength`.
+A Volume is a logical byte address space `[0..N)`. Its `ID` and
+`TotalLength` identify it.
 
 ### Snapshot
 
@@ -81,12 +81,12 @@ Each committed block MUST record:
 - checksum metadata, when configured
 
 Manifests are cumulative:
-- Each manifest contains every block that earlier commits committed, plus
-  the blocks that its own commit adds.
+- Each manifest contains every block from earlier commits, plus the blocks
+  that its own commit adds.
 - A single manifest suffices to determine complete read visibility.
 - Interpreting a snapshot requires no traversal of the chain.
 
-Absence is meaningful:
+Absence from the manifest is meaningful:
 - An implementation MUST treat any range that the manifest omits as
   uncommitted and MUST NOT infer its contents.
 
@@ -239,7 +239,7 @@ rejects them as Volume options. Volume provides the following options:
 - `WithRetryCount(n)`: a bounded number of automatic CAS retries after a
   commit conflict.
 - `WithRetryBaseDelay(d)`, `WithRetryMaxDelay(d)`, `WithRetryJitter(j)`:
-  configuration of the backoff between CAS retries.
+  the backoff interval between CAS retries.
 - `WithRetryObserver(fn)`: a callback invoked on each retry, with the same
   semantics as for a Dataset (see [`CONTRACT_WRITE_API.md`](CONTRACT_WRITE_API.md) §Optimistic
   Concurrency (CAS)).
@@ -289,10 +289,10 @@ Dataset.
   retries. Commits return `lode.ErrSnapshotConflict` until the pointer
   names a snapshot that has a manifest: either an operator persists the
   missing manifest, or an operator sets the pointer to an earlier
-  snapshot. A `Volume` value that remembers an
-  earlier head continues to expect that head's pointer content. After the
-  repair, the caller MUST therefore call `Latest` or open the volume again,
-  unless retries are configured (each retry refreshes the head).
+  snapshot. A `Volume` value that caches an earlier head continues to
+  expect that head's pointer content. After the repair, the caller MUST
+  therefore call `Latest` or open the volume again, unless the caller
+  configures retries (each retry refreshes the head).
 - `Latest`, `Snapshot`, and `Snapshots` never read staged copies. An
   abandoned commit has no canonical manifest, so no listing includes it, and
   its blocks become visible through the next commit, which merges them. That
@@ -440,8 +440,8 @@ Block lookup MUST be O(log B + R), where R is the number of covering
 blocks. Implementations MUST verify the sort order when they load the
 manifest and MUST NOT verify it on each range read.
 
-The cost of `Snapshots()` grows with the number of snapshots multiplied by
-the cumulative number of blocks. Callers MUST NOT use `Snapshots()` on
+The cost of `Snapshots()` grows with the snapshot count multiplied by the
+cumulative block count. Callers MUST NOT use `Snapshots()` on
 hot paths.
 
 ---

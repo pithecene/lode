@@ -31,7 +31,8 @@ type ObjectIterator interface {
 - `Next()` MUST return false once the iterator is exhausted or once a
   caller has invoked `Close()`.
 - `Close()` MUST be idempotent.
-- A caller MAY invoke `Err()` after the iterator is exhausted or closed.
+- A caller MAY invoke `Err()` after the iterator reaches exhaustion or after
+  the caller has invoked `Close()`.
 - Implementations MUST release resources when a caller invokes `Close()` or
   when the iterator reaches exhaustion.
 

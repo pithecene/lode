@@ -127,8 +127,8 @@ Datasets and Volumes share these rules:
 
 ## Guarantees
 
-- **Immutable snapshots**: data files and manifests never change once
-  written.
+- **Immutable snapshots**: Lode never modifies a data file or manifest
+  after it persists the object.
 - **Atomic commits**: a snapshot is visible only once its manifest exists.
 - **Explicit metadata**: every snapshot carries metadata that the caller
   supplies, and Lode never infers metadata.

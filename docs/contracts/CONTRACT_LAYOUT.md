@@ -47,9 +47,9 @@ A dataset's paths have two sources (V1_API_DECISIONS D11).
   NOT combine flat paths with options that name those directories.
 - The default names and the flat-path structure are part of the persisted
   format: a later release MUST NOT change them (V1_API_DECISIONS
-  D8). The order, placement, and parsing of path segments are likewise
-  fixed for every set of names.
-- The names are part of a dataset's address, as the store is. Each manifest
+  D8). A later release likewise MUST NOT change the order, placement, or
+  parsing of path segments for any set of names.
+- The names, like the store, are part of a dataset's address. Each manifest
   records them (CONTRACT_CORE §Manifest Requirements). Lode MUST reject
   with `ErrSettingsMismatch` any writer or view whose names differ from
   those that the dataset's head manifest records. A manifest of format
@@ -136,7 +136,7 @@ The following rules also apply:
 ## NoOp Components
 
 - Canonical NoOp implementations MUST exist.
-- A Dataset configuration MUST NEVER use a `nil` partitioner or compressor.
+- A Dataset configuration MUST NOT use a `nil` partitioner or compressor.
 - Manifests MUST record `partitioner = "noop"` and `compression = "noop"`
   when the dataset uses the corresponding NoOp partitioner or compressor.
 - When a dataset configures no codec, manifests MUST omit codec fields.

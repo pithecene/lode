@@ -84,8 +84,8 @@ A tombstone governs only a manifest that it **describes**, that is, one with
 the same `CreatedAt` and the same file list. Lode reports a tombstone that
 it cannot read, or that contradicts a manifest still present
 (`SweepReport.Unparseable` or an `Expire` error), and never acts on it.
-Recovery from the fault never rewrites or removes such a tombstone, and an
-operator resolves the corruption.
+No recovery step rewrites or removes such a tombstone, and an operator
+resolves the fault.
 
 ## Snapshot Removal by `Expire`
 
@@ -106,8 +106,9 @@ sequenceDiagram
 ```
 
 Every step is idempotent: a step that finds its target already deleted
-succeeds. If the process terminates at any point, the next `Expire` that
-names the same ID, or the next `Sweep`, resumes from the tombstone.
+succeeds. If the process terminates after it writes the tombstone, the next
+`Expire` that names the same ID, or the next `Sweep`, resumes from the
+tombstone.
 
 ### Selecting Snapshots
 
@@ -116,13 +117,13 @@ names the same ID, or the next `Sweep`, resumes from the tombstone.
 - `Partition` selects snapshots that have a manifest in the given partition
   or beneath it (Hive layouts only). Matching compares whole path segments,
   so `run_id=run-1` never selects `run_id=run-10`. `Expire` retains a
-  snapshot with files outside the partition and reports it in `Mixed`. To
-  expire such a snapshot, name it in `IDs` in a request that omits
-  `Partition`. Because the fields combine by intersection, `Expire` still
+  snapshot with files outside the partition and reports it in `Mixed`. A
+  caller expires such a snapshot by naming it in `IDs` in a request that
+  omits `Partition`. Because the fields combine by intersection, `Expire` still
   reports the snapshot as mixed when a request specifies both.
 - `Before` selects snapshots whose write began before the given instant.
-  Lode derives the instant from the snapshot ID, so selection loads no
-  manifest.
+  Lode derives each snapshot's write time from its snapshot ID, so
+  selection loads no manifest.
 
 The fields combine by intersection. `Expire` returns `ErrInvalidArgument`
 for a request that specifies none of them.
@@ -142,15 +143,15 @@ recent commit the smaller ID. `Expire` therefore returns
 
 - The pointer names a snapshot without a persisted manifest, which
   indicates a pending commit ([CONTRACT_CORE §Head
-  Pointer](../contracts/CONTRACT_CORE.md#head-pointer)). Retry once the
-  commit completes. If `Expire` detects this condition before the run
+  Pointer](../contracts/CONTRACT_CORE.md#head-pointer)). A caller can retry
+  the request once the commit completes. If `Expire` detects this condition before the run
   begins, it expires nothing. If it detects the condition partway through
   the run, the snapshots already expired remain expired, and the report
   lists them. A pointer left by an abandoned commit remains
   until the next commit replaces it: `Latest` never replaces a pointer, because no
   persisted state distinguishes an abandoned commit from a pending one.
-- The dataset has snapshots or tombstones but no pointer, because its
-  snapshots predate the pointer. `Expire` expires nothing. Any commit
+- The dataset has snapshots or tombstones but no pointer, because Lode
+  wrote them before it introduced the head pointer. `Expire` expires nothing. Any commit
   creates the pointer, after which retention proceeds.
 
 Retention treats a pointer as corrupt when the pointer does not contain a
@@ -173,7 +174,7 @@ data:
 - every tombstone while a commit is pending, because the head is then
   undetermined
 - a tombstone that is invalid or contradicts a manifest copy, because Lode
-  cannot rely on it, and which `Sweep` reports in `Unparseable`
+  cannot rely on it (`Sweep` reports such a tombstone in `Unparseable`)
 
 **It reclaims orphaned data.** `Sweep` deletes every data object that is
 older than `Grace` and whose snapshot has neither a manifest nor a
@@ -216,12 +217,12 @@ never deletes the pointer or a tombstone.
 `Grace` has no default and must be positive. A write in progress has data
 objects but no manifest, so `Sweep` cannot distinguish it from an aborted
 write. Only age differentiates them. `Sweep` measures age from the instant
-in the snapshot ID, and the **writer's** clock supplies that instant. Choose a grace
-period that exceeds the sum of:
+in the snapshot ID, and the **writer's** clock supplies that instant. The
+grace period must exceed the sum of:
 
 - the duration of the longest expected write, and
 - the largest clock difference between any writing host and the host that
-  runs `Sweep` (whether from skew or from a clock that has been set back).
+  runs `Sweep` (whether from skew or from a clock that moved backward).
 
 Twenty-four hours is a conservative initial value.
 

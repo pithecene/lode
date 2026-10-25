@@ -70,12 +70,11 @@ sequenceDiagram
 ```
 
 If another writer advanced the pointer first, the compare-and-swap (CAS)
-fails with
-`ErrSnapshotConflict`. With `WithRetry`, Lode reads the head again and
-retries the commit with the same staged data, and the retry may still
-publish the snapshot. If the commit fails permanently, the data files that
-a buffered write staged remain as orphaned objects until `Sweep` reclaims
-them. A stream write deletes its object on a best-effort basis if the
+fails with `ErrSnapshotConflict`. When the caller enables `WithRetry`, Lode
+reads the head again, retries the commit with the same staged data, and
+publishes the snapshot if the retry succeeds. If the commit fails
+permanently, a buffered write's staged data files remain as orphaned
+objects until `Sweep` reclaims them. A stream write deletes its object on a best-effort basis if the
 commit fails before any manifest write. Otherwise, the stream write retains
 the object, because the store may have persisted a manifest even when its
 write reported an error.
