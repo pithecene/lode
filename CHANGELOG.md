@@ -209,7 +209,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Retry on conflict**: `WithRetryCount(n)` retries a commit that fails with `ErrSnapshotConflict` up to `n` times, on Datasets and Volumes. A retry writes the data files once and repeats only the manifest write and the pointer update. `WithRetryBaseDelay`, `WithRetryMaxDelay`, and `WithRetryJitter` configure the exponential backoff, whose defaults are a base delay of 10 ms, a maximum of 2 s, and full jitter. ([#164](https://github.com/pithecene/lode/pull/164), closes [#163](https://github.com/pithecene/lode/issues/163))
+- **Retry on conflict**: `WithRetryCount(n)` retries a commit that fails with `ErrSnapshotConflict` up to `n` times, on Datasets and Volumes. The commit writes the data files once, and a retry repeats only the manifest write and the pointer update. `WithRetryBaseDelay`, `WithRetryMaxDelay`, and `WithRetryJitter` configure the exponential backoff, whose defaults are a base delay of 10 ms, a maximum of 2 s, and full jitter. ([#164](https://github.com/pithecene/lode/pull/164), closes [#163](https://github.com/pithecene/lode/issues/163))
 
 ### Upgrade Notes
 
