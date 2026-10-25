@@ -11,6 +11,7 @@
 [![Release](https://img.shields.io/github/v/release/pithecene/lode?sort=semver)](https://github.com/pithecene/lode/releases/latest)
 [![CI](https://github.com/pithecene/lode/actions/workflows/ci.yml/badge.svg)](https://github.com/pithecene/lode/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/pithecene/lode)](LICENSE)
+[![Documentation](https://img.shields.io/badge/docs-pithecene.sh-1b1a17)](https://pithecene.sh/docs/lode)
 
 Lode is an embeddable Go persistence framework that provides snapshots,
 metadata, and safe write semantics on object storage, without requiring a
@@ -151,6 +152,10 @@ Services](PUBLIC_API.md#other-s3-compatible-services)).
 ---
 
 ## Documentation
+
+Pithecene publishes the guides, the public API reference, and the contracts
+at [pithecene.sh/docs/lode](https://pithecene.sh/docs/lode). The repository
+holds the same documents:
 
 | Topic | Where |
 |-------|-------|
