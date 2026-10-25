@@ -105,8 +105,11 @@ func BenchmarkS3_FirstWrite(b *testing.B) {
 }
 
 // BenchmarkS3_SteadyWrite measures the commits that follow a dataset's
-// first: one handle, opened before the timer starts, writes three records
-// and reads them back in each iteration.
+// first two: one handle, opened before the timer starts, writes three
+// records and reads them back in each iteration. The adapter records the
+// pointer's version when it replaces the pointer but not when it creates
+// it, so the second commit still reads the pointer; both commits precede
+// the timer.
 func BenchmarkS3_SteadyWrite(b *testing.B) {
 	skipBenchIfNoS3(b)
 	for _, backend := range benchBackends {
@@ -116,6 +119,7 @@ func BenchmarkS3_SteadyWrite(b *testing.B) {
 			if err != nil {
 				b.Fatal(err)
 			}
+			writeAndRead(b, ds, -2)
 			writeAndRead(b, ds, -1)
 			requests.reset()
 			b.ReportAllocs()

@@ -129,8 +129,8 @@ the highest figure observed across `go test -count=120`.
 |-----------|---------|------:|-----:|----------:|---------------:|
 | `BenchmarkS3_FirstWrite/LocalStack` | Workstation | 18,980,000 ± 7% | 734,748 ± 1% | 7,540 | 13 |
 | `BenchmarkS3_FirstWrite/RustFS` | Workstation | 104,200,000 ± 5% | 722,866 ± 2% | 7,352 | 13 |
-| `BenchmarkS3_SteadyWrite/LocalStack` | Workstation | 8,175,000 ± 20% | 307,848 ± 1% | 2,915 | 5 |
-| `BenchmarkS3_SteadyWrite/RustFS` | Workstation | 36,770,000 ± 3% | 305,342 ± 2% | 2,888 | 5 |
+| `BenchmarkS3_SteadyWrite/LocalStack` | Workstation | 7,364,000 ± 5% | 319,836 ± 2% | 2,919 | 5 |
+| `BenchmarkS3_SteadyWrite/RustFS` | Workstation | 36,140,000 ± 6% | 309,648 ± 2% | 2,873 | 5 |
 
 The figures are medians of ten runs on an AMD Ryzen 9 5900XT, measured on
 Lode v0.12.0 with Go 1.27.3. Neither benchmark has a CI figure yet.
@@ -152,11 +152,14 @@ toolchain and the SDK.
   can adopt an abandoned first commit (CONTRACT_CORE §Head Pointer), creates
   the pointer, writes the manifest, and deletes the staged copy. The read
   takes two Gets. The total is thirteen requests.
-- `BenchmarkS3_SteadyWrite` writes through one handle whose dataset already
-  has a commit, which is the common case. Each commit writes the data
+- `BenchmarkS3_SteadyWrite` writes through one handle after the dataset's
+  first two commits, which is the common case. Each commit writes the data
   object, replaces the pointer, and writes the manifest; the adapter knows
   the pointer's version from its own last replacement, so it does not read
-  the pointer first. The read takes two Gets, for five requests in all.
+  the pointer first. The read takes two Gets, for five requests in all. The
+  second commit reads the pointer once more, because the adapter records a
+  pointer's version when it replaces the pointer but not when it creates
+  it, so both commits precede the timer.
 
 The single benchmark that these replace, `BenchmarkS3_WriteRoundTrip`,
 measured only the first commit. Its allocations rose from 2,970 in
