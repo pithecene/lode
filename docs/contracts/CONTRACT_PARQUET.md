@@ -1,4 +1,4 @@
-# Lode Parquet Codec — Contract
+# Lode Parquet Codec Contract
 
 This document defines the required semantics for the integration of the
 Parquet codec.
@@ -22,7 +22,7 @@ It is authoritative for any Parquet codec implementation within Lode.
 - Automatic schema evolution or merging.
 - Partitioning by row group within Lode (external readers perform it).
 - Encryption or column-level access control.
-- Nested types (structs, lists, maps); schemas are flat.
+- Nested types (structs, lists, and maps). Schemas are flat.
 
 ---
 
@@ -104,8 +104,8 @@ ds, err := root.Records(ctx, "events", codec) // returns a schema error
 `ErrSchemaViolation`, which `Root.Records` and `ReadRoot.Records` return,
 and which `Encode` and `Decode` return if called directly, for:
 
-- invalid `ParquetType` values (out of range);
-- empty field names; and
+- invalid `ParquetType` values (out of range),
+- empty field names, and
 - duplicate field names (which would cause columns to be dropped without
   notice).
 
@@ -290,14 +290,14 @@ statistics through `FileStats()` after each `Encode` call:
   float64, string, and timestamp.
 - `NullCount` for each column: the number of null values in a nullable
   column.
-- `DistinctCount`: not computed; the codec reports zero, which the
+- `DistinctCount`: not computed. The codec reports zero, which the
   manifest omits.
 - Boolean and byte columns report only `NullCount` (no minimum or maximum).
 - Statistics are computed during `Encode` from the Go record values, not
   from Parquet's internal metadata.
 - Minimum and maximum values use the same Go types as the input records.
   When serialized to JSON, a `time.Time` becomes an RFC 3339 string with
-  nanosecond precision; consumers must interpret values according to the
+  nanosecond precision, and consumers must interpret values according to the
   schema.
 
 ---
@@ -507,8 +507,8 @@ Three decisions bound the codec.
 
 1. **Nested types:** the codec supports flat schemas only, without nested
    structs, lists, or maps.
-2. **Schemas:** a schema is declared explicitly; the codec does not derive
-   one from Go struct tags.
+2. **Schemas:** the caller declares a schema explicitly, and the codec does
+   not derive one from Go struct tags.
 3. **Compression:** the codec offers Snappy, gzip, or no internal
    compression, and no Zstandard.
 

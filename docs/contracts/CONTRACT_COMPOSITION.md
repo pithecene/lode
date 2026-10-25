@@ -1,4 +1,4 @@
-# Lode Store Composition — Contract
+# Lode Store Composition Contract
 
 This document defines the deterministic behavior of store composition.
 

@@ -109,9 +109,9 @@ and complete programs are listed in [`examples/`](examples/).
   metadata.
 - Storage, format, compression, and partitioning are independent.
 
-**Volume** (sparse byte ranges; experimental package `lode/volume`):
+**Volume** (sparse byte ranges, in the experimental package `lode/volume`):
 - A volume is a sparse, resumable byte address space.
-- Commits record which ranges exist; gaps are never filled with zeros.
+- Commits record which ranges exist, and Lode never fills a gap with zeros.
 - Each commit produces a cumulative manifest.
 
 **Both:**
@@ -132,7 +132,7 @@ and complete programs are listed in [`examples/`](examples/).
   detects concurrent writers through CAS.
 
 Lode does not coordinate distributed writers, execute queries, compact
-data, or remove anything without being asked; [the concepts
+data, or remove anything without being asked. [The concepts
 guide](docs/guides/concepts.md#what-lode-guarantees) gives the details.
 
 Version 1.0 accepts two limitations. A backend without a
@@ -165,7 +165,7 @@ Services](PUBLIC_API.md#other-s3-compatible-services)).
 ## Status
 
 Lode is at **v0.12.0** and under active development. Its APIs are
-stabilizing; the breaking changes still under consideration for v1.0 are
+stabilizing. The breaking changes still under consideration for v1.0 are
 listed in [`docs/plans/V1_API_DECISIONS.md`](docs/plans/V1_API_DECISIONS.md), and each
 release is described in [`CHANGELOG.md`](CHANGELOG.md).
 

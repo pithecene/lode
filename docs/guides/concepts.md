@@ -1,8 +1,8 @@
-# Concepts: How Lode Stores and Commits Data
+# How Lode Stores and Commits Data
 
 This guide describes what Lode is, how a dataset is arranged in storage,
 how a commit becomes visible, and how to choose among the write APIs. It is
-explanatory; the normative rules are defined in the contracts under
+explanatory, and the normative rules are defined in the contracts under
 [`docs/contracts/`](../contracts/), principally
 [`CONTRACT_CORE.md`](../contracts/CONTRACT_CORE.md) and
 [`CONTRACT_WRITE_API.md`](../contracts/CONTRACT_WRITE_API.md).
@@ -10,16 +10,16 @@ explanatory; the normative rules are defined in the contracts under
 ## What Lode Is and Is Not
 
 **Lode is:**
-- an embeddable Go library;
-- a persistence framework for structured data and sparse byte ranges;
+- an embeddable Go library
+- a persistence framework for structured data and sparse byte ranges
 - a provider of snapshots, atomic commits, and metadata guarantees that
-  would otherwise have to be implemented by hand on raw storage APIs; and
-- explicit and predictable by design.
+  would otherwise have to be implemented by hand on raw storage APIs
+- explicit and predictable by design
 
 **Lode is not:**
-- a database or storage engine;
-- a query planner or execution runtime; or
-- a distributed system or background service.
+- a database or storage engine
+- a query planner or execution runtime
+- a distributed system or background service
 
 Lode governs *structure and lifecycle*, not execution.
 
@@ -27,16 +27,16 @@ Lode governs *structure and lifecycle*, not execution.
 
 Many systems already use object storage as their primary persistence layer:
 
-- events written to S3;
-- Parquet files on a filesystem; and
-- analytics data deposited according to informal convention.
+- events written to S3
+- Parquet files on a filesystem
+- analytics data deposited according to informal convention
 
 What such systems usually lack is discipline:
-- no clear snapshots or versions;
-- no guarantees about metadata;
-- accidental overwrites;
-- improvised directory layouts; and
-- uncertain safety of reads and writes.
+- no clear snapshots or versions
+- no guarantees about metadata
+- accidental overwrites
+- improvised directory layouts
+- uncertain safety of reads and writes
 
 Lode formalizes what should be formalized and declines to do anything
 else.
@@ -106,7 +106,7 @@ flowchart TD
     B -- sparse, resumable byte ranges --> V["Volume:<br/>StageWriteAt + Commit"]
 ```
 
-## A Typical Workflow: Event Storage
+## A Typical Workflow for Event Storage
 
 A typical Lode workflow has the following configuration:
 
@@ -130,7 +130,7 @@ Lode guarantees the following:
 | Guarantee | Detail |
 |-----------|--------|
 | **Immutable snapshots** | Once written, data files and manifests never change |
-| **Atomic commits** | The presence of a manifest signifies a commit; nothing is partially visible |
+| **Atomic commits** | The presence of a manifest signifies a commit, and nothing is partially visible |
 | **Explicit metadata** | Every snapshot carries metadata supplied by the caller (never inferred) |
 | **Safe writes** | Overwrites are prevented, atomically for standard writes on every built-in adapter. Large uploads (above 5 GB) are atomic when the backend supports conditional completion of multipart uploads, and best-effort otherwise ([details](../../PUBLIC_API.md#large-upload-guarantees)). |
 | **Independence from the backend** | The same semantics on the filesystem, in memory, or on S3 |
@@ -140,8 +140,8 @@ Lode explicitly does **not** provide the following:
 | Non-Goal | Reason |
 |----------|--------|
 | Distributed coordination | Lode detects conflicts (CAS) but provides no locks, consensus, or leader election |
-| Query execution | Lode structures data; query engines consume it |
-| Background compaction | Lode performs no implicit mutation; callers control the lifecycle |
-| Automatic removal | Nothing is removed implicitly; `Expire` and `Sweep` remove snapshots and residual data when the caller invokes them (see [the retention guide](retention.md)) |
+| Query execution | Lode structures data, and query engines consume it |
+| Background compaction | Lode performs no implicit mutation, and callers control the lifecycle |
+| Automatic removal | Nothing is removed implicitly, and `Expire` and `Sweep` remove snapshots and residual data when the caller invokes them (see [the retention guide](retention.md)) |
 
 The complete contracts are in [`docs/contracts/`](../contracts/).

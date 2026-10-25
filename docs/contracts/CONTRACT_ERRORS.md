@@ -1,4 +1,4 @@
-# Lode Error Taxonomy — Contract
+# Lode Error Taxonomy Contract
 
 This document defines the error taxonomy for Lode's read and write APIs.
 Errors are categorized by source and purpose so that callers can handle them
@@ -11,7 +11,7 @@ precisely.
 1. **Predictable**: callers know which errors to expect from each operation.
 2. **Actionable**: each error type indicates whether retrying,
    reconfiguring, or abandoning the operation is appropriate.
-3. **Consistent with immutability**: no error implies mutable state or
+3. **Faithful to immutability**: no error implies mutable state or
    background recovery.
 
 ---
@@ -58,7 +58,7 @@ requested operation.
 - `ListDatasets` returns `ErrDatasetsNotModeled` for a root with flat paths.
 - `ListPartitions` returns `ErrPartitionPrefixNotSupported` when `Prefix` is
   specified and the dataset is not partitioned.
-- An empty list is returned **only** when storage is actually empty, never
+- An empty list is returned **only** when storage is empty, never
   as a substitute for an unsupported operation.
 
 **Path-Specific Notes**:
@@ -118,7 +118,9 @@ These errors indicate failures in the storage layer.
 | Error | Source | Meaning |
 |-------|--------|---------|
 | `lode.ErrPathExists` | Storage | An attempt to write to an existing path (a violation of immutability) |
-| `lode.ErrInvalidPath` | Storage, Read API | The key is empty or escapes the root; the partition prefix, or a string passed to `ParsePartitionPath`, is not a canonical relative path; or the `ReadRange` bounds are negative or overflow |
+| `lode.ErrInvalidPath` | Storage, Read API | The key is empty or escapes the root |
+| `lode.ErrInvalidPath` | Storage, Read API | The partition prefix, or a string passed to `ParsePartitionPath`, is not a canonical relative path |
+| `lode.ErrInvalidPath` | Storage, Read API | The `ReadRange` bounds are negative or overflow |
 | `lode.ErrRangeReadNotSupported` | Read API | The store does not implement `RangeReader` |
 
 **Behavior**:
@@ -143,10 +145,10 @@ These errors indicate failures in the storage layer.
 
 When the backend supports conditional completion of multipart uploads (for
 example, S3 with `If-None-Match`), both paths detect an existing object
-atomically. When only the preliminary check is available, a
+atomically. If only the preliminary check is available, a
 time-of-check-to-time-of-use (TOCTOU) interval exists, and single-writer
 semantics or external coordination is required. Threshold values are
-specific to each adapter; consult the adapter's documentation.
+specific to each adapter, and the adapter's documentation states them.
 
 ---
 
@@ -157,10 +159,18 @@ They are not safe to retry: the call itself must be corrected.
 
 | Error | Source | Meaning |
 |-------|--------|---------|
-| `lode.ErrInvalidArgument` | Roots (`Open`, `OpenReadOnly`), recorded and returned by every root method | A `nil` store factory, a factory that returned a `nil` store, a `nil` root option, or a path name that is invalid, duplicated, or `latest`, or flat paths with a datasets or snapshots directory (CONTRACT_LAYOUT §Path Names) |
-| `lode.ErrInvalidArgument` | Opening a handle or view (`Records`, `Blobs`) | A dataset ID that is not one path segment (§Dataset IDs); a `nil` codec or option; a `nil` layout or compressor; a Hive layout without keys or with a key that is not one path segment or contains `=`; a Hive layout without `By` for records that are not maps, or with a `By` function for another record type; a blob dataset with a partitioned layout; a writer's compressor whose extension is not part of one path segment (CONTRACT_STORAGE §Names in Keys); an option value out of range (`WithRetry*`) |
+| `lode.ErrInvalidArgument` | Roots (`Open`, `OpenReadOnly`), recorded and returned by every root method | A `nil` store factory, a factory that returned a `nil` store, or a `nil` root option |
+| `lode.ErrInvalidArgument` | Roots (`Open`, `OpenReadOnly`), recorded and returned by every root method | A path name that is invalid, duplicated, or `latest`, or flat paths with a datasets or snapshots directory (CONTRACT_LAYOUT §Path Names) |
+| `lode.ErrInvalidArgument` | Opening a handle or view (`Records`, `Blobs`) | A dataset ID that is not one path segment (§Dataset IDs) |
+| `lode.ErrInvalidArgument` | Opening a handle or view (`Records`, `Blobs`) | A `nil` codec, option, layout, or compressor |
+| `lode.ErrInvalidArgument` | Opening a handle or view (`Records`, `Blobs`) | A Hive layout without keys, or with a key that is not one path segment or contains `=` |
+| `lode.ErrInvalidArgument` | Opening a handle or view (`Records`, `Blobs`) | A Hive layout without `By` for records that are not maps, or with a `By` function for another record type |
+| `lode.ErrInvalidArgument` | Opening a handle or view (`Records`, `Blobs`) | A blob dataset with a partitioned layout |
+| `lode.ErrInvalidArgument` | Opening a handle or view (`Records`, `Blobs`) | A writer's compressor whose extension is not part of one path segment (CONTRACT_STORAGE §Names in Keys) |
+| `lode.ErrInvalidArgument` | Opening a handle or view (`Records`, `Blobs`) | An option value out of range (`WithRetry*`) |
 | `lode.ErrInvalidArgument` | `Write`, `StreamWrite` | Metadata that does not encode as a JSON object |
-| `lode.ErrInvalidArgument` | Volume | A volume ID that is not one path segment (CONTRACT_STORAGE §Names in Keys); a negative offset, a length that is not positive, an empty block, a block or read outside the address space, a block path not produced by the volume, or a commit without a new block |
+| `lode.ErrInvalidArgument` | Volume | A volume ID that is not one path segment (CONTRACT_STORAGE §Names in Keys) |
+| `lode.ErrInvalidArgument` | Volume | A negative offset, a length that is not positive, an empty block, a block or read outside the address space, a block path not produced by the volume, or a commit without a new block |
 
 Each option type has one target (`RootOption`, `DatasetOption`,
 `ViewOption`, and Volume's own `Option`), so an option used where it does
@@ -193,10 +203,13 @@ configuration.
 
 | Error | Source | Meaning |
 |-------|--------|---------|
-| `lode.ErrSettingsMismatch` | `Read` (handles, views) | The snapshot's codec, or, unless its format is 1.0.0, its codec description, differs from the handle's; or its compressor is neither bundled nor passed with `WithCompressor`; or its checksum is neither bundled nor passed with `WithChecksum` |
+| `lode.ErrSettingsMismatch` | `Read` (handles, views) | The snapshot's codec, or, unless its format is 1.0.0, its codec description, differs from the handle's |
+| `lode.ErrSettingsMismatch` | `Read` (handles, views) | The snapshot's compressor is neither bundled nor passed with `WithCompressor`, or its checksum is neither bundled nor passed with `WithChecksum` |
 | `lode.ErrSettingsMismatch` | Opening a view | The head's codec or description, or path names, differ from the view's |
 | `lode.ErrCodecNotStreamable` | `Records.StreamWrite` | The codec is not a `StreamingCodec` |
-| `lode.ErrSettingsMismatch` | Opening a writer, `Write`, `StreamWrite` | The writer's codec, codec description, compressor, checksum, partitioner, partition keys, or path names differ from those the dataset's manifests record; the dataset's directory holds a history persisted under another layout; or the writer's Hive keys cannot be verified against a dataset written before format version 1.1.0 (CONTRACT_WRITE_API §Settings) |
+| `lode.ErrSettingsMismatch` | Opening a writer, `Write`, `StreamWrite` | The writer's codec, codec description, compressor, checksum, partitioner, partition keys, or path names differ from those the dataset's manifests record (CONTRACT_WRITE_API §Settings) |
+| `lode.ErrSettingsMismatch` | Opening a writer, `Write`, `StreamWrite` | The dataset's directory holds a history persisted under another layout (CONTRACT_WRITE_API §Settings) |
+| `lode.ErrSettingsMismatch` | Opening a writer, `Write`, `StreamWrite` | The writer's Hive keys cannot be verified against a dataset written before format version 1.1.0 (CONTRACT_WRITE_API §Settings) |
 
 **Behavior**:
 - `Read` validates each snapshot's codec against the handle's before
@@ -221,7 +234,7 @@ These errors indicate invalid use of the streaming write APIs.
 | `lode.ErrPartitioningNotSupported` | `Records.StreamWrite` | `Records.StreamWrite` was called on a partitioned layout |
 
 **Behavior**:
-- `Blobs.StreamWrite` streams one blob; a blob dataset has no codec, so
+- `Blobs.StreamWrite` streams one blob. A blob dataset has no codec, so
   the v0 error for a stream with a codec no longer exists.
 - Use `Records.StreamWrite` for records with streaming codecs.
 - Use `Records.Write` for records with codecs that do not stream.
@@ -232,9 +245,10 @@ These errors indicate invalid use of the streaming write APIs.
 
 **Removal of Partial Objects on Error**:
 - On an abort, or on an error before commit, no manifest is written.
-- Partial data objects may remain in storage; their removal is best-effort.
-- Callers should not rely on the automatic removal of partial objects
-  (`Sweep` reclaims them; see [`CONTRACT_RETENTION.md`](CONTRACT_RETENTION.md)).
+- Partial data objects may remain in storage, and their removal is
+  best-effort.
+- Callers should not rely on the automatic removal of partial objects.
+  `Sweep` reclaims them ([`CONTRACT_RETENTION.md`](CONTRACT_RETENTION.md)).
 - A failure to delete a partial object does not create a snapshot.
 
 ---
@@ -273,8 +287,8 @@ See [CONTRACT_PARQUET.md](CONTRACT_PARQUET.md) for complete Parquet codec semant
 ### 9. Volume Errors
 
 These errors indicate failures specific to Volume. Volume resides in the
-package `lode/volume`, so its two sentinels are declared there; the shared sentinels that it also returns
-are those of `lode`.
+package `lode/volume`, so its two sentinels are declared there. The shared
+sentinels that it also returns are those of `lode`.
 
 | Error | Source | Meaning |
 |-------|--------|---------|
@@ -313,7 +327,9 @@ optimistic concurrency control.
 
 | Error | Source | Meaning |
 |-------|--------|---------|
-| `lode.ErrSnapshotConflict` | `Write`, `StreamWrite` (`Records`, `Blobs`), Volume.Commit | Another writer committed after the parent was resolved; (for `Volume.Commit`) the parent's manifest has not been persisted; or (for a dataset writer) the pointer names a snapshot whose settings no manifest records (CONTRACT_WRITE_API §Settings) |
+| `lode.ErrSnapshotConflict` | `Write`, `StreamWrite` (`Records`, `Blobs`), Volume.Commit | Another writer committed after the parent was resolved |
+| `lode.ErrSnapshotConflict` | `Volume.Commit` | The parent's manifest has not been persisted |
+| `lode.ErrSnapshotConflict` | `Write`, `StreamWrite` (`Records`, `Blobs`) | The pointer names a snapshot whose settings no manifest records (CONTRACT_WRITE_API §Settings) |
 
 **ErrSnapshotConflict Behavior**:
 - The commit's expected parent snapshot ID does not match the current value
@@ -327,8 +343,9 @@ optimistic concurrency control.
 3. Commit again.
 
 **Automatic Retry**: `WithRetryCount(n)` performs this procedure
-automatically within the commit path. Data files are written once; only the
-reassignment of the manifest's parent and the pointer CAS are retried. See
+automatically within the commit path. Lode writes data files once and
+retries only the reassignment of the manifest's parent and the pointer
+CAS. See
 [`CONTRACT_WRITE_API.md`](CONTRACT_WRITE_API.md) §Optimistic Concurrency (CAS).
 
 ---
@@ -340,9 +357,9 @@ unreferenced objects ([`CONTRACT_RETENTION.md`](CONTRACT_RETENTION.md)).
 
 | Error | Source | Meaning |
 |-------|--------|---------|
-| `lode.ErrSnapshotExpired` | `Snapshot`, `Read` (handles, views) | The snapshot was expired by `Expire`; the error also matches `ErrNotFound` |
+| `lode.ErrSnapshotExpired` | `Snapshot`, `Read` (handles, views) | `Expire` expired the snapshot, and the error also matches `ErrNotFound` |
 | `lode.ErrHeadUncommitted` | `Expire`, `Sweep` | The head is not yet committed: the latest pointer names a snapshot whose manifest has not been persisted (`Expire`), or the pointer is absent while snapshots exist (both) |
-| `lode.ErrInvalidArgument` | `Expire`, `Sweep` | An `ExpireRequest` without a selector field; a `SweepRequest.Grace` that is zero or negative |
+| `lode.ErrInvalidArgument` | `Expire`, `Sweep` | An `ExpireRequest` without a selector field, or a `SweepRequest.Grace` that is zero or negative |
 | `lode.ErrInvalidPath` | `Expire` | `ExpireRequest.Partition` is not a canonical relative partition path |
 | `lode.ErrPartitionPrefixNotSupported` | `Expire` | `ExpireRequest.Partition` was specified on a layout without partitions |
 
@@ -351,8 +368,8 @@ unreferenced objects ([`CONTRACT_RETENTION.md`](CONTRACT_RETENTION.md)).
   reports it in `ExpireReport.RetainedHead`.
 - `ErrHeadUncommitted` is retryable: retry once the pending commit
   completes. A pointer left by an abandoned commit is replaced by the next
-  commit; `Latest` never replaces an existing pointer (CONTRACT_CORE §Head
-  Pointer).
+  commit, because `Latest` never replaces an existing pointer (CONTRACT_CORE
+  §Head Pointer).
 - `Expire` and `Sweep` return a non-nil report with every error, describing
   the work completed before the error. After a retryable failure, `Sweep`,
   or an `Expire` that names the affected IDs, completes the remainder.
@@ -373,7 +390,8 @@ unreferenced objects ([`CONTRACT_RETENTION.md`](CONTRACT_RETENTION.md)).
 ### Non-Retry Errors
 - `ErrDatasetsNotModeled`: list datasets under a root with a datasets
   directory.
-- `ManifestValidationError`: the data is corrupt; investigate its source.
+- `ManifestValidationError`: the data is corrupt, so investigate its
+  source.
 - `ErrPathExists`: a logic error in the caller (an attempt to write the same
   path twice). Retention's creation of a tombstone is the exception: there
   the error means that another run recorded the expiry first, which
@@ -386,8 +404,8 @@ unreferenced objects ([`CONTRACT_RETENTION.md`](CONTRACT_RETENTION.md)).
 - `ErrSettingsMismatch`: configure the writer as the dataset is.
 
 ### Fatal Errors
-- No panic is part of the public contract; invalid configuration and invalid
-  use of the API MUST return errors.
+- No panic is part of the public contract. Invalid configuration and
+  invalid use of the API MUST return errors.
 
 ---
 
@@ -410,18 +428,18 @@ which the failure originated with a source prefix.
 1. A sentinel MUST NOT carry a prefix. It is matched rather than read, and
    the message that contains it supplies the prefix.
 2. An error that originates in Lode MUST begin with the prefix of its
-   component. An error originates where it is created, where a sentinel is
-   first wrapped with detail, or where an error from code outside Lode (the
-   operating system, the AWS SDK, an encoding library, or a caller's reader)
-   is first wrapped.
+   component. An error originates where it is created, or where a sentinel
+   is first wrapped with detail. An error from code outside Lode, such as
+   the operating system, the AWS SDK, an encoding library, or a caller's
+   reader, originates where Lode first wraps it.
 3. Code that wraps an error returned by another part of Lode MUST add
    context without a prefix. That error already names its source, and only
    the code that creates an error knows its source.
 
 A message therefore names its source once, after the context that the
 callers added: `failed to write data file: fs: put: open …: permission
-denied`. An error returned by a custom store or codec is the caller's own;
-Lode adds context to it and no prefix.
+denied`. An error returned by a custom store or codec is the caller's own,
+and Lode adds context to it but no prefix.
 
 **Enforcement**: the test in `internal/errprefix` type-checks every package
 under `lode/` and `internal/` and fails on any call to `fmt.Errorf` or
@@ -448,11 +466,12 @@ All operations provide:
 - **Atomic writes**: a commit is complete as CONTRACT_CORE §Head Pointer
   defines it.
 
-  Retention (`Expire`, `Sweep`) is not a snapshot commit. Apart from the
-  copies of a canonical manifest with which `Sweep` restores a partition
-  index ([`CONTRACT_RETENTION.md`](CONTRACT_RETENTION.md) §Definition, step 3), its only writes
-  are tombstones, created with create-only semantics ([`CONTRACT_RETENTION.md`](CONTRACT_RETENTION.md)
-  §Order of Operations); every other action it performs is an idempotent
+  Retention (`Expire`, `Sweep`) is not a snapshot commit. `Sweep` writes
+  copies of a canonical manifest to restore a partition index
+  ([`CONTRACT_RETENTION.md`](CONTRACT_RETENTION.md) §Definition, step 3).
+  Apart from those copies, retention writes only tombstones, created with
+  create-only semantics ([`CONTRACT_RETENTION.md`](CONTRACT_RETENTION.md)
+  §Order of Operations). Every other action it performs is an idempotent
   deletion.
 
 ---

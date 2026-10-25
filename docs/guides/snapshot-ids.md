@@ -2,12 +2,12 @@
 
 This guide describes the structure of a Lode snapshot ID, how IDs are
 ordered, and why their uniqueness matters once retention is in use. The
-guide is explanatory; the normative rules are defined in
+guide is explanatory, and the normative rules are defined in
 [`CONTRACT_CORE.md`](../contracts/CONTRACT_CORE.md) §Snapshot ID.
 
 ## The Format
 
-Lode generates every snapshot ID; the caller never chooses one. Since
+Lode generates every snapshot ID, and the caller never chooses one. Since
 v0.11.0 an ID has the following form:
 
 ```
@@ -48,8 +48,8 @@ Two writes that begin in the same nanosecond are ordered by their nonces,
 which are random and therefore do not indicate which write committed first.
 This matters only where Lode assumes that the largest ID is the most recent.
 `Latest` makes that assumption when the `latest` pointer is missing or names
-a snapshot without a manifest (after an abandoned commit or a manual edit);
-parent resolution makes it only when the pointer is missing or does not
+a snapshot without a manifest (after an abandoned commit or a manual edit).
+Parent resolution makes it only when the pointer is missing or does not
 contain a snapshot ID. Retention never makes the assumption and declines to
 run without a pointer it can rely on.
 
@@ -74,9 +74,9 @@ sequenceDiagram
 A tombstone declares that everything under its ID is being removed, so a
 later snapshot that reused the ID could be mistaken for the expired one. An
 ID derived from the clock alone repeats whenever the clock repeats an
-instant, as happens with a coarse clock, with two hosts writing in the same
-nanosecond, after an NTP adjustment, or when a virtual machine is restored
-from a snapshot. The nonce removes this dependence on the clock.
+instant. A clock repeats an instant when it is coarse, when two hosts write
+in the same nanosecond, after an NTP adjustment, and when an operator
+restores a virtual machine from a snapshot. The nonce removes this dependence on the clock.
 
 ## Collisions
 
@@ -101,11 +101,11 @@ the consequences are as follows:
   reports the tombstone in `Unparseable` and retains the data. The exception
   is the case in which both commits also completed in the same nanosecond
   with the same files: the old tombstone then describes the new snapshot,
-  which can therefore be removed. A further exposure exists while the new
-  write is staging data, before its manifest exists: nothing yet
-  distinguishes that data from the expired snapshot's residual objects, so a
-  `Sweep`, or an `Expire` that names the ID, can delete it.
+  which can therefore be removed. The new write is also exposed while it
+  stages data, before its manifest exists. Nothing yet distinguishes that
+  data from the expired snapshot's residual objects, so a `Sweep`, or an
+  `Expire` that names the ID, can delete it.
 
 Instant-only IDs collided whenever two writes began in the same nanosecond,
-with the same consequences; the nonce reduces such a collision to a 2⁻⁶⁴
+with the same consequences. The nonce reduces such a collision to a 2⁻⁶⁴
 event.
