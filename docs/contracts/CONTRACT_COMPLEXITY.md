@@ -2,7 +2,7 @@
 
 ---
 
-## Principle
+## Bounded Cost of Public Methods
 
 Every public method MUST have a documented, bounded cost. A cost that
 exceeds the documented bound is a defect. Hot-path operations MUST NOT
@@ -37,11 +37,11 @@ scale with the size of a dataset's or volume's history.
 
 - Hot path: incurred on every read or write. A cost of O(S), O(B), or O(M)
   is a defect.
-- Cold path: explicit listing (`Snapshots()`, `ListDatasets`). The cost is
-  documented, and its scaling is acknowledged.
+- Cold path: explicit listing (`Snapshots()`, `ListDatasets`). This
+  contract documents the cost and acknowledges its scaling.
 - Degraded path: a fallback for backward compatibility (a scan when the
-  pointer is absent). The cost is documented, and the next commit restores
-  the pointer.
+  pointer is absent). This contract documents the cost, and the next commit
+  restores the pointer.
 
 ---
 
@@ -68,28 +68,29 @@ scale with the size of a dataset's or volume's history.
 | Blobs.StreamWrite | 4 fixed | scan fallback (below) | O(1) streaming |
 | Records.StreamWrite | 4 fixed | scan fallback (below) | O(1) streaming |
 
-Parent resolution:
+Parent resolution incurs the following store calls:
 - In-memory cache: 0 calls
 - Pointer: 1 call (2 calls for a Volume, which also loads the parent's manifest)
 - Scan fallback (degraded): O(N) through `List`. For a Dataset, the scan
   adds 1 tombstone `Get` per snapshot scanned, and 1 `Exists` of the
   canonical manifest for each scanned snapshot that has a tombstone. It
   proceeds from the newest snapshot until it finds one that is not
-  expired. The scan creates a missing pointer
-  but never replaces an existing one (CONTRACT_CORE §Head Pointer).
+  expired. The scan creates a missing pointer but never replaces an
+  existing one (CONTRACT_CORE §Head Pointer).
 
 Parent resolution MUST NOT use `List` when a valid pointer exists.
 
-Exceptions, each incurred once (CONTRACT_WRITE_API §Settings):
+The following exceptions each occur once (CONTRACT_WRITE_API §Settings):
 - A dataset's first commit adds 1 `Put` and 1 `Delete` for its staged manifest.
 - A writer's settings check, before its first commit, costs 1 `Get` of the
   manifest that the pointer names, or 2 `Get` calls while a first commit is
-  pending. When neither manifest exists, it costs the scan fallback and 1
-  `List` of the dataset's directory. Against an empty dataset it costs 1 `List` of the
+  pending. When neither the manifest that the pointer names nor the staged
+  manifest exists, the check costs the scan fallback and 1 `List` of the
+  dataset's directory. Against an empty dataset, it costs 1 `List` of the
   dataset's directory.
 - The first write to a Hive dataset whose manifests predate format version
-  1.1.0 adds 1 `Get` per snapshot followed from the head to the first
-  snapshot with files.
+  1.1.0 follows the snapshot chain from the head to the first snapshot with
+  files. That write adds 1 `Get` per snapshot followed.
 
 ---
 
@@ -115,12 +116,12 @@ Exceptions, each incurred once (CONTRACT_WRITE_API §Settings):
 | `ReadRoot.Records`, `ReadRoot.Blobs` (warm) | 1 `Get` of the pointer + at most 2 `Get` calls of the manifest |
 | `ReadRoot.Records`, `ReadRoot.Blobs` (no pointer) | 1 `Get` of the pointer + the scan fallback of each grammar |
 
-A view does not know whether the dataset is partitioned until it has read a
-manifest, so it reads the canonical manifest under the snapshots directory,
-then under the segments directory. At most one exists. Opening writes
-nothing. A writer's open check is the settings check of
-CONTRACT_WRITE_API §Settings Check. Once that check is settled, commits
-keep the bounds above.
+A view cannot determine whether the dataset is partitioned before it reads
+a manifest. It therefore reads the canonical manifest under the snapshots
+directory first and under the segments directory second. At most one
+exists. Opening writes nothing. A writer's open check is the settings check
+of CONTRACT_WRITE_API §Settings Check. After that check completes, commits
+maintain the bounds above.
 
 ---
 
@@ -137,7 +138,7 @@ keep the bounds above.
 `ListManifests` MUST extract snapshot IDs from paths, and CONTRACT_ERRORS.md
 requires manifest validation. `ListPartitions` MUST NOT deserialize any
 manifest twice. On layouts that model partitions, `Prefix` reduces N and M
-to the matching subtree. `StartAfter` and `Limit` are applied after
+to the matching subtree. The listing applies `StartAfter` and `Limit` after
 enumeration, so they bound the result set but not the store calls. Sorting
 adds O(N log N) CPU and no store calls.
 
@@ -164,19 +165,22 @@ these terms:
 The store calls of `Sweep`, with T tombstones and D objects deleted
 (manifests included), are the sum of these terms:
 - 2 `List` calls, 1 pointer `Get`, and T `Get` calls
-- 1 `Get` per manifest path of a tombstoned snapshot with anything left
-- at most 1 `Exists` per manifest path of each unlisted-manifest group past
-  grace
+- 1 `Get` per manifest path of each tombstoned snapshot that retains
+  objects
+- at most 1 `Exists` per manifest path of each unlisted-manifest group
+  older than the grace period
 - D `Delete` calls
-- for each unindexed snapshot past grace, 1 `Get`, 1 `Put` per missing
-  partition copy, and 1 tombstone `Get`
+- 1 `Get`, 1 `Put` per missing partition copy, and 1 tombstone `Get` for
+  each unindexed snapshot older than the grace period
 
 `Expire` with `Partition` lists only that partition's subtree. Otherwise, N
-comprises the whole snapshot prefix. Without a pointer, retention lists the
-whole snapshot prefix even for a `Partition` request, to distinguish an empty dataset from one that it must refuse. Selection by
-`Before` reads snapshot IDs from paths and loads no manifest beyond the K
-selected. The complete bounds and their derivation are given in
-[`CONTRACT_RETENTION.md`](CONTRACT_RETENTION.md) §Complexity Bounds.
+counts every key under the snapshot prefix. Without a pointer, retention
+lists the whole snapshot prefix even for a `Partition` request. The full
+listing distinguishes an empty dataset from a dataset that retention must
+refuse. Selection by `Before` reads snapshot IDs from paths and loads no
+manifest beyond the K selected.
+[`CONTRACT_RETENTION.md`](CONTRACT_RETENTION.md) §Complexity Bounds gives
+the complete bounds and their derivation.
 
 ---
 

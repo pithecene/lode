@@ -11,8 +11,8 @@ implementation.
 1. Bound dataset storage without circumventing Lode's layout.
 2. Ensure that every CONTRACT_CORE invariant remains observable and true
    after a deletion.
-3. Make removal explicit, initiated by the caller, resumable, and
-   previewable (through a dry run).
+3. Make removal explicit, caller-initiated, resumable, and previewable
+   (through a dry run).
 
 ---
 
@@ -49,19 +49,20 @@ guarantees:
   clock repeats. If such a collision occurs, the old tombstone does not
   describe the new snapshot's manifest (§Tombstone), so retention declines
   to act on it. The tombstone therefore never causes the new snapshot to be
-  deleted. Because the tombstone cannot be removed, the new snapshot is
-  instead held, which means that it is reported but never expired or
-  reclaimed. One exposure remains: while the reusing write is staging data,
+  deleted. Because no operation removes the tombstone, retention holds the
+  new snapshot. Retention reports a held snapshot but never expires or
+  reclaims it. One exposure remains: while the reusing write is staging data,
   before any of its manifests exists, nothing distinguishes that data from
   the expired snapshot's residual objects. A `Sweep`, or an `Expire` that
   names the ID, can delete the data during that interval. So can an expiry
   that has already deleted the canonical manifest, because its remaining
   steps operate on the old inventory. A tombstone also cannot distinguish
   the two snapshots if both commits completed in the same nanosecond with
-  the same files. Lode accepts these 2⁻⁶⁴ events rather than verify every
-  write against the tombstones.
+  the same files. Lode accepts these events, each with a probability near
+  2⁻⁶⁴, rather than verifying every write against the tombstones.
 
-Immutable means *unchanging while it exists*, not *unremovable*.
+In this contract, an immutable object is *unchanging while it exists*, not
+*unremovable*, so retention may remove an object but never modifies it.
 
 ---
 
@@ -69,24 +70,25 @@ Immutable means *unchanging while it exists*, not *unremovable*.
 
 ### Expired Snapshot
 
-A snapshot whose ID is recorded in a **tombstone** and whose canonical
-manifest is absent. Its remaining partition manifests and data objects, if
+An expired snapshot is a snapshot whose ID a **tombstone** records and
+whose canonical manifest is absent. Its remaining partition manifests and data objects, if
 any, are residual objects that `Sweep` or a repeated `Expire` removes.
 
 ### Expiring Snapshot
 
-A snapshot whose tombstone exists and whose canonical manifest also still
-exists, that is, a snapshot in the interval between steps 1 and 2 below.
-The snapshot remains fully readable and consistent during this interval,
-because the tombstone records an intention, not a completion. A snapshot written
-before canonical manifests were introduced has no canonical manifest and
-therefore no expiring interval: its tombstone alone renders it expired.
+An expiring snapshot has both a tombstone and a canonical manifest, so it
+lies in the interval between steps 1 and 2 below. The snapshot remains
+fully readable and consistent during this interval, because the tombstone
+records an intention, not a completion. A snapshot written before Lode
+introduced canonical manifests has no canonical manifest and therefore no
+expiring interval: its tombstone alone renders it expired.
 `Snapshot` and `Read` return `ErrSnapshotExpired` from step 1 onward, and
 the later steps remove its partition manifests and data.
 
 ### Tombstone
 
-A small object at a path defined by the layout, one per expired snapshot:
+A tombstone is a small object, one per expired snapshot, at the following
+path that the layout defines:
 
 ```
 <dataset root>/expired/<snapshot_id>
@@ -95,8 +97,9 @@ A small object at a path defined by the layout, one per expired snapshot:
 The `expired/` directory is reserved for Lode: callers MUST NOT write
 under it.
 
-Contents: the snapshot ID, the UTC instant at which the expiry was
-requested, the manifest's `CreatedAt`, and the snapshot's **inventory**.
+A tombstone contains the snapshot ID, the UTC instant at which the caller
+requested the expiry, the manifest's `CreatedAt`, and the snapshot's
+**inventory**.
 The inventory is the manifest's `Files[]` (the path and size of every data
 object), as copied when the expiry is recorded.
 
@@ -108,8 +111,9 @@ reused the ID is distinguished even when it lists the same files. Retention
 acts on a tombstone only with respect to manifests that the tombstone
 describes.
 
-The tombstone is the expiry's own record of what the expiry removes. It is
-written before anything is deleted and outlasts every manifest. Each later
+The tombstone is the expiry's own record of what the expiry removes. The
+expiry writes the tombstone before it deletes anything, and the tombstone
+outlasts every manifest. Each later
 step, whether in the same run, in a repeated `Expire`, or in `Sweep`,
 therefore operates on the tombstone and never on manifests that may already
 have been deleted. A tombstone records an intention, not an outcome.
@@ -120,16 +124,17 @@ are the only persisted record of an expiry.
 
 ### Head
 
-The snapshot that the `latest` pointer names.
+The head is the snapshot that the `latest` pointer names.
 
 ### Referenced Object
 
-A data object path that appears in the `Files[]` of at least one existing
-manifest of the dataset.
+A referenced object is a data object path that appears in the `Files[]` of
+at least one existing manifest of the dataset.
 
 ### Unreferenced Object
 
-A data object of the layout whose snapshot ID names no existing manifest.
+An unreferenced object is a data object of the layout whose snapshot ID
+names no existing manifest.
 A data object of the layout is a path that the layout's grammar parses as
 `.../<snapshot ID>/data/<file>` for this dataset: `snapshots/<id>/data/` in
 the default layout, `[partitions/<k=v>.../]segments/<id>/data/` in the Hive
@@ -152,18 +157,20 @@ Every other object under the dataset that is not one of its manifests is
 outside the scope of retention. Such objects include partition-level
 auxiliary files such as `partitions/<k=v>/run.json`, the pointer, and
 tombstones. A store listing of the dataset MAY return them, but `Sweep` and
-`Expire` MUST NOT delete them. Nor may they report them unless a manifest
-names them, in which case a `FileRef.Path` that fails the step-4 guard is
-reported in `Skipped` and never deleted. Manifests are deleted only as §Order of
-Operations prescribes. This scope is a consumer dependency (quarry records
-its run there), not an implementation detail.
+`Expire` MUST NOT delete them. Neither operation reports such an object
+unless a manifest names it. Expiry reports a named `FileRef.Path` that
+fails the step-4 guard in `Skipped` and never deletes it. Manifests are
+deleted only as §Order of Operations prescribes. This scope is a consumer
+dependency, not an implementation detail: the Quarry runtime records its
+run state in objects outside the scope of retention.
 
 ### Caller-Owned Objects
 
 Objects that a caller writes through `Store.Put` outside the layout's data
 topology are **caller-owned**. Lode never deletes them. The caller reclaims
 them, typically after `Expire` reports as expired the snapshots that
-described them. Retention deletes only manifests and data objects whose paths its layout produces for a snapshot that it is expiring,
+described them. Retention deletes only the manifests and data objects at
+paths that the layout produces for a snapshot that retention is expiring,
 settling, or reclaiming as unreferenced.
 
 ---
@@ -234,15 +241,15 @@ in `IDs` and omits `Partition`.
 Only the snapshot's own data files are considered (§Order of Operations,
 step 4). A `FileRef` outside the dataset's data topology is never deleted,
 so it never renders a snapshot mixed. Such a `FileRef` is reported in
-`Skipped` only for a snapshot that the run expires. A mixed or retained
-snapshot reports none.
+`Skipped` only for a snapshot that the run expires. The report lists no
+such `FileRef` for a mixed or retained snapshot.
 
 ### Head Protection
 
 The head MUST NOT be expired. `Expire` MUST read the pointer **after**
 resolving the selection and **before any mutation**. If the resolved set
-contains the head, the head is removed from the set and reported in
-`RetainedHead`, and the remainder of the set is expired. Selecting the head
+contains the head, `Expire` removes the head from the set, reports it in
+`RetainedHead`, and expires the remainder of the set. Selecting the head
 is not an error: a `Before` or `Partition` request against a dataset with no
 newer writes always selects it, and failing would render such a request
 unusable until a new commit occurs. A caller that requires an entire
@@ -255,8 +262,8 @@ nothing. A tombstone counts as evidence of a snapshot, because it shows that
 snapshots existed even when no manifest remains. A dataset with neither
 snapshots nor tombstones requires no pointer. A pointer whose content is not
 a snapshot ID in the generated form (CONTRACT_CORE §Snapshot ID) is
-corrupt. Retention fails rather than confirm it, even if a manifest exists
-at the path that it would name.
+corrupt. Retention fails rather than accepting the pointer, even if a
+manifest exists at the path that its content would name.
 
 Every commit writes the pointer, so the pointer is absent only in a dataset
 written before the pointer was introduced, after a manual edit, or after a
@@ -276,9 +283,8 @@ Retention MUST NEVER modify the pointer and MUST NEVER remove the manifest
 that it names. Either action would expose a parent as the head again or
 cause concurrent writers that compare against the current value to fail.
 
-The head is determined by reading the pointer. The check MUST be repeated
-**immediately before step 1 for each snapshot**, not once per `Expire`
-call. A writer may commit between selection and deletion, and a snapshot
+`Expire` MUST repeat the head check **immediately before step 1 for each
+snapshot**, not once per `Expire` call. A writer may commit between selection and deletion, and a snapshot
 that was listed during selection may have become the head in that
 interval. A snapshot that the repeated check identifies as the head is
 retained and reported in `RetainedHead` exactly as at the initial check, and
@@ -296,8 +302,9 @@ Therefore one check before the tombstone is written precludes the race for
 every later step.
 
 While a commit is pending (CONTRACT_CORE §Head Pointer), the pointer names
-a snapshot whose manifest has not been persisted. In that state, the previous head remains the only readable committed state, and the
-pointer alone does not identify it. Retention therefore MUST NOT proceed
+a snapshot whose manifest has not been persisted. In that state, the
+previous head remains the only readable committed snapshot, and the pointer
+alone does not identify it. Retention therefore MUST NOT proceed
 while the head is uncommitted. The pointer can name an ID without a
 manifest, which means no canonical manifest and, for data written before
 canonical manifests were introduced, no partition manifest either. `Expire`
@@ -438,7 +445,8 @@ on its next access, which is the documented and expected outcome.
 
 Two concurrent expiries of the same ID are safe, because every step is
 idempotent and tombstone creation is atomic. With `lode.SingleProcess`,
-that holds for expiries within the process that shares the wrapped store.
+this safety holds only for expiries within the process that shares the
+wrapped store.
 
 A commit persists its partition manifests after the pointer and the
 canonical manifest (CONTRACT_CORE §Head Pointer). A later commit can
@@ -490,8 +498,8 @@ steps in order:
    reclaimed. For every validly tombstoned ID,
    `Sweep` performs steps 2 and 3 of §Order of Operations on those paths.
 
-   Only once **every** manifest of the snapshot is confirmed absent is the
-   snapshot *settled*. `Settled` reports the snapshots whose manifests this
+   `Sweep` *settles* the snapshot only after it confirms that **every**
+   manifest of the snapshot is absent. `Settled` reports the snapshots whose manifests this
    run found and deleted (or, in a dry run, would delete), so a snapshot
    settled by an earlier run is not reported again. Like the counts
    (§Accounting), `Settled` is an observation, not an assertion: concurrent
@@ -524,7 +532,8 @@ steps in order:
 3. **Restore partition indexes.** On a partitioned layout, the partition
    manifests of a snapshot are an index of its canonical manifest, which a
    writer persists after the commit is complete (CONTRACT_CORE §Head
-   Pointer). A writer that terminates first leaves a committed snapshot
+   Pointer). A writer that terminates before persisting the partition
+   manifests leaves a committed snapshot
    that a listing filtered by partition, and an `Expire` by `Partition`,
    cannot find. `Sweep` restores the index of a snapshot when all of the
    following hold:
@@ -596,9 +605,8 @@ prevent it (§Head Protection): `Sweep` then returns `ErrHeadUncommitted`, as
 
 An orphaned object MUST NOT be deleted unless it is older than
 `SweepRequest.Grace`. Its age is the current time minus the instant encoded
-in the snapshot ID in its path (§Selection, `Before`). Every data path
-therefore carries its creation instant, and no `Stat` capability is
-required of the store. A writer's clock can be behind the clock of the host
+in the snapshot ID in its path (§Selection, `Before`). Because every data
+path carries its creation instant, the store needs no `Stat` capability. A writer's clock can be behind the clock of the host
 running `Sweep`, whether from skew or from a clock that was set back. Such
 a writer records instants that already appear old, which reduces the
 effective grace period by the difference. `Grace` MUST exceed the duration
@@ -608,7 +616,7 @@ write in progress can be reclaimed before its manifest is persisted.
 
 Rationale: a write in progress has written data objects but not yet its
 manifest, so the grace period MUST exceed the duration of the longest
-expected write. There is no default: `Grace` MUST be strictly positive, and
+expected write. `Grace` has no default: it MUST be strictly positive, and
 a zero or negative value returns `ErrInvalidArgument` before any listing or
 mutation. A zero grace period would make every unreferenced object
 immediately eligible for deletion, which is never intended. Twenty-four
@@ -639,8 +647,8 @@ that a real run would return. A dry-run `Expire` still reads the pointer, so
 `RetainedHead` and `ErrHeadUncommitted` are those that a real run would
 produce. A dry-run `Sweep` reads the pointer in the same manner. It treats
 every validly tombstoned snapshot other than a protected one as settled, so
-it counts the snapshot's objects exactly as a real run would after step
-1. In step 3 it checks with `Exists` whether each copy is absent rather
+it counts the snapshot's objects exactly as a real run would after the
+first step. In step 3 it checks with `Exists` whether each copy is absent rather
 than creating it.
 
 ---

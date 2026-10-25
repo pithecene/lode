@@ -1,6 +1,6 @@
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/lode-banner-dark.png">
-  <img alt="Lode: structured persistence for object storage. An engraved section of folded, faulted strata, hand-coloured in tarnished metals, cut by a gold-bearing lode" src="docs/assets/lode-banner-light.png" width="100%">
+  <img alt="Lode: structured persistence for object storage. An engraved section of folded, faulted strata, hand-colored in tarnished metals, cut by a gold-bearing lode" src="docs/assets/lode-banner-light.png" width="100%">
 </picture>
 
 # Lode
@@ -14,9 +14,9 @@
 
 Lode is an embeddable Go persistence framework that provides snapshots,
 metadata, and safe write semantics on object storage, without requiring a
-database. It offers **Datasets** for structured collections of named
-objects and, in an experimental package (`lode/volume`), **Volumes** for
-sparse, resumable storage of byte ranges.
+database. It offers **Datasets**, which hold structured collections of
+named objects, and **Volumes**, which store sparse, resumable byte ranges
+in an experimental package (`lode/volume`).
 
 ---
 
@@ -94,7 +94,7 @@ view, _ := lode.OpenReadOnly(lode.FS("/tmp/lode-demo")).Records(ctx, "events", l
 
 Lode stores data on the filesystem (`lode.FS`), in memory (`lode.Memory`),
 or on S3-compatible storage (`s3.Factory`). The storage location must exist
-before a dataset is opened (see [Storage
+before the caller opens a dataset (see [Storage
 Prerequisites](PUBLIC_API.md#storage-prerequisites)). Streaming writes and
 the experimental Volume API are described in [`PUBLIC_API.md`](PUBLIC_API.md),
 and complete programs are listed in [`examples/`](examples/).
@@ -103,21 +103,24 @@ and complete programs are listed in [`examples/`](examples/).
 
 ## Core Ideas
 
-**Dataset** (structured collections):
+A **Dataset**, which holds structured collections, follows these rules:
 - Each write produces a new, immutable snapshot.
 - Each snapshot references a manifest that describes its data files and
   metadata.
-- Storage, format, compression, and partitioning are independent.
+- A caller chooses storage, format, compression, and partitioning
+  independently of one another.
 
-**Volume** (sparse byte ranges, in the experimental package `lode/volume`):
+A **Volume**, which stores sparse byte ranges in the experimental package
+`lode/volume`, follows these rules:
 - A volume is a sparse, resumable byte address space.
 - Commits record which ranges exist, and Lode never fills a gap with zeros.
 - Each commit produces a cumulative manifest.
 
-**Both:**
-- A snapshot is visible only once its manifest is persisted.
-- Metadata is explicit and persisted, never inferred.
-- Every store detects concurrent writers through CAS.
+Datasets and Volumes share these rules:
+- A snapshot becomes visible only after Lode persists its manifest.
+- Lode persists the metadata that the caller supplies and never infers
+  metadata.
+- Every store detects concurrent writers through compare-and-swap (CAS).
 
 ---
 
@@ -126,19 +129,19 @@ and complete programs are listed in [`examples/`](examples/).
 - **Immutable snapshots**: data files and manifests never change once
   written.
 - **Atomic commits**: a snapshot is visible only once its manifest exists.
-- **Explicit metadata**: every snapshot carries metadata supplied by the
-  caller, never inferred.
-- **Safe writes**: existing objects are never overwritten, and every store
+- **Explicit metadata**: every snapshot carries metadata that the caller
+  supplies, and Lode never infers metadata.
+- **Safe writes**: Lode never overwrites an existing object, and every store
   detects concurrent writers through CAS.
 
 Lode does not coordinate distributed writers, execute queries, compact
-data, or remove anything without being asked. [The concepts
-guide](docs/guides/concepts.md#what-lode-guarantees) gives the details.
+data, or delete objects unless the caller requests deletion. [The concepts
+guide](docs/guides/concepts.md#guarantees-and-non-goals) defines each guarantee
+and each exclusion.
 
-Version 1.0 accepts two limitations. A backend without a
-conditional write serves writers in one process only, through
-`SingleProcess`, and writers in several processes then need external
-coordination ([Concurrency and
+Lode has two limitations by design. A backend without a conditional write
+serves writers in one process only, through `SingleProcess`, so writers in
+several processes on that backend need external coordination ([Concurrency and
 CAS](PUBLIC_API.md#concurrency-and-cas)). On an S3-compatible service other
 than AWS S3, the guarantees depend on conditional writes and consistency
 that Lode does not verify ([Other S3-Compatible
@@ -150,7 +153,7 @@ Services](PUBLIC_API.md#other-s3-compatible-services)).
 
 | Topic | Where |
 |-------|-------|
-| Storage model, commits, and choosing a write API | [Concepts guide](docs/guides/concepts.md) |
+| Storage model, commits, and write API selection | [Concepts guide](docs/guides/concepts.md) |
 | Rules of the API that most often surprise a caller | [Usage pitfalls guide](docs/guides/pitfalls.md) |
 | Complete API usage and options | [`PUBLIC_API.md`](PUBLIC_API.md) |
 | Expiring snapshots and reclaiming residual data | [Retention guide](docs/guides/retention.md) |
@@ -165,15 +168,16 @@ Services](PUBLIC_API.md#other-s3-compatible-services)).
 ## Status
 
 Lode is at **v0.12.0** and under active development. Its APIs are
-stabilizing. The breaking changes still under consideration for v1.0 are
-listed in [`docs/plans/V1_API_DECISIONS.md`](docs/plans/V1_API_DECISIONS.md), and each
-release is described in [`CHANGELOG.md`](CHANGELOG.md).
+stabilizing. [`docs/plans/V1_API_DECISIONS.md`](docs/plans/V1_API_DECISIONS.md)
+lists the breaking changes still under consideration for v1.0, and
+[`CHANGELOG.md`](CHANGELOG.md) describes each release.
 
 ---
 
 ## License
 
-Apache License 2.0 (see [`LICENSE`](LICENSE)). Copyright © 2026 Pithecene LLC.
+Pithecene LLC distributes Lode under the Apache License 2.0 (see
+[`LICENSE`](LICENSE)). Copyright © 2026 Pithecene LLC.
 
-Contact: contact@pithecene.sh. To report a vulnerability, follow
+Pithecene answers inquiries at contact@pithecene.sh. To report a vulnerability, follow
 [`SECURITY.md`](SECURITY.md).

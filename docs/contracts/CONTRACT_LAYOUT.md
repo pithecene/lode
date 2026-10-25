@@ -1,7 +1,7 @@
 # Lode Layouts and Components Contract
 
-This document defines the ownership of layouts and the behavior of the
-components that layouts govern: partitioners, compressors, and codecs.
+This document defines layout ownership and the behavior of the components
+that layouts govern: partitioners, compressors, and codecs.
 
 ---
 
@@ -30,8 +30,8 @@ A dataset's paths have two sources (V1_API_DECISIONS D11).
   documented default, names each of the datasets, snapshots, partitions,
   segments, data, expired, and staged directories and the manifest file.
   `WithFlatPaths` omits the datasets and snapshots directories.
-- The dataset's **Layout** governs whether and how partition semantics are
-  encoded in paths: `Unpartitioned()` or `Hive(keys...)`.
+- The dataset's **Layout** governs whether and how paths encode partition
+  semantics: `Unpartitioned()` or `Hive(keys...)`.
 
 ### Path Names
 
@@ -40,51 +40,50 @@ A dataset's paths have two sources (V1_API_DECISIONS D11).
   with `.lode-tmp-`. A name MUST NOT contain `=`, which marks a partition
   segment.
 - The names a root uses MUST be distinct, and none MAY be `latest`, the
-  pointer's name. The pointer's name is not configurable: it is where the
-  writers of a dataset coordinate, and two names would let two roots commit
-  independent histories over shared snapshot paths.
-- Flat paths omit the datasets and snapshots directories, so they MUST NOT
-  be combined with options that name those directories.
-- The default names, and the paths of flat paths, are part of the
-  persisted format: a later release MUST NOT change them (V1_API_DECISIONS
+  pointer's name. The pointer's name is not configurable. The writers of a
+  dataset coordinate at the pointer, and a second pointer name would let
+  two roots commit independent histories over shared snapshot paths.
+- Flat paths omit the datasets and snapshots directories, so a root MUST
+  NOT combine flat paths with options that name those directories.
+- The default names and the flat-path structure are part of the persisted
+  format: a later release MUST NOT change them (V1_API_DECISIONS
   D8). The order, placement, and parsing of path segments are likewise
   fixed for every set of names.
 - The names are part of a dataset's address, as the store is. Each manifest
-  records them (CONTRACT_CORE §Manifest Requirements), and a writer or view
-  whose names differ from those the dataset's head manifest records MUST be
-  rejected with `ErrSettingsMismatch`. A manifest of format version 1.0.0
+  records them (CONTRACT_CORE §Manifest Requirements). Lode MUST reject
+  with `ErrSettingsMismatch` any writer or view whose names differ from
+  those that the dataset's head manifest records. A manifest of format version 1.0.0
   records no names: it was persisted under the default names, flat or not
   according to where it lies, and a root with other names MUST be rejected
   by it.
 - A root whose datasets directory differs addresses another prefix and sees
   another dataset. A root whose other names differ shares the pointer. If
-  that root finds the manifest the pointer names, the recorded names reject
-  it. If it does not, a writer returns `ErrSnapshotConflict`, as for a
+  that root finds the manifest that the pointer names, the names recorded
+  in that manifest reject the root. If it does not, a writer returns `ErrSnapshotConflict`, as for a
   pending commit, and never appends.
 - Lode recognizes another history's manifest by its file name, from a
-  listing alone. That name is the root's manifest name or the default
-  name, which every manifest persisted before the names became root
-  options bears (CONTRACT_WRITE_API §Settings).
+  listing alone. That name is either the root's manifest name or the
+  default name. Every manifest persisted before the names became root
+  options bears the default name (CONTRACT_WRITE_API §Settings).
 
 The following rules also apply:
 - The persistence layer defines the logical layout of keys.
 - Storage adapters MUST NOT introduce their own persistence structure.
 - Adapters MAY rewrite keys, but they MUST return the canonical keys that
-  are persisted.
+  Lode persists.
 
 ### Layout-Specific Requirements
 
-- **Flat layouts** (without partitions encoded in paths) MUST be paired with
-  `partitioner = "noop"`. Any other partitioner MUST be rejected at
+- **Flat layouts** (without partitions encoded in paths) MUST pair with
+  `partitioner = "noop"`. Lode MUST reject any other partitioner at
   configuration time, to prevent colliding paths.
-- **Hive-style layouts** MUST be anchored at partitions and MUST enable
-  prefix pruning when a partition filter is supplied. A layout that claims
+- **Hive-style layouts** MUST anchor paths at partitions and MUST enable
+  prefix pruning when a caller supplies a partition filter. A layout that claims
   partition-first semantics but requires scans of every manifest is
   invalid.
-- **Hive-style layouts** MUST place a copy of each manifest under the
-  prefix of every partition that holds its files, so that a listing
-  filtered by partition finds the snapshot without a scan of every
-  manifest. These copies are an index of the canonical manifest, persisted
+- **Hive-style layouts** MUST place a copy of each manifest under every
+  partition prefix that holds its files. A listing filtered by partition
+  then finds the snapshot without scanning every manifest. These copies are an index of the canonical manifest, persisted
   after the commit is complete (CONTRACT_CORE §Head Pointer). A listing
   filtered by partition reflects the copies that exist: it omits a
   committed snapshot whose writer terminated before persisting the copy for
@@ -103,20 +102,19 @@ The following rules also apply:
 
 - The partitioner defines the logical semantics of partitions (keys,
   values, normalization).
-- The layout determines whether and how those semantics are encoded in
-  paths.
-- The partitioner MUST be recorded in manifests by name, and a Hive
+- The layout determines whether and how paths encode those semantics.
+- Manifests MUST record the partitioner by name and MUST record a Hive
   partitioner's keys, in order, as `partition_keys`.
-- Layouts that do not support partitions MUST accept any partitioner that
-  is **semantically inert** (not only one named `"noop"`), and MUST reject
-  partitioners that emit non-empty partition keys.
+- Unpartitioned layouts MUST accept any **semantically inert** partitioner
+  (not only one named `"noop"`) and MUST reject any partitioner that emits
+  non-empty partition keys.
 
 ---
 
 ## Compressor
 
 - The compressor defines the compression format and the file extension.
-- The compressor MUST be recorded in manifests by name.
+- Manifests MUST record the compressor by name.
 - The absence of compression is explicit (the `noop` compressor), not
   implicit.
 
@@ -126,12 +124,11 @@ The following rules also apply:
 
 - The codec defines the serialization format of structured data.
 - Configuring a codec is optional.
-- When a codec is configured, it MUST be recorded in manifests by name and
+- When a dataset configures a codec, manifests MUST record it by name and
   by description (`Codec.Describe`), a deterministic, canonical form of its
-  configuration: equal configurations MUST yield equal descriptions. A
-  description omits configuration that does not affect which records a file
-  holds or how they decode, such as the internal compression of a Parquet
-  file.
+  configuration. Equal configurations MUST yield equal descriptions. A
+  description omits settings that affect neither the records in a file nor
+  their decoding, such as the internal compression of a Parquet file.
 
 ---
 
@@ -141,11 +138,11 @@ The following rules also apply:
 - A Dataset configuration MUST NEVER use a `nil` partitioner or compressor.
 - Manifests MUST record `partitioner = "noop"` and `compression = "noop"`
   when applicable.
-- When no codec is configured, codec fields MUST be omitted from manifests.
+- When a dataset configures no codec, manifests MUST omit codec fields.
 
 ---
 
 ## Key Persistence
 
-- Only canonical object keys returned by adapters are persisted.
-- Transient metadata and hints MUST NOT be persisted.
+- Lode persists only the canonical object keys that adapters return.
+- Lode MUST NOT persist transient metadata or hints.

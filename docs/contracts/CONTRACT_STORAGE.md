@@ -17,13 +17,14 @@ It is authoritative for any implementation of the `Store` interface.
 
 ### `Put`
 
-**Purpose**: `Put` creates a new object. It MUST NOT overwrite existing data
-without reporting it.
+**Purpose**: `Put` creates a new object, and it MUST NOT overwrite existing
+data without reporting the conflict.
 
 **Behavior**:
 - MUST write data to the given path.
 - Paths are slash-separated on every platform. A path that is empty, escapes
-  the root, or contains a backslash MUST return `ErrInvalidPath`. Adapters
+  the root, or contains a backslash MUST cause `Put` to return
+  `ErrInvalidPath`. Adapters
   MUST NOT read a backslash as a separator. A path whose final segment
   begins with the reserved prefix `.lode-tmp-` MUST also return
   `ErrInvalidPath` on every adapter, because the filesystem adapter names
@@ -35,7 +36,7 @@ without reporting it.
   existing object may go undetected under concurrent writers.
 - It MUST be atomic wherever the adapter knows the outcome. On an error that
   the adapter can observe, including an error from the supplied reader, the
-  path MUST be left as it was before the call. A `Put` that created an
+  adapter MUST leave the path as it was before the call. A `Put` that created an
   object and then failed MUST remove it. If that removal itself fails, `Put`
   MUST return an error that reports both failures.
 - An object MUST become visible to `Get`, `Exists`, and `List` only once it
@@ -45,8 +46,8 @@ without reporting it.
   under a temporary name in the same directory and publishes it with a hard
   link, which fails if the path exists. The adapter therefore requires a
   filesystem that supports hard links, and on one that does not, `Put`
-  returns an error. A published object has the mode that creating it with
-  mode 0644 under the process umask gives. Temporary names begin with the
+  returns an error. A published object has mode 0644 as modified by the
+  process umask. Temporary names begin with the
   reserved prefix `.lode-tmp-`, and `List` omits them. The adapter
   removes the temporary name after publishing. If that removal fails, or the
   process ends first, an inert temporary file remains that no Lode operation
@@ -59,16 +60,17 @@ without reporting it.
   reclaims it ([`CONTRACT_RETENTION.md`](CONTRACT_RETENTION.md)).
 - Callers never remove anything after a failed `Put`: they MUST NOT access a
   path whose `Put` returned an error. A path whose `Put` returned
-  `ErrPathExists` belongs to another writer. The single exception is
-  retention's creation of a tombstone, which reads the existing tombstone to
-  verify that it records the same expiry and never writes or deletes it
+  `ErrPathExists` belongs to another writer. The single exception arises
+  when retention creates a tombstone. Retention then reads the existing
+  tombstone to verify that it records the same expiry, and it never writes
+  or deletes that tombstone
   ([`CONTRACT_RETENTION.md`](CONTRACT_RETENTION.md) §Order of Operations).
 
 #### Put Upload Paths
 
 Adapters MAY route `Put` through different mechanisms according to the
-size of the payload. The strength of the guarantee against overwriting
-depends on the path and on the capabilities of the backend:
+size of the payload. The overwrite guarantee depends on the upload path
+and the backend's capabilities:
 
 | Path | Trigger | Detection Mechanism | Guarantee |
 |------|---------|---------------------|-----------|
@@ -78,30 +80,30 @@ depends on the path and on the capabilities of the backend:
 **Atomic Path** (at or below the threshold):
 - MUST use an atomic conditional create where the backend supports one.
 - A duplicate write MUST return `ErrPathExists` atomically.
-- No coordination beyond the adapter is required.
-- MAY buffer the payload in a temporary file to conserve memory. The
-  temporary file MUST be removed automatically.
+- The atomic path requires no coordination beyond the adapter.
+- MAY buffer the payload in a temporary file to conserve memory, and MUST
+  then remove that temporary file automatically.
 
 **Multipart Path** (above the threshold):
-- Used when the limits of the backend's API require uploads in parts.
+- Applies when the backend's API limits require uploads in parts.
 - SHOULD use conditional completion (for example, S3 `If-None-Match` on
   `CompleteMultipartUpload`) where the backend supports it, to guarantee
-  atomically that nothing is overwritten.
+  atomically that the upload overwrites no existing object.
 - MAY perform a preliminary existence check so that it fails early.
-- If conditional completion is not supported, MUST perform a preliminary
-  existence check.
+- If the backend does not support conditional completion, MUST perform a
+  preliminary existence check.
 - If the preliminary check detects an existing path, MUST return
   `ErrPathExists`.
 - When only the preliminary check is available, a **TOCTOU interval**
-  exists between the check and completion, so single-writer semantics or
-  external coordination is REQUIRED.
+  separates the check from completion, so callers MUST ensure single-writer
+  semantics or external coordination.
 
 #### Adapter Documentation Requirements
 
 Adapters MUST document:
 - the size threshold that separates the atomic path from the multipart path
-- which path provides atomic detection and which provides best-effort
-  detection
+- the path that provides atomic detection and the path that provides
+  best-effort detection
 - limitations specific to the backend (for example, the maximum object size
   and limits on parts)
 
@@ -138,12 +140,12 @@ Adapters MUST document:
 `ReadRange` and `ReaderAt` form the optional `RangeReader` interface
 (V1_API_DECISIONS D5). `RangeStore` is a `Store` that implements it. The
 built-in stores and the S3 adapter are `RangeStore`s, and their
-constructors and factories say so in their types. An adapter that cannot
+constructors and factories return that type. An adapter that cannot
 read ranges MUST NOT implement it, rather than implement methods that only
 return `ErrRangeReadNotSupported`.
 
-Where a store's capability is static, it is expressed in its type, and a
-requirement for range reads is stated as a `RangeStore` parameter. Only
+Where a store's capability is static, the store's type expresses it, and a
+function that requires range reads takes a `RangeStore` parameter. Only
 code that accepts an arbitrary `Store` discovers the capability when it
 runs, and it MUST do so with a checked type assertion that reports
 `ErrRangeReadNotSupported`, never one that can panic.
@@ -159,7 +161,7 @@ runs, and it MUST do so with a checked type assertion that reports
 - If the range extends beyond the end of the object, MUST return the
   available bytes (not an error).
 - If the offset is beyond the end of the object, MUST return an empty slice.
-- Buffer allocation MUST be bounded by the bytes available, not by the
+- The adapter MUST bound its buffer by the available bytes, not by the
   requested length. A large valid length beyond the end of the object MUST
   NOT exhaust memory.
 - MUST use genuine range reads (not a read of the whole object) where the
@@ -176,8 +178,8 @@ runs, and it MUST do so with a checked type assertion that reports
 
 ## Names in Keys
 
-Lode builds keys from names and cleans them, so a name that is not one path
-segment moves its key to another object. Through the dataset `a`, the
+Lode builds keys from names and normalizes each key as a path, so a name
+that is not one path segment redirects its key to another object. Through the dataset `a`, the
 snapshot ID `../../b/snapshots/<id>` would address a snapshot of the dataset
 `b`. The key rules of §Put cannot detect such a key, because it stays within
 the store.
@@ -197,10 +199,10 @@ checks each name before any store call:
 | Compressor extension | `WithCompressor` on a writer, which names each data file by its role and the extension | `ErrInvalidArgument` |
 | Snapshot ID | `Snapshot`, `Read`, and `GetManifest`, and Volume's `Snapshot` and `ReadAt` | `ErrNotFound`, because no snapshot has such an ID |
 
-The other values that reach a key are bounded in other ways:
+Separate constraints bound the remaining values that reach a key:
 
-- A Hive partition value is escaped and follows its key and `=`, so its
-  segment is never `.` or `..`.
+- Lode escapes a Hive partition value and places it after its key and
+  `=`, so its segment is never `.` or `..`.
 - `Expire` derives paths only from IDs that its own listing parsed, or from
   IDs in the generated form (CONTRACT_RETENTION §Selection).
 - `OpenObject` and `ReaderAt` read only a data object of the handle's
@@ -210,20 +212,20 @@ The other values that reach a key are bounded in other ways:
 
 ## Commit Semantics
 
-The commit protocol, including when a commit is complete, is stated in
-CONTRACT_CORE §Head Pointer. An adapter's obligation is that `Put` makes an
+CONTRACT_CORE §Head Pointer states the commit protocol, including the point
+at which a commit is complete. An adapter's obligation is that `Put` makes an
 object visible only once it is complete (§Put), so that a manifest a reader
 observes is whole.
 
 ## Streamed Writes
 
-- Adapters MUST allow data objects to be written before the manifest is
-  committed.
+- Adapters MUST allow a caller to write data objects before the caller
+  commits the manifest.
 - Adapters MUST NOT provide any implicit commit signal beyond the commit
   protocol of CONTRACT_CORE §Head Pointer.
 - The guarantee against overwriting applies according to the `Put` path
   (see §Put Upload Paths).
-- Adapters MUST allow partial objects to be removed through `Delete`.
+- Adapters MUST allow callers to remove partial objects through `Delete`.
 
 ### Streaming Write Atomicity
 
@@ -235,10 +237,10 @@ For streaming writes that use the multipart path:
   to write.
 - Callers that use streaming writes on such backends MUST ensure
   single-writer semantics or use external coordination.
-- A failure during a multipart upload SHOULD cause a best-effort abort and
-  removal of the partial upload.
-- That removal MUST use an independent context (not the caller's context,
-  which may have been canceled) to maximize the likelihood of success.
+- When a multipart upload fails, the adapter SHOULD abort it and remove the
+  partial upload on a best-effort basis.
+- The adapter MUST perform that removal with an independent context rather
+  than the caller's context, which the caller may already have canceled.
 
 ---
 
@@ -246,8 +248,9 @@ For streaming writes that use the multipart path:
 
 Every adapter MUST implement `ConditionalWriter`: `Store` is `ObjectStore`
 (the object operations above) together with `ConditionalWriter`. Each
-commit advances the latest pointer through `CompareAndSwap`, which provides
-optimistic concurrency control (CAS), and retention writes tombstones
+commit advances the latest pointer through `CompareAndSwap`, a
+compare-and-swap (CAS) operation that provides optimistic concurrency
+control, and retention writes tombstones
 through it.
 
 ```go
@@ -284,7 +287,7 @@ type ConditionalWriter interface {
 **S3 adapter:**
 - The conditional `PutObject` decides every outcome: `If-None-Match: *`
   creates the object, and `If-Match` replaces exactly the version that was
-  compared. No outcome is inferred from what the adapter recorded earlier.
+  compared. The adapter infers no outcome from its earlier records.
 - When `expected` is empty, call `PutObject` with `If-None-Match: *` at
   once.
 - When the adapter itself replaced the object (with `If-Match`) and
@@ -294,18 +297,20 @@ type ConditionalWriter interface {
   one per object, each identified by a digest of the content. Objects that
   are created once and never replaced, such as tombstones, therefore leave
   no record. The adapter holds a bounded number of such records and evicts
-  one when the limit is reached. `Delete` discards the record of the
+  one when it reaches the limit. `Delete` discards the record of the
   deleted object. Neither eviction nor discarding affects any outcome.
 - Otherwise, call `GetObject` to read the current content and its ETag.
-  Do the same when either of those writes reports that its precondition
-  failed or that the object no longer exists. Then compare the content
-  with `expected`, and call `PutObject` with `If-Match` on that ETag, or
-  with `If-None-Match: *` if the object does not exist. The outcome is therefore the one that reading first would give: an
+  Also call `GetObject` when either conditional write reports that its
+  precondition failed or that the object no longer exists. Then compare
+  the content with `expected`, and call `PutObject` with `If-Match` on that
+  ETag, or with `If-None-Match: *` if the object does not exist. The
+  outcome is therefore the one that reading first would give: an
   empty existing object satisfies an empty `expected`, and an object that
   another writer replaced yields `ErrSnapshotConflict`.
-- A refused precondition on the final write returns `ErrSnapshotConflict`,
-  as does an `If-Match` write that finds the object deleted since it was
-  read, which S3 reports as not found.
+- The adapter returns `ErrSnapshotConflict` when S3 refuses the
+  precondition on the final write. It also returns `ErrSnapshotConflict`
+  when an `If-Match` write finds the object deleted after the read, a
+  condition that S3 reports as not found.
 - After any failed write the adapter discards what it knew of the object's
   version, because a lost response may hide a completed write.
 
@@ -317,15 +322,16 @@ type ConditionalWriter interface {
 A backend that offers no conditional write cannot implement
 `CompareAndSwap` atomically across processes. `lode.SingleProcess(store)`
 converts its `ObjectStore` into a `Store` by serializing `CompareAndSwap`
-calls under a lock held by the process. A store that already implements
-`ConditionalWriter` is returned unchanged. Its `CompareAndSwap` MUST follow
+calls under a lock held by the process. `lode.SingleProcess` returns a
+store that already implements `ConditionalWriter` unchanged. Its `CompareAndSwap` MUST follow
 the semantics table above. It serializes only callers that share the
 returned value within one process, and its replacement is a `Delete`
 followed by a `Put`, so a failed `Put` leaves the path absent. Reads
 through the returned value (`Get`, `Exists`, `List`, `ReadRange`, and
 `ReaderAt`) MUST wait for a replacement in progress. A reader in the
 process then observes the old or the new content, never the absence
-between the `Delete` and the `Put`. A nil store MUST be returned as nil.
+between the `Delete` and the `Put`. `lode.SingleProcess` MUST return nil
+for a nil store.
 
 ---
 
@@ -357,8 +363,8 @@ definitions.
 ### Full Materialization of List
 
 `Store.List` returns a `[]string`, so all matching keys accumulate in
-memory. This is a **documented constraint of the interface**, not a defect
-of an implementation.
+memory. Full materialization is a **documented constraint of the
+interface**, not a defect of any implementation.
 
 Adapters MUST paginate requests to the backend (for example, with S3
 `ListObjectsV2` continuation tokens) but MUST return all results in the
