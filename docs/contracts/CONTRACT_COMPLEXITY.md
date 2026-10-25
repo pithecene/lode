@@ -1,4 +1,4 @@
-# Lode Complexity Bounds — Contract
+# Lode Complexity Bounds Contract
 
 ---
 
@@ -14,8 +14,8 @@ scale with the size of a dataset's or volume's history.
 
 ### Cost Dimensions
 
-- Store calls: network round trips (Get, Put, List, Exists, Delete,
-  ReadRange)
+- Store calls: network round trips (`Get`, `Put`, `List`, `Exists`, `Delete`,
+  `ReadRange`)
 - Memory: peak allocation relative to the size of the input or output
 - CPU: the algorithmic complexity class
 
@@ -49,17 +49,17 @@ scale with the size of a dataset's or volume's history.
 
 | Method | Calls | Memory | Notes |
 |--------|-------|--------|-------|
-| Put | 1 | O(payload) | Atomic; the multipart path adds a preliminary check |
-| Get | 1 | O(1) stream | Returns an `io.ReadCloser` |
-| Exists | 1 | O(1) | |
-| Delete | 1 | O(1) | |
-| ReadRange | 1 | O(L) | |
-| ReaderAt | 1 to open + 1 per call | O(L) per call | |
-| List | ⌈N/page⌉ | O(N) | Fully materialized (a constraint of the interface) |
+| `Put` | 1 | O(payload) | Atomic, and the multipart path adds a preliminary check |
+| `Get` | 1 | O(1) stream | Returns an `io.ReadCloser` |
+| `Exists` | 1 | O(1) | |
+| `Delete` | 1 | O(1) | |
+| `ReadRange` | 1 | O(L) | |
+| `ReaderAt` | 1 to open + 1 per call | O(L) per call | |
+| `List` | ⌈N/page⌉ | O(N) | Fully materialized (a constraint of the interface) |
 
 ---
 
-## Dataset — Write Operations
+## Dataset Write Operations
 
 | Operation | Store Calls (warm) | Store Calls (cold) | Memory |
 |-----------|-------------------|--------------------|--------|
@@ -71,37 +71,38 @@ scale with the size of a dataset's or volume's history.
 Parent resolution:
 - In-memory cache: 0 calls
 - Pointer: 1 call (2 calls for a Volume, which also loads the parent's manifest)
-- Scan fallback (degraded): O(N) through List, plus, for a Dataset, 1
-  tombstone Get per snapshot scanned (and 1 Exists of the canonical manifest
-  for each scanned snapshot that has a tombstone), from the newest snapshot
-  until one is found that is not expired. The scan creates a missing pointer
+- Scan fallback (degraded): O(N) through `List`. For a Dataset, the scan
+  adds 1 tombstone `Get` per snapshot scanned, and 1 `Exists` of the
+  canonical manifest for each scanned snapshot that has a tombstone. It
+  proceeds from the newest snapshot until it finds one that is not
+  expired. The scan creates a missing pointer
   but never replaces an existing one (CONTRACT_CORE §Head Pointer).
 
-Parent resolution MUST NOT use List when a valid pointer exists.
+Parent resolution MUST NOT use `List` when a valid pointer exists.
 
 Exceptions, each incurred once (CONTRACT_WRITE_API §Settings):
-- A dataset's first commit adds 1 Put and 1 Delete for its staged manifest.
-- A writer's settings check, before its first commit, costs 1 Get of the
-  manifest that the pointer names, 2 Gets while a first commit is pending,
-  or the scan fallback and 1 List of the dataset's directory when neither
-  manifest exists. Against an empty dataset it costs 1 List of the
+- A dataset's first commit adds 1 `Put` and 1 `Delete` for its staged manifest.
+- A writer's settings check, before its first commit, costs 1 `Get` of the
+  manifest that the pointer names, or 2 `Get` calls while a first commit is
+  pending. When neither manifest exists, it costs the scan fallback and 1
+  `List` of the dataset's directory. Against an empty dataset it costs 1 `List` of the
   dataset's directory.
 - The first write to a Hive dataset whose manifests predate format version
-  1.1.0 adds 1 Get per snapshot followed from the head to the first
+  1.1.0 adds 1 `Get` per snapshot followed from the head to the first
   snapshot with files.
 
 ---
 
-## Dataset — Read Operations
+## Dataset Read Operations
 
 | Operation | Path | Store Calls | Memory | CPU |
 |-----------|------|-------------|--------|-----|
 | Latest (warm) | Hot | 2 (pointer + manifest) | O(manifest) | O(1) |
-| Latest (cold) | Degraded | 1 List + 1 Get + 1 tombstone Get per snapshot scanned (+1 canonical-manifest Exists per scanned snapshot that has a tombstone) | O(N) | O(N) |
-| Snapshot(id) | Hot | 1 Get | O(manifest) | O(1) |
-| Snapshot(id) fallback | Degraded | 1 Get (canonical miss) + 1 tombstone Get + 1 List + scan | O(N) | O(N) |
-| Snapshots() | Cold | 1 List + S Gets | O(S × manifest) | O(S × B_avg + S log S) |
-| Read(id) | Hot | 1 + F Gets | O(R_total) | O(R_total) |
+| Latest (cold) | Degraded | 1 `List` + 1 `Get` + 1 tombstone `Get` per snapshot scanned (+1 canonical-manifest `Exists` per scanned snapshot that has a tombstone) | O(N) | O(N) |
+| Snapshot(id) | Hot | 1 `Get` | O(manifest) | O(1) |
+| Snapshot(id) fallback | Degraded | 1 `Get` (canonical miss) + 1 tombstone `Get` + 1 `List` + scan | O(N) | O(N) |
+| Snapshots() | Cold | 1 `List` + S `Get` calls | O(S × manifest) | O(S × B_avg + S log S) |
+| Read(id) | Hot | 1 + F `Get` calls | O(R_total) | O(R_total) |
 
 ---
 
@@ -109,32 +110,32 @@ Exceptions, each incurred once (CONTRACT_WRITE_API §Settings):
 
 | Operation | Store Calls |
 |-----------|-------------|
-| `Root.Records`, `Root.Blobs` (warm: the pointer names a manifest) | 1 Get of the pointer + 1 Get of the manifest |
-| `Root.Records`, `Root.Blobs` (empty dataset) | 1 Get of the pointer + the scan fallback + 1 List of the dataset's directory |
-| `ReadRoot.Records`, `ReadRoot.Blobs` (warm) | 1 Get of the pointer + at most 2 Gets of the manifest |
-| `ReadRoot.Records`, `ReadRoot.Blobs` (no pointer) | 1 Get of the pointer + the scan fallback of each grammar |
+| `Root.Records`, `Root.Blobs` (warm: the pointer names a manifest) | 1 `Get` of the pointer + 1 `Get` of the manifest |
+| `Root.Records`, `Root.Blobs` (empty dataset) | 1 `Get` of the pointer + the scan fallback + 1 `List` of the dataset's directory |
+| `ReadRoot.Records`, `ReadRoot.Blobs` (warm) | 1 `Get` of the pointer + at most 2 `Get` calls of the manifest |
+| `ReadRoot.Records`, `ReadRoot.Blobs` (no pointer) | 1 `Get` of the pointer + the scan fallback of each grammar |
 
 A view does not know whether the dataset is partitioned until it has read a
 manifest, so it reads the canonical manifest under the snapshots directory,
-then under the segments directory; at most one exists. Opening writes
+then under the segments directory. At most one exists. Opening writes
 nothing. A writer's open check is the settings check of
-CONTRACT_WRITE_API §Settings Check; once settled, commits keep the bounds
-above.
+CONTRACT_WRITE_API §Settings Check. Once that check is settled, commits
+keep the bounds above.
 
 ---
 
-## Dataset Views and Handles — Enumeration
+## Enumeration by Dataset Views and Handles
 
 | Operation | Path | Store Calls | Memory |
 |-----------|------|-------------|--------|
-| ListDatasets (on a root) | Cold | 1 List | O(N) |
-| ListManifests | Cold | 1 List + M Gets (validation) | O(N + M × manifest) |
-| ListPartitions | Cold | 1 List + M Gets | O(N + M × manifest) |
-| GetManifest | Hot | 1 Get | O(manifest) |
-| OpenObject | Hot | 1 Get | O(1) stream |
+| ListDatasets (on a root) | Cold | 1 `List` | O(N) |
+| ListManifests | Cold | 1 `List` + M `Get` calls (validation) | O(N + M × manifest) |
+| ListPartitions | Cold | 1 `List` + M `Get` calls | O(N + M × manifest) |
+| GetManifest | Hot | 1 `Get` | O(manifest) |
+| OpenObject | Hot | 1 `Get` | O(1) stream |
 
-`ListManifests` MUST extract snapshot IDs from paths; manifest validation is
-required by CONTRACT_ERRORS.md. `ListPartitions` MUST NOT deserialize any
+`ListManifests` MUST extract snapshot IDs from paths, and CONTRACT_ERRORS.md
+requires manifest validation. `ListPartitions` MUST NOT deserialize any
 manifest twice. On layouts that model partitions, `Prefix` reduces N and M
 to the matching subtree. `StartAfter` and `Limit` are applied after
 enumeration, so they bound the result set but not the store calls. Sorting
@@ -142,50 +143,70 @@ adds O(N log N) CPU and no store calls.
 
 ---
 
-## Dataset — Retention
+## Dataset Retention
 
 | Operation | Path | Store Calls | Memory |
 |-----------|------|-------------|--------|
-| Expire (K selected) | Cold | 1 List + (K + 1) pointer Gets (each + at most 1 Exists, + 1 List when the head has no canonical manifest) + K manifest Gets + K tombstone Gets + 1 Get per manifest path of each selected snapshot + K tombstone writes (each + at most 1 read-back Get) + Σ(manifests + files) Deletes | O(N + K × manifest) |
-| Sweep (T tombstones, D objects deleted, manifests included) | Cold | 2 Lists + 1 pointer Get + T Gets + 1 Get per manifest path of a tombstoned snapshot with anything left + ≤ 1 Exists per manifest path of each unlisted-manifest group past grace + D Deletes + per unindexed snapshot past grace: 1 Get + 1 Put per missing partition copy + 1 tombstone Get | O(N + Σ tombstone inventories + one snapshot's manifest copies) |
-| Snapshot(id), Read(id) expired | Hot miss | +1 Get (tombstone) | O(1) |
+| Expire (K selected) | Cold | The sum of the terms below | O(N + K × manifest) |
+| Sweep (T tombstones, D objects deleted, manifests included) | Cold | The sum of the terms below | O(N + Σ tombstone inventories + one snapshot's manifest copies) |
+| Snapshot(id), Read(id) expired | Hot miss | +1 `Get` (tombstone) | O(1) |
 
-`Expire` with `Partition` lists only that partition's subtree; otherwise N
+The store calls of `Expire`, with K snapshots selected, are the sum of
+these terms:
+- 1 `List`
+- K + 1 pointer `Get` calls, each with at most 1 `Exists`, and with 1
+  `List` when the head has no canonical manifest
+- K manifest `Get` calls and K tombstone `Get` calls
+- 1 `Get` per manifest path of each selected snapshot
+- K tombstone writes, each with at most 1 read-back `Get`
+- Σ(manifests + files) `Delete` calls
+
+The store calls of `Sweep`, with T tombstones and D objects deleted
+(manifests included), are the sum of these terms:
+- 2 `List` calls, 1 pointer `Get`, and T `Get` calls
+- 1 `Get` per manifest path of a tombstoned snapshot with anything left
+- at most 1 `Exists` per manifest path of each unlisted-manifest group past
+  grace
+- D `Delete` calls
+- for each unindexed snapshot past grace, 1 `Get`, 1 `Put` per missing
+  partition copy, and 1 tombstone `Get`
+
+`Expire` with `Partition` lists only that partition's subtree. Otherwise, N
 comprises the whole snapshot prefix. Without a pointer, retention lists the
-whole snapshot prefix even for a `Partition` request, in order to
-distinguish an empty dataset from one that it must refuse. Selection by
+whole snapshot prefix even for a `Partition` request, to distinguish an empty dataset from one that it must refuse. Selection by
 `Before` reads snapshot IDs from paths and loads no manifest beyond the K
 selected. The complete bounds and their derivation are given in
 [`CONTRACT_RETENTION.md`](CONTRACT_RETENTION.md) §Complexity Bounds.
 
 ---
 
-## Volume — Write Operations
+## Volume Write Operations
 
 | Operation | Path | Store Calls | Memory | CPU |
 |-----------|------|-------------|--------|-----|
-| StageWriteAt | Hot | 1 Put | O(block) | O(block) |
+| StageWriteAt | Hot | 1 `Put` | O(block) | O(block) |
 | Commit (warm) | Hot | 5 fixed | O(B) manifest | O(B + K log K) |
-| Commit (cold) | Degraded | +1 List | +O(N) | +O(N) |
+| Commit (cold) | Degraded | +1 `List` | +O(N) | +O(N) |
 
-A warm commit makes one Get of the parent's manifest, one Put of the staged
-manifest, one pointer update, one Put of the canonical manifest, and one
-Delete of the staged manifest (CONTRACT_VOLUME §Error Semantics).
+A warm commit makes five store calls (CONTRACT_VOLUME §Error Semantics).
+They are one `Get` of the parent's manifest, one `Put` of the staged
+manifest, one pointer update, one `Put` of the canonical manifest, and one
+`Delete` of the staged manifest.
 
 The size of the cumulative manifest grows by O(B) per commit, a cost
 inherent in the cumulative design.
 
 ---
 
-## Volume — Read Operations
+## Volume Read Operations
 
 | Operation | Path | Store Calls | Memory | CPU |
 |-----------|------|-------------|--------|-----|
-| ReadAt | Hot | 1 Get + R ReadRange | O(L) | O(log B + R) |
+| ReadAt | Hot | 1 `Get` + R `ReadRange` | O(L) | O(log B + R) |
 | Latest (warm) | Hot | 2 | O(B) | O(1) |
-| Latest (cold) | Degraded | 1 List + 1 Get | O(N + B) | O(N) |
-| Snapshots() | Cold | 1 List + S Gets | O(S × B_avg) | O(S × B_avg + S log S) |
-| Snapshot(id) | Hot | 1 Get | O(B) | O(B) |
+| Latest (cold) | Degraded | 1 `List` + 1 `Get` | O(N + B) | O(N) |
+| Snapshots() | Cold | 1 `List` + S `Get` calls | O(S × B_avg) | O(S × B_avg + S log S) |
+| Snapshot(id) | Hot | 1 `Get` | O(B) | O(B) |
 
 The block lookup in `ReadAt` MUST be O(log B + R). No read may verify the
 sort order of blocks.

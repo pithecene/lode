@@ -1,4 +1,4 @@
-# Lode Layouts and Components — Contract
+# Lode Layouts and Components Contract
 
 This document defines the ownership of layouts and the behavior of the
 components that layouts govern: partitioners, compressors, and codecs.
@@ -24,28 +24,27 @@ exclusively to dataset handles and views.
 
 ## Layout Ownership
 
-A dataset's paths have two sources (V1_API_DECISIONS D11):
-- the root's **path names** govern the topology of datasets, snapshots,
-  partitions, segments, manifests, and data objects: the datasets,
-  snapshots, partitions, segments, data, expired, and staged directories
-  and the manifest file are each named by a root option, with documented
-  defaults, and `WithFlatPaths` omits the datasets and snapshots
-  directories; and
-- the dataset's **Layout** governs whether and how partition semantics are
+A dataset's paths have two sources (V1_API_DECISIONS D11).
+- The root's **path names** govern the topology of datasets, snapshots,
+  partitions, segments, manifests, and data objects. A root option, with a
+  documented default, names each of the datasets, snapshots, partitions,
+  segments, data, expired, and staged directories and the manifest file.
+  `WithFlatPaths` omits the datasets and snapshots directories.
+- The dataset's **Layout** governs whether and how partition semantics are
   encoded in paths: `Unpartitioned()` or `Hive(keys...)`.
 
 ### Path Names
 
 - Each name MUST be one canonical path segment (CONTRACT_STORAGE §Put):
   not empty, `.`, or `..`, without `/` or a backslash, and not beginning
-  with `.lode-tmp-`; it MUST NOT contain `=`, which marks a partition
+  with `.lode-tmp-`. A name MUST NOT contain `=`, which marks a partition
   segment.
 - The names a root uses MUST be distinct, and none MAY be `latest`, the
   pointer's name. The pointer's name is not configurable: it is where the
   writers of a dataset coordinate, and two names would let two roots commit
   independent histories over shared snapshot paths.
-- Flat paths omit the datasets and snapshots directories; they MUST NOT be
-  combined with options that name those directories.
+- Flat paths omit the datasets and snapshots directories, so they MUST NOT
+  be combined with options that name those directories.
 - The default names, and the paths of flat paths, are part of the
   persisted format: a later release MUST NOT change them (V1_API_DECISIONS
   D8). The order, placement, and parsing of path segments are likewise
@@ -58,14 +57,14 @@ A dataset's paths have two sources (V1_API_DECISIONS D11):
   according to where it lies, and a root with other names MUST be rejected
   by it.
 - A root whose datasets directory differs addresses another prefix and sees
-  another dataset. A root whose other names differ shares the pointer: if
-  it finds the manifest the pointer names, the recorded names reject it,
-  and if it does not, a writer returns `ErrSnapshotConflict`, as for a
+  another dataset. A root whose other names differ shares the pointer. If
+  that root finds the manifest the pointer names, the recorded names reject
+  it. If it does not, a writer returns `ErrSnapshotConflict`, as for a
   pending commit, and never appends.
 - Lode recognizes another history's manifest by its file name, from a
-  listing alone: the root's manifest name, or the default name, which
-  every manifest persisted before the names became root options bears
-  (CONTRACT_WRITE_API §Settings).
+  listing alone. That name is the root's manifest name or the default
+  name, which every manifest persisted before the names became root
+  options bears (CONTRACT_WRITE_API §Settings).
 
 The following rules also apply:
 - The persistence layer defines the logical layout of keys.
@@ -92,9 +91,9 @@ The following rules also apply:
   that partition.
 - Every layout MUST place a dataset's staged first manifest
   (CONTRACT_CORE §Head Pointer) at `<dataset dir>/staged/<snapshot_id>.json`,
-  beside the tombstones in `<dataset dir>/expired/`, where no layout parses
-  a manifest or a data object, so that no listing reports it as a snapshot
-  and retention never treats it as data. The dataset directory is
+  beside the tombstones in `<dataset dir>/expired/`. No layout parses a
+  manifest or a data object there, so no listing reports the staged
+  manifest as a snapshot, and retention never treats it as data. The dataset directory is
   `datasets/<id>` in the default and Hive layouts and `<id>` in the flat
   layout.
 

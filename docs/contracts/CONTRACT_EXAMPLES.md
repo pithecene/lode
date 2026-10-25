@@ -1,4 +1,4 @@
-# Lode Examples and Call Sites — Contract
+# Lode Examples and Call Sites Contract
 
 This contract defines normative conventions for examples and API call sites
 in Lode.
@@ -73,8 +73,8 @@ snapshot, err := blobs.Write(ctx, blobData, nil)
 ### Metadata
 
 Pass metadata as a struct when its shape is known, and decode it with
-`snapshot.Metadata.Decode(&v)`; pass a `lode.D` for ad hoc keys, or `nil`
-for none.
+`snapshot.Metadata.Decode(&v)`. For ad hoc keys, pass a `lode.D`, and for
+no metadata, pass `nil`.
 
 ---
 
@@ -97,10 +97,10 @@ for none.
 Changes to ergonomics before v1 (for example, reordering parameters) are
 permitted only when:
 
-1. the contract is updated in the same PR as the behavior change;
-2. [`PUBLIC_API.md`](../../PUBLIC_API.md) is updated;
-3. all tests are updated;
-4. all examples are updated; and
+1. the contract is updated in the same PR as the behavior change,
+2. [`PUBLIC_API.md`](../../PUBLIC_API.md) is updated,
+3. all tests are updated,
+4. all examples are updated, and
 5. the CHANGELOG includes a migration note.
 
 After the change, no call site may retain the former form.
@@ -111,9 +111,9 @@ After the change, no call site may retain the former form.
 
 Agents must:
 - stop and ask if an example diverges from the conventions of
-  [`PUBLIC_API.md`](../../PUBLIC_API.md);
-- stop and ask before introducing a call-site pattern not covered here; and
-- prefer editing existing examples to creating new ones.
+  [`PUBLIC_API.md`](../../PUBLIC_API.md)
+- stop and ask before introducing a call-site pattern not covered here
+- prefer editing existing examples to creating new ones
 
 ---
 

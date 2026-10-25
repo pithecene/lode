@@ -1,4 +1,4 @@
-# Lode Volume Model — Contract
+# Lode Volume Model Contract
 
 This document defines the contract for the `Volume` persistence paradigm.
 It is authoritative for all Volume implementations.
@@ -161,8 +161,8 @@ because the storage layout and the manifest format (§Storage Layout,
 §Manifest Requirements) are persisted formats.
 
 The public Volume API is explicit and minimal, and it is composed of the
-`Writer` and `Reader` interfaces (in the package `volume`; names prefixed
-with `lode.` denote the shared types that it uses):
+`Writer` and `Reader` interfaces in the package `volume`. Names prefixed
+with `lode.` denote the shared types that it uses:
 
 ```go
 // ID uniquely identifies a volume. It is one path segment
@@ -228,9 +228,9 @@ func New(id ID, storeFactory lode.Factory[lode.RangeStore], totalLength int64, o
 
 ### Volume Options
 
-Volume has its own `Option` type; dataset options (`DatasetOption`,
-`ViewOption`, `RootOption`) are different types and are rejected at compile
-time. The options are:
+Volume has its own `Option` type. Dataset options (`DatasetOption`,
+`ViewOption`, and `RootOption`) are different types and are rejected at
+compile time. The options are:
 
 - `WithChecksum(c lode.Checksum)`: integrity checksums on staged blocks
   (disabled by default).
@@ -272,25 +272,25 @@ value returns `lode.ErrInvalidArgument` with the same message.
 - An obsolete parent at `Commit` MUST produce `lode.ErrSnapshotConflict`.
 - Commit MUST persist and remove a staged copy of its manifest as
   CONTRACT_CORE §Head Pointer specifies.
-- When the pointer names a snapshot whose canonical manifest has not been
-  persisted (a pending or abandoned commit, CONTRACT_CORE §Head Pointer),
-  Commit MUST load that snapshot from its staged copy, adopt it as the
-  parent, and merge its blocks. An abandoned commit therefore does not
+- The pointer can name a snapshot whose canonical manifest has not been
+  persisted, which is a pending or abandoned commit (CONTRACT_CORE §Head
+  Pointer). Commit MUST then load that snapshot from its staged copy, adopt
+  it as the parent, and merge its blocks. An abandoned commit therefore does not
   prevent later commits.
-- When the pointer names a snapshot that has neither a canonical manifest
-  nor a staged copy (a commit persisted by a release earlier than v0.11.0,
-  or a manual edit of the pointer), Commit MUST return
+- The pointer can name a snapshot that has neither a canonical manifest
+  nor a staged copy, after a commit persisted by a release earlier than
+  v0.11.0 or a manual edit of the pointer. Commit MUST then return
   `lode.ErrSnapshotConflict`, because the parent's blocks cannot be merged.
   If retries are configured, Commit retries. Commits return
   `lode.ErrSnapshotConflict` until the pointer names a snapshot that has a
   manifest: either the missing manifest is persisted, or an operator sets
   the pointer to an earlier snapshot. A `Volume` value that remembers an
-  earlier head continues to expect that head's pointer content, so after
-  the repair the caller MUST call `Latest` or open the volume again, unless
-  retries are configured (each retry refreshes the head).
+  earlier head continues to expect that head's pointer content. After the
+  repair, the caller MUST therefore call `Latest` or open the volume again,
+  unless retries are configured (each retry refreshes the head).
 - `Latest`, `Snapshot`, and `Snapshots` never read staged copies. An
   abandoned commit has no canonical manifest, so it is never listed, and its
-  blocks become visible through the next commit, which merges them; that
+  blocks become visible through the next commit, which merges them. That
   commit's `ParentSnapshotID` names the abandoned snapshot.
 
 ---
@@ -304,8 +304,8 @@ The snapshot history of a Volume is linear.
 | Pattern | Writers | Blocks | History | Supported |
 |---------|---------|--------|---------|-----------|
 | Single writer | 1 process | Non-overlapping blocks | Linear (guaranteed) | Yes |
-| Multiple processes, serialized | N processes, external coordination | Non-overlapping blocks | Linear (enforced by the caller) | Yes; the caller provides coordination |
-| Multiple processes, uncoordinated | N processes, no coordination | Non-overlapping blocks | Linear (enforced by CAS) | Yes; a later commit adopts an abandoned commit from its staged manifest (§Error Semantics) |
+| Multiple processes, serialized | N processes, external coordination | Non-overlapping blocks | Linear (enforced by the caller) | Yes, with coordination that the caller provides |
+| Multiple processes, uncoordinated | N processes, no coordination | Non-overlapping blocks | Linear (enforced by CAS) | Yes, because a later commit adopts an abandoned commit from its staged manifest (§Error Semantics) |
 | Multiple writers in one process, store wrapped with `lode.SingleProcess` | N goroutines, each with its own `Volume`, sharing one wrapped store | Non-overlapping blocks | Linear (enforced by the process lock) | Yes |
 
 ### Optimistic Concurrency (CAS)
@@ -313,7 +313,7 @@ The snapshot history of a Volume is linear.
 Volume detects concurrent commits and returns `ErrSnapshotConflict`.
 
 Conflict detection is the same as for a Dataset (see [`CONTRACT_WRITE_API.md`](CONTRACT_WRITE_API.md)
-§Optimistic Concurrency (CAS)); only the snapshot ID of a retry differs:
+§Optimistic Concurrency (CAS)). Only the snapshot ID of a retry differs:
 - `Commit` records the expected parent when it resolves the parent.
 - The pointer is updated with `CompareAndSwap`.
 - An obsolete parent produces `ErrSnapshotConflict`.
@@ -336,12 +336,12 @@ Conflict detection is the same as for a Dataset (see [`CONTRACT_WRITE_API.md`](C
 5. Retries the pointer CAS with a new snapshot ID.
 
 A Volume retry may draw a new snapshot ID because block paths do not contain
-it (`volumes/<id>/data/<offset>-<length>.bin`); a Dataset retry retains its
+it (`volumes/<id>/data/<offset>-<length>.bin`). A Dataset retry retains its
 ID because its data paths do (V1_API_DECISIONS D10c).
 
 `ErrOverlappingBlocks` terminates the retry loop immediately, because it is
 not retryable. If `WithRetryObserver(fn)` is configured, `fn` is called once
-per retry, before step 1. If all retries are exhausted,
+per retry, before step 1. When all retries are exhausted,
 `ErrSnapshotConflict` is returned as it would be without retries.
 
 **Single-writer compatibility:**
@@ -355,10 +355,10 @@ per retry, before step 1. If all retries are exhausted,
 No new type of storage engine is required.
 
 The capabilities of a `lode.RangeStore` are sufficient:
-- immutable object writes;
-- `List`, `Exists`, `Get`, and `Delete`;
+- immutable object writes
+- `List`, `Exists`, `Get`, and `Delete`
 - range reads (`RangeReader`, CONTRACT_STORAGE §Range Reads), which `New`
-  requires through its parameter type; and
+  requires through its parameter type
 - `CompareAndSwap` (CONTRACT_STORAGE §ConditionalWriter Capability).
 
 Adapters MUST preserve the semantics under which the manifest defines what
@@ -399,7 +399,7 @@ A workflow that requires sparse, resumable, out-of-order, or range-verified
 data belongs to `Volume`, not to `Dataset`.
 
 Design discipline:
-- Adapters remain minimal; lifecycle semantics remain in the Lode core.
+- Adapters remain minimal, and lifecycle semantics remain in the Lode core.
 - Policy that depends on the runtime (scheduling, peer management, execution
   strategy) belongs in consuming systems, not in Lode.
 
@@ -424,17 +424,17 @@ cumulative design.
 
 | Operation | Store Calls | Memory | CPU |
 |-----------|-------------|--------|-----|
-| `ReadAt` | 1 Get + R ReadRange | O(L) | **O(log B + R)** |
+| `ReadAt` | 1 `Get` + R `ReadRange` | O(L) | **O(log B + R)** |
 | `Latest` | 2 (pointer + manifest) | O(B) | O(1) |
-| `Snapshot(id)` | 1 Get | O(B) | O(B) validation |
-| `Snapshots` | 1 List + S Gets | O(S × B_avg) | O(S × B_avg + S log S) |
+| `Snapshot(id)` | 1 `Get` | O(B) | O(B) validation |
+| `Snapshots` | 1 `List` + S `Get` calls | O(S × B_avg) | O(S × B_avg + S log S) |
 
 Block lookup MUST be O(log B + R), where R is the number of covering
-blocks. Implementations MUST NOT verify the sort order on each read; sort
+blocks. Implementations MUST NOT verify the sort order on each read. Sort
 verification MUST occur when the manifest is loaded, not when it is read.
 
-The cost of `Snapshots()` grows with the product of the number of snapshots
-and the cumulative number of blocks. Callers MUST NOT use `Snapshots()` on
+The cost of `Snapshots()` grows with the number of snapshots multiplied by
+the cumulative number of blocks. Callers MUST NOT use `Snapshots()` on
 hot paths.
 
 ---

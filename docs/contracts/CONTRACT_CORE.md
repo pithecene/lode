@@ -1,4 +1,4 @@
-# Lode Core Model — Contract
+# Lode Core Model Contract
 
 This document defines the **core data model** and invariants for Lode.
 It is authoritative for all implementations and adapters.
@@ -35,8 +35,8 @@ The immutable state of a dataset at a point in time. Each snapshot has a
 stable `SnapshotID` and, optionally, a parent snapshot ID.
 
 ### Snapshot ID
-Lode generates every snapshot ID, for Datasets and Volumes alike; callers
-never choose one. Since v0.11.0 an ID has the form `<instant>-<nonce>`:
+Lode generates every snapshot ID, for Datasets and Volumes alike, and
+callers never choose one. Since v0.11.0 an ID has the form `<instant>-<nonce>`:
 
 - `<instant>`: the Unix time, in nanoseconds, at which the write begins,
   expressed in decimal without a sign or leading zero.
@@ -44,8 +44,8 @@ never choose one. Since v0.11.0 an ID has the form `<instant>-<nonce>`:
   secure random source.
 
 Uniqueness does not depend on the clock. Two IDs coincide only when two
-writes begin in the same nanosecond *and* draw the same 64-bit nonce, a
-probability of 2⁻⁶⁴ for each such pair, however often the clock repeats or
+writes begin in the same nanosecond *and* draw the same 64-bit nonce. The
+probability is 2⁻⁶⁴ for each such pair, however often the clock repeats or
 is set back. Lode does not reserve IDs against existing ones. If IDs
 nevertheless coincide while the earlier snapshot exists, the colliding
 commit fails at its create-only manifest write, but only after it has
@@ -66,7 +66,7 @@ nonce, which does not reflect commit order.
 
 IDs written before v0.11.0 consist of `<instant>` alone. They remain valid
 and are read, selected, and retained exactly like current IDs. An ID is in
-the *generated form* when it is in either form; a legacy ID sorts before
+the *generated form* when it is in either form. A legacy ID sorts before
 every current ID with the same instant.
 
 ### Head Pointer
@@ -81,14 +81,14 @@ commits, and a Volume's blocks are persisted by `StageWriteAt` before
 and leaves the head unchanged. The commit itself resolves its parent,
 advances the pointer with `CompareAndSwap`, and then persists its canonical
 manifest followed by its partition manifests, one at a time. The commit is
-complete when its canonical manifest is persisted; from then on `Latest` and
-`Snapshot` return the snapshot. The partition manifests are an index of the
-canonical manifest: a writer that terminates before persisting all of them
-leaves a committed snapshot with an incomplete index, and the unfiltered
-listings report it through its canonical manifest (CONTRACT_READ_API
-§Listing Order and Cursors). A snapshot written before canonical
+complete when its canonical manifest is persisted, and from then on
+`Latest` and `Snapshot` return the snapshot. The partition manifests are an
+index of the canonical manifest. A writer that terminates before persisting
+all of them leaves a committed snapshot with an incomplete index, and the
+unfiltered listings report it through its canonical manifest
+(CONTRACT_READ_API §Listing Order and Cursors). A snapshot written before canonical
 manifests were introduced has only partition manifests and is committed
-when any of them is persisted; `Latest`, `Snapshot`, and retention find it
+when any of them is persisted. `Latest`, `Snapshot`, and retention find it
 through them. Between the pointer update and the canonical
 manifest the commit is *pending*: the pointer names a snapshot that has no manifest. A pending
 commit whose writer terminates before persisting the manifest is
@@ -96,18 +96,18 @@ commit whose writer terminates before persisting the manifest is
 abandoned one, so Lode treats every pointer that names a snapshot without a
 manifest as a pending commit:
 
-- When the pointer is missing or names a snapshot without a manifest (a
+- A pointer can be missing or name a snapshot without a manifest after a
   pending or abandoned commit, a manual edit, or a failed `Put` in the
-  replacement of `lode.SingleProcess`), `Latest` selects the largest snapshot ID that has a
-  manifest. If the clock was set back, or two commits began in the same
+  replacement of `lode.SingleProcess`. `Latest` then selects the largest
+  snapshot ID that has a manifest. If the clock was set back, or two commits began in the same
   nanosecond, that selection may not be the most recent commit. A writer
   handle's `Latest` creates a missing pointer from the selection but never
   replaces an existing pointer, because replacing it would revert the head
-  past a pending commit. A view (`ReadRoot.Records`, `ReadRoot.Blobs`)
-  resolves the head the same way but MUST NOT create a missing pointer: a
-  view never writes, so its store need not provide `CompareAndSwap`, and
-  every write through a view's store (`Put`, `Delete`, `CompareAndSwap`)
-  MUST return `ErrReadOnly`.
+  past a pending commit. A view (`ReadRoot.Records` or `ReadRoot.Blobs`)
+  resolves the head the same way but MUST NOT create a missing pointer. A
+  view never writes, so its store need not provide `CompareAndSwap`. Every
+  write through a view's store (`Put`, `Delete`, or `CompareAndSwap`) MUST
+  return `ErrReadOnly`.
 - A new commit adopts the snapshot that the pointer names as its parent,
   whether or not that snapshot has a manifest, so the history remains
   linear. After an abandoned commit, the next snapshot's `ParentSnapshotID`
@@ -117,16 +117,17 @@ manifest as a pending commit:
 - A Volume commit requires its parent's manifest. It therefore persists a
   staged copy of its own manifest at
   `volumes/<volume_id>/staged/<snapshot_id>.json` before it advances the
-  pointer, and removes the copy after it persists the canonical manifest,
-  so the next commit can load the parent even after an abandoned commit.
+  pointer. It removes the copy after it persists the canonical manifest.
+  The next commit can therefore load the parent even after an abandoned
+  commit.
   When the pointer update fails, the copy is removed only if the pointer
   names another snapshot, because a store may report a failure for an
   update it applied. Only a parent without either copy makes a Volume
   commit return `ErrSnapshotConflict` (CONTRACT_VOLUME §Error Semantics).
 - A dataset's first commit (one that expects no pointer) persists a staged
   copy of its manifest at `<dataset dir>/staged/<snapshot_id>.json` before it
-  advances the pointer, and removes the copy after it persists the canonical
-  manifest, so that a writer can check its settings against the commit
+  advances the pointer. It removes the copy after it persists the canonical
+  manifest. A writer can therefore check its settings against the commit
   while it is pending (CONTRACT_WRITE_API §Settings). Later commits stage
   nothing: the dataset then has a manifest to check against. When the
   pointer update fails, the copy is removed only if the pointer names
@@ -139,7 +140,7 @@ manifest as a pending commit:
   read of the pointer, or of the manifest that the pointer names, fails with
   any other error, `Latest`, parent resolution, and Volume commits MUST
   return that error. They MUST NOT treat the failure as a missing pointer or
-  manifest: the largest snapshot ID may name the head's parent, so selecting
+  manifest. The largest snapshot ID may name the head's parent, so selecting
   it would report an earlier snapshot as the head or fork the history.
 
 Instant-only IDs written before v0.11.0 were subject to the same ordering
@@ -171,7 +172,7 @@ Required fields:
 Optional fields:
 - the codec name (omitted when no codec is configured)
 - per-file statistics (present when the codec reports them through
-  `StatisticalCodec`; omitted otherwise)
+  `StatisticalCodec`, and omitted otherwise)
 
 Settings fields (format version 1.1.0 and later):
 - `codec_description`: the codec's configuration as `Codec.Describe`
@@ -186,10 +187,10 @@ Settings fields (format version 1.1.0 and later):
 With the codec, compressor, partitioner, and checksum names, these fields
 record every setting a writer must share with the dataset
 (CONTRACT_WRITE_API §Settings). The format version, not the presence of a
-field, decides which fields a manifest records: a manifest of format
+field, decides which fields a manifest records. A manifest of format
 version 1.0.0 was written before these fields existed and is read as using
-the names under which it was found, and a manifest of format version 1.1.0
-or later without `paths` is invalid.
+the names under which it was found. A manifest of format version 1.1.0 or
+later without `paths` is invalid.
 
 ### Per-File Statistics
 
@@ -201,12 +202,12 @@ A `FileRef` MAY contain per-file statistics reported by the codec.
 - When a codec does not report statistics, the statistics field MUST be
   omitted.
 - Statistics values MUST be serializable as JSON.
-- Statistics MUST NOT be inferred; the codec reports them from observed
+- Statistics MUST NOT be inferred. The codec reports them from observed
   data.
 - Per-file statistics comprise the row count and, for each column, the
   minimum, maximum, null count, and distinct count.
-- The distinct count is optional; a value of zero means that it was not
-  computed.
+- The distinct count is optional, and a value of zero means that it was
+  not computed.
 
 ### Checksum Rules
 
@@ -225,13 +226,13 @@ Manifests are immutable once written.
 - Metadata MUST be explicit on every snapshot.
 - A writer accepts metadata as any value that encodes as a JSON object (a
   struct or a map). `nil` is converted to an empty object (`{}`) at the API
-  boundary; a value that does not encode as an object is rejected with
+  boundary. A value that does not encode as an object is rejected with
   `ErrInvalidArgument`.
 - Empty metadata (`{}`) is valid and MUST be persisted as an explicit
   object.
 - The persisted object is retained as written (`Metadata`) and decoded on
-  request; Lode does not reinterpret its values.
-- Manifests always contain a metadata object; a manifest whose metadata is
+  request. Lode does not reinterpret its values.
+- Manifests always contain a metadata object. A manifest whose metadata is
   absent or not an object is invalid.
 
 ---
@@ -241,7 +242,7 @@ Manifests are immutable once written.
 - Snapshot history is strictly linear, with a single head.
 - Snapshots are immutable after commit.
 - Data files are immutable once written.
-- Commits create new state; they do not mutate existing state.
+- Commits create new state and do not mutate existing state.
 - Retention, which applies to Datasets only, removes
   committed snapshots and their data files but never rewrites them. The
   expiry of a committed snapshot is recorded by a new object (a tombstone),

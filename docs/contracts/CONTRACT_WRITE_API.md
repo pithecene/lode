@@ -1,4 +1,4 @@
-# Lode Write API — Contract
+# Lode Write API Contract
 
 This document defines the required semantics for the write-facing API.
 It is authoritative for any `Dataset` implementation.
@@ -24,14 +24,14 @@ It is authoritative for any `Dataset` implementation.
 
 ## Write Semantics
 
-`Records[T]` writes records of type `T`; `Blobs` writes one blob per
+`Records[T]` writes records of type `T`, and `Blobs` writes one blob per
 snapshot. Both are opened at a root (`Root.Records`, `Root.Blobs`), which
 checks the writer's settings against the dataset's head (§Settings).
 
 ### Required Behavior
 
 - `Write(ctx, data, metadata)` MUST create a new snapshot on success.
-- Metadata MUST encode as a JSON object (a struct, a map, or `nil`); a
+- Metadata MUST encode as a JSON object (a struct, a map, or `nil`). A
   value that does not MUST be rejected with `ErrInvalidArgument` before any
   store call. `nil` metadata MUST be persisted as `{}`.
 - Empty metadata is valid and MUST be persisted explicitly.
@@ -47,18 +47,21 @@ checks the writer's settings against the dataset's head (§Settings).
 
 ### Settings
 
-Every writer of a dataset MUST share the dataset's settings: the codec name
-and description (`Codec.Describe`), the compressor, the checksum
-algorithm, the partitioner and its keys, and the path names, as the
-manifest records them (CONTRACT_CORE §Manifest Requirements).
+Every writer of a dataset MUST share the dataset's settings, as the
+manifest records them (CONTRACT_CORE §Manifest Requirements). The settings
+are the codec name and description (`Codec.Describe`), the compressor, the
+checksum algorithm, the partitioner and its keys, and the path names.
 
 - When it opens, and again before its first commit, a writer MUST compare
-  its settings with one manifest, found in this order: the manifest of the snapshot that the
-  pointer names; that snapshot's staged copy (CONTRACT_CORE §Head Pointer);
-  and, when the pointer is absent or names neither, the newest manifest, as
-  `Latest` selects it. With no pointer and no manifest, the dataset is
-  empty, and the commit records the writer's settings, unless its
-  directory holds a manifest that the writer's layout does not persist.
+  its settings with one manifest, found in this order:
+  1. the manifest of the snapshot that the pointer names
+  2. that snapshot's staged copy (CONTRACT_CORE §Head Pointer)
+  3. when the pointer is absent or names neither, the newest manifest, as
+     `Latest` selects it
+
+  With no pointer and no manifest, the dataset is empty, and the commit
+  records the writer's settings, unless its directory holds a manifest that
+  the writer's layout does not persist.
 - A dataset directory that holds such a manifest, when no manifest is found
   under the writer's layout, contains a history persisted under another
   layout. The writer MUST be rejected with `ErrSettingsMismatch` rather
@@ -66,7 +69,7 @@ manifest records them (CONTRACT_CORE §Manifest Requirements).
   file name, without reading any object: the writer's manifest name, or
   the default name, which every manifest persisted before the names became
   root options bears. A history persisted under two other custom names
-  whose pointer is absent is not recognized; Lode persists a pointer with
+  whose pointer is absent is not recognized. Lode persists a pointer with
   every commit, so only a pointer removed by hand produces that state. Data
   objects are not a history:
   another writer persists its data before its first commit, and two first
@@ -79,7 +82,7 @@ manifest records them (CONTRACT_CORE §Manifest Requirements).
 - A pointer that names a snapshot with neither a manifest nor a staged copy,
   in a dataset with no other manifest, belongs to a first commit whose
   settings are unknown. The writer MUST return `ErrSnapshotConflict` rather
-  than commit unchecked settings; only a first commit persisted before
+  than commit unchecked settings. Only a first commit persisted before
   format version 1.1.0, or a pointer edited by hand, produces that state.
 - Two first commits with conflicting settings are serialized by the
   pointer's `CompareAndSwap`: the losing writer is checked against the
@@ -95,11 +98,11 @@ manifest records them (CONTRACT_CORE §Manifest Requirements).
 - A manifest written before format version 1.1.0 records no partition keys.
   For such a dataset with a Hive partitioner, the writer's keys MUST be
   verified, by name and in order, against the partition path of the first
-  snapshot with files, found by following parents from the head. A chain
-  without files back to its root is consistent with any keys; a chain that
-  ends at a missing or expired parent, or repeats a snapshot, before a
-  snapshot with files cannot be verified, and the write MUST be rejected
-  with `ErrSettingsMismatch`.
+  snapshot with files. The writer finds that snapshot by following parents
+  from the head. A chain without files back to its root accepts any keys.
+  A chain that ends at a missing or expired parent, or repeats a snapshot,
+  before a snapshot with files cannot be verified. The write MUST then be
+  rejected with `ErrSettingsMismatch`.
   Lode MUST NOT infer keys from partition paths: the writer states them,
   and Lode verifies them.
 
@@ -113,22 +116,22 @@ manifest records them (CONTRACT_CORE §Manifest Requirements).
 - `StreamWriter.Abort(ctx)` MUST ensure that no manifest is written.
 - `StreamWriter.Close()` without a preceding `Commit` MUST behave as `Abort`.
 - Streamed writes MUST be single-pass writes to the final object path.
-- Streamed writes MUST NOT mutate existing objects; every write targets a new
-  path.
+- Streamed writes MUST NOT mutate existing objects, so every write targets a
+  new path.
 - Streamed writes MUST set the row or event count to `1`.
 - When a checksum component is configured, the checksum MUST be computed during
   streaming and recorded in the manifest for each file written.
-- If the store's `Put` returns before consuming the stream (for example,
-  with `ErrPathExists`), every `Write` call issued after `Put` returned, and
-  `Commit`, MUST fail with that error, even when a compressor would buffer
-  the bytes; these calls MUST NOT block.
+- The store's `Put` can return before consuming the stream, for example
+  with `ErrPathExists`. Every `Write` call issued after `Put` returned, and
+  `Commit`, MUST then fail with that error, even when a compressor would
+  buffer the bytes. These calls MUST NOT block.
 - After a failed `Put`, the writer MUST NOT access the data path. `Put` is
   atomic ([`CONTRACT_STORAGE.md`](CONTRACT_STORAGE.md) §Put), so a failed stream leaves no object
   of its own, and a path whose `Put` returned `ErrPathExists` belongs to
   another writer. Removal of data files applies only to objects whose `Put`
   succeeded and whose commit then failed before any manifest write was
   attempted. A failed manifest write does not show whether the manifest was
-  stored (a lost response stores it), so the snapshot may be visible; the
+  stored (a lost response stores it), so the snapshot may be visible. The
   data object MUST then be retained, and `Sweep` reclaims it if the commit
   did fail.
 
@@ -139,14 +142,14 @@ manifest records them (CONTRACT_CORE §Manifest Requirements).
 - `Records.StreamWrite` MUST return `ErrNilIterator` if the iterator is
   `nil`.
 - `Records.StreamWrite` MUST consume records from an `iter.Seq2[T, error]`,
-  one at a time; an error the iterator yields aborts the write.
+  one at a time. An error that the iterator yields aborts the write.
 - `Records.StreamWrite` MUST return `ErrCodecNotStreamable` if the codec is
   not a `StreamingCodec`.
 - `Records.StreamWrite` MUST return `ErrPartitioningNotSupported` if the
   layout is partitioned, because single-pass streaming cannot partition
   records without buffering them.
 - Streamed record writes MUST be single-pass writes to the final object path.
-- Streamed record writes MUST NOT mutate existing objects; every write
+- Streamed record writes MUST NOT mutate existing objects, so every write
   targets a new path.
 - On success, the manifest is written and the new snapshot is returned.
 - On error (an iterator failure, a codec error, or a storage error), no
@@ -210,7 +213,7 @@ The snapshot history of a Dataset is linear.
 | Pattern | Writers | Snapshots | History | Supported |
 |---------|---------|-----------|---------|-----------|
 | Single writer | 1 process | 1 per Write | Linear (guaranteed) | Yes |
-| Multiple processes, serialized | N processes, external coordination | N (one per writer) | Linear (enforced by the caller) | Yes; the caller provides coordination |
+| Multiple processes, serialized | N processes, external coordination | N (one per writer) | Linear (enforced by the caller) | Yes, with coordination that the caller provides |
 | Multiple processes, uncoordinated | N processes, no coordination | N (one per writer) | Linear (enforced by CAS) | Yes |
 | Multiple writers in one process, store wrapped with `SingleProcess` | N goroutines, each with its own `Dataset`, sharing one wrapped store | N (one per writer) | Linear (enforced by the process lock) | Yes |
 
@@ -250,9 +253,9 @@ commit path. On `ErrSnapshotConflict`, the writer:
    same snapshot ID).
 4. Retries the pointer CAS.
 
-Data files are written once; only the manifest and the pointer are retried.
+Lode writes data files once and retries only the manifest and the pointer.
 The snapshot ID is retained because a Dataset's data paths contain it, so
-any data file the write persisted is valid only under that ID; a write that
+any data file the write persisted is valid only under that ID. A write that
 persisted no data file, such as an empty batch, retains it as well. A Volume
 retry draws a new ID because its block paths do not contain it
 (CONTRACT_VOLUME §Optimistic Concurrency (CAS), V1_API_DECISIONS D10c). If all retries are exhausted, `ErrSnapshotConflict` is returned as it would
@@ -358,10 +361,10 @@ and a glossary of variables.
 ### Parent Resolution
 
 - In-memory cache (within a process): **0 store calls**.
-- Persistent pointer (cold start): **1 store call** (1 Get). The snapshot
-  that the pointer names is the parent even when its manifest has not been
-  persisted, because it may belong to a pending commit; adopting any other
-  parent would fork the history (CONTRACT_CORE §Head Pointer).
+- Persistent pointer (cold start): **1 store call** (1 `Get`). The
+  snapshot that the pointer names is the parent even when its manifest has
+  not been persisted, because it may belong to a pending commit. Adopting
+  any other parent would fork the history (CONTRACT_CORE §Head Pointer).
 - Scan fallback (absent pointer, for backward compatibility): **O(N) through
   List**. The commit then creates the pointer.
 
@@ -370,17 +373,17 @@ Parent resolution MUST NOT use List when a valid pointer exists.
 ### Settings Check
 
 The check runs once per writer, before its first commit:
-- Against the manifest that the pointer names: **1 Get**.
-- While a first commit is pending: **2 Gets** (the canonical manifest, then
-  the staged copy).
+- Against the manifest that the pointer names: **1 `Get`**.
+- While a first commit is pending: **2 `Get` calls** (the canonical
+  manifest, then the staged copy).
 - When neither exists: the scan of `Latest`, **O(N) through List**, and
   1 List of the dataset's directory.
 - Against an empty dataset: **1 List** of the dataset's directory, to
   detect a history persisted under another layout.
 - Against a dataset written before format version 1.1.0 with a Hive
-  partitioner: **1 Get per snapshot** followed from the head to the first
-  snapshot with files, once per dataset, because the first commit after it
-  records the keys.
+  partitioner: **1 `Get` per snapshot** followed from the head to the first
+  snapshot with files. The check runs once per dataset, because the first
+  commit after it records the keys.
 
 ### Write Operations
 

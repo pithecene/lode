@@ -1,4 +1,4 @@
-# Lode Object Iteration — Contract
+# Lode Object Iteration Contract
 
 This document defines the lifecycle semantics for object iteration.
 
