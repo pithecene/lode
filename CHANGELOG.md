@@ -9,14 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Breaking Changes
+---
 
-- **A volume ID must be one path segment**: `volume.New` returns `ErrInvalidArgument` for an empty ID, the ID `.` or `..`, an ID with `/` or a backslash, and an ID beginning with `.lode-tmp-`. Lode checks a dataset ID in the same way. Earlier releases cleaned the paths that Lode built from an ID, so an ID such as `../datasets/events` addressed objects outside the volume's directory, including a dataset's pointer. An ID such as `a/data` addressed the objects of the volume `a`.
-- **A compressor's extension must not contain `/` or a backslash**: `WithCompressor` on a writer returns `ErrInvalidArgument` for such an extension. A writer appends the extension to each data file's name, so in earlier releases an extension such as `/../x` placed data files outside the snapshot's directory.
+## [0.12.1] - 2026-10-25
 
-### Fixed
+### Changed
+
+- **Documentation by audience**: the guides for readers are in `docs/guides/`, including a new guide to usage pitfalls. Plans and readiness records are in `docs/plans/`, and conventions for maintainers are in `docs/maintainers/`. Each contract is titled in the form "Lode X Contract", and each reference to another document is a link. Pithecene publishes the guides, the public API reference, and the contracts at [pithecene.sh/docs/lode](https://pithecene.sh/docs/lode).
+
+### Security
 
 - **A snapshot ID can no longer reach another dataset**: `Snapshot`, `Read`, and `GetManifest` return `ErrNotFound` for a snapshot ID that is not one path segment, because no snapshot has such an ID. In earlier releases, Lode cleaned the paths that it built from the ID, so the handle of the dataset `a`, given an ID such as `../../b/snapshots/<id>`, read the dataset `b`. Volume's `Snapshot` and `ReadAt` apply the same rule.
+- **A volume ID must be one path segment**: `volume.New` returns `ErrInvalidArgument` for an empty ID, the ID `.` or `..`, an ID with `/` or a backslash, and an ID beginning with `.lode-tmp-`. Lode checks a dataset ID in the same way. Earlier releases cleaned the paths that Lode built from an ID, so an ID such as `../datasets/events` addressed objects outside the volume's directory, including a dataset's pointer. An ID such as `a/data` addressed the objects of the volume `a`.
+- **A compressor's extension must not contain `/` or a backslash**: `WithCompressor` on a writer returns `ErrInvalidArgument` for such an extension. A writer appends the extension to each data file's name, so in earlier releases an extension such as `/../x` placed data files outside the snapshot's directory.
 
 ### Upgrade Notes
 
@@ -451,7 +456,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-[Unreleased]: https://github.com/pithecene/lode/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/pithecene/lode/compare/v0.12.1...HEAD
+[0.12.1]: https://github.com/pithecene/lode/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/pithecene/lode/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/pithecene/lode/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/pithecene/lode/compare/v0.9.1...v0.10.0
