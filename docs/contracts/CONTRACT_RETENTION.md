@@ -639,8 +639,8 @@ that a real run would return. A dry-run `Expire` still reads the pointer, so
 `RetainedHead` and `ErrHeadUncommitted` are those that a real run would
 produce. A dry-run `Sweep` reads the pointer in the same manner. It treats
 every validly tombstoned snapshot other than a protected one as settled, so
-it counts the snapshot's objects exactly as a real run would after step
-1. In step 3 it checks with `Exists` whether each copy is absent rather
+it counts the snapshot's objects exactly as a real run would after the
+first step. In step 3 it checks with `Exists` whether each copy is absent rather
 than creating it.
 
 ---
