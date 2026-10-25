@@ -33,7 +33,7 @@ Documentation, grouped by audience. Contracts define **system behavior**.
 
 Readers:
 
-- `guides/` — explanatory guides (non-normative): `concepts.md` (storage model, commits, choosing a write API), `retention.md` (expiry, tombstones, sweep), `snapshot-ids.md` (ID format, ordering, uniqueness)
+- `guides/` — explanatory guides (non-normative): `concepts.md` (storage model, commits, choosing a write API), `pitfalls.md` (rules of the API that most often surprise a caller), `retention.md` (expiry, tombstones, sweep), `snapshot-ids.md` (ID format, ordering, uniqueness)
 - `BENCHMARKS.md` — benchmark results and performance baselines
 
 Contracts (`contracts/`), by subject:
