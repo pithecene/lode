@@ -251,9 +251,9 @@ such `FileRef` for a mixed or retained snapshot.
 resolving the selection and **before any mutation**. If the resolved set
 contains the head, `Expire` removes the head from the set, reports it in
 `RetainedHead`, and expires the remainder of the set. Selecting the head
-is not an error. A `Before` or `Partition` request against a dataset that
-has received no commit after the head always selects the head, and an error would render such a request
-unusable until a new commit occurs. A caller that requires an entire
+is not an error. A `Before` instant later than the head's ID instant, or a
+`Partition` that holds the head's files, selects the head. An error would
+render such a request unusable until a new commit occurs. A caller that requires an entire
 partition to be removed inspects `RetainedHead` and repeats the request
 after a newer commit.
 
