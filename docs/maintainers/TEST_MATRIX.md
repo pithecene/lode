@@ -275,7 +275,7 @@ behavior itself.
 
 ---
 
-### CONTRACT_LAYOUT.md — Layout & Components
+### CONTRACT_LAYOUT.md — Layouts and Components
 
 | Requirement | Test |
 |-------------|------|

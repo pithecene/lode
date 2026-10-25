@@ -1,4 +1,4 @@
-# Lode Read API — Design and Implementation
+# Lode Read API — Contract
 
 This document defines the **Lode Read API**: its goals, non-goals, adapter
 contracts, and implementation considerations. It is authoritative for any

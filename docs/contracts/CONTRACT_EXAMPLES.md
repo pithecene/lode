@@ -1,4 +1,4 @@
-# CONTRACT_EXAMPLES.md — Example and Callsite Conventions
+# Lode Examples and Call Sites — Contract
 
 This contract defines normative conventions for examples and API call sites
 in Lode.
