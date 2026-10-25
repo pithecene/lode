@@ -418,8 +418,8 @@ Snapshot expiry and the sweep of unreferenced objects
 ## Error Messages
 
 Callers classify errors with `errors.Is` and `errors.As`, never by their
-messages. Each message serves human readers and begins with a source prefix
-that names the component in which the failure originated.
+messages. Each message serves human readers, and a source prefix in it names
+the component in which the failure originated.
 
 | Prefix | Component |
 |--------|-----------|
