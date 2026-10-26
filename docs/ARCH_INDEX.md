@@ -47,6 +47,7 @@ Contracts (`contracts/`), by subject:
 Maintainers (`maintainers/`):
 
 - `SNIPPET_POLICY.md` — markdown code fence conventions
+- `DOCS_SITE.md` — the documents that pithecene.sh publishes, and how a renamed document reaches the site
 
 Plans and records (`plans/`):
 
