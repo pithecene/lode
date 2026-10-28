@@ -1,17 +1,19 @@
 package lode
 
 import (
-	"bufio"
 	"bytes"
 	"errors"
+	"io"
 	"slices"
 	"strings"
 	"testing"
+	"testing/iotest"
 )
 
-// The decoder's buffer grows to the longest line it meets, up to
-// maxScanTokenSize, so a line far longer than the scanner's initial buffer
-// decodes, and a line beyond the limit fails rather than being truncated.
+// Decode reads one value per record with no line buffer in between, so a
+// record far longer than the read buffer decodes, and so does a record
+// longer than the ten mebibytes that earlier releases refused: Decode reads
+// every file that Encode wrote.
 func TestJSONLCodec_Decode_LineLength(t *testing.T) {
 	codec := JSONL[D]()
 
@@ -29,12 +31,67 @@ func TestJSONLCodec_Decode_LineLength(t *testing.T) {
 		}
 	})
 
-	t.Run("a line beyond the limit fails", func(t *testing.T) {
-		line := `{"v":"` + strings.Repeat("x", maxScanTokenSize) + `"}` + "\n"
-		if _, err := codec.Decode(strings.NewReader(line)); !errors.Is(err, bufio.ErrTooLong) {
-			t.Fatalf("Decode = %v, want bufio.ErrTooLong", err)
+	t.Run("a record longer than ten mebibytes round-trips", func(t *testing.T) {
+		// Eleven mebibytes is the base64 of an eight-mebibyte blob, the
+		// shape of record that the former ceiling refused after Encode
+		// had written it.
+		want := D{"v": strings.Repeat("x", 11<<20)}
+		var buf bytes.Buffer
+		if err := codec.Encode(&buf, []D{want}); err != nil {
+			t.Fatal(err)
+		}
+		records, err := codec.Decode(&buf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(records) != 1 || records[0]["v"] != want["v"] {
+			t.Fatalf("decoded %d records, want the one record of %d bytes", len(records), len(want["v"].(string)))
 		}
 	})
+}
+
+// Decode ends at the stream's end and fails on anything else: a reader's
+// error, a value cut short, a line that holds no value, and a record that
+// is not an object when the record type is a map.
+func TestJSONLCodec_Decode_Ends(t *testing.T) {
+	codec := JSONL[D]()
+	errRead := errors.New("read failed")
+
+	cases := []struct {
+		name  string
+		input io.Reader
+		want  int   // records decoded when err is nil
+		err   error // an error to match with errors.Is, or nil for any error
+		fails bool
+	}{
+		{name: "an empty stream holds no records", input: strings.NewReader(""), want: 0},
+		{name: "empty lines hold no records", input: strings.NewReader("\n\n"), want: 0},
+		{name: "a last record without a newline decodes", input: strings.NewReader(`{"v":1}` + "\n" + `{"v":2}`), want: 2},
+		{name: "a reader's error is returned", input: io.MultiReader(strings.NewReader(`{"v":1}`+"\n"), iotest.ErrReader(errRead)), err: errRead, fails: true},
+		{name: "a value cut short fails", input: strings.NewReader(`{"v":1}` + "\n" + `{"v":`), fails: true},
+		{name: "a line that holds no value fails", input: strings.NewReader(`{"v":1}` + "\nx\n"), fails: true},
+		{name: "a record that is not an object fails", input: strings.NewReader(`{"v":1}` + "\n[1]\n"), fails: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			records, err := codec.Decode(tc.input)
+			if tc.fails {
+				if err == nil {
+					t.Fatalf("Decode = %v, want an error", records)
+				}
+				if tc.err != nil && !errors.Is(err, tc.err) {
+					t.Fatalf("Decode = %v, want %v", err, tc.err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(records) != tc.want {
+				t.Fatalf("decoded %d records, want %d", len(records), tc.want)
+			}
+		})
+	}
 }
 
 // jsonlEvent is a typed record for the JSONL round trips.

@@ -295,7 +295,9 @@ type Codec[T any] interface {
 	// Encode writes records to the given writer.
 	Encode(w io.Writer, records []T) error
 
-	// Decode reads records from the given reader.
+	// Decode reads records from the given reader. It returns every record
+	// that Encode, or a stream encoder, wrote: a codec bounds Decode no
+	// more tightly than it bounds Encode.
 	Decode(r io.Reader) ([]T, error)
 }
 

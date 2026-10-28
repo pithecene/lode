@@ -4,13 +4,12 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"math"
 
 	jsoniter "github.com/json-iterator/go"
 )
 
 var jsonCodec = jsoniter.ConfigCompatibleWithStandardLibrary
-
-const maxScanTokenSize = 10 * 1024 * 1024 // 10MB
 
 // -----------------------------------------------------------------------------
 // JSONL Codec
@@ -48,9 +47,17 @@ func (jsonlCodec[T]) Decode(r io.Reader) ([]T, error) {
 	var records []T
 	scanner := bufio.NewScanner(r)
 	// The scanner allocates its buffer on demand and grows it to the
-	// longest line, up to maxScanTokenSize, so a small file costs a small
-	// buffer rather than a fixed 64 KiB.
-	scanner.Buffer(nil, maxScanTokenSize)
+	// longest line, so a small file costs a small buffer rather than a
+	// fixed 64 KiB. The growth has no ceiling below the address space:
+	// Encode bounds a line only by the record it was given, and Decode
+	// holds the whole file's records in memory anyway, so a ceiling on one
+	// line would refuse files that Encode wrote without bounding memory.
+	// The file itself is the bound, for a well-formed and for a corrupt
+	// object alike: a line is at most the file, the scanner holds at most
+	// twice the longest line while it grows, and the decoded records of
+	// the whole file follow. A per-line ceiling changes that by a constant
+	// factor, not an order, while refusing valid files.
+	scanner.Buffer(nil, math.MaxInt)
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		if len(line) == 0 {
