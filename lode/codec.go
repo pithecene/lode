@@ -52,6 +52,11 @@ func (jsonlCodec[T]) Decode(r io.Reader) ([]T, error) {
 	// Encode bounds a line only by the record it was given, and Decode
 	// holds the whole file's records in memory anyway, so a ceiling on one
 	// line would refuse files that Encode wrote without bounding memory.
+	// The file itself is the bound, for a well-formed and for a corrupt
+	// object alike: a line is at most the file, the scanner holds at most
+	// twice the longest line while it grows, and the decoded records of
+	// the whole file follow. A per-line ceiling changes that by a constant
+	// factor, not an order, while refusing valid files.
 	scanner.Buffer(nil, math.MaxInt)
 	for scanner.Scan() {
 		line := scanner.Bytes()
