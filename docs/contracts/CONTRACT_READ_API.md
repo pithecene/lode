@@ -160,6 +160,11 @@ ReaderAt(ctx context.Context, obj ObjectRef) (io.ReaderAt, error)
 Views resolve paths according to Lode's layout and semantics but do **not
 interpret** the data.
 
+- A codec's `Decode` MUST return every record that its `Encode`, or its
+  stream encoder, wrote. A codec MUST NOT bound a record's size in `Decode`
+  more tightly than in `Encode`, so a record that a writer persisted is a
+  record that a view reads.
+
 ### Opening a View
 
 - A view MUST resolve the dataset's head without writing. It reads the

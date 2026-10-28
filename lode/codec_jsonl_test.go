@@ -1,17 +1,16 @@
 package lode
 
 import (
-	"bufio"
 	"bytes"
-	"errors"
 	"slices"
 	"strings"
 	"testing"
 )
 
-// The decoder's buffer grows to the longest line it meets, up to
-// maxScanTokenSize, so a line far longer than the scanner's initial buffer
-// decodes, and a line beyond the limit fails rather than being truncated.
+// The decoder's buffer grows to the longest line it meets, so a line far
+// longer than the scanner's initial buffer decodes, and so does a record
+// longer than the ten mebibytes that earlier releases refused: Decode reads
+// every file that Encode wrote.
 func TestJSONLCodec_Decode_LineLength(t *testing.T) {
 	codec := JSONL[D]()
 
@@ -29,10 +28,21 @@ func TestJSONLCodec_Decode_LineLength(t *testing.T) {
 		}
 	})
 
-	t.Run("a line beyond the limit fails", func(t *testing.T) {
-		line := `{"v":"` + strings.Repeat("x", maxScanTokenSize) + `"}` + "\n"
-		if _, err := codec.Decode(strings.NewReader(line)); !errors.Is(err, bufio.ErrTooLong) {
-			t.Fatalf("Decode = %v, want bufio.ErrTooLong", err)
+	t.Run("a record longer than ten mebibytes round-trips", func(t *testing.T) {
+		// Eleven mebibytes is the base64 of an eight-mebibyte blob, the
+		// shape of record that the former ceiling refused after Encode
+		// had written it.
+		want := D{"v": strings.Repeat("x", 11<<20)}
+		var buf bytes.Buffer
+		if err := codec.Encode(&buf, []D{want}); err != nil {
+			t.Fatal(err)
+		}
+		records, err := codec.Decode(&buf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(records) != 1 || records[0]["v"] != want["v"] {
+			t.Fatalf("decoded %d records, want the one record of %d bytes", len(records), len(want["v"].(string)))
 		}
 	})
 }

@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A JSON Lines record of any length decodes**: the JSONL codec's `Decode` grows its buffer to the longest line in the file, with no ceiling of its own. Earlier releases refused a line longer than 10 MiB with `bufio.Scanner: token too long`, while `Encode` and the stream encoder wrote lines of any length. A dataset could therefore hold a record that its view could not return, such as an 8 MiB blob encoded as base64 inside one record. The codec contract now states that `Decode` returns every record that `Encode` wrote.
+
 ---
 
 ## [0.12.1] - 2026-10-25
