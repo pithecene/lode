@@ -133,7 +133,7 @@ CI/CD workflows (GitHub Actions).
 - `workflows/nightly.yml` — nightly checks (run on demand)
 - `workflows/chaos.yml` — chaos harness (run on demand)
 - `workflows/release.yml` — release automation
-- `actions/release-check/` — installs the internal release check at its pinned commit
+- `actions/release-check/` — runs the internal release check from the image that `mise.toml` pins
 
 ---
 

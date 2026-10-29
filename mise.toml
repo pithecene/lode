@@ -5,3 +5,8 @@ go = "1.27.3"
 "go:github.com/go-gremlins/gremlins/cmd/gremlins" = "v0.6.0"
 "go:golang.org/x/perf/cmd/benchstat" = "v0.0.0-20260209182753-b57e4e371b65"
 yamllint = "1.38.0"
+
+[env]
+# The organization's internal check, by version and digest: the one pin for
+# the changelog job of ci.yml and the release check of release.yml.
+BOSUN_IMAGE = "ghcr.io/pithecene/bosun:0.1.0-rc.1@sha256:163fbde71f7592ea40dc652402c6abbf6e229d2c137e412b09f99066c2d17b28"

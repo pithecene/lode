@@ -74,35 +74,29 @@ jobs:
 
   changelog:
     name: 🧾 Changelog
-    # The release check is private to the maintainers. GitHub withholds the
-    # deploy key from pull requests that forks and Dependabot open, so those
-    # pull requests create no job rather than a job that fails for want of it.
+    # The release check is private to the maintainers. A pull request that a
+    # fork or Dependabot opens creates no job, rather than a job that fails
+    # for want of access to the check.
     if: >-
       github.event_name != 'pull_request' ||
       (github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.user.login != 'dependabot[bot]')
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # The job pulls the internal check's image from the organization's registry.
+      packages: read
     steps:
       - name: 📥 Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
         with:
           persist-credentials: false
 
-      # The check runs `bosun check` as bosun.yaml configures it, through
-      # Bosun's action from a checkout at the pinned commit. A public
-      # repository cannot call an action that a private one holds, so the
-      # deploy key checks Bosun out, and .bosun/ stays out of the source.
-      - name: 📥 Checkout Bosun
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
-        with:
-          repository: pithecene/bosun
-          ref: e3cd045e216af622df9bac46ce244c21532d5409
-          ssh-key: ${{ secrets.BOSUN_DEPLOY_KEY }}
-          persist-credentials: false
-          path: .bosun/source
-
       - name: 🧾 Check Changelog
-        uses: ./.bosun/source/tools/dagger
+        uses: ./.github/actions/release-check
+        with:
+          token: ${{ github.token }}
+          run: bosun check
 
   snippets:
     name: 📝 Snippets

@@ -1,35 +1,29 @@
 name: Release Check
 description: >-
-  Installs the organization's internal release check at .bosun/bin/release-gate
-  from the commit that this action pins. Moving the pin adopts any revised rule.
+  Runs a command in the organization's internal check image, which
+  BOSUN_IMAGE in mise.toml pins by version and digest. Moving the pin adopts
+  any revised rule. The job grants `packages: read`, which the pull needs.
 
 inputs:
-  ssh-key:
-    description: The read-only deploy key that checks out the release check.
+  token:
+    description: The job's token, which pulls the image.
+    required: true
+  run:
+    description: The command to run in the image on the checkout.
     required: true
 
 runs:
   using: composite
   steps:
-    - name: 📥 Checkout Release Check
-      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
-      with:
-        repository: pithecene/bosun
-        # The changelog job of ci.yml runs the same commit; move both together.
-        ref: e3cd045e216af622df9bac46ce244c21532d5409
-        ssh-key: ${{ inputs.ssh-key }}
-        persist-credentials: false
-        path: .bosun-source
-
-    - name: 🧰 Setup Rust
-      # The check builds with the Rust version that its own repository pins,
-      # installed by the runner's rustup rather than by a third-party action.
+    - name: 🧾 Run the Release Check
       shell: bash
+      env:
+        TOKEN: ${{ inputs.token }}
+        COMMAND: ${{ inputs.run }}
       run: |
-        version=$(awk -F'"' '/^rust = /{print $2}' .bosun-source/mise.toml)
-        rustup toolchain install "$version" --profile minimal
-        echo "RUSTUP_TOOLCHAIN=$version" >> "$GITHUB_ENV"
-
-    - name: 🏗️ Install Release Check
-      shell: bash
-      run: .bosun-source/tools/install/install.sh .bosun-source .bosun release-gate
+        set -euo pipefail
+        image="$(sed -n 's/^BOSUN_IMAGE = "\(.*\)"$/\1/p' mise.toml)"
+        [ -n "$image" ] || { echo "mise.toml pins no BOSUN_IMAGE" >&2; exit 1; }
+        printf '%s' "$TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+        docker run --rm -v "$GITHUB_WORKSPACE:/work" -e GITHUB_ACTIONS -e GITHUB_ACTOR \
+          --entrypoint sh "$image" -c "$COMMAND"

@@ -26,6 +26,10 @@ jobs:
     runs-on: ubuntu-latest
     needs: [tag_check]
     if: ${{ needs.tag_check.outputs.semver_match != '' }}
+    permissions:
+      contents: read
+      # The job pulls the internal check's image from the organization's registry.
+      packages: read
     steps:
       - name: 📥 Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
@@ -40,16 +44,13 @@ jobs:
       - name: 📝 Extract Release Notes
         run: scripts/release-notes.sh "${GITHUB_REF_NAME}" release-notes.md
 
-      - name: 🏗️ Install Release Check
+      - name: 🧾 Check Changelog and Release Notes
         uses: ./.github/actions/release-check
         with:
-          ssh-key: ${{ secrets.BOSUN_DEPLOY_KEY }}
-
-      - name: 🧾 Check Changelog
-        run: .bosun/bin/release-gate check CHANGELOG.md
-
-      - name: 🧾 Check Release Notes
-        run: .bosun/bin/release-gate notes release-notes.md
+          token: ${{ github.token }}
+          run: >-
+            release-gate check CHANGELOG.md &&
+            release-gate notes release-notes.md
 
   package:
     name: 📦 Package
