@@ -9,4 +9,4 @@ yamllint = "1.38.0"
 [env]
 # The organization's internal check, by version and digest: the one pin for
 # the changelog job of ci.yml and the release check of release.yml.
-BOSUN_IMAGE = "ghcr.io/pithecene/bosun:0.1.0-rc.1@sha256:163fbde71f7592ea40dc652402c6abbf6e229d2c137e412b09f99066c2d17b28"
+BOSUN_IMAGE = "ghcr.io/pithecene/bosun:0.1.0-rc.2@sha256:078700d19d6fde736c9699baa3a052e8ff009d16f63323200c84ded8ae4231b0"
