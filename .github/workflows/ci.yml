@@ -82,19 +82,31 @@ jobs:
       (github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.user.login != 'dependabot[bot]')
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Bosun's action asks whether its engine's state is already cached.
+      actions: read
     steps:
       - name: 📥 Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
         with:
           persist-credentials: false
 
-      - name: 🏗️ Install Release Check
-        uses: ./.github/actions/release-check
+      # The check runs `bosun check` as bosun.yaml configures it, through
+      # Bosun's action from a checkout at the pinned commit. A public
+      # repository cannot call an action that a private one holds, so the
+      # deploy key checks Bosun out, and .bosun/ stays out of the source.
+      - name: 📥 Checkout Bosun
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
         with:
+          repository: pithecene/bosun
+          ref: f77aae3cc530204bd51da9195562c5cf0a171fa1
           ssh-key: ${{ secrets.BOSUN_DEPLOY_KEY }}
+          persist-credentials: false
+          path: .bosun/source
 
       - name: 🧾 Check Changelog
-        run: .bosun/bin/release-gate check CHANGELOG.md
+        uses: ./.bosun/source/tools/dagger
 
   snippets:
     name: 📝 Snippets

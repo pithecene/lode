@@ -1,0 +1,5 @@
+# Lode configures Bosun's checks (pithecene/bosun, CONTRACT_CONFIG): the release gate holds the changelog to the
+# changelog contract. CI runs them in the changelog job of .github/workflows/ci.yml.
+version: 1
+changelog:
+  file: CHANGELOG.md

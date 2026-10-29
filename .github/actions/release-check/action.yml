@@ -15,7 +15,8 @@ runs:
       uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
       with:
         repository: pithecene/bosun
-        ref: 34c156de5591e7d9327b5aa2790803f3257d7a8f
+        # The changelog job of ci.yml runs the same commit; move both together.
+        ref: f77aae3cc530204bd51da9195562c5cf0a171fa1
         ssh-key: ${{ inputs.ssh-key }}
         persist-credentials: false
         path: .bosun-source
