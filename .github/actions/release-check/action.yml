@@ -16,7 +16,7 @@ runs:
       with:
         repository: pithecene/bosun
         # The changelog job of ci.yml runs the same commit; move both together.
-        ref: f77aae3cc530204bd51da9195562c5cf0a171fa1
+        ref: 48e4ea345d86e0fb0b9f7054847603aa06182e34
         ssh-key: ${{ inputs.ssh-key }}
         persist-credentials: false
         path: .bosun-source

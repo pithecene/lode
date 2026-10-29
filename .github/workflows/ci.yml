@@ -100,7 +100,7 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
         with:
           repository: pithecene/bosun
-          ref: f77aae3cc530204bd51da9195562c5cf0a171fa1
+          ref: 48e4ea345d86e0fb0b9f7054847603aa06182e34
           ssh-key: ${{ secrets.BOSUN_DEPLOY_KEY }}
           persist-credentials: false
           path: .bosun/source
