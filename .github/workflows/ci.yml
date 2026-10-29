@@ -82,10 +82,6 @@ jobs:
       (github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.user.login != 'dependabot[bot]')
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      # Bosun's action asks whether its engine's state is already cached.
-      actions: read
     steps:
       - name: 📥 Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
@@ -100,7 +96,7 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
         with:
           repository: pithecene/bosun
-          ref: 48e4ea345d86e0fb0b9f7054847603aa06182e34
+          ref: e3cd045e216af622df9bac46ce244c21532d5409
           ssh-key: ${{ secrets.BOSUN_DEPLOY_KEY }}
           persist-credentials: false
           path: .bosun/source
