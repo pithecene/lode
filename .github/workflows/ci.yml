@@ -82,10 +82,6 @@ jobs:
       (github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.user.login != 'dependabot[bot]')
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      # The job pulls the internal check's image from the organization's registry.
-      packages: read
     steps:
       - name: 📥 Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
@@ -95,7 +91,8 @@ jobs:
       - name: 🧾 Check Changelog
         uses: ./.github/actions/release-check
         with:
-          token: ${{ github.token }}
+          registry-user: ${{ secrets.BOSUN_REGISTRY_USER }}
+          registry-token: ${{ secrets.BOSUN_REGISTRY_TOKEN }}
           run: bosun check
 
   snippets:
