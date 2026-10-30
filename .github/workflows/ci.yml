@@ -82,6 +82,13 @@ jobs:
       (github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.user.login != 'dependabot[bot]')
     runs-on: ubuntu-latest
+    # The job runs inside the organization's check image. Its version and
+    # digest here and in release.yml move together.
+    container:
+      image: ghcr.io/pithecene/bosun:0.1.0-rc.3@sha256:448e8c48c2c8370979e5e9420073b7229d43bdaa8bc3797ad3f4b9d570157c8e
+      credentials:
+        username: bosun
+        password: ${{ secrets.BOSUN_REGISTRY_TOKEN }}
     steps:
       - name: 📥 Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
@@ -89,11 +96,7 @@ jobs:
           persist-credentials: false
 
       - name: 🧾 Check Changelog
-        uses: ./.github/actions/release-check
-        with:
-          registry-user: ${{ secrets.BOSUN_REGISTRY_USER }}
-          registry-token: ${{ secrets.BOSUN_REGISTRY_TOKEN }}
-          run: bosun check
+        run: bosun check
 
   snippets:
     name: 📝 Snippets
