@@ -32,13 +32,15 @@ Based on the full-history audit of the production dataset
   order. v0.11.0 removes every path to that outcome
   ([#208](https://github.com/pithecene/lode/issues/208)); the criterion
   remains unmet until v0.11.0 is observed in production.
-- **Not yet met, time-gated:** the API, sentinel, option, and manifest
-  format freeze windows restart with v0.12.0 (2026-10-23), which ships
-  every decision of `V1_API_DECISIONS.md`: the construction and record
-  surface of D11, manifest format 1.1.0, typed partition paths (D4), range
-  reads as an optional capability (D5), the error-message rule (D6), the
-  removal of the S3 test double (D7), and the partition index (D10b). The
-  earliest pass of each window is 2026-11-20 (§1, §2). No decision is open.
+- **Not yet met, time-gated:** the sentinel, option, and manifest format
+  freeze windows restart with v0.12.0 (2026-10-23), which ships every
+  decision of `V1_API_DECISIONS.md`: the construction and record surface
+  of D11, manifest format 1.1.0, typed partition paths (D4), range reads
+  as an optional capability (D5), the error-message rule (D6), the removal
+  of the S3 test double (D7), and the partition index (D10b). The earliest
+  pass of each of these windows is 2026-11-20 (§1, §2). The API freeze
+  window restarts with v0.13.0 (2026-10-31), which adds `Prefixed`, and
+  its earliest pass is 2026-11-28 (§1). No decision is open.
 - **Not yet met, evidence missing:** native AWS S3 (§6), steady-state snapshot
   reads (§3), checksum-backed corruption checks (no production file carries a
   checksum, §10).
@@ -151,6 +153,9 @@ partitions, one dataset on R2.
 >
 > **Evidence:** Window restarted by v0.12.0 (2026-10-23), which releases the D11 surface and, besides, `PartitionPath` and `ParsePartitionPath` (D4), `RangeReader` and `RangeStore` in place of the range methods of `ObjectStore` (D5), the removal of `s3.MockS3Client` (D7), and `SweepReport.Reindexed` (D10b). A symbol-by-symbol comparison with v0.11.0 finds every removed or changed signature in the changelog. Earliest pass: 2026-11-20.
 > Date: 2026-10-23 | Observer: @pithecene | Project: lode
+>
+> **Evidence:** Window restarted by v0.13.0 (2026-10-31), which adds `Prefixed`, a factory whose store keeps every object under a prefix. The release also adds `volume.Remove` and `volume.ErrRemoved`, which the criterion excludes as part of the experimental Volume. No signature changes. Earliest pass: 2026-11-28.
+> Date: 2026-10-31 | Observer: @pithecene | Project: lode
 > Summary: Not met; window restarts on every API change.
 > Issue: lode#175
 

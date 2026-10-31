@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+---
+
+## [0.13.0] - 2026-10-31
+
 ### Added
 
 - **`lode.Prefixed`**: this factory wraps another factory's store so that every object lives under a prefix, on any backend. A dataset or a volume therefore sits at a location of the caller's choice in a store the caller already holds. The store refuses a key that would leave the prefix with `ErrInvalidPath`, and the factory refuses a prefix outside the root with `ErrInvalidArgument`.
@@ -469,7 +473,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-[Unreleased]: https://github.com/pithecene/lode/compare/v0.12.2...HEAD
+[Unreleased]: https://github.com/pithecene/lode/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/pithecene/lode/compare/v0.12.2...v0.13.0
 [0.12.2]: https://github.com/pithecene/lode/compare/v0.12.1...v0.12.2
 [0.12.1]: https://github.com/pithecene/lode/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/pithecene/lode/compare/v0.11.0...v0.12.0
