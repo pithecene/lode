@@ -51,7 +51,17 @@ type Errors struct {
 	// HeadUncommitted is returned by CommittedHead when the pointer names a
 	// snapshot with no manifest, or is missing beside existing snapshots.
 	HeadUncommitted error
+	// Removed is returned wherever the head is read when the pointer holds
+	// RemovedPointer. A container that is never removed leaves it nil, and
+	// its pointer is then read as before.
+	Removed error
 }
+
+// RemovedPointer is the content of the head pointer of a removed history
+// (CONTRACT_CORE §Head Pointer). It is not a snapshot ID, so no commit can
+// parent on it, and Remove never deletes it, so a writer that held the
+// history open through the removal can never advance the pointer again.
+const RemovedPointer = "lode:removed"
 
 // Kind is what a container knows about its own snapshots: where they live
 // and how to read one. Implemented by small value types, not closures.
@@ -301,10 +311,27 @@ func (q *newestFirst[ID]) Pop() any {
 // The head pointer
 // -----------------------------------------------------------------------------
 
-// ReadPointer returns the ID the persisted pointer names, or errs.NotFound when
-// the pointer is absent or empty.
+// ReadPointer returns the ID the persisted pointer names, errs.NotFound when
+// the pointer is absent or empty, and errs.Removed when it holds
+// RemovedPointer and the container passed errs.Removed.
 func (h *History[ID, M]) ReadPointer(ctx context.Context) (ID, error) {
-	rc, err := h.store.Get(ctx, h.pointerPath)
+	content, err := readPointer(ctx, h.store, h.pointerPath)
+	if err != nil {
+		return "", err
+	}
+	id := ID(strings.TrimSpace(content))
+	if id == "" {
+		return "", h.errs.NotFound
+	}
+	if h.errs.Removed != nil && id == RemovedPointer {
+		return "", h.errs.Removed
+	}
+	return id, nil
+}
+
+// readPointer returns the pointer's content as stored.
+func readPointer(ctx context.Context, store Store, pointerPath string) (string, error) {
+	rc, err := store.Get(ctx, pointerPath)
 	if err != nil {
 		return "", fmt.Errorf("failed to read latest pointer: %w", err)
 	}
@@ -313,11 +340,51 @@ func (h *History[ID, M]) ReadPointer(ctx context.Context) (ID, error) {
 	if err != nil {
 		return "", fmt.Errorf("lode: failed to read latest pointer: %w", err)
 	}
-	id := ID(strings.TrimSpace(string(data)))
-	if id == "" {
-		return "", h.errs.NotFound
+	return string(data), nil
+}
+
+// Remove replaces the pointer at pointerPath with RemovedPointer through
+// CompareAndSwap against the content it read, so a commit that races the
+// removal fails its own swap and, on retry, reads the removal. It returns
+// the content it replaced: "" when the pointer was absent, and
+// RemovedPointer when the pointer already held it, in which case nothing
+// is written. A conflict is retried as a commit's is, and
+// errs.SnapshotConflict is returned once cfg's attempts are spent. The
+// caller removes the history's other objects afterwards and never the
+// pointer.
+func Remove(ctx context.Context, store Store, pointerPath string, errs Errors, cfg *retry.Config) (string, error) {
+	var lastErr error
+	// n reaches cfg.MaxAttempts() and stops there: neither MaxAttempts()+1
+	// nor n++ past it is computed, so the largest retry count neither
+	// overflows into zero attempts nor into an endless loop.
+	for n := 0; ; n++ {
+		if n > 0 {
+			if err := cfg.Backoff(ctx, n); err != nil {
+				return "", err
+			}
+		}
+		content, err := readPointer(ctx, store, pointerPath)
+		if errors.Is(err, errs.NotFound) {
+			content = "" // CompareAndSwap creates the pointer
+		} else if err != nil {
+			return "", err
+		}
+		previous := strings.TrimSpace(content)
+		if previous == RemovedPointer {
+			return previous, nil
+		}
+		err = store.CompareAndSwap(ctx, pointerPath, content, RemovedPointer)
+		if err == nil {
+			return previous, nil
+		}
+		if !errors.Is(err, errs.SnapshotConflict) {
+			return "", fmt.Errorf("failed to replace latest pointer: %w", err)
+		}
+		lastErr = err
+		if n >= cfg.MaxAttempts() {
+			return "", lastErr
+		}
 	}
-	return id, nil
 }
 
 // CommittedHead returns the head retention must never remove: the snapshot
@@ -717,7 +784,34 @@ func (h *History[ID, M]) CommitLoop(ctx context.Context, cfg *retry.Config, atte
 		if !errors.Is(err, h.errs.SnapshotConflict) {
 			return err
 		}
+		if err := h.removed(ctx); err != nil {
+			return err
+		}
 		lastErr = err
 	}
 	return lastErr
+}
+
+// removed reports the removal of a removable history whose commit just
+// conflicted. A writer that remembers its head commits without reading the
+// pointer, so its swap is where it meets the marker: one read on the
+// conflict path tells a removal from a concurrent commit, and the writer
+// then returns errs.Removed whatever its retries. Nil for a history that
+// cannot be removed, or whose pointer holds anything else. A read that
+// fails otherwise is returned, as every read of the pointer is
+// (CONTRACT_CORE §Head Pointer): the conflict may be the removal's.
+func (h *History[ID, M]) removed(ctx context.Context) error {
+	if h.errs.Removed == nil {
+		return nil
+	}
+	_, err := h.ReadPointer(ctx)
+	switch {
+	case err == nil, errors.Is(err, h.errs.NotFound):
+		return nil
+	case errors.Is(err, h.errs.Removed):
+		h.Forget()
+		return err
+	default:
+		return fmt.Errorf("failed to resolve head after a conflict: %w", err)
+	}
 }

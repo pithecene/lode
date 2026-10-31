@@ -190,6 +190,20 @@ names, `Layout`, and settings recorded in manifests are specific to
 datasets and do not apply to Volume, whose metadata is a `volume.Metadata`
 map.
 
+`volume.Remove(ctx, id, factory, opts...)` removes a volume
+(CONTRACT_VOLUME §Removal). It first replaces the head pointer with a
+removal marker, so `Latest` and `Commit` on every handle of the volume
+return `volume.ErrRemoved` from then on, and then deletes the volume's
+manifests, staged manifests and blocks. The pointer stays as the fence
+that keeps the volume removed, and a second call completes an interrupted
+removal. A commit that races the removal makes the pointer swap conflict:
+with `WithRetryCount` the swap is retried, and otherwise `Remove` returns
+`ErrSnapshotConflict` and deletes nothing. A commit that advanced the
+pointer but has not persisted its manifest makes `Remove` return
+`ErrHeadUncommitted` with the fence written and nothing deleted, as
+`Expire` does for an uncommitted head; call `Remove` again once the
+commit has finished.
+
 The package `volume` defines its own option type, `volume.Option`, so the
 Dataset options of `lode` do not compile as Volume options. Volume accepts
 the following options:
@@ -1009,14 +1023,16 @@ if errors.Is(err, lode.ErrNoSnapshots) {
 | `ErrSettingsMismatch` | The handle's codec, codec description, compressor, checksum, layout and partition keys, or path names differ from the dataset's | Writer handles, views |
 | `ErrReadOnly` | A write (`Put`, `Delete`, or `CompareAndSwap`) was attempted through a read-only root's store | Views |
 | `ErrSnapshotExpired` | `Expire` removed the snapshot, and the error also matches `ErrNotFound` | Handles |
-| `ErrHeadUncommitted` | The latest pointer names a snapshot whose manifest has not been persisted, or is absent while snapshots exist | `Expire`, `Sweep` (absent pointer only) |
+| `ErrHeadUncommitted` | The latest pointer names a snapshot whose manifest has not been persisted, or is absent while snapshots exist | `Expire`, `Sweep` (absent pointer only), `volume.Remove` |
 | `ErrSchemaViolation` | A record does not conform to the Parquet schema, or the schema is invalid | Parquet codec |
 | `ErrInvalidFormat` | A Parquet file is malformed or corrupt | Parquet codec |
 
-Volume (experimental) adds two sentinels in the package `volume`:
-`volume.ErrRangeMissing` (a `ReadAt` range is not fully committed) and
+Volume (experimental) adds three sentinels in the package `volume`:
+`volume.ErrRangeMissing` (a `ReadAt` range is not fully committed),
 `volume.ErrOverlappingBlocks` (committed blocks overlap in the cumulative
-manifest). It also returns the shared sentinels above where they apply.
+manifest) and `volume.ErrRemoved` (the volume was removed, so its head and
+its commits are refused). It also returns the shared sentinels in the
+table where they apply.
 
 ### Error Handling Guidelines
 

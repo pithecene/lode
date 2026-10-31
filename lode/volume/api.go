@@ -107,7 +107,15 @@ var (
 	// ErrOverlappingBlocks indicates committed blocks overlap in the
 	// cumulative manifest.
 	ErrOverlappingBlocks error = errOverlappingBlocks{}
+
+	// ErrRemoved indicates the volume was removed (Remove): its head and
+	// its commits are refused for good.
+	ErrRemoved error = errRemoved{}
 )
+
+type errRemoved struct{}
+
+func (errRemoved) Error() string { return "volume removed" }
 
 type errRangeMissing struct{}
 

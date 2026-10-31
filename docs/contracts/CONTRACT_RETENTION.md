@@ -24,7 +24,8 @@ implementation.
   own scheduler.
 - Automatic compaction, rewriting of data files, or merging of snapshots.
 - Volume retention. Volume snapshots are cumulative, and this contract does
-  not define their expiry.
+  not define their expiry. A Volume is removed whole, by `volume.Remove`
+  (CONTRACT_VOLUME §Removal).
 
 ---
 

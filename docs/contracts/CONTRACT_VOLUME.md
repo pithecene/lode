@@ -293,6 +293,8 @@ Dataset.
   expect that head's pointer content. After the repair, the caller MUST
   therefore call `Latest` or open the volume again, unless the caller
   configures retries (each retry refreshes the head).
+- A removed Volume (§Removal) MUST produce `volume.ErrRemoved` from
+  `Latest` and `Commit`.
 - `Latest`, `Snapshot`, and `Snapshots` never read staged copies. An
   abandoned commit has no canonical manifest, so no listing includes it, and
   its blocks become visible through the next commit, which merges them. That
@@ -389,6 +391,61 @@ volumes/<volume_id>/data/<offset>-<length>.bin
 - Volume names data files by byte range to facilitate debugging.
 - This layout is not part of the public API, but it is a stable persisted
   format (§Public API Surface).
+
+---
+
+## Removal
+
+A Volume is removed whole, by `Remove(ctx, id, factory, opts...)`. A
+Volume has no expiry of single snapshots, because its snapshots are
+cumulative (CONTRACT_RETENTION §Non-Goals).
+
+`Remove` MUST proceed in this order:
+
+1. It replaces the head pointer with the removal marker `lode:removed`
+   through `CompareAndSwap` against the content it read, and creates the
+   pointer with the marker when the Volume has none. The marker is not a
+   snapshot ID, so no commit can parent on it. A commit that races the
+   swap makes it conflict. `Remove` retries the swap as a commit retries
+   (§Optimistic Concurrency), and returns `lode.ErrSnapshotConflict` once
+   the retries are spent, having deleted nothing.
+2. It checks that the head it replaced has a canonical manifest. A head
+   without one belongs to a commit that advanced the pointer and has not
+   persisted its manifest, pending or abandoned (CONTRACT_CORE §Head
+   Pointer). `Remove` then returns `lode.ErrHeadUncommitted` and deletes
+   nothing. The marker is written, so that commit can finish and no other
+   can start, and a later call, which finds the marker, deletes whatever
+   then exists.
+3. It deletes every other object of the Volume: manifests, staged
+   manifests and blocks.
+
+A commit that persists its manifest after a later call's listing leaves
+that one manifest behind. No commit can parent on it, its blocks are
+gone, and the next `Remove` deletes it.
+
+The pointer stays. It is the fence that keeps the Volume removed:
+
+- Once the pointer holds the marker, `Latest` and `Commit` on every handle
+  of the Volume MUST return `ErrRemoved`. A handle that remembers an
+  earlier head commits without reading the pointer, so its swap is where
+  it meets the marker. A commit whose swap conflicts MUST therefore read
+  the pointer again, and MUST return `ErrRemoved` when it holds the
+  marker, whether or not the caller configured retries. A writer that
+  held the Volume open through the removal never advances the pointer.
+- A store may report an object the removal deletes as missing
+  (CONTRACT_STORAGE §Delete), as when two removals overlap. `Remove` MUST
+  treat it as deleted.
+- `Remove` MUST NOT delete the pointer, and removing a removed Volume
+  deletes what remains, so a second call completes an interrupted one.
+  A block staged into a removed Volume is an abandoned staged object,
+  which the next `Remove` deletes.
+- A removed Volume therefore keeps one small object, as an expired
+  Dataset snapshot keeps its tombstone.
+
+`Remove` checks its arguments before it creates the store: a Volume ID that
+is not one canonical path segment yields `lode.ErrInvalidArgument`
+(CONTRACT_STORAGE §Names in Keys), so a removal never reaches another
+Volume's objects.
 
 ---
 

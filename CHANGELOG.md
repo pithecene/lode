@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Volume removal**: `volume.Remove(ctx, id, factory, opts...)` removes a Volume whole. It first swaps the head pointer for a removal marker, so `Latest` and `Commit` on every handle return the new `volume.ErrRemoved` from then on, and then deletes the Volume's manifests, staged manifests and blocks. The pointer stays as the fence that keeps the Volume removed, so a writer that held it open can never commit again, and a second call completes an interrupted removal. CONTRACT_VOLUME §Removal states the rules, and CONTRACT_CORE §Head Pointer reserves the marker.
 - **A store under a prefix**: `Prefixed(factory, prefix)` returns a factory of a `RangeStore` that keeps every object of another factory's store under `prefix`, on any backend. Each key passes the key rules before the prefix is added, so no key reaches outside it, and listings return keys without the prefix. A caller can place a container, such as a Volume, under a location of its own in a store it already holds. CONTRACT_STORAGE §Prefixed Stores states the rules.
 
 ---
