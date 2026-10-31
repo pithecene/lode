@@ -100,6 +100,7 @@ var historyErrors = history.Errors{
 	NotFound:         lode.ErrNotFound,
 	NoSnapshots:      lode.ErrNoSnapshots,
 	SnapshotConflict: lode.ErrSnapshotConflict,
+	Removed:          ErrRemoved,
 }
 
 // validateID rejects a volume ID that is not one canonical path segment
@@ -166,9 +167,68 @@ func New(id ID, storeFactory lode.Factory[lode.RangeStore], totalLength int64, o
 // ID returns the volume's identifier.
 func (v *volume) ID() ID { return v.id }
 
+// Remove removes volume id from the store that storeFactory creates
+// (CONTRACT_VOLUME §Removal). It first replaces the head pointer with the
+// removal marker, so Latest and Commit on any handle of the volume return
+// ErrRemoved from then on, and then deletes every other object of the
+// volume: manifests, staged manifests and blocks. The pointer stays, as the
+// fence that keeps the volume removed. Removing a removed volume deletes
+// what remains, so a second call completes an interrupted one.
+//
+// A commit that races the removal makes the pointer swap conflict. With
+// WithRetryCount the swap is retried; otherwise, or once the retries are
+// spent, Remove returns lode.ErrSnapshotConflict and deletes nothing.
+// Remove takes the retry options of New; any other option is accepted and
+// has no effect.
+func Remove(ctx context.Context, id ID, storeFactory lode.Factory[lode.RangeStore], opts ...Option) error {
+	if storeFactory == nil {
+		return validate.Argument("store factory must not be nil")
+	}
+	if err := validateID(id); err != nil {
+		return err
+	}
+	cfg := &config{retry: retry.Default()}
+	for _, opt := range opts {
+		if err := opt.apply(cfg); err != nil {
+			return err
+		}
+	}
+	store, err := storeFactory()
+	if err != nil {
+		return fmt.Errorf("failed to create store: %w", err)
+	}
+	if validate.Nil(store) {
+		return validate.Argument("store factory returned nil store")
+	}
+
+	pointer := volumeLatestPointerPath(id)
+	if err := history.Remove(ctx, store, pointer, historyErrors, &cfg.retry); err != nil {
+		return err
+	}
+	keys, err := store.List(ctx, volumePrefix(id))
+	if err != nil {
+		return fmt.Errorf("failed to list volume objects: %w", err)
+	}
+	for _, k := range keys {
+		if k == pointer {
+			continue
+		}
+		if err := store.Delete(ctx, k); err != nil {
+			return fmt.Errorf("failed to delete volume object %s: %w", k, err)
+		}
+	}
+	return nil
+}
+
 // -----------------------------------------------------------------------------
 // Path helpers (fixed layout per CONTRACT_VOLUME.md)
 // -----------------------------------------------------------------------------
+
+// volumePrefix holds every object of volume id. The trailing slash keeps
+// volume "a" from listing the objects of volume "ab".
+func volumePrefix(id ID) string {
+	return path.Join("volumes", string(id)) + "/"
+}
 
 func volumeSnapshotsPrefix(id ID) string {
 	return path.Join("volumes", string(id), "snapshots") + "/"

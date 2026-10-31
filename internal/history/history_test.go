@@ -343,6 +343,58 @@ func TestReadPointer(t *testing.T) {
 	})
 }
 
+// The removal marker reads as errs.Removed only for a container that passes
+// that sentinel. A container that is never removed, which passes none, reads
+// the marker as it reads any other pointer content.
+func TestReadPointer_RemovalMarker(t *testing.T) {
+	errRemoved := errors.New("removed")
+	removable := testErrors
+	removable.Removed = errRemoved
+
+	s := newMemStore()
+	s.objects[pointer] = []byte(RemovedPointer)
+	h := New(s, testKind{}, pointer, "test manifest", removable)
+	if _, err := h.ReadPointer(t.Context()); !errors.Is(err, errRemoved) {
+		t.Fatalf("removable: got %v, want errs.Removed", err)
+	}
+	if _, err := h.Latest(t.Context()); !errors.Is(err, errRemoved) {
+		t.Fatalf("Latest: got %v, want errs.Removed", err)
+	}
+	if _, _, err := h.Resolve(t.Context()); !errors.Is(err, errRemoved) {
+		t.Fatalf("Resolve: got %v, want errs.Removed", err)
+	}
+
+	plain := newTestHistory(s)
+	if got, err := plain.ReadPointer(t.Context()); err != nil || got != RemovedPointer {
+		t.Fatalf("not removable: got %q, %v; want the marker as content", got, err)
+	}
+}
+
+// Remove swaps whatever the pointer holds for the marker, creates it when
+// absent, and leaves an existing marker as it is.
+func TestRemove(t *testing.T) {
+	for _, content := range []string{"5", "", "not an id"} {
+		s := newMemStore()
+		if content != "" {
+			s.objects[pointer] = []byte(content)
+		}
+		if err := Remove(t.Context(), s, pointer, testErrors, new(retry.Default())); err != nil {
+			t.Fatalf("Remove over %q: %v", content, err)
+		}
+		if got := string(s.objects[pointer]); got != RemovedPointer {
+			t.Fatalf("Remove over %q left %q", content, got)
+		}
+		if err := Remove(t.Context(), s, pointer, testErrors, new(retry.Default())); err != nil {
+			t.Fatalf("second Remove over %q: %v", content, err)
+		}
+	}
+	s := newMemStore()
+	s.fail = failOn("get", "", errBoom)
+	if err := Remove(t.Context(), s, pointer, testErrors, new(retry.Default())); !errors.Is(err, errBoom) {
+		t.Fatalf("a failed pointer read: got %v, want it returned", err)
+	}
+}
+
 // errReaderStore returns a reader that fails, for ReadPointer's read error.
 type errReaderStore struct{ *memStore }
 

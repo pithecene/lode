@@ -141,7 +141,13 @@ manifest as a pending commit:
   staged copy, adopts the abandoned snapshot as its parent, and removes the
   copy after it commits.
 - Parent resolution selects the largest snapshot ID only when the pointer
-  is missing or does not contain a snapshot ID.
+  is missing or does not contain a snapshot ID. One content that is not a
+  snapshot ID is reserved: the removal marker `lode:removed`, which
+  `volume.Remove` writes (CONTRACT_VOLUME §Removal). A container that can
+  be removed reads the marker as its removal, and `Latest` and parent
+  resolution return `volume.ErrRemoved` instead of scanning. A Dataset
+  cannot be removed this way and reads the marker as any other content
+  that is not a snapshot ID.
 - "Missing" means that the store reported the object as not found. When a
   read of the pointer, or of the manifest that the pointer names, fails with
   any other error, `Latest`, parent resolution, and Volume commits MUST

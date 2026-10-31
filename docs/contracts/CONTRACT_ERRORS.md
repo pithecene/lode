@@ -298,6 +298,7 @@ returns the shared sentinels of `lode`.
 |-------|--------|---------|
 | `volume.ErrRangeMissing` | Volume.ReadAt | The requested range is not fully committed |
 | `volume.ErrOverlappingBlocks` | Volume.Commit | Committed blocks overlap in the cumulative manifest |
+| `volume.ErrRemoved` | Volume.Latest, Volume.Commit | The volume was removed (CONTRACT_VOLUME §Removal) |
 
 #### `ErrRangeMissing` Behavior
 - `ReadAt` returns `ErrRangeMissing` if any part of the range is
@@ -310,6 +311,13 @@ returns the shared sentinels of `lode`.
 - If any blocks overlap, `Commit` returns `ErrOverlappingBlocks`.
 - Two blocks overlap when their byte ranges `[offset, offset+length)`
   intersect.
+
+#### `ErrRemoved` Behavior
+- Once `Remove` has replaced the head pointer with the removal marker,
+  `Latest` and `Commit` on every handle of the volume return `ErrRemoved`,
+  and `Snapshot` returns `ErrNotFound` for its deleted snapshots.
+- `Remove` returns `ErrSnapshotConflict`, not `ErrRemoved`, when a commit
+  races its pointer swap and the retries are spent.
 
 #### Other Volume Error Behavior
 - `Commit` with an empty block list returns an error.
