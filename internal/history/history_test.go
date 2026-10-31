@@ -370,28 +370,62 @@ func TestReadPointer_RemovalMarker(t *testing.T) {
 	}
 }
 
-// Remove swaps whatever the pointer holds for the marker, creates it when
-// absent, and leaves an existing marker as it is.
+// Remove swaps whatever the pointer holds for the marker and returns what
+// it replaced, creates the pointer when absent, and leaves an existing
+// marker as it is.
 func TestRemove(t *testing.T) {
 	for _, content := range []string{"5", "", "not an id"} {
 		s := newMemStore()
 		if content != "" {
 			s.objects[pointer] = []byte(content)
 		}
-		if err := Remove(t.Context(), s, pointer, testErrors, new(retry.Default())); err != nil {
-			t.Fatalf("Remove over %q: %v", content, err)
+		previous, err := Remove(t.Context(), s, pointer, testErrors, new(retry.Default()))
+		if err != nil || previous != content {
+			t.Fatalf("Remove over %q = %q, %v", content, previous, err)
 		}
 		if got := string(s.objects[pointer]); got != RemovedPointer {
 			t.Fatalf("Remove over %q left %q", content, got)
 		}
-		if err := Remove(t.Context(), s, pointer, testErrors, new(retry.Default())); err != nil {
-			t.Fatalf("second Remove over %q: %v", content, err)
+		previous, err = Remove(t.Context(), s, pointer, testErrors, new(retry.Default()))
+		if err != nil || previous != RemovedPointer {
+			t.Fatalf("second Remove over %q = %q, %v", content, previous, err)
 		}
 	}
 	s := newMemStore()
 	s.fail = failOn("get", "", errBoom)
-	if err := Remove(t.Context(), s, pointer, testErrors, new(retry.Default())); !errors.Is(err, errBoom) {
+	if _, err := Remove(t.Context(), s, pointer, testErrors, new(retry.Default())); !errors.Is(err, errBoom) {
 		t.Fatalf("a failed pointer read: got %v, want it returned", err)
+	}
+}
+
+// A commit that conflicts reads the pointer once more. The removal is
+// returned when it finds the marker, and a read that fails otherwise is
+// returned too, never hidden behind the conflict.
+func TestCommitLoop_ReadsTheRemovalAfterAConflict(t *testing.T) {
+	errRemoved := errors.New("removed")
+	removable := testErrors
+	removable.Removed = errRemoved
+	conflict := func() error { return errConflict }
+
+	s := newMemStore()
+	s.objects[pointer] = []byte(RemovedPointer)
+	h := New(s, testKind{}, pointer, "test manifest", removable)
+	if err := h.CommitLoop(t.Context(), new(retry.Default()), conflict); !errors.Is(err, errRemoved) {
+		t.Fatalf("a conflict over the marker: got %v, want errs.Removed", err)
+	}
+
+	s = newMemStore()
+	s.objects[pointer] = []byte("5")
+	s.fail = failOn("get", pointer, errBoom)
+	h = New(s, testKind{}, pointer, "test manifest", removable)
+	if err := h.CommitLoop(t.Context(), new(retry.Default()), conflict); !errors.Is(err, errBoom) {
+		t.Fatalf("a conflict with a failing pointer read: got %v, want the read's error", err)
+	}
+
+	// A history that cannot be removed reads nothing after a conflict.
+	h = New(s, testKind{}, pointer, "test manifest", testErrors)
+	if err := h.CommitLoop(t.Context(), new(retry.Default()), conflict); !errors.Is(err, errConflict) {
+		t.Fatalf("not removable: got %v, want the conflict", err)
 	}
 }
 

@@ -409,8 +409,19 @@ cumulative (CONTRACT_RETENTION §Non-Goals).
    swap makes it conflict. `Remove` retries the swap as a commit retries
    (§Optimistic Concurrency), and returns `lode.ErrSnapshotConflict` once
    the retries are spent, having deleted nothing.
-2. It deletes every other object of the Volume: manifests, staged
+2. It checks that the head it replaced has a canonical manifest. A head
+   without one belongs to a commit that advanced the pointer and has not
+   persisted its manifest, pending or abandoned (CONTRACT_CORE §Head
+   Pointer). `Remove` then returns `lode.ErrHeadUncommitted` and deletes
+   nothing. The marker is written, so that commit can finish and no other
+   can start, and a later call, which finds the marker, deletes whatever
+   then exists.
+3. It deletes every other object of the Volume: manifests, staged
    manifests and blocks.
+
+A commit that persists its manifest after a later call's listing leaves
+that one manifest behind. No commit can parent on it, its blocks are
+gone, and the next `Remove` deletes it.
 
 The pointer stays. It is the fence that keeps the Volume removed:
 

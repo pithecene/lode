@@ -198,7 +198,11 @@ manifests, staged manifests and blocks. The pointer stays as the fence
 that keeps the volume removed, and a second call completes an interrupted
 removal. A commit that races the removal makes the pointer swap conflict:
 with `WithRetryCount` the swap is retried, and otherwise `Remove` returns
-`ErrSnapshotConflict` and deletes nothing.
+`ErrSnapshotConflict` and deletes nothing. A commit that advanced the
+pointer but has not persisted its manifest makes `Remove` return
+`ErrHeadUncommitted` with the fence written and nothing deleted, as
+`Expire` does for an uncommitted head; call `Remove` again once the
+commit has finished.
 
 The package `volume` defines its own option type, `volume.Option`, so the
 Dataset options of `lode` do not compile as Volume options. Volume accepts
@@ -1019,7 +1023,7 @@ if errors.Is(err, lode.ErrNoSnapshots) {
 | `ErrSettingsMismatch` | The handle's codec, codec description, compressor, checksum, layout and partition keys, or path names differ from the dataset's | Writer handles, views |
 | `ErrReadOnly` | A write (`Put`, `Delete`, or `CompareAndSwap`) was attempted through a read-only root's store | Views |
 | `ErrSnapshotExpired` | `Expire` removed the snapshot, and the error also matches `ErrNotFound` | Handles |
-| `ErrHeadUncommitted` | The latest pointer names a snapshot whose manifest has not been persisted, or is absent while snapshots exist | `Expire`, `Sweep` (absent pointer only) |
+| `ErrHeadUncommitted` | The latest pointer names a snapshot whose manifest has not been persisted, or is absent while snapshots exist | `Expire`, `Sweep` (absent pointer only), `volume.Remove` |
 | `ErrSchemaViolation` | A record does not conform to the Parquet schema, or the schema is invalid | Parquet codec |
 | `ErrInvalidFormat` | A Parquet file is malformed or corrupt | Parquet codec |
 

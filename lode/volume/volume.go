@@ -202,8 +202,20 @@ func Remove(ctx context.Context, id ID, storeFactory lode.Factory[lode.RangeStor
 	}
 
 	pointer := volumeLatestPointerPath(id)
-	if err := history.Remove(ctx, store, pointer, historyErrors, &cfg.retry); err != nil {
+	previous, err := history.Remove(ctx, store, pointer, historyErrors, &cfg.retry)
+	if err != nil {
 		return err
+	}
+	// The head this call fenced may belong to a commit that advanced the
+	// pointer and has not persisted its manifest yet (CONTRACT_CORE §Head
+	// Pointer). Deleting now would leave that manifest, once persisted,
+	// naming deleted blocks. The fence is up, so no other commit can start:
+	// this call refuses, the commit finishes or stays abandoned, and the
+	// next call, which finds the marker, deletes whatever then exists.
+	if previous != "" && previous != history.RemovedPointer {
+		if err := pendingCommit(ctx, store, id, SnapshotID(previous)); err != nil {
+			return err
+		}
 	}
 	keys, err := store.List(ctx, volumePrefix(id))
 	if err != nil {
@@ -225,6 +237,24 @@ func Remove(ctx context.Context, id ID, storeFactory lode.Factory[lode.RangeStor
 // -----------------------------------------------------------------------------
 // Path helpers (fixed layout per CONTRACT_VOLUME.md)
 // -----------------------------------------------------------------------------
+
+// pendingCommit is lode.ErrHeadUncommitted when head, the snapshot the
+// pointer named before the removal, has no canonical manifest: its commit
+// is pending or abandoned, and no persisted state tells which. A pointer
+// that held anything but a generated ID named no commit.
+func pendingCommit(ctx context.Context, store lode.RangeStore, id ID, head SnapshotID) error {
+	if !history.IsGeneratedID(head) {
+		return nil
+	}
+	committed, err := store.Exists(ctx, volumeManifestPath(id, head))
+	if err != nil {
+		return fmt.Errorf("failed to resolve head: %w", err)
+	}
+	if !committed {
+		return fmt.Errorf("lode: latest pointer named %s, whose manifest has not been persisted: %w", head, lode.ErrHeadUncommitted)
+	}
+	return nil
+}
 
 // volumePrefix holds every object of volume id. The trailing slash keeps
 // volume "a" from listing the objects of volume "ab".

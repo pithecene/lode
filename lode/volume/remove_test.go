@@ -6,6 +6,7 @@ import (
 	"io"
 	"math"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -128,6 +129,64 @@ func TestRemove_CompletesAnInterruptedRemoval(t *testing.T) {
 	if got, want := listed(t, fs, "volumes/v/"), []string{"volumes/v/latest"}; !slices.Equal(got, want) {
 		t.Fatalf("left %q, want %q", got, want)
 	}
+}
+
+// A removal that fences a commit which advanced the pointer but has not
+// persisted its manifest refuses to delete: the fence is up, the commit can
+// finish, and the next removal deletes what then exists.
+func TestRemove_RefusesWhileACommitIsPending(t *testing.T) {
+	ctx := t.Context()
+	fs := testutil.NewFaultStore(lode.NewMemory())
+	factory := newFaultStoreFactory(fs)
+	vol := newTestVolume(t, "v", factory, 10)
+	blk := stageBlock(t, vol, 0, bytes.Repeat([]byte("A"), 5))
+
+	// The commit advances the pointer and then fails to persist its
+	// manifest, which leaves exactly a pending commit's state.
+	fs.SetPutError(testutil.ErrInjectedPut, "manifest.json")
+	if _, err := vol.Commit(ctx, []BlockRef{blk}, Metadata{}); !errors.Is(err, testutil.ErrInjectedPut) {
+		t.Fatalf("the commit: %v, want the injected put error", err)
+	}
+	fs.SetPutError(nil)
+
+	err := Remove(ctx, "v", factory)
+	if !errors.Is(err, lode.ErrHeadUncommitted) {
+		t.Fatalf("Remove over a pending commit = %v, want ErrHeadUncommitted", err)
+	}
+	if got := pointerContent(t, fs, "v"); got != history.RemovedPointer {
+		t.Fatalf("pointer holds %q, want the marker", got)
+	}
+	if exists, _ := fs.Exists(ctx, blk.Path); !exists {
+		t.Fatal("the refused removal deleted the pending commit's block")
+	}
+
+	// The commit finishes: its manifest is persisted after the fence.
+	staged, err := fs.Get(ctx, volumeStagedManifestPath("v", SnapshotID(stagedID(t, fs, "v"))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ := io.ReadAll(staged)
+	_ = staged.Close()
+	if err := fs.Put(ctx, volumeManifestPath("v", SnapshotID(stagedID(t, fs, "v"))), bytes.NewReader(data)); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Remove(ctx, "v", factory); err != nil {
+		t.Fatalf("second Remove: %v", err)
+	}
+	if got, want := listed(t, fs, "volumes/v/"), []string{"volumes/v/latest"}; !slices.Equal(got, want) {
+		t.Fatalf("left %q, want %q", got, want)
+	}
+}
+
+// stagedID returns the one staged manifest's snapshot ID of volume id.
+func stagedID(t *testing.T, store lode.Store, id ID) string {
+	t.Helper()
+	keys := listed(t, store, "volumes/"+string(id)+"/staged/")
+	if len(keys) != 1 {
+		t.Fatalf("staged manifests %q, want one", keys)
+	}
+	return strings.TrimSuffix(strings.TrimPrefix(keys[0], "volumes/"+string(id)+"/staged/"), ".json")
 }
 
 // A store that reports a deleted object as missing, as when two removals

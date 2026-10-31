@@ -346,40 +346,45 @@ func readPointer(ctx context.Context, store Store, pointerPath string) (string, 
 // Remove replaces the pointer at pointerPath with RemovedPointer through
 // CompareAndSwap against the content it read, so a commit that races the
 // removal fails its own swap and, on retry, reads the removal. It returns
-// nil when the pointer already holds RemovedPointer. A conflict is retried
-// as a commit's is, and errs.SnapshotConflict is returned once cfg's
-// attempts are spent. The caller removes the history's other objects
-// afterwards and never the pointer.
-func Remove(ctx context.Context, store Store, pointerPath string, errs Errors, cfg *retry.Config) error {
+// the content it replaced: "" when the pointer was absent, and
+// RemovedPointer when the pointer already held it, in which case nothing
+// is written. A conflict is retried as a commit's is, and
+// errs.SnapshotConflict is returned once cfg's attempts are spent. The
+// caller removes the history's other objects afterwards and never the
+// pointer.
+func Remove(ctx context.Context, store Store, pointerPath string, errs Errors, cfg *retry.Config) (string, error) {
 	var lastErr error
-	// n counts up to the attempts, never past them: cfg.MaxAttempts()+1
-	// overflows at the largest retry count, and a loop that then ran zero
-	// times would report success without writing the marker.
-	for n := 0; n <= cfg.MaxAttempts(); n++ {
+	// n reaches cfg.MaxAttempts() and stops there: neither MaxAttempts()+1
+	// nor n++ past it is computed, so the largest retry count neither
+	// overflows into zero attempts nor into an endless loop.
+	for n := 0; ; n++ {
 		if n > 0 {
 			if err := cfg.Backoff(ctx, n); err != nil {
-				return err
+				return "", err
 			}
 		}
 		content, err := readPointer(ctx, store, pointerPath)
 		if errors.Is(err, errs.NotFound) {
 			content = "" // CompareAndSwap creates the pointer
 		} else if err != nil {
-			return err
+			return "", err
 		}
-		if strings.TrimSpace(content) == RemovedPointer {
-			return nil
+		previous := strings.TrimSpace(content)
+		if previous == RemovedPointer {
+			return previous, nil
 		}
 		err = store.CompareAndSwap(ctx, pointerPath, content, RemovedPointer)
 		if err == nil {
-			return nil
+			return previous, nil
 		}
 		if !errors.Is(err, errs.SnapshotConflict) {
-			return fmt.Errorf("failed to replace latest pointer: %w", err)
+			return "", fmt.Errorf("failed to replace latest pointer: %w", err)
 		}
 		lastErr = err
+		if n >= cfg.MaxAttempts() {
+			return "", lastErr
+		}
 	}
-	return lastErr
 }
 
 // CommittedHead returns the head retention must never remove: the snapshot
@@ -779,8 +784,8 @@ func (h *History[ID, M]) CommitLoop(ctx context.Context, cfg *retry.Config, atte
 		if !errors.Is(err, h.errs.SnapshotConflict) {
 			return err
 		}
-		if removed := h.removed(ctx); removed != nil {
-			return removed
+		if err := h.removed(ctx); err != nil {
+			return err
 		}
 		lastErr = err
 	}
@@ -792,14 +797,21 @@ func (h *History[ID, M]) CommitLoop(ctx context.Context, cfg *retry.Config, atte
 // pointer, so its swap is where it meets the marker: one read on the
 // conflict path tells a removal from a concurrent commit, and the writer
 // then returns errs.Removed whatever its retries. Nil for a history that
-// cannot be removed, or whose pointer holds anything else.
+// cannot be removed, or whose pointer holds anything else. A read that
+// fails otherwise is returned, as every read of the pointer is
+// (CONTRACT_CORE §Head Pointer): the conflict may be the removal's.
 func (h *History[ID, M]) removed(ctx context.Context) error {
 	if h.errs.Removed == nil {
 		return nil
 	}
-	if _, err := h.ReadPointer(ctx); errors.Is(err, h.errs.Removed) {
+	_, err := h.ReadPointer(ctx)
+	switch {
+	case err == nil, errors.Is(err, h.errs.NotFound):
+		return nil
+	case errors.Is(err, h.errs.Removed):
 		h.Forget()
 		return err
+	default:
+		return fmt.Errorf("failed to resolve head after a conflict: %w", err)
 	}
-	return nil
 }

@@ -317,7 +317,9 @@ returns the shared sentinels of `lode`.
   `Latest` and `Commit` on every handle of the volume return `ErrRemoved`,
   and `Snapshot` returns `ErrNotFound` for its deleted snapshots.
 - `Remove` returns `ErrSnapshotConflict`, not `ErrRemoved`, when a commit
-  races its pointer swap and the retries are spent.
+  races its pointer swap and the retries are spent, and
+  `ErrHeadUncommitted` when the head it fenced has no canonical manifest
+  yet (CONTRACT_VOLUME §Removal).
 
 #### Other Volume Error Behavior
 - `Commit` with an empty block list returns an error.
@@ -371,7 +373,7 @@ Snapshot expiry and the sweep of unreferenced objects
 | Error | Source | Meaning |
 |-------|--------|---------|
 | `lode.ErrSnapshotExpired` | `Snapshot`, `Read` (handles, views) | `Expire` expired the snapshot, and the error also matches `ErrNotFound` |
-| `lode.ErrHeadUncommitted` | `Expire`, `Sweep` | No commit has completed the head: the latest pointer names a snapshot whose manifest the writer has not yet persisted (`Expire` only), or the pointer is absent while snapshots exist (both `Expire` and `Sweep`) |
+| `lode.ErrHeadUncommitted` | `Expire`, `Sweep`, `volume.Remove` | No commit has completed the head: the latest pointer names a snapshot whose manifest the writer has not yet persisted (`Expire` only), or the pointer is absent while snapshots exist (both `Expire` and `Sweep`) |
 | `lode.ErrInvalidArgument` | `Expire`, `Sweep` | An `ExpireRequest` without a selector field, or a `SweepRequest.Grace` that is zero or negative |
 | `lode.ErrInvalidPath` | `Expire` | `ExpireRequest.Partition` is not a canonical relative partition path |
 | `lode.ErrPartitionPrefixNotSupported` | `Expire` | The caller specified `ExpireRequest.Partition` on a layout without partitions |
