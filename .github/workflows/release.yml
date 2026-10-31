@@ -26,6 +26,13 @@ jobs:
     runs-on: ubuntu-latest
     needs: [tag_check]
     if: ${{ needs.tag_check.outputs.semver_match != '' }}
+    # The job runs inside the organization's check image. Its version and
+    # digest here and in ci.yml move together.
+    container:
+      image: ghcr.io/pithecene/bosun:0.1.0@sha256:269a05c636e4f76da16cce7d8efc0926e5f424e21baf129e3bd77812f113a0ad
+      credentials:
+        username: bosun
+        password: ${{ secrets.BOSUN_REGISTRY_TOKEN }}
     steps:
       - name: 📥 Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
@@ -40,16 +47,11 @@ jobs:
       - name: 📝 Extract Release Notes
         run: scripts/release-notes.sh "${GITHUB_REF_NAME}" release-notes.md
 
-      - name: 🏗️ Install Release Check
-        uses: ./.github/actions/release-check
-        with:
-          ssh-key: ${{ secrets.BOSUN_DEPLOY_KEY }}
-
       - name: 🧾 Check Changelog
-        run: .bosun/bin/release-gate check CHANGELOG.md
+        run: release-gate check CHANGELOG.md
 
       - name: 🧾 Check Release Notes
-        run: .bosun/bin/release-gate notes release-notes.md
+        run: release-gate notes release-notes.md
 
   package:
     name: 📦 Package
