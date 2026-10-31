@@ -1,5 +1,9 @@
 # Lode configures Bosun's checks (pithecene/bosun, CONTRACT_CONFIG): the release gate holds the changelog to the
-# changelog contract. CI runs them in the changelog job of .github/workflows/ci.yml.
+# changelog contract, and the prose gate holds it to the prose contract, which the changelog contract applies to
+# every entry. CI runs them in the changelog job of .github/workflows/ci.yml.
 version: 1
+prose:
+  documents:
+    - CHANGELOG.md
 changelog:
   file: CHANGELOG.md

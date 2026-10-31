@@ -167,7 +167,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Module path**: replace `github.com/pithecene-io/lode` with `github.com/pithecene/lode` in imports and in `go.mod`.
 - **Custom store adapters**: implement `CompareAndSwap`, or wrap the adapter with `lode.SingleProcess` when every writer runs in one process and uses the same wrapped store, and return `ErrNotFound` from `Get` for a missing path.
-- **Volume**: import `github.com/pithecene/lode/lode/volume` and rename according to the table above.
+- **Volume**: import `github.com/pithecene/lode/lode/volume` and rename according to the table under Breaking Changes.
 - **Snapshot IDs**: code that parsed an ID as an integer must treat it as an opaque string.
 - **No data migration required**: the storage layout and the manifest format are unchanged.
 
