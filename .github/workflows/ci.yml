@@ -85,7 +85,7 @@ jobs:
     # The job runs inside the organization's check image. Its version and
     # digest here and in release.yml move together.
     container:
-      image: ghcr.io/pithecene/bosun:0.1.0-rc.4@sha256:836b73c673b960989bb1ebad890d9aa8b558c7cd917d09e5e14496c0cdef234d
+      image: ghcr.io/pithecene/bosun:0.1.0@sha256:269a05c636e4f76da16cce7d8efc0926e5f424e21baf129e3bd77812f113a0ad
       credentials:
         username: bosun
         password: ${{ secrets.BOSUN_REGISTRY_TOKEN }}
