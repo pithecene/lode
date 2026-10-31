@@ -415,11 +415,15 @@ cumulative (CONTRACT_RETENTION §Non-Goals).
 The pointer stays. It is the fence that keeps the Volume removed:
 
 - Once the pointer holds the marker, `Latest` and `Commit` on every handle
-  of the Volume MUST return `ErrRemoved`, and a handle that remembers an
-  earlier head MUST read the pointer again before it commits. A writer
-  that held the Volume open through the removal therefore never advances
-  the pointer: its swap conflicts with the marker, and its retry reads the
-  removal.
+  of the Volume MUST return `ErrRemoved`. A handle that remembers an
+  earlier head commits without reading the pointer, so its swap is where
+  it meets the marker. A commit whose swap conflicts MUST therefore read
+  the pointer again, and MUST return `ErrRemoved` when it holds the
+  marker, whether or not the caller configured retries. A writer that
+  held the Volume open through the removal never advances the pointer.
+- A store may report an object the removal deletes as missing
+  (CONTRACT_STORAGE §Delete), as when two removals overlap. `Remove` MUST
+  treat it as deleted.
 - `Remove` MUST NOT delete the pointer, and removing a removed Volume
   deletes what remains, so a second call completes an interrupted one.
   A block staged into a removed Volume is an abandoned staged object,

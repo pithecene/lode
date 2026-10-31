@@ -213,7 +213,9 @@ func Remove(ctx context.Context, id ID, storeFactory lode.Factory[lode.RangeStor
 		if k == pointer {
 			continue
 		}
-		if err := store.Delete(ctx, k); err != nil {
+		// A store may report a missing object (CONTRACT_STORAGE §Delete), as
+		// one a concurrent removal deleted first: the object is gone either way.
+		if err := store.Delete(ctx, k); err != nil && !errors.Is(err, lode.ErrNotFound) {
 			return fmt.Errorf("failed to delete volume object %s: %w", k, err)
 		}
 	}

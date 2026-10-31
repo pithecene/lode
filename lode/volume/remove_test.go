@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"math"
 	"slices"
 	"testing"
 	"time"
@@ -112,13 +113,55 @@ func TestRemove_CompletesAnInterruptedRemoval(t *testing.T) {
 	if got := pointerContent(t, fs, "v"); got != history.RemovedPointer {
 		t.Fatalf("pointer holds %q after a failed removal, want the marker", got)
 	}
-	stageBlock(t, vol, 5, bytes.Repeat([]byte("B"), 5)) // a writer that still holds the volume
+	// The fence is up while the manifests remain. A writer that remembers
+	// its head commits without reading the pointer, and meets the marker at
+	// its swap: it reports the removal, not a conflict, with no retries.
+	blk := stageBlock(t, vol, 5, bytes.Repeat([]byte("B"), 5))
+	if _, err := vol.Commit(ctx, []BlockRef{blk}, Metadata{}); !errors.Is(err, ErrRemoved) {
+		t.Fatalf("Commit by the handle that remembers its head = %v, want ErrRemoved", err)
+	}
 
 	fs.SetDeleteError(nil)
 	if err := Remove(ctx, "v", factory); err != nil {
 		t.Fatalf("second Remove: %v", err)
 	}
 	if got, want := listed(t, fs, "volumes/v/"), []string{"volumes/v/latest"}; !slices.Equal(got, want) {
+		t.Fatalf("left %q, want %q", got, want)
+	}
+}
+
+// A store that reports a deleted object as missing, as when two removals
+// overlap, does not fail the removal.
+func TestRemove_TreatsAMissingObjectAsDeleted(t *testing.T) {
+	ctx := t.Context()
+	fs := testutil.NewFaultStore(lode.NewMemory())
+	factory := newFaultStoreFactory(fs)
+	vol := newTestVolume(t, "v", factory, 10)
+	commitBlocks(t, vol, []BlockRef{stageBlock(t, vol, 0, bytes.Repeat([]byte("A"), 5))}, Metadata{})
+	fs.SetDeleteError(lode.ErrNotFound)
+	if err := Remove(ctx, "v", factory); err != nil {
+		t.Fatalf("Remove over a store that reports missing objects: %v", err)
+	}
+	if got := pointerContent(t, fs, "v"); got != history.RemovedPointer {
+		t.Fatalf("pointer holds %q, want the marker", got)
+	}
+}
+
+// The largest retry count writes the fence as any other: the attempt loop
+// counts up to the attempts and never past them.
+func TestRemove_WritesTheFenceAtTheLargestRetryCount(t *testing.T) {
+	ctx := t.Context()
+	store := lode.NewMemory()
+	factory := lode.Use(store)
+	vol := newTestVolume(t, "v", factory, 10)
+	commitBlocks(t, vol, []BlockRef{stageBlock(t, vol, 0, bytes.Repeat([]byte("A"), 5))}, Metadata{})
+	if err := Remove(ctx, "v", factory, WithRetryCount(math.MaxInt)); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if got := pointerContent(t, store, "v"); got != history.RemovedPointer {
+		t.Fatalf("pointer holds %q, want the marker", got)
+	}
+	if got, want := listed(t, store, "volumes/v/"), []string{"volumes/v/latest"}; !slices.Equal(got, want) {
 		t.Fatalf("left %q, want %q", got, want)
 	}
 }

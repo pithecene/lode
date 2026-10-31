@@ -352,7 +352,10 @@ func readPointer(ctx context.Context, store Store, pointerPath string) (string, 
 // afterwards and never the pointer.
 func Remove(ctx context.Context, store Store, pointerPath string, errs Errors, cfg *retry.Config) error {
 	var lastErr error
-	for n := range cfg.MaxAttempts() + 1 {
+	// n counts up to the attempts, never past them: cfg.MaxAttempts()+1
+	// overflows at the largest retry count, and a loop that then ran zero
+	// times would report success without writing the marker.
+	for n := 0; n <= cfg.MaxAttempts(); n++ {
 		if n > 0 {
 			if err := cfg.Backoff(ctx, n); err != nil {
 				return err
@@ -776,7 +779,27 @@ func (h *History[ID, M]) CommitLoop(ctx context.Context, cfg *retry.Config, atte
 		if !errors.Is(err, h.errs.SnapshotConflict) {
 			return err
 		}
+		if removed := h.removed(ctx); removed != nil {
+			return removed
+		}
 		lastErr = err
 	}
 	return lastErr
+}
+
+// removed reports the removal of a removable history whose commit just
+// conflicted. A writer that remembers its head commits without reading the
+// pointer, so its swap is where it meets the marker: one read on the
+// conflict path tells a removal from a concurrent commit, and the writer
+// then returns errs.Removed whatever its retries. Nil for a history that
+// cannot be removed, or whose pointer holds anything else.
+func (h *History[ID, M]) removed(ctx context.Context) error {
+	if h.errs.Removed == nil {
+		return nil
+	}
+	if _, err := h.ReadPointer(ctx); errors.Is(err, h.errs.Removed) {
+		h.Forget()
+		return err
+	}
+	return nil
 }
