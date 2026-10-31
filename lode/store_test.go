@@ -36,6 +36,21 @@ type storeBackend struct {
 var storeBackends = []storeBackend{
 	{name: "fs", open: openFSStore},
 	{name: "memory", open: func(*testing.T) RangeStore { return NewMemory() }},
+	// Prefixed stores hold the same contract as the stores they wrap
+	// (CONTRACT_STORAGE §Prefixed Stores).
+	{name: "prefixed fs", open: func(t *testing.T) RangeStore { return openPrefixed(t, Use(openFSStore(t))) }},
+	{name: "prefixed memory", open: func(t *testing.T) RangeStore { return openPrefixed(t, Memory()) }},
+}
+
+// openPrefixed is a store under a two-segment prefix of the store factory
+// creates, so a key that escaped one segment would still be caught.
+func openPrefixed(t *testing.T, factory Factory[RangeStore]) RangeStore {
+	t.Helper()
+	store, err := Prefixed(factory, "tenant/run")()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store
 }
 
 // openFSStore is an FS store over a fresh temporary directory.

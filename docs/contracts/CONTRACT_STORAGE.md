@@ -210,6 +210,32 @@ Separate constraints bound the remaining values that reach a key:
 
 ---
 
+## Prefixed Stores
+
+`Prefixed(factory, prefix)` returns a factory of a `RangeStore` that keeps
+every object of the store `factory` creates under `prefix`. A caller uses it
+to place a container under a location of its own choice in a store it
+already holds, on any backend.
+
+- The key `k` addresses the inner object `prefix/k`. `List` lists the inner
+  store under the prefix and returns each key without the prefix, so the
+  store never returns or touches an object outside the prefix. A sibling
+  location that shares the prefix as a string, such as `a/b2` beside
+  `a/b`, is outside it.
+- Each operation applies the key rules of §Put to its key before it adds
+  the prefix, and returns `ErrInvalidPath` for a key that they reject. A key
+  such as `../x` therefore never reaches the inner store.
+- The prefix MUST name a location inside the root: a prefix that is empty,
+  that cleans to the root, or that escapes it yields `ErrInvalidArgument`
+  when the factory is called, before the factory calls `factory`. A nil
+  `factory`, or one that returns a nil store, yields `ErrInvalidArgument`
+  too, and an error from `factory` is returned unchanged.
+- Every other obligation of this contract, such as immutable `Put`, range
+  reads and `CompareAndSwap`, is the inner store's, so the prefixed store
+  holds each of them exactly when the inner store does.
+
+---
+
 ## Commit Semantics
 
 CONTRACT_CORE §Head Pointer states the commit protocol, including the point

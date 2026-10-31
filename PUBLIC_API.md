@@ -244,6 +244,8 @@ includes a curated set of components:
 - `FS(root)`: filesystem storage
 - `Memory()`: in-memory storage (a new store per root)
 - `Use(store)`: a store the caller holds
+- `Prefixed(factory, prefix)`: the store of another factory, with every
+  object kept under `prefix` (CONTRACT_STORAGE §Prefixed Stores)
 - `s3.Factory(client, config)`: S3-compatible storage (§S3 Storage Adapter)
 
 The store types are `NewFS(root)`, `NewMemory()`, `s3.New(client,
