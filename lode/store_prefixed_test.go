@@ -110,7 +110,7 @@ func TestPrefixed_RefusesAnInvalidPrefix(t *testing.T) {
 			t.Errorf("Prefixed(%q) = %v, want ErrInvalidArgument", p, err)
 		}
 	}
-	if _, err := Prefixed(nil, "a")(); !errors.Is(err, ErrInvalidArgument) {
+	if _, err := Prefixed[RangeStore](nil, "a")(); !errors.Is(err, ErrInvalidArgument) {
 		t.Errorf("Prefixed(nil) = %v, want ErrInvalidArgument", err)
 	}
 	if called {
@@ -127,5 +127,25 @@ func TestPrefixed_ReturnsTheFactoryError(t *testing.T) {
 	nilStore := func() (RangeStore, error) { return nil, nil } //nolint:nilnil // the misbehaving factory under test
 	if _, err := Prefixed(nilStore, "a")(); !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("nil store: got %v, want ErrInvalidArgument", err)
+	}
+	typedNil := func() (*memoryStore, error) { return nil, nil } //nolint:nilnil // the misbehaving factory under test
+	if _, err := Prefixed(typedNil, "a")(); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("typed nil store: got %v, want ErrInvalidArgument", err)
+	}
+}
+
+// A factory of a concrete store type, as Use returns for a store the caller
+// holds, is accepted without a conversion.
+func TestPrefixed_AcceptsAConcreteStoreFactory(t *testing.T) {
+	inner := &memoryStore{data: map[string][]byte{}}
+	store, err := Prefixed(Use(inner), "p")()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Put(t.Context(), "k", bytes.NewReader([]byte("v"))); err != nil {
+		t.Fatal(err)
+	}
+	if exists, _ := inner.Exists(t.Context(), "p/k"); !exists {
+		t.Fatal("the object is not under the prefix in the concrete store")
 	}
 }

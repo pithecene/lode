@@ -20,7 +20,10 @@ import (
 // than reaching outside the prefix. The prefix itself must be non-empty
 // and must not escape the root, or the factory returns ErrInvalidArgument
 // when it is called, before it calls factory.
-func Prefixed(factory Factory[RangeStore], prefix string) Factory[RangeStore] {
+//
+// The factory may create any RangeStore implementation, such as the
+// *s3.Store that Use(s3Store) returns a factory of.
+func Prefixed[S RangeStore](factory Factory[S], prefix string) Factory[RangeStore] {
 	return func() (RangeStore, error) {
 		if factory == nil {
 			return nil, validate.Argument("store factory must not be nil")
@@ -36,7 +39,7 @@ func Prefixed(factory Factory[RangeStore], prefix string) Factory[RangeStore] {
 		if err != nil {
 			return nil, err
 		}
-		if inner == nil {
+		if validate.Nil(inner) { // a typed nil too, which would panic at first use
 			return nil, validate.Argument("store factory returned nil store")
 		}
 		return &prefixedStore{inner: inner, prefix: p}, nil
