@@ -11,8 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Volume removal**: `volume.Remove(ctx, id, factory, opts...)` removes a Volume whole. It first swaps the head pointer for a removal marker, so `Latest` and `Commit` on every handle return the new `volume.ErrRemoved` from then on, and then deletes the Volume's manifests, staged manifests and blocks. The pointer stays as the fence that keeps the Volume removed, so a writer that held it open can never commit again, and a second call completes an interrupted removal. CONTRACT_VOLUME §Removal states the rules, and CONTRACT_CORE §Head Pointer reserves the marker.
-- **A store under a prefix**: `Prefixed(factory, prefix)` returns a factory of a `RangeStore` that keeps every object of another factory's store under `prefix`, on any backend. Each key passes the key rules before the prefix is added, so no key reaches outside it, and listings return keys without the prefix. A caller can place a container, such as a Volume, under a location of its own in a store it already holds. CONTRACT_STORAGE §Prefixed Stores states the rules.
+- **`lode.Prefixed`**: this factory wraps another factory's store so that every object lives under a prefix, on any backend. A dataset or a volume therefore sits at a location of the caller's choice in a store the caller already holds. The store refuses a key that would leave the prefix with `ErrInvalidPath`, and the factory refuses a prefix outside the root with `ErrInvalidArgument`.
+- **Volume removal**: `volume.Remove` removes a volume with its data, and the volume stays removed. `Latest` and `Commit` on any handle of the volume return the new `volume.ErrRemoved`, and a second call completes an interrupted removal. `Remove` returns `ErrHeadUncommitted` while the head it fenced has no manifest, pending or abandoned, and `ErrSnapshotConflict` when a commit races it and the retries of `WithRetryCount` are spent, and in both cases it deletes nothing.
 
 ---
 
