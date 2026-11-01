@@ -315,6 +315,9 @@ type ConditionalWriter interface {
 - The conditional `PutObject` decides every outcome: `If-None-Match: *`
   creates the object, and `If-Match` replaces exactly the version whose ETag
   the adapter compared. The adapter infers no outcome from its earlier records.
+- The adapter sends `If-Match` with the ETag's bare value, without the
+  quotation marks in which S3 returns it, because some S3-compatible
+  backends refuse the quoted form even when the ETag matches.
 - When `expected` is empty, call `PutObject` with `If-None-Match: *`
   immediately, without reading the object first.
 - When the adapter itself replaced the object with `If-Match`, it records
