@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+---
+
+## [0.14.0] - 2026-11-01
+
 ### Added
 
 - **`volume.Head`**: this function returns the snapshot ID that a volume's head pointer names, without the total length that `volume.New` needs. A caller that knows a volume's ID but not its length can therefore date the volume's last commit, a pending commit included. `Head` never writes. It returns `ErrNoSnapshots` for a volume with no commit, `volume.ErrRemoved` for a removed one, and `ErrHeadUncommitted` when the pointer is absent beside manifests.
@@ -485,7 +489,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-[Unreleased]: https://github.com/pithecene/lode/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/pithecene/lode/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/pithecene/lode/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/pithecene/lode/compare/v0.12.2...v0.13.0
 [0.12.2]: https://github.com/pithecene/lode/compare/v0.12.1...v0.12.2
 [0.12.1]: https://github.com/pithecene/lode/compare/v0.12.0...v0.12.1
