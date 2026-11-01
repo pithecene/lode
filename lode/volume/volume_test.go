@@ -1805,6 +1805,132 @@ func TestVolume_Commit_AbandonedCommit(t *testing.T) {
 	}
 }
 
+// TestVolume_Commit_RetryCompletesPendingCommit verifies that a retry of a
+// commit whose manifest write failed after the pointer advanced completes
+// that commit: it returns the pending snapshot, persists its canonical
+// manifest, and removes the staged copy. Before, the retry found its
+// blocks in the pending parent and failed as a commit without new blocks.
+func TestVolume_Commit_RetryCompletesPendingCommit(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// retrier returns the handle that retries, given the one that failed.
+		retrier func(t *testing.T, failed Volume, mem lode.RangeStore) Volume
+	}{
+		{"same handle", func(_ *testing.T, failed Volume, _ lode.RangeStore) Volume { return failed }},
+		{"same handle after Latest", func(t *testing.T, failed Volume, _ lode.RangeStore) Volume {
+			if _, err := failed.Latest(t.Context()); err != nil {
+				t.Fatalf("Latest: %v", err)
+			}
+			return failed
+		}},
+		{"another handle", func(t *testing.T, _ Volume, mem lode.RangeStore) Volume {
+			return newTestVolume(t, "test-vol", memoryFactoryFrom(mem), 100)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mem := lode.NewMemory()
+			fs := testutil.NewFaultStore(mem)
+			vol := newTestVolume(t, "test-vol", newFaultStoreFactory(fs), 100)
+			commitBlocks(t, vol, []BlockRef{stageBlock(t, vol, 0, []byte("first"))}, Metadata{})
+			blk := stageBlock(t, vol, 10, []byte("second"))
+
+			fs.SetPutError(testutil.ErrInjectedPut, "manifest.json")
+			if _, err := vol.Commit(t.Context(), []BlockRef{blk}, Metadata{}); err == nil {
+				t.Fatal("commit with a failing manifest write succeeded")
+			}
+			fs.SetPutError(nil)
+			pointed, err := lodeGet(t, mem, "volumes/test-vol/latest")
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			retrier := tc.retrier(t, vol, mem)
+			snap, err := retrier.Commit(t.Context(), []BlockRef{blk}, Metadata{})
+			if err != nil {
+				t.Fatalf("retry of the pending commit: %v", err)
+			}
+			if string(snap.ID) != pointed || len(snap.Manifest.Blocks) != 2 {
+				t.Fatalf("retry = %s with %d blocks, want the pending %s with both", snap.ID, len(snap.Manifest.Blocks), pointed)
+			}
+			latest, err := retrier.Latest(t.Context())
+			if err != nil || latest.ID != snap.ID {
+				t.Fatalf("Latest = %v, %v; want the completed %s", latest, err, snap.ID)
+			}
+			if got, err := retrier.ReadAt(t.Context(), snap.ID, 10, 6); err != nil || string(got) != "second" {
+				t.Errorf("completed commit's block = %q, %v; want %q", got, err, "second")
+			}
+			if _, err := mem.Get(t.Context(), "volumes/test-vol/staged/"+pointed+".json"); !errors.Is(err, lode.ErrNotFound) {
+				t.Errorf("staged copy of a completed commit: %v, want lode.ErrNotFound", err)
+			}
+
+			next, err := retrier.Commit(t.Context(), []BlockRef{stageBlock(t, retrier, 20, []byte("third"))}, Metadata{})
+			if err != nil || next.Manifest.ParentSnapshotID != snap.ID {
+				t.Fatalf("commit after the completion = %v, %v; want parent %s", next, err, snap.ID)
+			}
+		})
+	}
+}
+
+// TestVolume_Commit_StaleHandleCompletesPendingCommitOnRetry verifies that
+// a handle that remembers the head from before the pending commit
+// conflicts on its first attempt, as any stale handle does, and completes
+// the pending commit on its retry, which resolves the head from storage.
+// A second retry, once the commit is complete, has no new block.
+func TestVolume_Commit_StaleHandleCompletesPendingCommitOnRetry(t *testing.T) {
+	mem := lode.NewMemory()
+	fs := testutil.NewFaultStore(mem)
+	failing := newTestVolume(t, "test-vol", newFaultStoreFactory(fs), 100)
+	commitBlocks(t, failing, []BlockRef{stageBlock(t, failing, 0, []byte("first"))}, Metadata{})
+	stale := newTestVolume(t, "test-vol", memoryFactoryFrom(mem), 100, WithRetryCount(1), WithRetryBaseDelay(time.Millisecond))
+	if _, err := stale.Latest(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+
+	blk := stageBlock(t, failing, 10, []byte("second"))
+	fs.SetPutError(testutil.ErrInjectedPut, "manifest.json")
+	if _, err := failing.Commit(t.Context(), []BlockRef{blk}, Metadata{}); err == nil {
+		t.Fatal("commit with a failing manifest write succeeded")
+	}
+	fs.SetPutError(nil)
+	pointed, err := lodeGet(t, mem, "volumes/test-vol/latest")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	snap, err := stale.Commit(t.Context(), []BlockRef{blk}, Metadata{})
+	if err != nil || string(snap.ID) != pointed {
+		t.Fatalf("retry from a stale handle = %v, %v; want the pending %s", snap, err, pointed)
+	}
+	if _, err := failing.Commit(t.Context(), []BlockRef{blk}, Metadata{}); !errors.Is(err, lode.ErrInvalidArgument) {
+		t.Fatalf("retry after the completion = %v, want lode.ErrInvalidArgument", err)
+	}
+}
+
+// TestVolume_Commit_RetryOfCommittedBlocksIsRefused verifies that blocks a
+// committed head already holds still make a commit without new blocks,
+// and that completion of a pending commit can be retried after its own
+// manifest write fails.
+func TestVolume_Commit_RetryOfCommittedBlocksIsRefused(t *testing.T) {
+	mem := lode.NewMemory()
+	fs := testutil.NewFaultStore(mem)
+	vol := newTestVolume(t, "test-vol", newFaultStoreFactory(fs), 100)
+	blk := stageBlock(t, vol, 0, []byte("first"))
+
+	fs.SetPutError(testutil.ErrInjectedPut, "manifest.json")
+	for range 2 { // the commit, then a retry whose completion fails too
+		if _, err := vol.Commit(t.Context(), []BlockRef{blk}, Metadata{}); err == nil {
+			t.Fatal("commit with a failing manifest write succeeded")
+		}
+	}
+	fs.SetPutError(nil)
+	if _, err := vol.Commit(t.Context(), []BlockRef{blk}, Metadata{}); err != nil {
+		t.Fatalf("retry after the failed completion: %v", err)
+	}
+	if _, err := vol.Commit(t.Context(), []BlockRef{blk}, Metadata{}); !errors.Is(err, lode.ErrInvalidArgument) {
+		t.Fatalf("commit of committed blocks = %v, want lode.ErrInvalidArgument", err)
+	}
+}
+
 // lodeGet reads an object as a string.
 func lodeGet(t *testing.T, store lode.RangeStore, path string) (string, error) {
 	t.Helper()

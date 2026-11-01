@@ -113,7 +113,8 @@ The following rules govern the write lifecycle:
   the complete cumulative set of blocks (existing and new), not only to the
   new blocks.
 - A commit MUST include at least one new block. An empty commit (one without
-  new blocks) is invalid.
+  new blocks) is invalid. A retry of a pending commit is the one exception
+  (§Error Semantics).
 
 ### Staged Data Lifecycle
 
@@ -196,7 +197,11 @@ type Writer interface {
 
     // Commit records the provided blocks into a new immutable snapshot.
     // The resulting manifest is cumulative: it includes all previously committed
-    // blocks plus the new blocks. Commit MUST include at least one new block.
+    // blocks plus the new blocks. Commit MUST include at least one new block,
+    // except in a retry of a commit whose manifest write failed after the
+    // pointer advanced: when the pending snapshot already holds every block,
+    // Commit completes that commit and returns its snapshot
+    // (CONTRACT_VOLUME §Error Semantics).
     Commit(ctx context.Context, blocks []BlockRef, metadata Metadata) (*Snapshot, error)
 }
 
@@ -253,7 +258,8 @@ Dataset.
 - `StageWriteAt` MUST NOT make any block visible in a snapshot.
 - `Commit` MUST make blocks visible only through the manifest and MUST
   produce an immutable snapshot.
-- `Commit` MUST include at least one new block.
+- `Commit` MUST include at least one new block, except when it completes a
+  pending commit (§Error Semantics).
 - `Commit` MUST verify that no blocks overlap in the complete cumulative
   set.
 - `ReadAt` MUST return `volume.ErrRangeMissing` if any part of the range is
@@ -276,6 +282,35 @@ Dataset.
 - An obsolete parent at `Commit` MUST produce `lode.ErrSnapshotConflict`.
 - Commit MUST persist and remove a staged copy of its manifest as
   CONTRACT_CORE §Head Pointer specifies.
+- A commit can fail after it advanced the pointer, while it persists its
+  canonical manifest. Its snapshot is then pending, and its staged copy
+  holds the blocks. A later commit whose blocks that pending snapshot
+  already holds MUST complete the pending commit and return its snapshot.
+  To complete it, Commit persists the canonical manifest from the staged
+  copy, byte for byte, and then removes the copy. The metadata of the
+  returned snapshot is the pending commit's. A retry of the failed commit
+  therefore succeeds while the commit is pending.
+- Another writer can complete the same commit first. A snapshot ID carries
+  a random nonce, so every writer of the canonical manifest writes the
+  staged copy's bytes. A `Put` refused with `lode.ErrPathExists`, or a
+  staged copy that is gone beside a canonical manifest, MUST therefore
+  count as completion. The completion MUST NOT read or delete a path whose
+  `Put` it lost (CONTRACT_STORAGE §Put).
+- A removal (§Removal) can fence the Volume while a completion runs. The
+  completion MUST read the pointer after every outcome. When the pointer
+  holds the removal marker, the completion MUST produce `ErrRemoved`, and
+  it MUST delete the manifest when its own `Put` stored it. A removal
+  fences before it lists, so a pointer read that precedes the fence leaves
+  the manifest to the removal's own listing.
+- Once the parent has a canonical manifest, such a commit has no new block
+  and MUST produce `lode.ErrInvalidArgument`. A retry that arrives after
+  another writer completed the commit therefore fails, and `Latest` then
+  holds the blocks.
+- After a failed manifest write, the handle MUST resolve the parent from
+  storage at its next commit, so that the commit adopts the pending
+  snapshot instead of conflicting. Any other handle that remembers an
+  earlier head conflicts as a stale handle does (§Optimistic Concurrency),
+  and its retry resolves the parent from storage.
 - The head pointer can name the snapshot of a pending or abandoned commit,
   and that snapshot lacks a canonical manifest (CONTRACT_CORE §Head
   Pointer). Commit MUST then load that snapshot from its staged copy, adopt
