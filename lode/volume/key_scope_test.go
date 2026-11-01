@@ -94,6 +94,20 @@ func TestKeyScope_EveryEntryPoint(t *testing.T) {
 				t.Errorf("volume b after the refused removals: %v, %v", latest, err)
 			}
 		},
+		"Head": func(t *testing.T, f keyScopeFixture) {
+			t.Helper()
+			factory := memoryFactoryFrom(f.store)
+			for _, id := range escapingIDs {
+				var err error
+				keys := f.store.Recorded(func() { _, err = Head(t.Context(), id, factory) })
+				if !errors.Is(err, lode.ErrInvalidArgument) {
+					t.Errorf("Head(%q) = %v, want ErrInvalidArgument", id, err)
+				}
+				if len(keys) > 0 {
+					t.Errorf("Head(%q) reached %v before rejecting the ID", id, keys)
+				}
+			}
+		},
 		"Reader.Snapshot": readFinds(func(f keyScopeFixture, id SnapshotID) error {
 			_, err := f.a.Snapshot(t.Context(), id)
 			return err

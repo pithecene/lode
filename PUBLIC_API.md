@@ -204,6 +204,15 @@ pointer but has not persisted its manifest makes `Remove` return
 `Expire` does for an uncommitted head; call `Remove` again once the
 commit has finished.
 
+The function `volume.Head(ctx, id, factory)` returns the
+`volume.SnapshotID` that the head pointer names, without the total length that `volume.New` needs
+(CONTRACT_VOLUME §Head). The snapshot may belong to a pending commit. A
+snapshot ID begins with the instant its commit began, so a caller that
+cannot open the volume can date its last commit. `Head` never writes. It
+returns `ErrNoSnapshots` for a volume with no commit, `volume.ErrRemoved`
+for a removed volume, and `ErrHeadUncommitted` when the pointer is absent
+while manifests exist.
+
 The package `volume` defines its own option type, `volume.Option`, so the
 Dataset options of `lode` do not compile as Volume options. Volume accepts
 the following options:
@@ -1023,7 +1032,7 @@ if errors.Is(err, lode.ErrNoSnapshots) {
 | `ErrSettingsMismatch` | The handle's codec, codec description, compressor, checksum, layout and partition keys, or path names differ from the dataset's | Writer handles, views |
 | `ErrReadOnly` | A write (`Put`, `Delete`, or `CompareAndSwap`) was attempted through a read-only root's store | Views |
 | `ErrSnapshotExpired` | `Expire` removed the snapshot, and the error also matches `ErrNotFound` | Handles |
-| `ErrHeadUncommitted` | The latest pointer names a snapshot whose manifest has not been persisted, or is absent while snapshots exist | `Expire`, `Sweep` (absent pointer only), `volume.Remove` |
+| `ErrHeadUncommitted` | The latest pointer names a snapshot whose manifest has not been persisted, or is absent while snapshots exist | `Expire`, `Sweep` (absent pointer only), `volume.Remove`, `volume.Head` (absent pointer only) |
 | `ErrSchemaViolation` | A record does not conform to the Parquet schema, or the schema is invalid | Parquet codec |
 | `ErrInvalidFormat` | A Parquet file is malformed or corrupt | Parquet codec |
 
