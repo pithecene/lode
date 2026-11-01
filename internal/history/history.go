@@ -55,6 +55,10 @@ type Errors struct {
 	// RemovedPointer. A container that is never removed leaves it nil, and
 	// its pointer is then read as before.
 	Removed error
+	// PathExists is the store's refusal of a Put on a filled path. A
+	// container whose commits CompletePending completes passes it; others
+	// leave it nil.
+	PathExists error
 }
 
 // RemovedPointer is the content of the head pointer of a removed history
@@ -99,6 +103,9 @@ type Stager[ID ~string] interface {
 type Snapshot[ID ~string, M any] struct {
 	ID       ID
 	Manifest *M
+	// Pending is true for a parent that ResolveParent loaded from its staged
+	// copy: the canonical manifest was absent, so the commit was pending.
+	Pending bool
 }
 
 // History is one container's snapshot sequence and head pointer.
@@ -149,6 +156,118 @@ func (h *History[ID, M]) LoadAt(ctx context.Context, id ID, path string) (*Snaps
 		return nil, err
 	}
 	return &Snapshot[ID, M]{ID: id, Manifest: m}, nil
+}
+
+// CompletePending completes the pending commit of snapshot id, a parent
+// that ResolveParent loaded from its staged copy. It persists the
+// canonical manifest from the staged copy, byte for byte, and then removes
+// the copy, as the commit's own writer does (Advance). The writer of the
+// commit, or another handle, may complete it concurrently, and the commit
+// is complete all the same (putManifest). Every outcome is checked against
+// the removal fence last: a removed history returns errs.Removed, and a
+// manifest this call wrote into it is deleted. On success id is remembered
+// as the head when the pointer still names it. A failed write matches
+// ErrManifestUncertain.
+func (h *History[ID, M]) CompletePending(ctx context.Context, id ID) error {
+	if h.stager == nil {
+		return fmt.Errorf("lode: %s %s has no staged copy: %w", h.noun, id, h.errs.NotFound)
+	}
+	pointed, err := h.ReadPointer(ctx)
+	if err != nil && !errors.Is(err, h.errs.NotFound) {
+		return err
+	}
+	staged := h.stager.StagedPath(id)
+	canonical := h.kind.ManifestPath(id)
+	wrote, err := h.persistPending(ctx, id, staged, canonical)
+	// A removal fences the pointer before it lists and deletes, so a pointer
+	// read after the write either precedes the fence, and the removal's
+	// listing deletes the manifest, or finds the marker.
+	if removed := h.removedSince(ctx); removed != nil {
+		if wrote && errors.Is(removed, h.errs.Removed) {
+			_ = h.store.Delete(ctx, canonical) // best-effort: the next removal deletes it too
+		}
+		return removed
+	}
+	if err != nil {
+		return err
+	}
+	h.unstage(ctx, staged)
+	if pointed == id {
+		h.remember(id, string(id))
+	}
+	return nil
+}
+
+// persistPending persists the canonical manifest of snapshot id from its
+// staged copy. wrote reports that this call's Put stored it, so the call
+// owns the object. A missing staged copy means that a concurrent writer
+// completed the commit, whose manifest then exists, or that a removal
+// deleted both copies.
+func (h *History[ID, M]) persistPending(ctx context.Context, id ID, staged, canonical string) (wrote bool, err error) {
+	data, err := h.readAll(ctx, staged)
+	switch {
+	case errors.Is(err, h.errs.NotFound):
+		if _, err := h.Snapshot(ctx, id); err != nil {
+			return false, fmt.Errorf("failed to load %s: %w", h.noun, err)
+		}
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("failed to load staged %s: %w", h.noun, err)
+	}
+	wrote, err = h.putManifest(ctx, canonical, data)
+	if err != nil {
+		return false, manifestUncertain{fmt.Errorf("failed to write %s: %w", h.noun, err)}
+	}
+	return wrote, nil
+}
+
+// removedSince is errs.Removed when the pointer now holds the removal
+// marker, nil when it holds anything else or is absent, and the read's
+// error when the pointer cannot be read: the removal may then be the
+// reason (CONTRACT_CORE §Head Pointer).
+func (h *History[ID, M]) removedSince(ctx context.Context) error {
+	if h.errs.Removed == nil {
+		return nil
+	}
+	_, err := h.ReadPointer(ctx)
+	switch {
+	case err == nil, errors.Is(err, h.errs.NotFound):
+		return nil
+	case errors.Is(err, h.errs.Removed):
+		h.Forget()
+		return err
+	default:
+		return fmt.Errorf("failed to resolve head after completing a commit: %w", err)
+	}
+}
+
+// putManifest persists data at path, the canonical manifest of a pending
+// commit. A snapshot ID carries a random nonce, so the only writers of that
+// path are the commit's own writer and the handles that complete it, and
+// each writes the staged copy's bytes. A Put refused with errs.PathExists
+// therefore finds the commit complete, and the object is not read: a path
+// whose Put failed belongs to another writer (CONTRACT_STORAGE §Put).
+// wrote reports that this Put stored the object.
+func (h *History[ID, M]) putManifest(ctx context.Context, path string, data []byte) (wrote bool, err error) {
+	err = h.store.Put(ctx, path, bytes.NewReader(data))
+	switch {
+	case err == nil:
+		return true, nil
+	case h.errs.PathExists != nil && errors.Is(err, h.errs.PathExists):
+		return false, nil
+	default:
+		return false, err
+	}
+}
+
+// readAll reads the object at path whole.
+func (h *History[ID, M]) readAll(ctx context.Context, path string) ([]byte, error) {
+	rc, err := h.store.Get(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rc.Close() }() // read-only stream
+	return io.ReadAll(rc)
 }
 
 // Snapshot loads a snapshot by ID from its canonical manifest.
@@ -596,6 +715,7 @@ func (h *History[ID, M]) stagedParent(ctx context.Context, id ID, expected strin
 	}
 	staged, err := h.LoadAt(ctx, id, h.stager.StagedPath(id))
 	if err == nil {
+		staged.Pending = true
 		return staged, expected, nil
 	}
 	if !errors.Is(err, h.errs.NotFound) {
@@ -687,6 +807,9 @@ func (h *History[ID, M]) Advance(ctx context.Context, expected string, id ID, ma
 	}
 	for _, p := range paths {
 		if err := h.store.Put(ctx, p, bytes.NewReader(data)); err != nil {
+			// The pointer now names id, so the remembered head and pointer
+			// are stale: the next Resolve consults storage and adopts id.
+			h.Forget()
 			return manifestUncertain{fmt.Errorf("failed to write %s: %w", h.noun, err)}
 		}
 	}

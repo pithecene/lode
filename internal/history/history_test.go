@@ -24,14 +24,15 @@ import (
 // occurs).
 
 var (
-	errNotFound = errors.New("not found")
-	errNoSnaps  = errors.New("no snapshots")
-	errConflict = errors.New("conflict")
-	errBoom     = errors.New("boom")
-	errHead     = errors.New("head uncommitted")
+	errNotFound   = errors.New("not found")
+	errNoSnaps    = errors.New("no snapshots")
+	errConflict   = errors.New("conflict")
+	errBoom       = errors.New("boom")
+	errHead       = errors.New("head uncommitted")
+	errPathExists = errors.New("path exists")
 )
 
-var testErrors = Errors{NotFound: errNotFound, NoSnapshots: errNoSnaps, SnapshotConflict: errConflict, HeadUncommitted: errHead}
+var testErrors = Errors{NotFound: errNotFound, NoSnapshots: errNoSnaps, SnapshotConflict: errConflict, HeadUncommitted: errHead, PathExists: errPathExists}
 
 // --- store ---
 
@@ -1109,4 +1110,245 @@ func TestResolveParent_Staged(t *testing.T) {
 		_, _, err := h.ResolveParent(t.Context())
 		wantMessage(t, err, "failed to load snapshot: boom")
 	})
+}
+
+func TestCompletePending(t *testing.T) {
+	canonical := testKind{}.ManifestPath("5")
+	staged := stagingKind{}.StagedPath("5")
+	pending := func() *memStore {
+		s := newMemStore()
+		s.objects[pointer] = []byte("5")
+		putAt(t, s, staged, "five")
+		return s
+	}
+	// immutable refuses a Put on a filled path, as every store does.
+	immutable := func(s *memStore) func(string, string) error {
+		return func(op, p string) error {
+			if _, filled := s.objects[p]; op == "put" && filled {
+				return errPathExists
+			}
+			return nil
+		}
+	}
+
+	t.Run("persists the staged copy byte for byte and removes it", func(t *testing.T) {
+		s := pending()
+		want := s.objects[staged]
+		h := newStagingHistory(s)
+		if err := h.CompletePending(t.Context(), "5"); err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(s.objects[canonical], want) {
+			t.Fatalf("canonical manifest = %q, want the staged copy %q", s.objects[canonical], want)
+		}
+		if _, ok := s.objects[staged]; ok {
+			t.Fatal("staged copy remains after the commit was completed")
+		}
+		if h.head != "5" {
+			t.Fatalf("head = %q, want the completed snapshot", h.head)
+		}
+	})
+	t.Run("a pointer past the snapshot completes it without remembering it", func(t *testing.T) {
+		s := pending()
+		s.objects[pointer] = []byte("6")
+		h := newStagingHistory(s)
+		if err := h.CompletePending(t.Context(), "5"); err != nil {
+			t.Fatal(err)
+		}
+		if h.head != "" {
+			t.Fatalf("head = %q, want none", h.head)
+		}
+	})
+	t.Run("a manifest another writer persisted first completes it", func(t *testing.T) {
+		s := pending()
+		s.objects[canonical] = bytes.Clone(s.objects[staged])
+		s.fail = immutable(s)
+		h := newStagingHistory(s)
+		if err := h.CompletePending(t.Context(), "5"); err != nil {
+			t.Fatalf("CompletePending over a filled path: %v", err)
+		}
+		if slices.Contains(s.ops, "get "+canonical) || slices.Contains(s.ops, "delete "+canonical) {
+			t.Fatalf("ops = %v, want the refused path neither read nor deleted", s.ops)
+		}
+		if _, ok := s.objects[staged]; ok {
+			t.Fatal("staged copy remains after the commit was completed")
+		}
+	})
+	t.Run("a writer that completed it and removed the copy completes it", func(t *testing.T) {
+		s := pending()
+		s.objects[canonical] = s.objects[staged]
+		delete(s.objects, staged)
+		h := newStagingHistory(s)
+		if err := h.CompletePending(t.Context(), "5"); err != nil || h.head != "5" {
+			t.Fatalf("CompletePending = %v, head %q; want nil, 5", err, h.head)
+		}
+	})
+	t.Run("no copy of either kind is not found", func(t *testing.T) {
+		s := pending()
+		delete(s.objects, staged)
+		h := newStagingHistory(s)
+		if err := h.CompletePending(t.Context(), "5"); !errors.Is(err, errNotFound) {
+			t.Fatalf("got %v, want not found", err)
+		}
+	})
+	t.Run("a kind that stages nothing is not found", func(t *testing.T) {
+		s := pending()
+		h := newTestHistory(s)
+		if err := h.CompletePending(t.Context(), "5"); !errors.Is(err, errNotFound) {
+			t.Fatalf("got %v, want not found", err)
+		}
+		if _, ok := s.objects[canonical]; ok {
+			t.Fatal("a kind that stages nothing wrote a manifest")
+		}
+	})
+	t.Run("a removed history writes nothing", func(t *testing.T) {
+		errRemoved := errors.New("removed")
+		removable := testErrors
+		removable.Removed = errRemoved
+		s := pending()
+		s.objects[pointer] = []byte(RemovedPointer)
+		h := New(s, stagingKind{}, pointer, "test manifest", removable)
+		if err := h.CompletePending(t.Context(), "5"); !errors.Is(err, errRemoved) {
+			t.Fatalf("got %v, want the removal", err)
+		}
+		if _, ok := s.objects[canonical]; ok {
+			t.Fatal("canonical manifest written into a removed history")
+		}
+	})
+	t.Run("a failed write keeps the staged copy and is uncertain", func(t *testing.T) {
+		s := pending()
+		s.fail = failOn("put", "manifest.json", errBoom)
+		h := newStagingHistory(s)
+		if err := h.CompletePending(t.Context(), "5"); !errors.Is(err, ErrManifestUncertain) || !errors.Is(err, errBoom) {
+			t.Fatalf("got %v, want ErrManifestUncertain wrapping boom", err)
+		}
+		if _, ok := s.objects[staged]; !ok {
+			t.Fatal("staged copy removed although the canonical manifest is absent")
+		}
+	})
+	t.Run("a failed read of the staged copy is returned", func(t *testing.T) {
+		s := pending()
+		s.fail = failOn("get", staged, errBoom)
+		h := newStagingHistory(s)
+		wantMessage(t, h.CompletePending(t.Context(), "5"), "failed to load staged test manifest: boom")
+	})
+}
+
+// TestCompletePending_Removal verifies that a completion never leaves a
+// manifest in a removed history, whenever the removal lands.
+func TestCompletePending_Removal(t *testing.T) {
+	canonical := testKind{}.ManifestPath("5")
+	staged := stagingKind{}.StagedPath("5")
+	pending := func() *memStore {
+		s := newMemStore()
+		s.objects[pointer] = []byte("5")
+		putAt(t, s, staged, "five")
+		return s
+	}
+	// A removal fences the pointer and deletes the objects while this call
+	// holds the staged copy, before its manifest write lands.
+	removable := testErrors
+	errRemoved := errors.New("removed")
+	removable.Removed = errRemoved
+	removedDuringWrite := func(s *memStore) func(string, string) error {
+		return func(op, p string) error {
+			if op == "put" && p == canonical {
+				s.objects[pointer] = []byte(RemovedPointer)
+				delete(s.objects, staged)
+			}
+			return nil
+		}
+	}
+	t.Run("a removal before the write lands leaves no manifest", func(t *testing.T) {
+		s := pending()
+		s.fail = removedDuringWrite(s)
+		h := New(s, stagingKind{}, pointer, "test manifest", removable)
+		if err := h.CompletePending(t.Context(), "5"); !errors.Is(err, errRemoved) {
+			t.Fatalf("got %v, want the removal", err)
+		}
+		if _, ok := s.objects[canonical]; ok {
+			t.Fatal("completion left a manifest in a removed history")
+		}
+	})
+	t.Run("a removal that deleted both copies is the removal", func(t *testing.T) {
+		s := pending()
+		s.objects[pointer] = []byte(RemovedPointer)
+		delete(s.objects, staged)
+		h := New(s, stagingKind{}, pointer, "test manifest", removable)
+		// The pointer read that precedes the load sees the marker first.
+		if err := h.CompletePending(t.Context(), "5"); !errors.Is(err, errRemoved) {
+			t.Fatalf("got %v, want the removal", err)
+		}
+	})
+	t.Run("a pointer that cannot be read after the write is returned", func(t *testing.T) {
+		s := pending()
+		reads := 0
+		s.fail = func(op, p string) error {
+			if op == "get" && p == pointer {
+				if reads++; reads > 1 {
+					return errBoom
+				}
+			}
+			return nil
+		}
+		h := New(s, stagingKind{}, pointer, "test manifest", removable)
+		wantMessage(t, h.CompletePending(t.Context(), "5"), "failed to resolve head after completing a commit: failed to read latest pointer: boom")
+	})
+	t.Run("a removal after another writer completed it is the removal", func(t *testing.T) {
+		// The other writer persisted the manifest and removed the copy, and
+		// the removal fenced before it listed: the manifest is still there.
+		s := pending()
+		s.objects[canonical] = s.objects[staged]
+		delete(s.objects, staged)
+		s.fail = func(op, p string) error {
+			if op == "get" && p == canonical {
+				s.objects[pointer] = []byte(RemovedPointer)
+			}
+			return nil
+		}
+		h := New(s, stagingKind{}, pointer, "test manifest", removable)
+		if err := h.CompletePending(t.Context(), "5"); !errors.Is(err, errRemoved) {
+			t.Fatalf("got %v, want the removal", err)
+		}
+	})
+	t.Run("a removal beside a refused write deletes nothing it did not write", func(t *testing.T) {
+		s := pending()
+		s.objects[canonical] = s.objects[staged]
+		s.fail = func(op, p string) error {
+			if op == "put" && p == canonical {
+				s.objects[pointer] = []byte(RemovedPointer)
+				return errPathExists
+			}
+			return nil
+		}
+		h := New(s, stagingKind{}, pointer, "test manifest", removable)
+		if err := h.CompletePending(t.Context(), "5"); !errors.Is(err, errRemoved) {
+			t.Fatalf("got %v, want the removal", err)
+		}
+		if slices.Contains(s.ops, "delete "+canonical) {
+			t.Fatalf("ops = %v, want the other writer's manifest left to the removal", s.ops)
+		}
+	})
+}
+
+// TestAdvance_ManifestFailureForgetsTheHead verifies that a commit whose
+// manifest write fails after the pointer advanced drops the remembered
+// head, so the next commit resolves the pointer and adopts the pending
+// snapshot instead of expecting the stale pointer and conflicting.
+func TestAdvance_ManifestFailureForgetsTheHead(t *testing.T) {
+	s := newMemStore()
+	h := newStagingHistory(s)
+	if err := h.Advance(t.Context(), "", "4", &manifest{Tag: "four"}, []string{prefix + "4/manifest.json"}); err != nil {
+		t.Fatal(err)
+	}
+	s.fail = failOn("put", "manifest.json", errBoom)
+	if err := h.Advance(t.Context(), "4", "5", &manifest{Tag: "five"}, []string{prefix + "5/manifest.json"}); !errors.Is(err, ErrManifestUncertain) {
+		t.Fatalf("got %v, want ErrManifestUncertain", err)
+	}
+	s.fail = nil
+	assertForgotten(t, h)
+	parent, expected, err := h.ResolveParent(t.Context())
+	if err != nil || parent.ID != "5" || expected != "5" {
+		t.Fatalf("ResolveParent = %v, %q, %v; want the pending 5", parent, expected, err)
+	}
 }

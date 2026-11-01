@@ -137,7 +137,11 @@ type Writer interface {
 
 	// Commit records the provided blocks into a new immutable snapshot.
 	// The resulting manifest is cumulative: it includes all previously committed
-	// blocks plus the new blocks. Commit MUST include at least one new block.
+	// blocks plus the new blocks. Commit MUST include at least one new block,
+	// except in a retry of a commit whose manifest write failed after the
+	// pointer advanced: when the pending snapshot already holds every block,
+	// Commit completes that commit and returns its snapshot
+	// (CONTRACT_VOLUME §Error Semantics).
 	Commit(ctx context.Context, blocks []BlockRef, metadata Metadata) (*Snapshot, error)
 }
 

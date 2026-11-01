@@ -101,6 +101,7 @@ var historyErrors = history.Errors{
 	NoSnapshots:      lode.ErrNoSnapshots,
 	SnapshotConflict: lode.ErrSnapshotConflict,
 	Removed:          ErrRemoved,
+	PathExists:       lode.ErrPathExists,
 }
 
 // validateID rejects a volume ID that is not one canonical path segment
@@ -368,7 +369,7 @@ func (v *volume) Commit(ctx context.Context, blocks []BlockRef, metadata Metadat
 			existing, parentID = parent.Manifest.Blocks, parent.ID
 		}
 		if !hasNewBlock(existing, blocks) {
-			return validate.Argument("commit must include at least one new block (all provided blocks already committed)")
+			return v.completeParent(ctx, parent, &result)
 		}
 
 		// Cumulative block set, sorted by offset for O(log B) lookups: existing
@@ -390,6 +391,23 @@ func (v *volume) Commit(ctx context.Context, blocks []BlockRef, metadata Metadat
 		return nil, err
 	}
 	return result, nil
+}
+
+// completeParent settles a commit whose blocks the parent already holds.
+// A parent loaded from its staged copy is a pending commit, and a retry
+// of that commit after its manifest write failed asks for exactly its
+// blocks: the pending commit is completed and becomes the result
+// (CONTRACT_VOLUME §Error Semantics). A parent with a canonical manifest
+// committed the blocks already, and the commit has no new block.
+func (v *volume) completeParent(ctx context.Context, parent *history.Snapshot[SnapshotID, Manifest], result **Snapshot) error {
+	if parent == nil || !parent.Pending {
+		return validate.Argument("commit must include at least one new block (all provided blocks already committed)")
+	}
+	if err := v.history.CompletePending(ctx, parent.ID); err != nil {
+		return err
+	}
+	*result = toVolumeSnapshot(parent)
+	return nil
 }
 
 // hasNewBlock reports whether any of blocks is absent from existing.
