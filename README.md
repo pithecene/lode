@@ -173,7 +173,7 @@ holds the same documents:
 
 ## Status
 
-The current release of Lode is **v0.12.2**. [`docs/plans/V1_API_DECISIONS.md`](docs/plans/V1_API_DECISIONS.md)
+The current release of Lode is **v0.13.0**. [`docs/plans/V1_API_DECISIONS.md`](docs/plans/V1_API_DECISIONS.md)
 lists the breaking changes still under consideration for v1.0, and
 [`CHANGELOG.md`](CHANGELOG.md) describes each release.
 
