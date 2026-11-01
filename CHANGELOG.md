@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`volume.Head`**: this function returns the snapshot ID that a volume's head pointer names, without the total length that `volume.New` needs. A caller that knows a volume's ID but not its length can therefore date the volume's last commit, a pending commit included. `Head` never writes. It returns `ErrNoSnapshots` for a volume with no commit, `volume.ErrRemoved` for a removed one, and `ErrHeadUncommitted` when the pointer is absent beside manifests.
+
 ### Fixed
 
 - **A Volume commit retried after a failed manifest write succeeds**: a commit that advanced the pointer and failed to persist its manifest left a pending snapshot that already held the blocks. A retry of that commit returned `ErrInvalidArgument` for a commit without new blocks, from every handle. `Commit` now completes the pending commit from its staged copy and returns its snapshot. The handle whose manifest write failed now reads the head from storage at its next commit and succeeds. Before, that commit returned `ErrSnapshotConflict`.

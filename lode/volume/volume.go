@@ -100,6 +100,7 @@ var historyErrors = history.Errors{
 	NotFound:         lode.ErrNotFound,
 	NoSnapshots:      lode.ErrNoSnapshots,
 	SnapshotConflict: lode.ErrSnapshotConflict,
+	HeadUncommitted:  lode.ErrHeadUncommitted,
 	Removed:          ErrRemoved,
 	PathExists:       lode.ErrPathExists,
 }
@@ -233,6 +234,35 @@ func Remove(ctx context.Context, id ID, storeFactory lode.Factory[lode.RangeStor
 		}
 	}
 	return nil
+}
+
+// Head returns the ID of the snapshot that the head pointer of volume id
+// names, read without the volume's total length (CONTRACT_VOLUME §Head).
+// The snapshot may belong to a pending commit, whose manifest is not yet
+// persisted. A snapshot ID carries the instant its commit began
+// (CONTRACT_CORE §Snapshot ID), so Head dates a volume's last commit for a
+// caller that cannot open it. Head returns lode.ErrNoSnapshots for a
+// volume with no commit, ErrRemoved for a removed volume, and
+// lode.ErrHeadUncommitted when the pointer is absent while manifests
+// exist. It never writes.
+func Head(ctx context.Context, id ID, storeFactory lode.Factory[lode.RangeStore]) (SnapshotID, error) {
+	if storeFactory == nil {
+		return "", validate.Argument("store factory must not be nil")
+	}
+	if err := validateID(id); err != nil {
+		return "", err
+	}
+	store, err := storeFactory()
+	if err != nil {
+		return "", fmt.Errorf("failed to create store: %w", err)
+	}
+	if validate.Nil(store) {
+		return "", validate.Argument("store factory returned nil store")
+	}
+	// The kind serves only its paths: PointedHead decodes no manifest, so
+	// the total length a decode would check is never read.
+	h := history.New(store, volumeKind{id: id}, volumeLatestPointerPath(id), "volume manifest", historyErrors)
+	return h.PointedHead(ctx)
 }
 
 // -----------------------------------------------------------------------------

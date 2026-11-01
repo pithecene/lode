@@ -525,6 +525,28 @@ func (h *History[ID, M]) CommittedHead(ctx context.Context, known ID) (ID, error
 	return id, h.ConfirmCommitted(ctx, id)
 }
 
+// PointedHead returns the snapshot the pointer names, whether its commit
+// is complete or pending, without loading any manifest. It returns
+// errs.NoSnapshots for a history with no snapshot, errs.Removed for a
+// removed one, errs.HeadUncommitted when the pointer is absent while
+// manifests exist, and an error when the pointer holds no snapshot ID.
+func (h *History[ID, M]) PointedHead(ctx context.Context) (ID, error) {
+	id, err := h.ReadPointer(ctx)
+	if errors.Is(err, h.errs.NotFound) {
+		if err := h.pointerless(ctx); err != nil {
+			return "", err
+		}
+		return "", h.errs.NoSnapshots
+	}
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve head: %w", err)
+	}
+	if !IsGeneratedID(id) {
+		return "", fmt.Errorf("lode: latest pointer holds %q, which is not a snapshot ID", id)
+	}
+	return id, nil
+}
+
 // ConfirmCommitted returns nil when snapshot id, read from the pointer, has
 // a manifest, and errs.HeadUncommitted when it has none: the commit is
 // pending, and the pointer no longer names its parent. A pointer that does

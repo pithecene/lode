@@ -484,6 +484,31 @@ Volume's objects.
 
 ---
 
+## Head
+
+`Head(ctx, id, factory)` returns the snapshot ID that the head pointer of
+a Volume names, and requires no total length. A caller that knows a
+Volume's ID but not its length can therefore date the Volume's last
+commit, because a generated snapshot ID begins with the instant its
+commit began (CONTRACT_CORE §Snapshot ID).
+
+- `Head` MUST read the pointer and MUST NOT write any object.
+- `Head` MUST NOT require a manifest. A pointer that names a pending or
+  abandoned commit yields that commit's snapshot ID (CONTRACT_CORE §Head
+  Pointer).
+- A Volume with no pointer and no manifest has no commit, and `Head` MUST
+  return `lode.ErrNoSnapshots`. A Volume that holds only staged blocks is
+  such a Volume.
+- A removed Volume MUST produce `ErrRemoved`.
+- A pointer that is absent while manifests exist cannot tell the head,
+  and `Head` MUST return `lode.ErrHeadUncommitted`, as `Expire` does.
+- A pointer that holds no snapshot ID MUST produce an error, and `Head`
+  MUST NOT return the pointer's content.
+- `Head` checks its arguments before it creates the store, as `Remove`
+  does.
+
+---
+
 ## Dataset Boundary
 
 `Dataset` and `Volume` are distinct containers built on one snapshot-history
