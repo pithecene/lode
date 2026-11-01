@@ -98,7 +98,10 @@ func (m *MockS3Client) PutObject(_ context.Context, params *s3.PutObjectInput, _
 			// S3 answers If-Match on an absent object with 404.
 			return nil, &types.NoSuchKey{}
 		}
-		if objectETag(existing) != ifMatch {
+		// The mock accepts only the bare ETag, as Hetzner Object Storage
+		// does, so every CompareAndSwap test fails if the adapter sends the
+		// quoted form.
+		if strings.Trim(objectETag(existing), `"`) != ifMatch {
 			return nil, &smithyAPIError{code: "PreconditionFailed", message: "etag mismatch"}
 		}
 	}

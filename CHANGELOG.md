@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`lode.Prefixed`**: this factory wraps another factory's store so that every object lives under a prefix, on any backend. A dataset or a volume therefore sits at a location of the caller's choice in a store the caller already holds. The store refuses a key that would leave the prefix with `ErrInvalidPath`, and the factory refuses a prefix outside the root with `ErrInvalidArgument`.
 - **Volume removal**: `volume.Remove` removes a volume with its data, and the volume stays removed. `Latest` and `Commit` on any handle of the volume return the new `volume.ErrRemoved`, and a second call completes an interrupted removal. `Remove` returns `ErrHeadUncommitted` while the head it fenced has no manifest, pending or abandoned, and `ErrSnapshotConflict` when a commit races it and the retries of `WithRetryCount` are spent, and in both cases it deletes nothing.
 
+### Fixed
+
+- **Commits succeed on Hetzner Object Storage**: the S3 adapter sends `If-Match` with the ETag's bare value. Hetzner refuses the quoted form that S3 returns with 412 even when the ETag matches, so every `CompareAndSwap` that replaced an object, and with it every commit after a dataset's first, returned `ErrSnapshotConflict` there. AWS S3 and Cloudflare R2 accept both forms. The adapter's documentation also records that Hetzner ignores `If-None-Match` on `CompleteMultipartUpload`, so a `Put` above 5 GB there has only the preliminary existence check.
+
 ---
 
 ## [0.12.2] - 2026-10-28

@@ -30,6 +30,7 @@
 //	|---------------|------------------------|-----------------------|
 //	| Cloudflare R2 | Supported              | ✅ Production verified |
 //	| AWS S3        | Supported              | ✅ Expected compatible |
+//	| Hetzner       | Ignored                | ⚠️ Best-effort only    |
 //	| RustFS        | Supported              | ⚠️ Test backend only   |
 //	| MinIO         | Unknown                | ⚠️ Not tested          |
 //	| LocalStack    | Unknown                | ⚠️ Test backend only   |
@@ -38,6 +39,14 @@
 // deploying against a backend not listed as verified, test with large uploads
 // (>5GB) before relying on the multipart path, or ensure single-writer
 // semantics at the application level.
+//
+// Hetzner Object Storage completes a multipart upload over an existing object
+// despite If-None-Match, so above 5GB the preflight check is the only
+// protection there and callers MUST ensure single-writer semantics
+// (CONTRACT_STORAGE §Put). Below 5GB, If-None-Match and If-Match on PutObject
+// hold under concurrent writers; a writer that loses an If-Match race
+// sometimes receives 500 instead of 412, and the SDK's retry of it then
+// receives 412.
 //
 // # Consistency
 //
@@ -563,7 +572,7 @@ func (s *Store) putConditional(ctx context.Context, fullKey, replacement string,
 	if cond.etag == "" {
 		input.IfNoneMatch = aws.String("*")
 	} else {
-		input.IfMatch = aws.String(cond.etag)
+		input.IfMatch = aws.String(ifMatchValue(cond.etag))
 	}
 	out, err := s.client.PutObject(ctx, input)
 	if err != nil {
@@ -576,6 +585,15 @@ func (s *Store) putConditional(ctx context.Context, fullKey, replacement string,
 	}
 	s.versions.record(fullKey, replacement, aws.ToString(out.ETag))
 	return nil
+}
+
+// ifMatchValue returns etag without its surrounding quotation marks. S3
+// returns an ETag quoted, as HTTP spells an entity tag. AWS S3 and Cloudflare
+// R2 accept If-Match in either form, but Hetzner Object Storage refuses the
+// quoted form with 412 even when the ETag matches, so only the bare value
+// works on every backend.
+func ifMatchValue(etag string) string {
+	return strings.Trim(etag, `"`)
 }
 
 // mapCASError maps S3 conditional-write refusals to ErrSnapshotConflict,
