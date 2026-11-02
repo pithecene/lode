@@ -1,10 +1,13 @@
 package lode
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -1018,4 +1021,99 @@ func TestSweep_ReindexFailures(t *testing.T) {
 			t.Errorf("expired %v, report = %+v; want no copy of the expired snapshot left", expired, report)
 		}
 	})
+}
+
+// -----------------------------------------------------------------------------
+// Scope
+// -----------------------------------------------------------------------------
+
+// A volume rooted in a dataset's directory is outside the scope of Sweep,
+// which derives every path it deletes from the dataset's layout
+// (§Unreferenced Object): Sweep neither deletes nor reports any of the
+// volume's objects, whatever their age, while it still reclaims the
+// dataset's own orphan. The volume is the one Lode v0.11.0 wrote
+// (testdata/v0.11.0), whose layout is a persisted format (CONTRACT_VOLUME
+// §Storage Layout), with a staged block and a staged manifest copy added at
+// their layout paths, as a pending commit leaves them.
+func TestSweep_LeavesAVolumeInTheDatasetDirectory(t *testing.T) {
+	old := string(idAt(time.Now().Add(-48 * time.Hour)))
+	cases := []struct {
+		name   string
+		open   func(t *testing.T, store Store) Records[D]
+		write  func(t *testing.T, ds Records[D])
+		orphan string
+	}{
+		{
+			name:   "default layout",
+			open:   newDefaultRetention,
+			write:  func(t *testing.T, ds Records[D]) { writeRecord(t, ds, 1) },
+			orphan: "datasets/events/snapshots/" + old + "/data/x",
+		},
+		{
+			name:   "hive layout",
+			open:   newHiveRetention,
+			write:  func(t *testing.T, ds Records[D]) { writeRun(t, ds, "a", "x") },
+			orphan: "datasets/events/partitions/run_id=a/event_type=x/segments/" + old + "/data/part.jsonl",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := NewMemory()
+			ds := tc.open(t, store)
+			tc.write(t, ds)
+			volume := putVolumeFixture(t, store, "datasets/events/volumes/disk/")
+			volume = append(volume,
+				"datasets/events/volumes/disk/data/900-4.bin",
+				"datasets/events/volumes/disk/staged/"+old+".json",
+			)
+			for _, p := range volume[len(volume)-2:] {
+				putObject(t, store, p)
+			}
+			putObject(t, store, tc.orphan)
+
+			report, err := ds.Sweep(t.Context(), SweepRequest{Grace: time.Nanosecond})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if exists(t, store, tc.orphan) || report.Orphans != 1 {
+				t.Errorf("report = %+v, want the dataset's orphan reclaimed", report)
+			}
+			for _, p := range volume {
+				if !exists(t, store, p) {
+					t.Errorf("Sweep deleted the volume's object %s", p)
+				}
+			}
+			for _, p := range report.Unparseable {
+				if strings.Contains(p, "/volumes/") {
+					t.Errorf("Sweep reported the volume's object %s", p)
+				}
+			}
+		})
+	}
+}
+
+// putVolumeFixture stores every object of the v0.11.0 volume under prefix
+// and returns their paths.
+func putVolumeFixture(t *testing.T, store Store, prefix string) []string {
+	t.Helper()
+	src := os.DirFS(v011Fixture + "/volumes/disk")
+	var paths []string
+	err := fs.WalkDir(src, ".", func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		data, err := fs.ReadFile(src, p)
+		if err != nil {
+			return err
+		}
+		paths = append(paths, prefix+p)
+		return store.Put(t.Context(), prefix+p, bytes.NewReader(data))
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) == 0 {
+		t.Fatal("the volume fixture holds no objects")
+	}
+	return paths
 }
