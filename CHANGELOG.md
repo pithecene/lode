@@ -163,7 +163,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Fewer S3 requests per commit**: the first commit of a dataset issues five requests instead of six, and each commit after the second through the same store issues three instead of four.
+- **Fewer S3 requests per commit**: a dataset's first commit issues five requests rather than six. Each later commit through the same store, from the third on, issues three rather than four.
 - **Fewer allocations**: the JSON Lines decoder no longer allocates 64 KiB for every file, so a read of a small file allocates 88 percent fewer bytes, and writes and reads allocate fewer objects.
 - **Snapshot IDs include a random suffix**: an ID has the form `<instant>-<nonce>`, so Lode no longer issues the same ID twice when the clock repeats a reading. IDs remain ordered by instant, and earlier IDs remain valid.
 - **Listings tolerate concurrent deletion**: `Snapshots`, `Latest`, `ListManifests`, and `ListPartitions` omit a manifest that another caller deletes during the listing instead of failing.
@@ -202,7 +202,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Listings are sorted**: on every store, `ListDatasets` returns IDs in lexicographic order, `ListPartitions` returns paths in lexicographic order, and `ListManifests` returns references ordered by partition and then by ID. `Limit` applies after sorting.
+- **Listings are sorted**: on every store, `ListDatasets` and `ListPartitions` return IDs and paths, respectively, in lexicographic order, and `ListManifests` returns references ordered by partition and then by ID. `Limit` applies after sorting.
 - **Error messages**: errors that match `ErrInvalidArgument` begin `lode: invalid argument:`, and `ErrInvalidPath` reads `invalid path`. Two Dataset read failures add one level of context, and four Volume read failures omit the word `volume`, so that `failed to list volume snapshots` becomes `failed to list snapshots`. Classification with `errors.Is` is unchanged.
 
 ### Fixed
