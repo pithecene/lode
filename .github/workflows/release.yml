@@ -28,7 +28,7 @@ jobs:
     if: ${{ needs.tag_check.outputs.semver_match != '' }}
     # The job runs inside the image of the internal check's current release.
     container:
-      image: ghcr.io/pithecene/bosun:0.2.0-rc.1
+      image: ghcr.io/pithecene/bosun:latest
       credentials:
         username: bosun
         password: ${{ secrets.BOSUN_REGISTRY_TOKEN }}
