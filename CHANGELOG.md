@@ -1,9 +1,9 @@
 # Changelog
 
-All notable changes to Lode will be documented in this file.
+This file records every notable change to Lode.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+This changelog follows the format of [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and Lode adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
@@ -28,7 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **`lode.Prefixed`**: this factory wraps another factory's store so that every object lives under a prefix, on any backend. A dataset or a volume therefore sits at a location of the caller's choice in a store the caller already holds. The store refuses a key that would leave the prefix with `ErrInvalidPath`, and the factory refuses a prefix outside the root with `ErrInvalidArgument`.
-- **Volume removal**: `volume.Remove` removes a volume with its data, and the volume stays removed. `Latest` and `Commit` on any handle of the volume return the new `volume.ErrRemoved`, and a second call completes an interrupted removal. `Remove` returns `ErrHeadUncommitted` while the head it fenced has no manifest, pending or abandoned, and `ErrSnapshotConflict` when a commit races it and the retries of `WithRetryCount` are spent, and in both cases it deletes nothing.
+- **Volume removal**: `volume.Remove` removes a volume with its data, and the volume stays removed. `Latest` and `Commit` on any handle of the volume return the new `volume.ErrRemoved`, and a second call completes an interrupted removal. `Remove` returns `ErrHeadUncommitted` while the head it fenced has no manifest, pending or abandoned, and `ErrSnapshotConflict` when a commit races it and `WithRetryCount` runs out of retries, and in both cases it deletes nothing.
 
 ### Fixed
 
@@ -48,7 +48,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Documentation by audience**: the guides for readers are in `docs/guides/`, including a new guide to usage pitfalls. Plans and readiness records are in `docs/plans/`, and conventions for maintainers are in `docs/maintainers/`. Each contract is titled in the form "Lode X Contract", and each reference to another document is a link. Pithecene publishes the guides, the public API reference, and the contracts at [pithecene.sh/docs/lode](https://pithecene.sh/docs/lode).
+- **Documentation by audience**: the guides for readers are in `docs/guides/`, including a new guide to usage pitfalls. Plans and readiness records are in `docs/plans/`, and conventions for maintainers are in `docs/maintainers/`. Each contract's title takes the form "Lode X Contract", and each reference to another document is a link. Pithecene publishes the guides, the public API reference, and the contracts at [pithecene.sh/docs/lode](https://pithecene.sh/docs/lode).
 
 ### Security
 
@@ -68,7 +68,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Breaking Changes
 
 - **Every writer must share the dataset's settings**: before its first commit, a writer compares its settings with those the dataset's head manifest records. A writer's settings are its codec, the codec's description, its compressor, its checksum, its partitioner and Hive keys, and its path names. A writer whose settings differ returns the new `ErrSettingsMismatch`. For a dataset whose manifests predate this release, the first write verifies the Hive keys against the partition paths.
-- **The construction and record API is replaced**: a root opens datasets, each codec determines its record type, and blobs have their own handle. A reader opens a view that takes the layout, codec name, and compressor from the dataset's manifests. Persisted data is unchanged: a dataset written by an earlier release opens under the default path names.
+- **A new construction and record API**: a root opens datasets, each codec determines its record type, and blobs have their own handle. A reader opens a view that takes the layout, codec name, and compressor from the dataset's manifests. Persisted data is unchanged: a dataset written by an earlier release opens under the default path names.
 
   | Before | After |
   |---|---|
@@ -95,7 +95,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`Codec` gains `Describe`**: a custom codec returns its configuration in a canonical form, or `""` when it has none.
 - **Volume takes the new factory type**: `volume.New` takes a `lode.Factory[lode.RangeStore]`, and Volume metadata is `volume.Metadata`.
 - **Range reads are an optional capability**: `ReadRange` and `ReaderAt` move from `ObjectStore` to the new `RangeReader` interface. An adapter that cannot read ranges omits them instead of returning `ErrRangeReadNotSupported`, and a handle's `ReaderAt` returns that error for such a store. `RangeStore` is a `Store` that reads ranges: `NewFS` and `NewMemory` return one, `FS`, `Memory`, and `s3.Factory` are factories of one, and `volume.New` takes one, so passing a store without range reads does not compile. Code that called `ReadRange` on a `Store` it built holds a `RangeStore` instead.
-- **Partition paths are typed**: the `ListManifests` parameter, `PartitionRef.Path`, `ManifestRef.Partition`, and `PartitionListOptions.StartAfter` are a `PartitionPath`, built with `ParsePartitionPath` (which returns `ErrInvalidPath` for a path that is not canonical) or taken from a listing. Code passes `lode.PartitionPath{}` where it formerly passed `""`, and it calls `String()` where it needs a string. A `PartitionPath` encodes as its string in text and therefore in JSON. For a manifest that names a noncanonical partition, a listing reports `ErrManifestInvalid`. `PartitionListOptions.Prefix` remains a string.
+- **Typed partition paths**: the `ListManifests` parameter, `PartitionRef.Path`, `ManifestRef.Partition`, and `PartitionListOptions.StartAfter` are a `PartitionPath`, built with `ParsePartitionPath` (which returns `ErrInvalidPath` for a path that is not canonical) or taken from a listing. Code passes `lode.PartitionPath{}` where it formerly passed `""`, and it calls `String()` where it needs a string. A `PartitionPath` encodes as its string in text and therefore in JSON. For a manifest that names a noncanonical partition, a listing reports `ErrManifestInvalid`. `PartitionListOptions.Prefix` remains a string.
 - **The S3 test double is no longer exported**: `s3.MockS3Client` and `s3.NewMockS3Client` exist only in the adapter's tests. A test that needs an in-memory S3 can copy the double or target an emulator such as LocalStack or MinIO.
 - **A dataset ID must be one path segment**: Lode rejects with `ErrInvalidArgument` an ID that is empty, is `.` or `..`, contains `/` or a backslash, or begins with `.lode-tmp-`. `=` remains permitted.
 
@@ -202,7 +202,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Listings are sorted**: on every store, `ListDatasets` and `ListPartitions` return IDs and paths, respectively, in lexicographic order, and `ListManifests` returns references ordered by partition and then by ID. `Limit` applies after sorting.
+- **Sorted listings**: on every store, `ListDatasets` and `ListPartitions` return IDs and paths, respectively, in lexicographic order, and `ListManifests` returns references ordered by partition and then by ID. `Limit` applies after sorting.
 - **Error messages**: errors that match `ErrInvalidArgument` begin `lode: invalid argument:`, and `ErrInvalidPath` reads `invalid path`. Two Dataset read failures add one level of context, and four Volume read failures omit the word `volume`, so that `failed to list volume snapshots` becomes `failed to list snapshots`. Classification with `errors.Is` is unchanged.
 
 ### Fixed
@@ -242,8 +242,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking Changes
 
-- **`VolumeOption` is removed**: `NewVolume` takes the `Option` type that `NewDataset` and `NewDatasetReader` take, and an option that does not apply to a Volume returns the new `ErrOptionNotValidForVolume`. ([#164](https://github.com/pithecene/lode/pull/164))
-- **`WithVolumeChecksum` is removed**: a Volume takes `WithChecksum`, as a Dataset does.
+- **The removal of `VolumeOption`**: `NewVolume` takes the `Option` type that `NewDataset` and `NewDatasetReader` take, and an option that does not apply to a Volume returns the new `ErrOptionNotValidForVolume`. ([#164](https://github.com/pithecene/lode/pull/164))
+- **The removal of `WithVolumeChecksum`**: a Volume takes `WithChecksum`, as a Dataset does.
 
 ### Added
 
@@ -340,7 +340,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Nil metadata is accepted**: `Write`, `StreamWrite`, `StreamWriteRecords`, and `Volume.Commit` treat nil metadata as empty instead of returning an error.
+- **Nil metadata as empty metadata**: `Write`, `StreamWrite`, `StreamWriteRecords`, and `Volume.Commit` treat nil metadata as empty instead of returning an error.
 
 ### Upgrade Notes
 
@@ -353,7 +353,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking Changes
 
-- **Dataset types are renamed**: the new names distinguish them from the Volume types, and this release provides no aliases.
+- **New names for the dataset types**: the new names distinguish them from the Volume types, and this release provides no aliases.
 
   | Before | After |
   |---|---|
