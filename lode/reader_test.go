@@ -39,7 +39,7 @@ func (r *testReader) view(ctx context.Context, id DatasetID) (*dataset, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := validateManifest(head); err != nil {
+	if err := validateManifest(head.Manifest); err != nil {
 		return nil, err
 	}
 	return newDataset(id, r.root.store, newPathLayout(r.root.names, scheme)), nil

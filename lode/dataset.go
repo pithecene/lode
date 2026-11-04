@@ -51,9 +51,39 @@ type DatasetOption interface {
 // ViewOption configures a view: ReadRoot.Records or ReadRoot.Blobs. A view
 // takes its layout and components from the dataset's manifests; only a
 // custom compressor or checksum, which Lode cannot reconstruct from its
-// name, is passed to it.
+// name, is passed to it, and AtSnapshot names the snapshot that the view
+// opens at in place of the head.
 type ViewOption interface {
-	applyView(cfg *components) error
+	applyView(cfg *viewConfig) error
+}
+
+// viewConfig is what a view's options set: its components, and the
+// snapshot it opens at, which is empty for the head.
+type viewConfig struct {
+	components components
+	at         DatasetSnapshotID
+}
+
+// viewOption adapts a function to ViewOption.
+type viewOption func(cfg *viewConfig) error
+
+func (o viewOption) applyView(cfg *viewConfig) error { return o(cfg) }
+
+// AtSnapshot opens a view at snapshot id in place of the head. Opening
+// reads that snapshot's canonical manifest and neither the pointer nor the
+// head, and it checks the view's codec and the root's path names against
+// that manifest. The view's Snapshot of id returns the snapshot that
+// opening read, with no further read; its other methods behave as on any
+// view. Opening returns ErrSnapshotExpired for an expired snapshot and
+// ErrNotFound for an absent one.
+func AtSnapshot(id DatasetSnapshotID) ViewOption {
+	return viewOption(func(cfg *viewConfig) error {
+		if !storepath.Segment(string(id)) {
+			return validate.Argument("AtSnapshot: snapshot ID %q is not %s", id, storepath.SegmentRule)
+		}
+		cfg.at = id
+		return nil
+	})
 }
 
 // ComponentOption configures a writer handle or a view.
@@ -74,7 +104,7 @@ type componentOption struct {
 }
 
 func (o componentOption) applyDataset(cfg *datasetConfig) error { return o.dataset(cfg) }
-func (o componentOption) applyView(cfg *components) error       { return o.view(cfg) }
+func (o componentOption) applyView(cfg *viewConfig) error       { return o.view(&cfg.components) }
 
 // WithLayout sets how a dataset is partitioned: Unpartitioned (the default)
 // or Hive.
@@ -203,8 +233,8 @@ func resolveDatasetConfig(opts []DatasetOption) (*datasetConfig, error) {
 }
 
 // resolveViewConfig applies opts.
-func resolveViewConfig(opts []ViewOption) (*components, error) {
-	cfg := &components{}
+func resolveViewConfig(opts []ViewOption) (*viewConfig, error) {
+	cfg := &viewConfig{}
 	for _, opt := range opts {
 		if opt == nil {
 			return nil, validate.Argument("option must not be nil")
@@ -234,6 +264,10 @@ type dataset struct {
 
 	// history owns the snapshot sequence and its head pointer (internal/history).
 	history history.History[DatasetSnapshotID, Manifest]
+
+	// opened is the snapshot that a view opened AtSnapshot read, which
+	// Snapshot returns for its ID; nil for every other handle.
+	opened *DatasetSnapshot
 }
 
 // writer is the core of a writer handle: its dataset, its retry policy,
@@ -331,6 +365,21 @@ var (
 	_ history.Stager[DatasetSnapshotID]         = datasetKind{}
 )
 
+// clone returns a copy of s that shares no memory with s, as a fresh load
+// of its manifest does: a caller that changes the copy leaves s intact. The
+// manifest passes through JSON, the encoding in which manifests persist.
+func (s *DatasetSnapshot) clone() (*DatasetSnapshot, error) {
+	data, err := json.Marshal(s.Manifest)
+	if err != nil {
+		return nil, fmt.Errorf("lode: failed to copy the manifest of %s: %w", s.ID, err)
+	}
+	m, err := datasetKind{}.Decode(bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	return &DatasetSnapshot{ID: s.ID, Manifest: m}, nil
+}
+
 func toDatasetSnapshot(s *history.Snapshot[DatasetSnapshotID, Manifest]) *DatasetSnapshot {
 	return &DatasetSnapshot{ID: s.ID, Manifest: s.Manifest}
 }
@@ -361,10 +410,15 @@ func (d *dataset) ID() DatasetID {
 // Snapshot loads a snapshot by ID. A dataset written before canonical
 // manifests existed is found by scan when the canonical path is absent.
 // An expired snapshot is reported before that scan: its partition manifests
-// may outlive the canonical one, and the scan would resurrect it.
+// may outlive the canonical one, and the scan would resurrect it. A view
+// opened AtSnapshot returns a copy of the snapshot that it read when it
+// opened, for that snapshot's ID.
 func (d *dataset) Snapshot(ctx context.Context, id DatasetSnapshotID) (*DatasetSnapshot, error) {
 	if err := validateSnapshotID(id); err != nil {
 		return nil, err
+	}
+	if d.opened != nil && d.opened.ID == id {
+		return d.opened.clone()
 	}
 	s, err := d.history.Snapshot(ctx, id)
 	if errors.Is(err, ErrNotFound) {
