@@ -249,9 +249,9 @@ func (r *ReadRoot) Blobs(ctx context.Context, id DatasetID, opts ...ViewOption) 
 	return &blobView{dataset: d}, nil
 }
 
-// openView resolves a view's layout from the snapshot it opens at, the
-// dataset's head or the snapshot that AtSnapshot names, and checks that
-// snapshot against the view's codec and the root's names.
+// openView resolves the snapshot at which the view opens (its anchor),
+// takes the view's layout from that snapshot, and checks the snapshot
+// against the view's codec and the root's names.
 func (r *ReadRoot) openView(ctx context.Context, id DatasetID, opts []ViewOption, codec codecIdentity) (*dataset, error) {
 	if err := validateDatasetID(id); err != nil {
 		return nil, err
@@ -260,12 +260,12 @@ func (r *ReadRoot) openView(ctx context.Context, id DatasetID, opts []ViewOption
 	if err != nil {
 		return nil, err
 	}
-	opened, scheme, err := resolveView(ctx, r.store, r.names, id, cfg.at)
+	opened, err := resolveAnchor(ctx, r.store, r.names, id, cfg.anchor)
 	if err != nil {
 		return nil, err
 	}
 	if err := validateManifest(opened.Manifest); err != nil {
-		return nil, fmt.Errorf("%s of %s: %w", viewAnchor(cfg.at), id, err)
+		return nil, fmt.Errorf("%s of %s: %w", cfg.anchor, id, err)
 	}
 	if err := matchCodec(opened.Manifest, codec); err != nil {
 		return nil, err
@@ -277,22 +277,108 @@ func (r *ReadRoot) openView(ctx context.Context, id DatasetID, opts []ViewOption
 	if want, have := r.names, recorded.paths; have != want {
 		return nil, fmt.Errorf("lode: path names mismatch: dataset records %#v, root has %#v: %w", have, want, ErrSettingsMismatch)
 	}
-	d := newDataset(id, r.store, newPathLayout(r.names, scheme))
+	d := newDataset(id, r.store, newPathLayout(r.names, opened.partitioning()))
 	d.components = cfg.components
 	d.codec = codec
-	if cfg.at != "" {
-		d.opened = opened
-	}
+	d.pinned = cfg.anchor.pin(opened)
 	return d, nil
 }
 
-// viewAnchor names the snapshot a view opens at, for error messages.
-func viewAnchor(at DatasetSnapshotID) string {
-	if at == "" {
-		return "head"
+// resolveAnchor finds the anchor's snapshot of dataset id without knowing
+// the dataset's layout. When the anchor has no snapshot, it returns
+// ErrSettingsMismatch if the dataset's directory holds a manifest under
+// other path names, and the anchor's absence otherwise.
+func resolveAnchor(ctx context.Context, store Store, names ManifestPaths, id DatasetID, anchor viewAnchor) (*DatasetSnapshot, error) {
+	candidates := viewCandidates(store, names, id)
+	opened, err := anchor.resolve(ctx, candidates)
+	if !isAbsence(err) {
+		return opened, err
 	}
-	return "snapshot " + string(at)
+	if foreign := rejectForeignManifest(ctx, store, id, candidates[0].layout, candidates[1].layout); foreign != nil {
+		return nil, foreign
+	}
+	return nil, err
 }
+
+// viewAnchor is the snapshot at which a view opens: the dataset's head
+// (headAnchor) or the snapshot that AtSnapshot names (snapshotAnchor).
+type viewAnchor interface {
+	// resolve finds the anchor's snapshot among the candidates, one dataset
+	// core per grammar, because a view does not know its layout until it
+	// reads a manifest. It returns an absence (isAbsence) when the anchor
+	// has no snapshot.
+	resolve(ctx context.Context, candidates []*dataset) (*DatasetSnapshot, error)
+
+	// pin returns the snapshot that the view keeps for Snapshot to serve,
+	// or nil when the view keeps none.
+	pin(opened *DatasetSnapshot) *DatasetSnapshot
+
+	// String names the anchor in error messages.
+	String() string
+}
+
+// headAnchor opens a view at the dataset's head, and the view keeps no
+// snapshot: its head may move.
+type headAnchor struct{}
+
+// resolve finds the head without knowing the layout. The pointer names the
+// head but not whether the dataset is partitioned, so the head's canonical
+// manifest is read under each grammar. Without a pointer, or when the
+// pointer names a snapshot whose manifest is not persisted, each grammar's
+// scan selects the head, as Latest does, without creating the pointer.
+func (headAnchor) resolve(ctx context.Context, candidates []*dataset) (*DatasetSnapshot, error) {
+	id := candidates[0].id
+	pointed, err := candidates[0].history.ReadPointer(ctx)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		return nil, err
+	}
+	loaders := make([]func(*dataset) (*DatasetSnapshot, error), 0, 2)
+	if err == nil {
+		loaders = append(loaders, func(d *dataset) (*DatasetSnapshot, error) { return fromHistory(d.history.Snapshot(ctx, pointed)) })
+	}
+	loaders = append(loaders, func(d *dataset) (*DatasetSnapshot, error) { return fromHistory(d.history.Newest(ctx)) })
+	for _, load := range loaders {
+		s, err := firstFound(candidates, load)
+		switch {
+		case err == nil:
+			return s, nil
+		case !isAbsence(err):
+			return nil, fmt.Errorf("failed to resolve the head of %s: %w", id, err)
+		}
+	}
+	return nil, fmt.Errorf("lode: dataset %s has no snapshot: %w", id, ErrNotFound)
+}
+
+func (headAnchor) pin(*DatasetSnapshot) *DatasetSnapshot { return nil }
+
+func (headAnchor) String() string { return "head" }
+
+// snapshotAnchor opens a view at one named snapshot, which the view keeps:
+// a snapshot never changes once committed.
+type snapshotAnchor struct {
+	id DatasetSnapshotID
+}
+
+// resolve finds the snapshot as Snapshot does (findSnapshot), with one
+// candidate per grammar in place of the handle's own core.
+func (a snapshotAnchor) resolve(ctx context.Context, candidates []*dataset) (*DatasetSnapshot, error) {
+	id := candidates[0].id
+	s, err := findSnapshot(ctx, candidates, a.id)
+	switch {
+	case err == nil:
+		return s, nil
+	case errors.Is(err, ErrSnapshotExpired):
+		return nil, err
+	case isAbsence(err):
+		return nil, fmt.Errorf("lode: snapshot %s of %s: %w", a.id, id, ErrNotFound)
+	default:
+		return nil, fmt.Errorf("failed to resolve snapshot %s of %s: %w", a.id, id, err)
+	}
+}
+
+func (snapshotAnchor) pin(opened *DatasetSnapshot) *DatasetSnapshot { return opened }
+
+func (a snapshotAnchor) String() string { return "snapshot " + string(a.id) }
 
 // hiveGrammar stands for every Hive scheme while a view's layout is not yet
 // known: reading needs only the grammar, not the keys.
@@ -307,104 +393,6 @@ func viewCandidates(store Store, names ManifestPaths, id DatasetID) []*dataset {
 		newDataset(id, store, newPathLayout(names, noopScheme)),
 		newDataset(id, store, newPathLayout(names, hiveGrammar)),
 	}
-}
-
-// resolveView finds the snapshot a view opens at: the head when at is
-// empty, and otherwise snapshot at.
-func resolveView(ctx context.Context, store Store, names ManifestPaths, id DatasetID, at DatasetSnapshotID) (*DatasetSnapshot, partitionScheme, error) {
-	if at == "" {
-		return resolveViewHead(ctx, store, names, id)
-	}
-	return resolveViewSnapshot(ctx, store, names, id, at)
-}
-
-// resolveViewHead finds the dataset's head without knowing its layout. The
-// pointer names the head but not whether the dataset is partitioned, so the
-// canonical manifest is read under the snapshots directory, then the
-// segments directory. Without a pointer, or when the pointer names a
-// snapshot whose manifest is not persisted, each grammar's scan selects the
-// head, as Latest does, without creating the pointer. It returns the head
-// and the partitioning it records; ErrSettingsMismatch when the dataset's
-// directory holds a manifest under other path names; ErrNotFound when the
-// dataset has no snapshot.
-func resolveViewHead(ctx context.Context, store Store, names ManifestPaths, id DatasetID) (*DatasetSnapshot, partitionScheme, error) {
-	candidates := viewCandidates(store, names, id)
-	pointed, err := candidates[0].history.ReadPointer(ctx)
-	if err != nil && !errors.Is(err, ErrNotFound) {
-		return nil, partitionScheme{}, err
-	}
-	loaders := make([]func(*dataset) (*DatasetSnapshot, error), 0, 2)
-	if err == nil {
-		loaders = append(loaders, func(d *dataset) (*DatasetSnapshot, error) { return fromHistory(d.history.Snapshot(ctx, pointed)) })
-	}
-	loaders = append(loaders, func(d *dataset) (*DatasetSnapshot, error) { return fromHistory(d.history.Newest(ctx)) })
-	for _, load := range loaders {
-		s, scheme, err := firstFound(candidates, load)
-		if err != nil {
-			return nil, partitionScheme{}, fmt.Errorf("failed to resolve the head of %s: %w", id, err)
-		}
-		if s != nil {
-			return s, scheme, nil
-		}
-	}
-	if err := rejectForeignManifest(ctx, store, id, candidates[0].layout, candidates[1].layout); err != nil {
-		return nil, partitionScheme{}, err
-	}
-	return nil, partitionScheme{}, fmt.Errorf("lode: dataset %s has no snapshot: %w", id, ErrNotFound)
-}
-
-// resolveViewSnapshot finds snapshot at without knowing the dataset's
-// layout, in the order that Snapshot follows once the layout is known: the
-// canonical manifest under each directory, then the tombstone, so that an
-// expired snapshot whose partition manifests remain is not resurrected,
-// then each grammar's scan, for a dataset written before canonical
-// manifests. It returns the snapshot and the partitioning it records;
-// ErrSnapshotExpired for an expired snapshot; ErrSettingsMismatch when the
-// dataset's directory holds a manifest under other path names; ErrNotFound
-// when no manifest of the snapshot exists.
-func resolveViewSnapshot(ctx context.Context, store Store, names ManifestPaths, id DatasetID, at DatasetSnapshotID) (*DatasetSnapshot, partitionScheme, error) {
-	candidates := viewCandidates(store, names, id)
-	canonical := func(d *dataset) (*DatasetSnapshot, error) { return fromHistory(d.history.Snapshot(ctx, at)) }
-	scanned := func(d *dataset) (*DatasetSnapshot, error) { return fromHistory(d.history.Find(ctx, at)) }
-	if s, scheme, err := firstFound(candidates, canonical); err != nil || s != nil {
-		return s, scheme, wrapResolveSnapshot(err, at, id)
-	}
-	if expired := candidates[0].tombstones().expiredError(ctx, at); expired != nil {
-		return nil, partitionScheme{}, expired
-	}
-	if s, scheme, err := firstFound(candidates, scanned); err != nil || s != nil {
-		return s, scheme, wrapResolveSnapshot(err, at, id)
-	}
-	if err := rejectForeignManifest(ctx, store, id, candidates[0].layout, candidates[1].layout); err != nil {
-		return nil, partitionScheme{}, err
-	}
-	return nil, partitionScheme{}, fmt.Errorf("lode: snapshot %s of %s: %w", at, id, ErrNotFound)
-}
-
-// wrapResolveSnapshot gives a failed read of snapshot at its context; nil
-// stays nil.
-func wrapResolveSnapshot(err error, at DatasetSnapshotID, id DatasetID) error {
-	if err == nil {
-		return nil
-	}
-	return fmt.Errorf("failed to resolve snapshot %s of %s: %w", at, id, err)
-}
-
-// firstFound returns the first snapshot that load finds in a candidate,
-// with the partitioning it records. It returns no snapshot and no error
-// when every candidate reports ErrNotFound or ErrNoSnapshots, and stops at
-// any other error.
-func firstFound(candidates []*dataset, load func(*dataset) (*DatasetSnapshot, error)) (*DatasetSnapshot, partitionScheme, error) {
-	for _, d := range candidates {
-		s, err := load(d)
-		if err == nil {
-			return s, partitionScheme{name: partitioner(s.Partitioner), keys: s.PartitionKeys}, nil
-		}
-		if !errors.Is(err, ErrNotFound) && !errors.Is(err, ErrNoSnapshots) {
-			return nil, partitionScheme{}, err
-		}
-	}
-	return nil, partitionScheme{}, nil
 }
 
 // recordView implements RecordView[T].

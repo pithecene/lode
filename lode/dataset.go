@@ -57,11 +57,11 @@ type ViewOption interface {
 	applyView(cfg *viewConfig) error
 }
 
-// viewConfig is what a view's options set: its components, and the
-// snapshot it opens at, which is empty for the head.
+// viewConfig is what a view's options set: its components, and the anchor
+// it opens at, the head unless AtSnapshot names a snapshot.
 type viewConfig struct {
 	components components
-	at         DatasetSnapshotID
+	anchor     viewAnchor
 }
 
 // viewOption adapts a function to ViewOption.
@@ -72,16 +72,16 @@ func (o viewOption) applyView(cfg *viewConfig) error { return o(cfg) }
 // AtSnapshot opens a view at snapshot id in place of the head. Opening
 // reads that snapshot's canonical manifest and neither the pointer nor the
 // head, and it checks the view's codec and the root's path names against
-// that manifest. The view's Snapshot of id returns the snapshot that
-// opening read, with no further read; its other methods behave as on any
-// view. Opening returns ErrSnapshotExpired for an expired snapshot and
-// ErrNotFound for an absent one.
+// that manifest. The view's Snapshot of id returns a copy of that snapshot
+// without a store call; its other methods behave as on any view. Opening
+// returns ErrSnapshotExpired for an expired snapshot and ErrNotFound for an
+// absent one.
 func AtSnapshot(id DatasetSnapshotID) ViewOption {
 	return viewOption(func(cfg *viewConfig) error {
 		if !storepath.Segment(string(id)) {
 			return validate.Argument("AtSnapshot: snapshot ID %q is not %s", id, storepath.SegmentRule)
 		}
-		cfg.at = id
+		cfg.anchor = snapshotAnchor{id: id}
 		return nil
 	})
 }
@@ -234,7 +234,7 @@ func resolveDatasetConfig(opts []DatasetOption) (*datasetConfig, error) {
 
 // resolveViewConfig applies opts.
 func resolveViewConfig(opts []ViewOption) (*viewConfig, error) {
-	cfg := &viewConfig{}
+	cfg := &viewConfig{anchor: headAnchor{}}
 	for _, opt := range opts {
 		if opt == nil {
 			return nil, validate.Argument("option must not be nil")
@@ -265,9 +265,10 @@ type dataset struct {
 	// history owns the snapshot sequence and its head pointer (internal/history).
 	history history.History[DatasetSnapshotID, Manifest]
 
-	// opened is the snapshot that a view opened AtSnapshot read, which
-	// Snapshot returns for its ID; nil for every other handle.
-	opened *DatasetSnapshot
+	// pinned is the snapshot that a view opened AtSnapshot read when it
+	// opened. Snapshot returns a copy of it for its ID. It is nil for every
+	// other handle, and nothing changes it once the view is open.
+	pinned *DatasetSnapshot
 }
 
 // writer is the core of a writer handle: its dataset, its retry policy,
@@ -407,33 +408,78 @@ func (d *dataset) ID() DatasetID {
 	return d.id
 }
 
-// Snapshot loads a snapshot by ID. A dataset written before canonical
-// manifests existed is found by scan when the canonical path is absent.
-// An expired snapshot is reported before that scan: its partition manifests
-// may outlive the canonical one, and the scan would resurrect it. A view
-// opened AtSnapshot returns a copy of the snapshot that it read when it
+// Snapshot loads a snapshot by ID, in the order of findSnapshot. A view
+// opened AtSnapshot returns a copy of the snapshot that it pinned when it
 // opened, for that snapshot's ID.
 func (d *dataset) Snapshot(ctx context.Context, id DatasetSnapshotID) (*DatasetSnapshot, error) {
 	if err := validateSnapshotID(id); err != nil {
 		return nil, err
 	}
-	if d.opened != nil && d.opened.ID == id {
-		return d.opened.clone()
+	if d.pinned != nil && d.pinned.ID == id {
+		return d.pinned.clone()
 	}
-	s, err := d.history.Snapshot(ctx, id)
-	if errors.Is(err, ErrNotFound) {
-		if expired := d.tombstones().expiredError(ctx, id); expired != nil {
-			return nil, expired
-		}
-		s, err = d.history.Find(ctx, id)
+	return findSnapshot(ctx, []*dataset{d}, id)
+}
+
+// findSnapshot looks snapshot id up in candidates, in the order that every
+// reader follows: the canonical manifest; then the tombstone, so that an
+// expired snapshot whose partition manifests remain is not resurrected;
+// then a scan, for a dataset written before canonical manifests. A handle
+// passes its own core, and a view that does not yet know its layout passes
+// one core per grammar (viewCandidates). It returns ErrSnapshotExpired for
+// an expired snapshot and ErrNotFound when no candidate holds a manifest of
+// id.
+func findSnapshot(ctx context.Context, candidates []*dataset, id DatasetSnapshotID) (*DatasetSnapshot, error) {
+	canonical := func(d *dataset) (*DatasetSnapshot, error) { return loadedManifest(d.history.Snapshot(ctx, id)) }
+	scanned := func(d *dataset) (*DatasetSnapshot, error) { return loadedManifest(d.history.Find(ctx, id)) }
+	s, err := firstFound(candidates, canonical)
+	if !isAbsence(err) {
+		return s, err
 	}
-	if err != nil {
-		if errors.Is(err, ErrNotFound) {
-			return nil, err
-		}
+	if expired := candidates[0].tombstones().expiredError(ctx, id); expired != nil {
+		return nil, expired
+	}
+	return firstFound(candidates, scanned)
+}
+
+// loadedManifest converts the load of one snapshot's manifest, and gives a
+// failure other than absence its context.
+func loadedManifest(s *history.Snapshot[DatasetSnapshotID, Manifest], err error) (*DatasetSnapshot, error) {
+	if err != nil && !isAbsence(err) {
 		return nil, fmt.Errorf("failed to get manifest: %w", err)
 	}
-	return toDatasetSnapshot(s), nil
+	return fromHistory(s, err)
+}
+
+// firstFound returns the first snapshot that load finds in a candidate. When
+// every candidate reports an absence, it returns the last one, and it stops
+// at any other error.
+func firstFound(candidates []*dataset, load func(*dataset) (*DatasetSnapshot, error)) (*DatasetSnapshot, error) {
+	var err error
+	for _, d := range candidates {
+		var s *DatasetSnapshot
+		if s, err = load(d); !isAbsence(err) {
+			return s, err
+		}
+	}
+	return nil, err
+}
+
+// isAbsence reports whether err means that a candidate holds no such
+// snapshot: ErrNotFound for one snapshot, ErrNoSnapshots for the newest.
+// An expired snapshot is not absent, although ErrSnapshotExpired matches
+// ErrNotFound: its tombstone records it.
+func isAbsence(err error) bool {
+	if errors.Is(err, ErrSnapshotExpired) {
+		return false
+	}
+	return errors.Is(err, ErrNotFound) || errors.Is(err, ErrNoSnapshots)
+}
+
+// partitioning is the partition scheme that the snapshot's manifest
+// records, which a view adopts as its layout.
+func (s *DatasetSnapshot) partitioning() partitionScheme {
+	return partitionScheme{name: partitioner(s.Partitioner), keys: s.PartitionKeys}
 }
 
 // Snapshots lists every snapshot, oldest first.

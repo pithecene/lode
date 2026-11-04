@@ -35,14 +35,14 @@ func (r *testReader) view(ctx context.Context, id DatasetID) (*dataset, error) {
 	if err := validateDatasetID(id); err != nil {
 		return nil, err
 	}
-	head, scheme, err := resolveViewHead(ctx, r.root.store, r.root.names, id)
+	head, err := resolveAnchor(ctx, r.root.store, r.root.names, id, headAnchor{})
 	if err != nil {
 		return nil, err
 	}
 	if err := validateManifest(head.Manifest); err != nil {
 		return nil, err
 	}
-	return newDataset(id, r.root.store, newPathLayout(r.root.names, scheme)), nil
+	return newDataset(id, r.root.store, newPathLayout(r.root.names, head.partitioning())), nil
 }
 
 func (r *testReader) ListDatasets(ctx context.Context, opts DatasetListOptions) ([]DatasetID, error) {
