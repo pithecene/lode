@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"iter"
 	"slices"
 	"sort"
 	"strings"
@@ -144,6 +145,85 @@ func (d *dataset) ListManifests(ctx context.Context, partition PartitionPath, op
 
 	sort.Slice(refs, func(i, j int) bool { return manifestRefLess(refs[i], refs[j]) })
 	return cursorWindow(refs, func(ref ManifestRef) bool { return manifestRefLess(opts.StartAfter, ref) }, opts.Limit), nil
+}
+
+// Manifests yields the dataset's committed manifests, within a partition
+// when one is given, in (Partition, ID) order after the cursor and up to
+// the limit. It loads and validates each manifest it yields, once, and no
+// other: unlike ListManifests, it does not validate a manifest outside the
+// window. A snapshot's manifest is its smallest-partition copy under the
+// prefix, or its canonical manifest when the prefix holds no copy of it. A
+// manifest that is gone by the time it is loaded, as when retention
+// removes a snapshot between the listing and the load, is skipped.
+func (d *dataset) Manifests(ctx context.Context, partition PartitionPath, opts ManifestListOptions) iter.Seq2[LoadedManifest, error] {
+	return func(yield func(LoadedManifest, error) bool) {
+		listing, err := d.listManifests(ctx, d.layout.snapshotsPrefixForPartition(d.id, partition.path))
+		if err != nil {
+			yield(LoadedManifest{}, err)
+			return
+		}
+		if !listing.any {
+			yield(LoadedManifest{}, ErrNotFound)
+			return
+		}
+		// A layout without partitions has no snapshot in any named partition:
+		// the selector matches nothing, so nothing is loaded.
+		if partition.path != "" && !d.layout.supportsPartitions() {
+			return
+		}
+		d.yieldLoaded(ctx, inRefOrder(listing.manifests), opts, yield)
+	}
+}
+
+// yieldLoaded loads each listed manifest after the cursor, in order, and
+// yields it until the limit is reached, an error is yielded, or the caller
+// stops.
+func (d *dataset) yieldLoaded(ctx context.Context, listed []listedManifest, opts ManifestListOptions, yield func(LoadedManifest, error) bool) {
+	yielded := 0
+	for _, m := range listed {
+		if opts.Limit > 0 && yielded == opts.Limit {
+			return
+		}
+		if !manifestRefLess(opts.StartAfter, ManifestRef{ID: m.id, Partition: PartitionPath{path: m.partition}}) {
+			continue
+		}
+		loaded, err := d.loadRef(ctx, m)
+		if errors.Is(err, ErrNotFound) {
+			continue
+		}
+		if !yield(loaded, err) || err != nil {
+			return
+		}
+		yielded++
+	}
+}
+
+// loadRef loads and validates a listed manifest, with the reference that
+// names it.
+func (d *dataset) loadRef(ctx context.Context, m listedManifest) (LoadedManifest, error) {
+	manifest, err := d.loadListed(ctx, m)
+	if err != nil {
+		return LoadedManifest{}, err
+	}
+	path, err := listedPartitionPath(m.partition, m.path)
+	if err != nil {
+		return LoadedManifest{}, err
+	}
+	return LoadedManifest{Ref: ManifestRef{ID: m.id, Partition: path}, Manifest: manifest}, nil
+}
+
+// inRefOrder returns the listed manifests in the order of their
+// ManifestRefs, (Partition, ID), so they are loaded and yielded in that
+// order.
+func inRefOrder(listed []listedManifest) []listedManifest {
+	ordered := slices.Clone(listed)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		return manifestRefLess(
+			ManifestRef{ID: ordered[i].id, Partition: PartitionPath{path: ordered[i].partition}},
+			ManifestRef{ID: ordered[j].id, Partition: PartitionPath{path: ordered[j].partition}},
+		)
+	})
+	return ordered
 }
 
 // listedManifest is one snapshot's manifest as found by listing.

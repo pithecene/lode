@@ -406,6 +406,14 @@ type SnapshotReader interface {
 	// GetManifest loads and validates the manifest a reference names.
 	GetManifest(ctx context.Context, ref ManifestRef) (*Manifest, error)
 
+	// Manifests yields the references ListManifests lists, in the same order
+	// and window, each with the manifest it loaded and validated to yield
+	// it, so a caller that reads them does not load them again. It loads
+	// each manifest only when the caller asks for it, and so, unlike
+	// ListManifests, validates no manifest outside the window. It yields
+	// ErrNotFound, and nothing else, if the dataset holds no manifest.
+	Manifests(ctx context.Context, partition PartitionPath, opts ManifestListOptions) iter.Seq2[LoadedManifest, error]
+
 	// OpenObject returns a reader for a data object. The caller closes it.
 	OpenObject(ctx context.Context, obj ObjectRef) (io.ReadCloser, error)
 
@@ -791,6 +799,14 @@ type ManifestRef struct {
 	// For partition-first layouts (e.g., HiveLayout), this is populated during
 	// discovery. The zero value for segment-first layouts (e.g., DefaultLayout).
 	Partition PartitionPath
+}
+
+// LoadedManifest is one manifest of a listing (SnapshotReader.Manifests):
+// the reference ListManifests would return for it, and the manifest that
+// GetManifest would load for that reference, already loaded and validated.
+type LoadedManifest struct {
+	Ref      ManifestRef
+	Manifest *Manifest
 }
 
 // PartitionRef references a partition within a dataset.

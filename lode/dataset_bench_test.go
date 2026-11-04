@@ -128,3 +128,93 @@ func BenchmarkDataset_SequentialWrites_StoreCallCount(b *testing.B) {
 		}
 	}
 }
+
+// partitionReadBench writes snapshots of one record each into one Hive
+// partition over a store with simulated remote latency, and opens a view of
+// them, as a reader of a run's partition finds it.
+func partitionReadBench(b *testing.B, snapshots int) (SnapshotReader, PartitionPath, *testutil.FaultStore) {
+	b.Helper()
+	fs := testutil.NewFaultStore(NewMemory())
+	ds, err := Open(Use[Store](fs)).Records(b.Context(), "bench-ds", JSONL[D](), hive("day"))
+	if err != nil {
+		b.Fatal(err)
+	}
+	for range snapshots {
+		if _, err := ds.Write(b.Context(), R(D{"day": "a"}), nil); err != nil {
+			b.Fatal(err)
+		}
+	}
+	view, err := OpenReadOnly(Use[Store](&latencyStore{inner: fs, latency: time.Millisecond})).Records(b.Context(), "bench-ds", JSONL[D]())
+	if err != nil {
+		b.Fatal(err)
+	}
+	day, err := ParsePartitionPath("day=a")
+	if err != nil {
+		b.Fatal(err)
+	}
+	return view, day, fs
+}
+
+// readFiles opens and drains each file a manifest names.
+func readFiles(b *testing.B, r SnapshotReader, ref ManifestRef, m *Manifest) {
+	b.Helper()
+	for _, f := range m.Files {
+		rc, err := r.OpenObject(b.Context(), ObjectRef{Manifest: ref, Path: f.Path})
+		if err != nil {
+			b.Fatal(err)
+		}
+		if _, err := io.Copy(io.Discard, rc); err != nil {
+			b.Fatal(err)
+		}
+		if err := rc.Close(); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkPartitionRead reads every snapshot of a partition of 72, the
+// artifact count of a day archive retained in chunks, with 1ms of latency
+// per Get and List: by ListManifests then GetManifest, and by Manifests.
+// It reports the store Gets each read makes.
+func BenchmarkPartitionRead(b *testing.B) {
+	const snapshots = 72
+	reads := []struct {
+		name string
+		read func(b *testing.B, r SnapshotReader, day PartitionPath)
+	}{
+		{"ListThenGet", func(b *testing.B, r SnapshotReader, day PartitionPath) {
+			refs, err := r.ListManifests(b.Context(), day, ManifestListOptions{})
+			if err != nil {
+				b.Fatal(err)
+			}
+			for _, ref := range refs {
+				m, err := r.GetManifest(b.Context(), ref)
+				if err != nil {
+					b.Fatal(err)
+				}
+				readFiles(b, r, ref, m)
+			}
+		}},
+		{"Manifests", func(b *testing.B, r SnapshotReader, day PartitionPath) {
+			for loaded, err := range r.Manifests(b.Context(), day, ManifestListOptions{}) {
+				if err != nil {
+					b.Fatal(err)
+				}
+				readFiles(b, r, loaded.Ref, loaded.Manifest)
+			}
+		}},
+	}
+	for _, read := range reads {
+		b.Run(read.name, func(b *testing.B) {
+			view, day, fs := partitionReadBench(b, snapshots)
+			gets := 0
+			b.ResetTimer()
+			for b.Loop() {
+				fs.Reset()
+				read.read(b, view, day)
+				gets += len(fs.GetCalls())
+			}
+			b.ReportMetric(float64(gets)/float64(b.N), "gets/op")
+		})
+	}
+}

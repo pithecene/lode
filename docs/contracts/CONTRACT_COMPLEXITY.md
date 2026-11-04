@@ -138,11 +138,13 @@ Operations table.
 | ListManifests | Cold | 1 `List` + M `Get` calls (validation) | O(N + M × manifest) |
 | ListPartitions | Cold | 1 `List` + M `Get` calls | O(N + M × manifest) |
 | GetManifest | Hot | 1 `Get` | O(manifest) |
+| Manifests | Cold | 1 `List` + 1 `Get` per manifest yielded | O(N + manifest) |
 | OpenObject | Hot | 1 `Get` | O(1) stream |
 
 `ListManifests` MUST extract snapshot IDs from paths, and CONTRACT_ERRORS.md
 requires manifest validation. `ListPartitions` MUST NOT deserialize any
-manifest twice. On layouts that model partitions, `Prefix` limits N and M
+manifest twice. `Manifests` loads only the manifests it yields, so `Limit` bounds its
+`Get` calls. On layouts that model partitions, `Prefix` limits N and M
 to the keys and manifests in the matching subtree. The listing applies `StartAfter` and `Limit` after
 enumeration, so they bound the result set but not the store calls. Sorting
 adds O(N log N) CPU and no store calls.

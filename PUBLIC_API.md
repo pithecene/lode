@@ -319,13 +319,16 @@ infers `T`):
   shares
 - `ManifestRef`, `PartitionRef`: the references that `ListManifests` and
   `ListPartitions` return
+- `LoadedManifest`: a reference that `Manifests` yields, and its manifest,
+  which the listing loaded
 - `PartitionPath`: a canonical partition path, which `ParsePartitionPath`
   constructs or a listing returns, and whose zero value names the dataset
   root
 - `ObjectRef`: a reference to a data object, which `OpenObject` and
   `ReaderAt` take
 - `DatasetListOptions`, `ManifestListOptions`, `PartitionListOptions`: the
-  options of `ListDatasets`, `ListManifests`, and `ListPartitions`
+  options of `ListDatasets`, `ListManifests`, `Manifests`, and
+  `ListPartitions`
 
 **Interfaces:**
 - `Codec[T]`, `StreamingCodec[T]`, `StreamEncoder[T]`: codecs and streaming
