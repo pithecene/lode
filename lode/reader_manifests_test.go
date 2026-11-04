@@ -235,6 +235,9 @@ func TestManifests_StopsAtAnInvalidManifest(t *testing.T) {
 	store := NewMemory()
 	ds := openHive(t, store)
 	ids := writeEach(t, ds, D{"day": "a"}, D{"day": "a"})
+	// Snapshot IDs order the listing, and two writes can share a clock tick,
+	// so the first listed is the smallest ID, not the first written.
+	slices.Sort(ids)
 	bad := "datasets/test-ds/partitions/day=a/segments/" + string(ids[0]) + "/manifest.json"
 	if err := store.Delete(t.Context(), bad); err != nil {
 		t.Fatal(err)
@@ -283,6 +286,7 @@ func TestManifests_RemovalBetweenListingAndUse(t *testing.T) {
 		ds := openHive(t, store)
 		ids := writeEach(t, ds, D{"day": "a"}, D{"day": "a"})
 		day := partitionPath(t, "day=a")
+		slices.Sort(ids)
 		var seen []DatasetSnapshotID
 		for loaded, err := range ds.Manifests(t.Context(), day, ManifestListOptions{}) {
 			if err != nil {
