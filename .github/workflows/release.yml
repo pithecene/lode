@@ -109,8 +109,8 @@ jobs:
           path: dist
 
       - name: 🚀 Create Release
-        # The approval of the release environment is the last gate, so the
-        # job publishes the release rather than leaving it as a draft.
+        # A maintainer's approval in the release environment authorizes the
+        # release, so the job publishes it rather than leaving a draft.
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
