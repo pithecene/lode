@@ -39,8 +39,9 @@ Based on the full-history audit of the production dataset
   as an optional capability (D5), the error-message rule (D6), the removal
   of the S3 test double (D7), and the partition index (D10b). The earliest
   pass of each of these windows is 2026-11-20 (§1, §2). The API freeze
-  window restarts with v0.13.0 (2026-11-01), which adds `Prefixed`, and
-  its earliest pass is 2026-11-29 (§1). No decision is open.
+  window restarts with v0.15.0 (2026-11-03), which adds
+  `SnapshotReader.Manifests` and `LoadedManifest`, and the window's
+  earliest pass is 2026-12-01 (§1). No decision is open.
 - **Not yet met, evidence missing:** native AWS S3 (§6), steady-state snapshot
   reads (§3), checksum-backed corruption checks (no production file carries a
   checksum, §10).
@@ -156,6 +157,8 @@ partitions, one dataset on R2.
 >
 > **Evidence:** Window restarted by v0.13.0 (2026-11-01), which adds `Prefixed`, a factory whose store keeps every object under a prefix. The release also adds `volume.Remove` and `volume.ErrRemoved`, which the criterion excludes as part of the experimental Volume. No signature changes. Earliest pass: 2026-11-29.
 > Date: 2026-11-01 | Observer: @pithecene | Project: lode
+> **Evidence:** Window restarted by v0.15.0 (2026-11-03), which adds `Manifests` to `SnapshotReader` and the type `LoadedManifest`. A type that implements `SnapshotReader` outside Lode must add the method. No existing signature changes. Earliest pass: 2026-12-01.
+> Date: 2026-11-03 | Observer: @pithecene | Project: lode, quarry
 > Summary: Not met; window restarts on every API change.
 > Issue: lode#175
 
