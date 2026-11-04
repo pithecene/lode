@@ -153,9 +153,10 @@ Volume serves reads by byte range:
   the address space.
   Each read through the reader MUST use the context that `ReaderAt` received, and
   the reader MUST be safe for concurrent use.
-- `SnapshotReaderAt.Snapshot()` MUST return a copy of the snapshot, so that
-  a change to one copy alters neither the bytes that the reader returns nor
-  a later copy.
+- `SnapshotReaderAt.Blocks()` MUST return a copy of the snapshot's committed
+  blocks, sorted by offset, so that a change to one copy alters neither the
+  bytes that the reader returns nor a later copy. `SnapshotReaderAt.ID()`
+  MUST return the ID of the reader's snapshot.
 
 A range read MUST behave as follows:
 - If any part of the range is missing, the read returns an explicit
@@ -242,8 +243,11 @@ type Reader interface {
 type SnapshotReaderAt interface {
     io.ReaderAt
 
-    // Snapshot returns a copy of the snapshot that the reader reads.
-    Snapshot() *Snapshot
+    // ID returns the ID of the snapshot that the reader reads.
+    ID() SnapshotID
+
+    // Blocks returns a copy of the snapshot's committed blocks.
+    Blocks() []BlockRef
 }
 
 // Volume composes the full read/write surface for a sparse byte space.
