@@ -145,6 +145,17 @@ The caller initiates resumption explicitly.
 Volume serves reads by byte range:
 - `ReadAt(snapshotID, offset, length)` succeeds only if committed blocks
   cover the entire requested range.
+- `ReaderAt(snapshotID)` MUST load the snapshot's manifest once and return a
+  `SnapshotReaderAt`, and each read through that reader MUST fetch block
+  data only. The reader's `ReadAt(p, off)` MUST follow `io.ReaderAt`: a read that extends
+  past the end of the address space returns `io.EOF` and the bytes from
+  its offset to the end. The range-read rules of this section apply to the bytes within
+  the address space.
+  Each read through the reader MUST use the context that `ReaderAt` received, and
+  the reader MUST be safe for concurrent use.
+- `SnapshotReaderAt.Snapshot()` MUST return a copy of the snapshot, so that
+  a change to one copy alters neither the bytes that the reader returns nor
+  a later copy.
 
 A range read MUST behave as follows:
 - If any part of the range is missing, the read returns an explicit
@@ -210,6 +221,11 @@ type Reader interface {
     // ReadAt reads a fully committed range from a snapshot.
     ReadAt(ctx context.Context, snapshotID SnapshotID, offset, length int64) ([]byte, error)
 
+    // ReaderAt loads a snapshot's manifest once and returns a reader of its
+    // committed bytes, whose reads fetch block data only.
+    // Returns lode.ErrNotFound if the snapshot does not exist.
+    ReaderAt(ctx context.Context, snapshotID SnapshotID) (SnapshotReaderAt, error)
+
     // Latest returns the most recently committed snapshot.
     // Returns lode.ErrNoSnapshots if no snapshots exist.
     Latest(ctx context.Context) (*Snapshot, error)
@@ -220,6 +236,14 @@ type Reader interface {
     // Snapshot retrieves a specific snapshot by ID.
     // Returns lode.ErrNotFound if the snapshot does not exist.
     Snapshot(ctx context.Context, id SnapshotID) (*Snapshot, error)
+}
+
+// SnapshotReaderAt reads the committed bytes of one snapshot.
+type SnapshotReaderAt interface {
+    io.ReaderAt
+
+    // Snapshot returns a copy of the snapshot that the reader reads.
+    Snapshot() *Snapshot
 }
 
 // Volume composes the full read/write surface for a sparse byte space.
@@ -549,6 +573,8 @@ cumulative design.
 | Operation | Store Calls | Memory | CPU |
 |-----------|-------------|--------|-----|
 | `ReadAt` | 1 `Get` + R `ReadRange` | O(L) | **O(log B + R)** |
+| `ReaderAt` | 1 `Get` | O(B) | O(B) validation |
+| `SnapshotReaderAt.ReadAt` | R `ReadRange` | O(L) | **O(log B + R)** |
 | `Latest` | 2 (pointer + manifest) | O(B) | O(1) |
 | `Snapshot(id)` | 1 `Get` | O(B) | O(B) validation |
 | `Snapshots` | 1 `List` + S `Get` calls | O(S × B_avg) | O(S × B_avg + S log S) |

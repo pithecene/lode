@@ -9,6 +9,7 @@ import (
 	"io"
 	"math"
 	"path"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -555,12 +556,46 @@ func (v *volume) ReadAt(ctx context.Context, snapshotID SnapshotID, offset, leng
 		return nil, err
 	}
 
+	// Coverage is checked before the result is allocated: a sparse volume
+	// may be far larger than its committed bytes, and a read of a gap
+	// fails without allocating the range.
 	covering, err := findCoveringBlocks(snapshot.Manifest.Blocks, offset, length)
 	if err != nil {
 		return nil, err
 	}
-
 	result := make([]byte, int(length))
+	if err := v.readBlocks(ctx, covering, offset, result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// ReaderAt loads a snapshot once and returns a reader of its committed
+// bytes.
+func (v *volume) ReaderAt(ctx context.Context, snapshotID SnapshotID) (SnapshotReaderAt, error) {
+	snapshot, err := v.Snapshot(ctx, snapshotID)
+	if err != nil {
+		return nil, err
+	}
+	return &snapshotReaderAt{ctx: ctx, volume: v, snapshot: snapshot}, nil
+}
+
+// snapshotReaderAt is the SnapshotReaderAt that ReaderAt returns. It holds
+// the snapshot that ReaderAt loaded and never changes it, so concurrent
+// reads share no mutable state.
+type snapshotReaderAt struct {
+	// ctx is the context of ReaderAt: io.ReaderAt passes none to a read.
+	ctx      context.Context
+	volume   *volume
+	snapshot *Snapshot
+}
+
+var _ SnapshotReaderAt = (*snapshotReaderAt)(nil)
+
+// readBlocks fills dst with the bytes at [offset, offset+len(dst)) from the
+// blocks that findCoveringBlocks returned for that range.
+func (v *volume) readBlocks(ctx context.Context, covering []BlockRef, offset int64, dst []byte) error {
+	length := int64(len(dst))
 	for _, b := range covering {
 		// Compute the intersection of [offset, offset+length) and [b.Offset, b.Offset+b.Length).
 		readStart := max(offset, b.Offset)
@@ -570,16 +605,81 @@ func (v *volume) ReadAt(ctx context.Context, snapshotID SnapshotID, offset, leng
 
 		data, err := v.store.ReadRange(ctx, b.Path, storeOffset, readLen)
 		if err != nil {
-			return nil, fmt.Errorf("failed to read block at offset %d: %w", b.Offset, err)
+			return fmt.Errorf("failed to read block at offset %d: %w", b.Offset, err)
 		}
 		if int64(len(data)) != readLen {
-			return nil, fmt.Errorf("lode: block data truncated at offset %d (expected %d bytes, got %d)", b.Offset, readLen, len(data))
+			return fmt.Errorf("lode: block data truncated at offset %d (expected %d bytes, got %d)", b.Offset, readLen, len(data))
 		}
 
-		copy(result[readStart-offset:], data)
+		copy(dst[readStart-offset:], data)
 	}
+	return nil
+}
 
-	return result, nil
+// ReadAt implements SnapshotReaderAt.
+func (r *snapshotReaderAt) ReadAt(p []byte, off int64) (int, error) {
+	if off < 0 {
+		return 0, validate.Argument("offset must be non-negative")
+	}
+	total := r.volume.totalLength
+	if off >= total {
+		return 0, io.EOF
+	}
+	n := min(int64(len(p)), total-off)
+	if n == 0 {
+		return 0, nil
+	}
+	covering, err := findCoveringBlocks(r.snapshot.Manifest.Blocks, off, n)
+	if err != nil {
+		return 0, err
+	}
+	if err := r.volume.readBlocks(r.ctx, covering, off, p[:n]); err != nil {
+		return 0, err
+	}
+	if n < int64(len(p)) {
+		return int(n), io.EOF
+	}
+	return int(n), nil
+}
+
+// Snapshot implements SnapshotReaderAt.
+func (r *snapshotReaderAt) Snapshot() *Snapshot {
+	return &Snapshot{ID: r.snapshot.ID, Manifest: r.snapshot.Manifest.clone()}
+}
+
+// clone returns a copy of m that shares no memory with m. Metadata holds the
+// values that decoding JSON produces, which cloneJSON copies in full.
+func (m *Manifest) clone() *Manifest {
+	c := *m
+	c.Blocks = slices.Clone(m.Blocks)
+	if m.Metadata != nil {
+		c.Metadata = make(Metadata, len(m.Metadata))
+		for k, val := range m.Metadata {
+			c.Metadata[k] = cloneJSON(val)
+		}
+	}
+	return &c
+}
+
+// cloneJSON copies a value that decoding JSON produced: an object, an array,
+// or a scalar, which is immutable and copied by value.
+func cloneJSON(val any) any {
+	switch t := val.(type) {
+	case map[string]any:
+		c := make(map[string]any, len(t))
+		for k, e := range t {
+			c[k] = cloneJSON(e)
+		}
+		return c
+	case []any:
+		c := make([]any, len(t))
+		for i, e := range t {
+			c[i] = cloneJSON(e)
+		}
+		return c
+	default:
+		return val
+	}
 }
 
 // findCoveringBlocks returns the blocks that fully cover [offset, offset+length).
@@ -595,14 +695,15 @@ func findCoveringBlocks(blocks []BlockRef, offset, length int64) ([]BlockRef, er
 		return blocks[i].Offset+blocks[i].Length > offset
 	})
 
-	// Collect relevant blocks (walk forward from start).
-	var relevant []BlockRef
-	for i := start; i < len(blocks); i++ {
-		if blocks[i].Offset >= requestEnd {
-			break
-		}
-		relevant = append(relevant, blocks[i])
+	// The relevant blocks are a contiguous run of the sorted blocks, so they
+	// are returned as a subslice rather than copied: a read needs no memory
+	// for them beyond its buffer. The capacity is capped so that an append
+	// to the result cannot overwrite the manifest's blocks.
+	end := start
+	for end < len(blocks) && blocks[end].Offset < requestEnd {
+		end++
 	}
+	relevant := blocks[start:end:end]
 
 	// Verify contiguous coverage from offset to requestEnd.
 	cursor := offset

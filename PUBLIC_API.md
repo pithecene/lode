@@ -151,7 +151,9 @@ semantics. The constructor takes a `lode.Factory[lode.RangeStore]`, so a
 call that passes a store without range reads does not compile. It returns a `volume.Volume`, whose write and read
 methods form the `volume.Writer` and `volume.Reader` interfaces. The `id`
 is a `volume.ID`. `Commit` returns a `volume.Snapshot`, which holds its
-`volume.SnapshotID` and its `volume.Manifest`.
+`volume.SnapshotID` and its `volume.Manifest`. `ReaderAt(ctx, snapshotID)`
+loads a snapshot's manifest once and returns a `volume.SnapshotReaderAt`,
+an `io.ReaderAt` whose reads fetch block data only.
 
 A Dataset constructs complete objects before committing, whereas a Volume
 commits data incrementally as sparse byte ranges. A Volume suits a byte
