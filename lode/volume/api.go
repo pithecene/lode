@@ -180,9 +180,13 @@ type SnapshotReaderAt interface {
 	// bytes, as Reader.ReadAt does.
 	io.ReaderAt
 
-	// Snapshot returns a copy of the snapshot that the reader reads. A
-	// change to the copy leaves the reader and later copies intact.
-	Snapshot() *Snapshot
+	// ID returns the ID of the snapshot that the reader reads.
+	ID() SnapshotID
+
+	// Blocks returns a copy of the snapshot's committed blocks, sorted by
+	// offset, so that a caller can check coverage before it reads. A change
+	// to the copy leaves the reader and later copies intact.
+	Blocks() []BlockRef
 }
 
 // Volume composes the full read/write surface for a sparse byte space.

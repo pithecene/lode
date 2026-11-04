@@ -27,7 +27,7 @@ func newReaderAtFixture(t *testing.T) readerAtFixture {
 	vol := newTestVolume(t, "vol", lode.Use[lode.RangeStore](store), 30)
 	a := stageBlock(t, vol, 0, []byte("AAAAAAAAAA"))
 	b := stageBlock(t, vol, 10, []byte("BBBBBBBBBB"))
-	snap := commitBlocks(t, vol, []BlockRef{a, b}, Metadata{"tags": []any{"x"}})
+	snap := commitBlocks(t, vol, []BlockRef{a, b}, Metadata{})
 	return readerAtFixture{store: store, vol: vol, snap: snap}
 }
 
@@ -128,25 +128,23 @@ func TestReaderAt_ReadAcrossTheEnd(t *testing.T) {
 	}
 }
 
-// Snapshot returns a copy: a change to it changes neither the reader's
-// reads nor a later copy.
-func TestReaderAt_SnapshotIsACopy(t *testing.T) {
+// The reader names its snapshot, and Blocks returns a copy: a change to it
+// changes neither the reader's reads nor a later copy.
+func TestReaderAt_BlocksAreACopy(t *testing.T) {
 	t.Parallel()
 	f := newReaderAtFixture(t)
 	r, err := f.vol.ReaderAt(t.Context(), f.snap.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	first := r.Snapshot()
-	first.Manifest.Blocks[0].Path = "elsewhere"
-	first.Manifest.Blocks = nil
-	first.Manifest.Metadata["tags"].([]any)[0] = "changed"
-	second := r.Snapshot()
-	if len(second.Manifest.Blocks) != 2 || second.Manifest.Blocks[0].Path == "elsewhere" {
-		t.Fatalf("blocks after a change to a copy: %v", second.Manifest.Blocks)
+	if r.ID() != f.snap.ID {
+		t.Fatalf("ID = %s, want %s", r.ID(), f.snap.ID)
 	}
-	if tag := second.Manifest.Metadata["tags"].([]any)[0]; tag != "x" {
-		t.Fatalf("metadata after a change to a copy: %v", tag)
+	first := r.Blocks()
+	first[0].Path = "elsewhere"
+	second := r.Blocks()
+	if len(second) != 2 || second[0].Path == "elsewhere" {
+		t.Fatalf("blocks after a change to a copy: %v", second)
 	}
 	p := make([]byte, 20)
 	if n, err := r.ReadAt(p, 0); err != nil || n != 20 {
@@ -176,7 +174,7 @@ func TestReaderAt_ConcurrentReads(t *testing.T) {
 				errs <- err
 				return
 			}
-			_ = r.Snapshot()
+			_ = r.Blocks()
 			errs <- nil
 		}()
 	}
