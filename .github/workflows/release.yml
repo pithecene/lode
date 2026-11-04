@@ -109,10 +109,12 @@ jobs:
           path: dist
 
       - name: 🚀 Create Release
+        # A maintainer's approval in the release environment authorizes the
+        # release, so the job publishes it rather than leaving a draft.
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
           generate_release_notes: false
           body_path: release-notes.md
-          draft: true
+          draft: false
           files: dist/*
