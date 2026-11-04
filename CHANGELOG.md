@@ -9,6 +9,10 @@ and Lode adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+---
+
+## [0.15.0] - 2026-11-03
+
 ### Added
 
 - **`Manifests` reads a partition's manifests once**: this method on every dataset handle and view yields the references that `ListManifests` returns, each with the manifest that the listing loaded and validated. A caller that reads the manifests no longer loads each one a second time with `GetManifest`. Reading 72 snapshots now takes 144 store reads, whereas `ListManifests` and `GetManifest` take 216. A type that implements `SnapshotReader` outside Lode, such as a test double, must add the method.
@@ -493,7 +497,8 @@ and Lode adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
-[Unreleased]: https://github.com/pithecene/lode/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/pithecene/lode/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/pithecene/lode/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/pithecene/lode/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/pithecene/lode/compare/v0.12.2...v0.13.0
 [0.12.2]: https://github.com/pithecene/lode/compare/v0.12.1...v0.12.2
