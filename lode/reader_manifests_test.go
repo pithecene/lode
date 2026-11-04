@@ -91,9 +91,9 @@ func collect(t *testing.T, r SnapshotReader, partition PartitionPath, opts Manif
 	return out
 }
 
-// windows are the listing options each fixture is listed under: whole, by
+// listingWindows are the listing options each fixture is listed under: whole, by
 // page, and from a cursor.
-func windows(refs []ManifestRef) []ManifestListOptions {
+func listingWindows(refs []ManifestRef) []ManifestListOptions {
 	opts := []ManifestListOptions{{}, {Limit: 1}, {Limit: 2}, {Limit: len(refs)}}
 	for _, ref := range refs {
 		opts = append(opts, ManifestListOptions{StartAfter: ref}, ManifestListOptions{StartAfter: ref, Limit: 1})
@@ -124,7 +124,7 @@ func TestManifests_EquivalentToListThenGet(t *testing.T) {
 				t.Fatal(err)
 			}
 			for _, partition := range partitionsOf(all) {
-				for _, opts := range windows(all) {
+				for _, opts := range listingWindows(all) {
 					want, err := r.ListManifests(t.Context(), partition, opts)
 					if err != nil {
 						t.Fatal(err)
