@@ -148,6 +148,7 @@ Snapshots(ctx context.Context) ([]*DatasetSnapshot, error)
 ListPartitions(ctx context.Context, opts PartitionListOptions) ([]PartitionRef, error)
 ListManifests(ctx context.Context, partition PartitionPath, opts ManifestListOptions) ([]ManifestRef, error)
 GetManifest(ctx context.Context, ref ManifestRef) (*Manifest, error)
+Manifests(ctx context.Context, partition PartitionPath, opts ManifestListOptions) iter.Seq2[LoadedManifest, error]
 OpenObject(ctx context.Context, obj ObjectRef) (io.ReadCloser, error)
 ReaderAt(ctx context.Context, obj ObjectRef) (io.ReaderAt, error)
 // OpenObject and ReaderAt read only a data object of the handle's dataset
@@ -229,6 +230,23 @@ read API imposes its own order:
   matches no element resumes at the next element greater than the cursor.
 - `Limit` bounds the result set, not the number of store calls. The listing
   sorts results and applies the cursor after it enumerates the store.
+- When every listed manifest is valid, `Manifests` MUST yield the
+  references that `ListManifests` returns for the same partition and
+  options, in the same order. With each reference,
+  `Manifests` MUST yield the manifest that `GetManifest` loads for that reference.
+  `Manifests` loads and validates each manifest once. A caller reads the
+  yielded manifest without loading it again.
+- `Manifests` MUST load a manifest only when the caller asks for the next
+  one, and MUST load no manifest outside the window. `Manifests` therefore
+  validates only the yielded manifests. By contrast, `ListManifests`
+  validates every listed manifest and then applies the window. For a dataset without manifests, `Manifests` MUST yield
+  `ErrNotFound` and nothing else. When a load fails, `Manifests` MUST yield the error once
+  and then stop.
+- A manifest that `Manifests` yields describes its snapshot at the time of
+  the listing. When retention removes the snapshot afterward, `OpenObject`
+  returns `ErrNotFound` for the snapshot's data. With `ListManifests`
+  and `GetManifest`, a caller receives that `ErrNotFound` from
+  `GetManifest` instead.
 
 A cursor is a position in this order, not in commit order. Within one
 partition, `(Partition, ID)` order is snapshot ID order, and a snapshot ID
@@ -454,6 +472,7 @@ and a glossary of variables.
 | `ListManifests` | 1 `List` + M `Get` calls (validation) | O(N + M × manifest) |
 | `ListPartitions` | 1 `List` + M `Get` calls | O(N + M × manifest) |
 | `GetManifest` | 1 `Get` | O(manifest) |
+| `Manifests` | 1 `List` + M `Get` calls, one per manifest yielded | O(N + manifest) |
 | `OpenObject` | 1 `Get` | O(1) streaming |
 
 `ListManifests` MUST extract snapshot IDs from paths and MUST NOT
