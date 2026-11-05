@@ -9,6 +9,10 @@ and Lode adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+---
+
+## [0.16.0] - 2026-11-05
+
 ### Added
 
 - **`WithPinnedSnapshot` selects the snapshot at which a view opens**: a view opened with this option reads the named snapshot's canonical manifest in place of the pointer and the head. The view checks its codec and the root's path names against that manifest. A reader that holds a snapshot ID therefore opens the view and loads the snapshot with three store reads in place of four. Opening a view at an expired snapshot returns `ErrSnapshotExpired`.
@@ -507,7 +511,8 @@ and Lode adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
-[Unreleased]: https://github.com/pithecene/lode/compare/v0.15.0...HEAD
+[Unreleased]: https://github.com/pithecene/lode/compare/v0.16.0...HEAD
+[0.16.0]: https://github.com/pithecene/lode/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/pithecene/lode/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/pithecene/lode/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/pithecene/lode/compare/v0.12.2...v0.13.0
