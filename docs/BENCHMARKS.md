@@ -75,7 +75,10 @@ holds each hot path of the Dataset and Volume APIs to a ceiling on the
 allocations per operation and on the bytes they allocate, measured on the
 in-memory store with the head known. Both figures are deterministic for a
 given toolchain, so the gates run in every `go test` without the race
-detector, which adds allocations of its own. The byte ceiling catches a
+detector, which adds allocations of its own. The gates count the
+allocations of the whole test binary, so each measurement starts after a
+garbage collection; a collection that earlier tests leave pending would
+otherwise add to a figure. The byte ceiling catches a
 single oversized allocation, such as a fixed buffer, which the allocation
 count does not; each byte ceiling is the measured figure rounded up to the
 next 64 bytes, because map growth in the in-memory store varies it by a few
