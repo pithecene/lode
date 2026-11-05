@@ -51,14 +51,14 @@ type DatasetOption interface {
 // ViewOption configures a view: ReadRoot.Records or ReadRoot.Blobs. A view
 // takes its layout and components from the dataset's manifests; only a
 // custom compressor or checksum, which Lode cannot reconstruct from its
-// name, is passed to it, and AtSnapshot names the snapshot that the view
+// name, is passed to it, and WithPinnedSnapshot names the snapshot that the view
 // opens at in place of the head.
 type ViewOption interface {
 	applyView(cfg *viewConfig) error
 }
 
 // viewConfig is what a view's options set: its components, and the anchor
-// it opens at, the head unless AtSnapshot names a snapshot.
+// it opens at, the head unless WithPinnedSnapshot names a snapshot.
 type viewConfig struct {
 	components components
 	anchor     viewAnchor
@@ -69,17 +69,17 @@ type viewOption func(cfg *viewConfig) error
 
 func (o viewOption) applyView(cfg *viewConfig) error { return o(cfg) }
 
-// AtSnapshot opens a view at snapshot id in place of the head. Opening
+// WithPinnedSnapshot opens a view at snapshot id in place of the head. Opening
 // reads that snapshot's canonical manifest and neither the pointer nor the
 // head, and it checks the view's codec and the root's path names against
 // that manifest. The view's Snapshot of id returns a copy of that snapshot
 // without a store call; its other methods behave as on any view. Opening
 // returns ErrSnapshotExpired for an expired snapshot and ErrNotFound for an
 // absent one.
-func AtSnapshot(id DatasetSnapshotID) ViewOption {
+func WithPinnedSnapshot(id DatasetSnapshotID) ViewOption {
 	return viewOption(func(cfg *viewConfig) error {
 		if !storepath.Segment(string(id)) {
-			return validate.Argument("AtSnapshot: snapshot ID %q is not %s", id, storepath.SegmentRule)
+			return validate.Argument("WithPinnedSnapshot: snapshot ID %q is not %s", id, storepath.SegmentRule)
 		}
 		cfg.anchor = snapshotAnchor{id: id}
 		return nil
@@ -265,7 +265,7 @@ type dataset struct {
 	// history owns the snapshot sequence and its head pointer (internal/history).
 	history history.History[DatasetSnapshotID, Manifest]
 
-	// pinned is the snapshot that a view opened AtSnapshot read when it
+	// pinned is the snapshot that a view opened with WithPinnedSnapshot read when it
 	// opened. Snapshot returns a copy of it for its ID. It is nil for every
 	// other handle, and nothing changes it once the view is open.
 	pinned *DatasetSnapshot
@@ -409,7 +409,7 @@ func (d *dataset) ID() DatasetID {
 }
 
 // Snapshot loads a snapshot by ID, in the order of findSnapshot. A view
-// opened AtSnapshot returns a copy of the snapshot that it pinned when it
+// opened with WithPinnedSnapshot returns a copy of the snapshot that it pinned when it
 // opened, for that snapshot's ID.
 func (d *dataset) Snapshot(ctx context.Context, id DatasetSnapshotID) (*DatasetSnapshot, error) {
 	if err := validateSnapshotID(id); err != nil {

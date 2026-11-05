@@ -301,7 +301,7 @@ func resolveAnchor(ctx context.Context, store Store, names ManifestPaths, id Dat
 }
 
 // viewAnchor is the snapshot at which a view opens: the dataset's head
-// (headAnchor) or the snapshot that AtSnapshot names (snapshotAnchor).
+// (headAnchor) or the snapshot that WithPinnedSnapshot names (snapshotAnchor).
 type viewAnchor interface {
 	// resolve finds the anchor's snapshot among the candidates, one dataset
 	// core per grammar, because a view does not know its layout until it

@@ -10,15 +10,15 @@ import (
 	"github.com/pithecene/lode/internal/testutil"
 )
 
-// atSnapshotFixture holds a dataset of two snapshots, older and head, over
+// pinnedFixture holds a dataset of two snapshots, older and head, over
 // a store that records the keys each call reaches.
-type atSnapshotFixture struct {
+type pinnedFixture struct {
 	store         *testutil.KeyRecorder
 	writer        Records[D]
 	older, latest *DatasetSnapshot
 }
 
-func newAtSnapshotFixture(t *testing.T, opts ...DatasetOption) atSnapshotFixture {
+func newPinnedFixture(t *testing.T, opts ...DatasetOption) pinnedFixture {
 	t.Helper()
 	ctx := t.Context()
 	store := testutil.NewKeyRecorder(NewMemory())
@@ -34,12 +34,12 @@ func newAtSnapshotFixture(t *testing.T, opts ...DatasetOption) atSnapshotFixture
 	if err != nil {
 		t.Fatal(err)
 	}
-	return atSnapshotFixture{store: store, writer: writer, older: older, latest: latest}
+	return pinnedFixture{store: store, writer: writer, older: older, latest: latest}
 }
 
 // open opens a view of the fixture's dataset with opts and returns the keys
 // that opening reached.
-func (f atSnapshotFixture) open(t *testing.T, opts ...ViewOption) (RecordView[D], []string, error) {
+func (f pinnedFixture) open(t *testing.T, opts ...ViewOption) (RecordView[D], []string, error) {
 	t.Helper()
 	var view RecordView[D]
 	var err error
@@ -53,7 +53,7 @@ func (f atSnapshotFixture) open(t *testing.T, opts ...ViewOption) (RecordView[D]
 // neither the pointer nor the head, takes the layout from it, and serves the
 // snapshot it read with no further request. Its other reads behave as on a
 // view of the head.
-func TestAtSnapshot_OpensAtTheNamedSnapshot(t *testing.T) {
+func TestWithPinnedSnapshot_OpensAtTheNamedSnapshot(t *testing.T) {
 	t.Parallel()
 	layouts := map[string][]DatasetOption{
 		"unpartitioned": nil,
@@ -62,8 +62,8 @@ func TestAtSnapshot_OpensAtTheNamedSnapshot(t *testing.T) {
 	for name, opts := range layouts {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			f := newAtSnapshotFixture(t, opts...)
-			view, keys, err := f.open(t, AtSnapshot(f.older.ID))
+			f := newPinnedFixture(t, opts...)
+			view, keys, err := f.open(t, WithPinnedSnapshot(f.older.ID))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -97,10 +97,10 @@ func TestAtSnapshot_OpensAtTheNamedSnapshot(t *testing.T) {
 
 // The snapshot that the view returns is a copy: a caller that changes it
 // changes neither the next Snapshot nor a Read of the snapshot.
-func TestAtSnapshot_ReturnsACopy(t *testing.T) {
+func TestWithPinnedSnapshot_ReturnsACopy(t *testing.T) {
 	t.Parallel()
-	f := newAtSnapshotFixture(t)
-	view, _, err := f.open(t, AtSnapshot(f.older.ID))
+	f := newPinnedFixture(t)
+	view, _, err := f.open(t, WithPinnedSnapshot(f.older.ID))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,9 +125,9 @@ func TestAtSnapshot_ReturnsACopy(t *testing.T) {
 
 // Opening at a snapshot and reading it costs fewer requests than opening
 // at the head and then reading the snapshot.
-func TestAtSnapshot_CostsFewerRequestsThanTheHead(t *testing.T) {
+func TestWithPinnedSnapshot_CostsFewerRequestsThanTheHead(t *testing.T) {
 	t.Parallel()
-	f := newAtSnapshotFixture(t, WithLayout(Hive("k")))
+	f := newPinnedFixture(t, WithLayout(Hive("k")))
 	cost := func(opts ...ViewOption) int {
 		view, keys, err := f.open(t, opts...)
 		if err != nil {
@@ -139,7 +139,7 @@ func TestAtSnapshot_CostsFewerRequestsThanTheHead(t *testing.T) {
 		}
 		return len(keys) + len(reads)
 	}
-	head, at := cost(), cost(AtSnapshot(f.older.ID))
+	head, at := cost(), cost(WithPinnedSnapshot(f.older.ID))
 	if at >= head {
 		t.Errorf("open at the snapshot and read it: %d requests; open at the head and read it: %d; want fewer", at, head)
 	}
@@ -149,25 +149,25 @@ func TestAtSnapshot_CostsFewerRequestsThanTheHead(t *testing.T) {
 // Opening at a snapshot that does not exist, or that retention expired,
 // fails as Snapshot does; an expired snapshot is not resurrected by the
 // partition manifests that an interrupted expiry leaves.
-func TestAtSnapshot_ReportsAnAbsentOrExpiredSnapshot(t *testing.T) {
+func TestWithPinnedSnapshot_ReportsAnAbsentOrExpiredSnapshot(t *testing.T) {
 	t.Parallel()
 	t.Run("absent", func(t *testing.T) {
 		t.Parallel()
-		f := newAtSnapshotFixture(t)
+		f := newPinnedFixture(t)
 		absent := DatasetSnapshotID(strings.Replace(string(f.older.ID), "-", "0-", 1))
-		if _, _, err := f.open(t, AtSnapshot(absent)); !errors.Is(err, ErrNotFound) {
+		if _, _, err := f.open(t, WithPinnedSnapshot(absent)); !errors.Is(err, ErrNotFound) {
 			t.Fatalf("open at an absent snapshot: %v, want ErrNotFound", err)
 		}
 	})
 	t.Run("expired", func(t *testing.T) {
 		t.Parallel()
-		f := newAtSnapshotFixture(t, WithLayout(Hive("k")))
+		f := newPinnedFixture(t, WithLayout(Hive("k")))
 		residual := f.partitionManifests(t, f.older.ID)
 		if _, err := f.writer.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{f.older.ID}}); err != nil {
 			t.Fatal(err)
 		}
 		f.restore(t, residual)
-		if _, _, err := f.open(t, AtSnapshot(f.older.ID)); !errors.Is(err, ErrSnapshotExpired) {
+		if _, _, err := f.open(t, WithPinnedSnapshot(f.older.ID)); !errors.Is(err, ErrSnapshotExpired) {
 			t.Fatalf("open at an expired snapshot: %v, want ErrSnapshotExpired", err)
 		}
 	})
@@ -175,9 +175,9 @@ func TestAtSnapshot_ReportsAnAbsentOrExpiredSnapshot(t *testing.T) {
 
 // A dataset written before canonical manifests has partition manifests
 // only, and opening at one of its snapshots finds the snapshot by scan.
-func TestAtSnapshot_FindsASnapshotWithoutACanonicalManifest(t *testing.T) {
+func TestWithPinnedSnapshot_FindsASnapshotWithoutACanonicalManifest(t *testing.T) {
 	t.Parallel()
-	f := newAtSnapshotFixture(t, WithLayout(Hive("k")))
+	f := newPinnedFixture(t, WithLayout(Hive("k")))
 	keys, err := f.store.List(t.Context(), "datasets/ds/")
 	if err != nil {
 		t.Fatal(err)
@@ -191,7 +191,7 @@ func TestAtSnapshot_FindsASnapshotWithoutACanonicalManifest(t *testing.T) {
 	if err := f.store.Delete(t.Context(), keys[canonical]); err != nil {
 		t.Fatal(err)
 	}
-	view, _, err := f.open(t, AtSnapshot(f.older.ID))
+	view, _, err := f.open(t, WithPinnedSnapshot(f.older.ID))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,7 +202,7 @@ func TestAtSnapshot_FindsASnapshotWithoutACanonicalManifest(t *testing.T) {
 
 // The view's codec and the root's path names are checked against the
 // named snapshot, as they are against the head.
-func TestAtSnapshot_ChecksTheNamedSnapshotsSettings(t *testing.T) {
+func TestWithPinnedSnapshot_ChecksTheNamedSnapshotsSettings(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
 	store := NewMemory()
@@ -214,13 +214,13 @@ func TestAtSnapshot_ChecksTheNamedSnapshotsSettings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := OpenReadOnly(Use(store)).Records(ctx, "ds", JSONL[D](), AtSnapshot(snap.ID)); !errors.Is(err, ErrSettingsMismatch) {
+	if _, err := OpenReadOnly(Use(store)).Records(ctx, "ds", JSONL[D](), WithPinnedSnapshot(snap.ID)); !errors.Is(err, ErrSettingsMismatch) {
 		t.Fatalf("records view at a blob snapshot: %v, want ErrSettingsMismatch", err)
 	}
-	if _, err := OpenReadOnly(Use(store), WithDatasetsDir("other")).Blobs(ctx, "ds", AtSnapshot(snap.ID)); !errors.Is(err, ErrNotFound) {
+	if _, err := OpenReadOnly(Use(store), WithDatasetsDir("other")).Blobs(ctx, "ds", WithPinnedSnapshot(snap.ID)); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("view under other path names: %v, want ErrNotFound", err)
 	}
-	view, err := OpenReadOnly(Use(store)).Blobs(ctx, "ds", AtSnapshot(snap.ID))
+	view, err := OpenReadOnly(Use(store)).Blobs(ctx, "ds", WithPinnedSnapshot(snap.ID))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -231,7 +231,7 @@ func TestAtSnapshot_ChecksTheNamedSnapshotsSettings(t *testing.T) {
 
 // partitionManifests returns the partition manifests of snapshot id with
 // their bytes, so a test can put them back after a complete expiry.
-func (f atSnapshotFixture) partitionManifests(t *testing.T, id DatasetSnapshotID) map[string][]byte {
+func (f pinnedFixture) partitionManifests(t *testing.T, id DatasetSnapshotID) map[string][]byte {
 	t.Helper()
 	keys, err := f.store.List(t.Context(), "datasets/ds/partitions/")
 	if err != nil {
@@ -259,7 +259,7 @@ func (f atSnapshotFixture) partitionManifests(t *testing.T, id DatasetSnapshotID
 }
 
 // restore puts objects back, as an interrupted expiry leaves them.
-func (f atSnapshotFixture) restore(t *testing.T, objects map[string][]byte) {
+func (f pinnedFixture) restore(t *testing.T, objects map[string][]byte) {
 	t.Helper()
 	for k, b := range objects {
 		if err := f.store.Put(t.Context(), k, strings.NewReader(string(b))); err != nil {
