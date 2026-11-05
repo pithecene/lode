@@ -232,13 +232,18 @@ func rejectForeignManifest(ctx context.Context, store Store, id DatasetID, layou
 // against: the canonical manifest of parent, the snapshot the pointer
 // names; its staged copy while a first commit is pending; otherwise the
 // newest manifest, as Latest selects it, by scan. The first two are single
-// Gets, so a pending first commit is checked without a listing. A pointer that names a snapshot with no manifest in a dataset
+// Gets, so a pending first commit is checked without a listing. A commit
+// removes its staged copy only after it persists the canonical manifest,
+// so when both Gets miss, the commit may have completed between them, and
+// the canonical manifest is read once more before the scan, which a
+// lagging listing can defeat. A pointer that names a snapshot with no manifest in a dataset
 // with no other manifest belongs to a pending first commit whose settings
 // are unknown, or to one abandoned before staging existed: the writer
 // conflicts rather than commit unchecked settings.
 func (d *writer) settingsManifest(ctx context.Context, parent DatasetSnapshotID) (*Manifest, error) {
+	canonical := func() (*DatasetSnapshot, error) { return fromHistory(d.history.Snapshot(ctx, parent)) }
 	loaders := []func() (*DatasetSnapshot, error){
-		func() (*DatasetSnapshot, error) { return fromHistory(d.history.Snapshot(ctx, parent)) },
+		canonical,
 		func() (*DatasetSnapshot, error) {
 			s, err := fromHistory(d.history.LoadStaged(ctx, parent))
 			if err == nil {
@@ -246,6 +251,7 @@ func (d *writer) settingsManifest(ctx context.Context, parent DatasetSnapshotID)
 			}
 			return s, err
 		},
+		canonical,
 		func() (*DatasetSnapshot, error) { return fromHistory(d.history.Newest(ctx)) },
 	}
 	for _, load := range loaders {

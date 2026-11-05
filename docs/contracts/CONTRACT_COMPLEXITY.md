@@ -85,12 +85,14 @@ Parent resolution MUST NOT use `List` when a valid pointer exists.
 The following one-time costs add to the fixed counts in the table above
 (CONTRACT_WRITE_API §Settings):
 - A dataset's first commit adds 1 `Put` and 1 `Delete` for its staged manifest.
-- A writer's settings check, before its first commit, costs 1 `Get` of the
-  manifest that the pointer names, or 2 `Get` calls while a first commit is
-  pending. When neither the manifest that the pointer names nor the staged
-  manifest exists, the check costs the scan fallback and 1 `List` of the
-  dataset's directory. Against an empty dataset, it costs 1 `List` of the
-  dataset's directory.
+- Before a writer's first commit, its settings check incurs the one cost
+  that matches the state of the dataset:
+  - With the manifest that the pointer names: 1 `Get`.
+  - With a first commit pending: 2 `Get` calls.
+  - With a pointer that names a snapshot that has neither a canonical nor a
+    staged manifest: 3 `Get` calls, the scan fallback, and 1 `List` of the
+    dataset's directory.
+  - Without a pointer or a manifest: 1 `List` of the dataset's directory.
 - The first write to a Hive dataset whose manifests predate format version
   1.1.0 follows the snapshot chain from the head to the first snapshot with
   files. That write adds 1 `Get` per snapshot followed.
