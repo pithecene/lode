@@ -1352,3 +1352,152 @@ func TestAdvance_ManifestFailureForgetsTheHead(t *testing.T) {
 		t.Fatalf("ResolveParent = %v, %q, %v; want the pending 5", parent, expected, err)
 	}
 }
+
+// A removal retries a conflicted swap until its attempts are spent, and a
+// backoff that the context ends is returned.
+func TestRemove_RetriesAConflict(t *testing.T) {
+	s := newMemStore()
+	s.fail = failOn("cas", pointer, errConflict)
+	if _, err := Remove(t.Context(), s, pointer, testErrors, fastRetry(t, 2)); !errors.Is(err, errConflict) {
+		t.Fatalf("got %v, want the conflict once the attempts are spent", err)
+	}
+	swaps := slices.DeleteFunc(slices.Clone(s.ops), func(op string) bool { return !strings.HasPrefix(op, "cas ") })
+	if len(swaps) != 3 {
+		t.Fatalf("swaps = %v, want 3 attempts", swaps)
+	}
+	// A delay no run reaches, so the canceled context alone ends the backoff.
+	slow := retry.Default()
+	for _, err := range []error{slow.SetMaxAttempts(2), slow.SetBaseDelay(time.Hour), slow.SetMaxDelay(time.Hour)} {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := Remove(ctx, s, pointer, testErrors, &slow); !errors.Is(err, context.Canceled) {
+		t.Fatalf("got %v, want the backoff's context error", err)
+	}
+}
+
+// pointedStore holds the pointer content, the manifests, and the failure
+// of one table case.
+type pointedStore struct {
+	pointer   string // "" leaves the pointer absent
+	manifests []id
+	fail      func(op, path string) error
+}
+
+func (c pointedStore) build(t *testing.T) *memStore {
+	t.Helper()
+	s := newMemStore()
+	if c.pointer != "" {
+		s.objects[pointer] = []byte(c.pointer)
+	}
+	for _, m := range c.manifests {
+		put(t, s, m, string(m))
+	}
+	s.fail = c.fail
+	return s
+}
+
+func TestCommittedHead(t *testing.T) {
+	cases := []struct {
+		name  string
+		store pointedStore
+		known id
+		want  id
+		err   error
+	}{
+		{name: "an empty history has no head", store: pointedStore{}},
+		{name: "manifests without a pointer", store: pointedStore{manifests: []id{"5"}}, err: errHead},
+		{name: "a failed pointer read", store: pointedStore{pointer: "5", fail: failOn("get", pointer, errBoom)}, err: errBoom},
+		{name: "a known head costs no further call", store: pointedStore{pointer: "5", fail: failOn("exists", "", errBoom)}, known: "5", want: "5"},
+		{name: "a committed head", store: pointedStore{pointer: "5", manifests: []id{"5"}}, want: "5"},
+		{name: "a pending head", store: pointedStore{pointer: "5", manifests: []id{"4"}}, want: "5", err: errHead},
+		{name: "a failed manifest check", store: pointedStore{pointer: "5", fail: failOn("exists", "", errBoom)}, want: "5", err: errBoom},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			h := newTestHistory(c.store.build(t))
+			got, err := h.CommittedHead(t.Context(), c.known)
+			if got != c.want || !errors.Is(err, c.err) || (c.err == nil) != (err == nil) {
+				t.Fatalf("got %q, %v; want %q, %v", got, err, c.want, c.err)
+			}
+		})
+	}
+	h := newTestHistory(pointedStore{pointer: "not an id"}.build(t))
+	if _, err := h.CommittedHead(t.Context(), ""); err == nil || !strings.Contains(err.Error(), "not a snapshot ID") {
+		t.Fatalf("got %v, want a pointer that holds no snapshot ID rejected", err)
+	}
+}
+
+func TestPointedHead(t *testing.T) {
+	cases := []struct {
+		name  string
+		store pointedStore
+		want  id
+		err   error
+	}{
+		{name: "an empty history", store: pointedStore{}, err: errNoSnaps},
+		{name: "manifests without a pointer", store: pointedStore{manifests: []id{"5"}}, err: errHead},
+		{name: "a failed listing without a pointer", store: pointedStore{fail: failOn("list", "", errBoom)}, err: errBoom},
+		{name: "a failed pointer read", store: pointedStore{pointer: "5", fail: failOn("get", pointer, errBoom)}, err: errBoom},
+		{name: "a pending head is named", store: pointedStore{pointer: "5"}, want: "5"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			h := newTestHistory(c.store.build(t))
+			got, err := h.PointedHead(t.Context())
+			if got != c.want || !errors.Is(err, c.err) || (c.err == nil) != (err == nil) {
+				t.Fatalf("got %q, %v; want %q, %v", got, err, c.want, c.err)
+			}
+		})
+	}
+	h := newTestHistory(pointedStore{pointer: "not an id"}.build(t))
+	if _, err := h.PointedHead(t.Context()); err == nil || !strings.Contains(err.Error(), "not a snapshot ID") {
+		t.Fatalf("got %v, want a pointer that holds no snapshot ID rejected", err)
+	}
+}
+
+// A snapshot written before canonical manifests is committed through any
+// listed copy, and a listing that fails is returned.
+func TestConfirmCommitted_ListedCopy(t *testing.T) {
+	s := newMemStore()
+	putAt(t, s, prefix+"5/copy/manifest.json", "five")
+	h := newTestHistory(s)
+	if err := h.ConfirmCommitted(t.Context(), "5"); err != nil {
+		t.Fatalf("got %v, want the listed copy to confirm 5", err)
+	}
+	s.fail = failOn("list", "", errBoom)
+	if err := h.ConfirmCommitted(t.Context(), "5"); !errors.Is(err, errBoom) {
+		t.Fatalf("got %v, want the listing's error", err)
+	}
+}
+
+// A commit on an adopted pending commit removes the adopted commit's staged
+// copy and, when the parent is another pending commit, the parent's too:
+// one Delete for each copy.
+func TestAdvance_ReleasesTheAdoptedCopies(t *testing.T) {
+	for _, parent := range []id{"9", "7"} {
+		s := newMemStore()
+		putAt(t, s, stagingKind{}.StagedPath("9"), "nine")
+		putAt(t, s, stagingKind{}.StagedPath("7"), "seven")
+		s.objects[pointer] = []byte(parent)
+		h := newStagingHistory(s)
+		if _, err := h.LoadStaged(t.Context(), "9"); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.Advance(t.Context(), string(parent), "10", &manifest{Tag: "ten"}, []string{testKind{}.ManifestPath("10")}); err != nil {
+			t.Fatal(err)
+		}
+		for _, staged := range []id{"9", parent} {
+			if _, ok := s.objects[stagingKind{}.StagedPath(staged)]; ok {
+				t.Errorf("parent %s: the staged copy of %s remains", parent, staged)
+			}
+		}
+		deletes := slices.DeleteFunc(slices.Clone(s.ops), func(op string) bool { return !strings.HasPrefix(op, "delete c/staged/") })
+		if want := map[id]int{"9": 2, "7": 3}[parent]; len(deletes) != want {
+			t.Errorf("parent %s: deletes = %v, want %d", parent, deletes, want)
+		}
+	}
+}
