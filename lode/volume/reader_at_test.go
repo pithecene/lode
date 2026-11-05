@@ -128,7 +128,7 @@ func TestReaderAt_ReadAcrossTheEnd(t *testing.T) {
 	}
 }
 
-// The reader names its snapshot, and Blocks returns a copy: a change to it
+// Blocks returns a copy: a change to it
 // changes neither the reader's reads nor a later copy.
 func TestReaderAt_BlocksAreACopy(t *testing.T) {
 	t.Parallel()
@@ -136,9 +136,6 @@ func TestReaderAt_BlocksAreACopy(t *testing.T) {
 	r, err := f.vol.ReaderAt(t.Context(), f.snap.ID)
 	if err != nil {
 		t.Fatal(err)
-	}
-	if r.ID() != f.snap.ID {
-		t.Fatalf("ID = %s, want %s", r.ID(), f.snap.ID)
 	}
 	first := r.Blocks()
 	first[0].Path = "elsewhere"

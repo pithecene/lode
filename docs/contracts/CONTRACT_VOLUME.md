@@ -155,8 +155,7 @@ Volume serves reads by byte range:
   the reader MUST be safe for concurrent use.
 - `SnapshotReaderAt.Blocks()` MUST return a copy of the snapshot's committed
   blocks, sorted by offset, so that a change to one copy alters neither the
-  bytes that the reader returns nor a later copy. `SnapshotReaderAt.ID()`
-  MUST return the ID of the reader's snapshot.
+  bytes that the reader returns nor a later copy.
 
 A range read MUST behave as follows:
 - If any part of the range is missing, the read returns an explicit
@@ -242,9 +241,6 @@ type Reader interface {
 // SnapshotReaderAt reads the committed bytes of one snapshot.
 type SnapshotReaderAt interface {
     io.ReaderAt
-
-    // ID returns the ID of the snapshot that the reader reads.
-    ID() SnapshotID
 
     // Blocks returns a copy of the snapshot's committed blocks.
     Blocks() []BlockRef
