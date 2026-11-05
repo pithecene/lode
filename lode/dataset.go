@@ -274,11 +274,6 @@ type writer struct {
 	// settled is true once this writer's settings were verified against
 	// the dataset's (checkSettings) or recorded by its own commit.
 	settled bool
-
-	// adoptedStaged is the staged manifest of an abandoned first commit
-	// whose settings checkSettings read; this writer's commit, a child of
-	// it, removes it ("" when there is none).
-	adoptedStaged string
 }
 
 // codecIdentity is the codec a dataset's manifests record: its name and
@@ -317,7 +312,9 @@ func (k datasetKind) StagedPath(id DatasetSnapshotID) string {
 }
 
 // StagesCommit is true only for a commit that expects no pointer, a
-// dataset's first: every later commit has a manifest to check against.
+// dataset's first: a later commit has a manifest to check against, unless
+// its writer adopted a pending first commit, whose commits the history
+// stages as well (history.LoadStaged).
 func (datasetKind) StagesCommit(expected string) bool { return expected == "" }
 
 func (k datasetKind) SnapshotsPrefix() string { return k.paths.snapshotsPrefix(k.id) }
@@ -640,4 +637,5 @@ var historyErrors = history.Errors{
 	NoSnapshots:      ErrNoSnapshots,
 	SnapshotConflict: ErrSnapshotConflict,
 	HeadUncommitted:  ErrHeadUncommitted,
+	PathExists:       ErrPathExists,
 }

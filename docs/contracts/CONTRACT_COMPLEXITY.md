@@ -85,8 +85,13 @@ Parent resolution MUST NOT use `List` when a valid pointer exists.
 The following one-time costs add to the fixed counts in the table above
 (CONTRACT_WRITE_API §Settings):
 - A dataset's first commit adds 1 `Put` and 1 `Delete` for its staged manifest.
+  A writer that adopted a pending first commit incurs the same two calls on each
+  later commit. The writer stops incurring them once one of its commits persists a
+  canonical manifest. That commit adds at most 2 `Delete` calls: one for
+  the adopted commit's staged manifest and one for the staged manifest of
+  the parent that the writer's commit names.
 - Before a writer's first commit, its settings check incurs the one cost
-  that matches the state of the dataset:
+  that matches the dataset's state:
   - With the manifest that the pointer names: 1 `Get`.
   - With a first commit pending: 2 `Get` calls.
   - With a pointer that names a snapshot that has neither a canonical nor a

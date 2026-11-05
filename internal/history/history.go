@@ -125,6 +125,15 @@ type History[ID ~string, M any] struct {
 	// write failed after a commit.
 	head    ID
 	pointer string
+
+	// adopted is the pending commit that LoadStaged loaded since a commit of
+	// this history last persisted its canonical manifest ("" = none). A
+	// dataset writer loads a staged copy at most once, because the copy
+	// settles its settings check. While adopted is set, the container may
+	// hold no canonical manifest, so every commit stages its manifest: a
+	// commit abandoned on a pending one would otherwise leave no manifest of
+	// its own or of its parent.
+	adopted ID
 }
 
 // New returns an empty-memory history over store whose head pointer is the
@@ -834,28 +843,53 @@ func (h *History[ID, M]) Advance(ctx context.Context, expected string, id ID, ma
 			h.Forget()
 			return manifestUncertain{fmt.Errorf("failed to write %s: %w", h.noun, err)}
 		}
+		if h.adopted != "" && p == h.kind.ManifestPath(id) {
+			h.releaseAdopted(ctx, expected)
+		}
 	}
 	h.unstage(ctx, staged)
 	h.remember(id, string(id))
 	return nil
 }
 
+// releaseAdopted removes the staged copy of the pending commit that this
+// history adopted, once a commit of it has persisted its canonical
+// manifest, which records what the copy recorded. The copy of the
+// commit's parent (expected) is removed too: a retry may parent on a
+// pending commit that this history never loaded. At most 2 Delete calls.
+// Best-effort: a copy that remains is never listed.
+func (h *History[ID, M]) releaseAdopted(ctx context.Context, expected string) {
+	_ = h.store.Delete(ctx, h.stager.StagedPath(h.adopted))
+	if parent := ID(expected); IsGeneratedID(parent) && parent != h.adopted {
+		_ = h.store.Delete(ctx, h.stager.StagedPath(parent))
+	}
+	h.adopted = ""
+}
+
 // stagedPath is the staged copy of snapshot id's manifest, "" when the kind
-// does not stage a commit that expects the given pointer content.
+// does not stage a commit that expects the given pointer content and this
+// history has adopted no pending commit (adopted).
 func (h *History[ID, M]) stagedPath(id ID, expected string) string {
-	if h.stager == nil || !h.stager.StagesCommit(expected) {
+	if h.stager == nil || (h.adopted == "" && !h.stager.StagesCommit(expected)) {
 		return ""
 	}
 	return h.stager.StagedPath(id)
 }
 
 // LoadStaged loads snapshot id from its staged copy. errs.NotFound when the
-// kind stages nothing or no staged copy exists.
+// kind stages nothing or no staged copy exists. A copy that loads belongs
+// to a pending commit, which this history adopts: it stages its commits
+// until one of them persists its canonical manifest, which then removes
+// the copy (releaseAdopted).
 func (h *History[ID, M]) LoadStaged(ctx context.Context, id ID) (*Snapshot[ID, M], error) {
 	if h.stager == nil {
 		return nil, h.errs.NotFound
 	}
-	return h.LoadAt(ctx, id, h.stager.StagedPath(id))
+	s, err := h.LoadAt(ctx, id, h.stager.StagedPath(id))
+	if err == nil {
+		h.adopted = id
+	}
+	return s, err
 }
 
 // Newest returns the snapshot with the largest ID that has an unexpired
@@ -865,12 +899,24 @@ func (h *History[ID, M]) Newest(ctx context.Context) (*Snapshot[ID, M], error) {
 	return h.scan(ctx)
 }
 
-// stage persists the staged copy at staged, when the kind stages.
+// stage persists the staged copy at staged, when the kind stages. A copy
+// that exists already belongs to an earlier attempt of the same commit: a
+// dataset retries a conflicted commit under its snapshot ID, and the
+// attempt's copy remains when discardStaged could not read the pointer.
+// That copy is kept. It differs from this attempt's only in the parent and
+// the creation time, and a dataset reads a staged copy only for the
+// settings, which every attempt records alike. Replacing it would open a
+// window in which the earlier attempt, if its pointer update was applied,
+// has no manifest at all. A Volume never retries under one ID.
 func (h *History[ID, M]) stage(ctx context.Context, staged string, data []byte) error {
 	if staged == "" {
 		return nil
 	}
-	return h.store.Put(ctx, staged, bytes.NewReader(data))
+	err := h.store.Put(ctx, staged, bytes.NewReader(data))
+	if h.errs.PathExists != nil && errors.Is(err, h.errs.PathExists) {
+		return nil
+	}
+	return err
 }
 
 // unstage removes the staged copy once the canonical manifest is persisted.
