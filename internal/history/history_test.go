@@ -1426,7 +1426,7 @@ func TestCommittedHead(t *testing.T) {
 		})
 	}
 	h := newTestHistory(pointedStore{pointer: "not an id"}.build(t))
-	if _, err := h.CommittedHead(t.Context(), ""); err == nil || !strings.Contains(err.Error(), "not a snapshot ID") {
+	if _, err := h.CommittedHead(t.Context(), ""); !errors.Is(err, ErrPointerNotSnapshotID) {
 		t.Fatalf("got %v, want a pointer that holds no snapshot ID rejected", err)
 	}
 }
@@ -1454,7 +1454,7 @@ func TestPointedHead(t *testing.T) {
 		})
 	}
 	h := newTestHistory(pointedStore{pointer: "not an id"}.build(t))
-	if _, err := h.PointedHead(t.Context()); err == nil || !strings.Contains(err.Error(), "not a snapshot ID") {
+	if _, err := h.PointedHead(t.Context()); !errors.Is(err, ErrPointerNotSnapshotID) {
 		t.Fatalf("got %v, want a pointer that holds no snapshot ID rejected", err)
 	}
 }
