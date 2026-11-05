@@ -14,6 +14,10 @@ and Lode adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **`WithPinnedSnapshot` selects the snapshot at which a view opens**: a view opened with this option reads the named snapshot's canonical manifest in place of the pointer and the head. The view checks its codec and the root's path names against that manifest. A reader that holds a snapshot ID therefore opens the view and loads the snapshot with three store reads in place of four. Opening a view at an expired snapshot returns `ErrSnapshotExpired`.
 - **`volume.Reader.ReaderAt` reads a snapshot without reloading its manifest**: this method loads a snapshot's manifest once and returns a `SnapshotReaderAt`, an `io.ReaderAt` whose reads fetch block data only. `ReadAt` loads the manifest on every call. A caller that reads a snapshot in several ranges therefore saves one store read for each range after the first. The reader's `Blocks` returns a copy of the committed blocks. A type that implements `volume.Reader` outside Lode must add the method.
 
+### Fixed
+
+- **A write that races a dataset's first commit no longer returns `ErrSnapshotConflict`**: a writer checks its settings against the head's canonical manifest and then against the staged copy of that manifest. The first commit could persist the manifest after the first read and remove the copy before the second, so neither read found a manifest. The writer then listed the manifests, and when the listing omitted the new manifest, the writer returned the error. The writer now reads the canonical manifest again before it lists the manifests.
+
 ---
 
 ## [0.15.0] - 2026-11-03

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -271,6 +272,46 @@ func TestWrite_SettingsOfAPendingFirstCommit(t *testing.T) {
 			t.Fatalf("got %v, want the newest manifest's settings enforced", err)
 		}
 	})
+}
+
+// commitRace hides the canonical manifest at canonical from its first Get,
+// as a writer sees it when that Get precedes the commit's write of the
+// manifest and the next Get follows the commit's removal of its staged
+// copy. Its listings are empty, as a lagging listing can be.
+type commitRace struct {
+	Store
+	canonical string
+	missed    bool
+}
+
+func (s *commitRace) Get(ctx context.Context, p string) (io.ReadCloser, error) {
+	if p == s.canonical && !s.missed {
+		s.missed = true
+		return nil, ErrNotFound
+	}
+	return s.Store.Get(ctx, p)
+}
+
+func (*commitRace) List(context.Context, string) ([]string, error) { return nil, nil }
+
+// A writer whose settings check races a first commit misses both the
+// canonical manifest and the staged copy; the commit removes the copy only
+// after it persists the manifest, so the writer finds the manifest on a
+// second read instead of reporting a conflict.
+func TestWrite_SettingsCheckRacingAFirstCommit(t *testing.T) {
+	store := NewMemory()
+	first, err := tryWrite(t, store, jsonl, R(D{"a": 1}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	race := &commitRace{Store: store, canonical: "datasets/events/snapshots/" + string(first.ID) + "/manifest.json"}
+	next, err := tryWrite(t, race, jsonl, R(D{"a": 2}))
+	if err != nil {
+		t.Fatalf("got %v, want the manifest found on the second read", err)
+	}
+	if !race.missed || next.ParentSnapshotID != first.ID {
+		t.Fatalf("missed = %v, parent = %s; want a commit on %s after the race", race.missed, next.ParentSnapshotID, first.ID)
+	}
 }
 
 // legacyHive rewrites every manifest copy of snap as format 1.0.0, without

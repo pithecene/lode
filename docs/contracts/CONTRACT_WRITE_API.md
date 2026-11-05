@@ -58,8 +58,12 @@ checksum algorithm, the partitioner and its keys, and the path names.
   its settings with the first of the following manifests that exists:
   1. the manifest of the snapshot that the pointer names
   2. that snapshot's staged copy (CONTRACT_CORE §Head Pointer)
-  3. the newest manifest, as `Latest` selects it, when the pointer is
-     absent or neither preceding manifest exists
+  3. the manifest of the snapshot that the pointer names, read again. A
+     commit removes its staged copy only after it persists its canonical
+     manifest, so a commit that completed between the first two reads has
+     persisted that manifest.
+  4. the newest manifest, as `Latest` selects it, when the pointer is
+     absent or no preceding read finds a manifest
 
   With no pointer and no manifest, the dataset is empty, and the writer's
   first commit records the writer's settings, unless the dataset directory
@@ -390,10 +394,12 @@ Parent resolution MUST NOT use List when a valid pointer exists.
 
 Each run of the check costs the following store calls:
 - Against the manifest that the pointer names: **1 `Get`**.
-- While a first commit is pending: **2 `Get` calls** (the canonical
+- Against a pending first commit: **2 `Get` calls** (the canonical
   manifest, then the staged copy).
-- When neither exists: the scan of `Latest`, **O(N) through List**, and
-  1 List of the dataset's directory.
+- Against a snapshot with neither a canonical nor a staged manifest:
+  **3 `Get` calls**, for the canonical manifest, the staged copy, and the
+  canonical manifest again. The check then scans as `Latest` does, at
+  **O(N) through List**, and issues 1 more `List` call on the dataset's directory.
 - Against an empty dataset: **1 List** of the dataset's directory, to
   detect a history persisted under another layout.
 - Against a dataset written before format version 1.1.0 with a Hive
