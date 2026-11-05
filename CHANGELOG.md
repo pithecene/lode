@@ -9,6 +9,10 @@ and Lode adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **`AtSnapshot` selects the snapshot at which a view opens**: a view opened with this option reads the named snapshot's canonical manifest in place of the pointer and the head. It checks the codec and path names against that manifest. The view's `Snapshot` then returns a copy of that snapshot without a store call. A reader that holds a snapshot ID therefore opens the view and loads the snapshot with two store reads in place of four. Opening a view at an expired snapshot returns `ErrSnapshotExpired`.
+
 ---
 
 ## [0.15.0] - 2026-11-03
