@@ -280,7 +280,6 @@ func (r *ReadRoot) openView(ctx context.Context, id DatasetID, opts []ViewOption
 	d := newDataset(id, r.store, newPathLayout(r.names, opened.partitioning()))
 	d.components = cfg.components
 	d.codec = codec
-	d.pinned = cfg.anchor.pin(opened)
 	return d, nil
 }
 
@@ -301,7 +300,7 @@ func resolveAnchor(ctx context.Context, store Store, names ManifestPaths, id Dat
 }
 
 // viewAnchor is the snapshot at which a view opens: the dataset's head
-// (headAnchor) or the snapshot that AtSnapshot names (snapshotAnchor).
+// (headAnchor) or the snapshot that WithPinnedSnapshot names (snapshotAnchor).
 type viewAnchor interface {
 	// resolve finds the anchor's snapshot among the candidates, one dataset
 	// core per grammar, because a view does not know its layout until it
@@ -309,16 +308,11 @@ type viewAnchor interface {
 	// has no snapshot.
 	resolve(ctx context.Context, candidates []*dataset) (*DatasetSnapshot, error)
 
-	// pin returns the snapshot that the view keeps for Snapshot to serve,
-	// or nil when the view keeps none.
-	pin(opened *DatasetSnapshot) *DatasetSnapshot
-
 	// String names the anchor in error messages.
 	String() string
 }
 
-// headAnchor opens a view at the dataset's head, and the view keeps no
-// snapshot: its head may move.
+// headAnchor opens a view at the dataset's head.
 type headAnchor struct{}
 
 // resolve finds the head without knowing the layout. The pointer names the
@@ -337,24 +331,24 @@ func (headAnchor) resolve(ctx context.Context, candidates []*dataset) (*DatasetS
 		loaders = append(loaders, func(d *dataset) (*DatasetSnapshot, error) { return fromHistory(d.history.Snapshot(ctx, pointed)) })
 	}
 	loaders = append(loaders, func(d *dataset) (*DatasetSnapshot, error) { return fromHistory(d.history.Newest(ctx)) })
+	// An if-chain, not a tagless switch: gremlins reports switch case
+	// expressions as not covered (go-gremlins/gremlins#298).
 	for _, load := range loaders {
 		s, err := firstFound(candidates, load)
-		switch {
-		case err == nil:
+		if err == nil {
 			return s, nil
-		case !isAbsence(err):
+		}
+		if !isAbsence(err) {
 			return nil, fmt.Errorf("failed to resolve the head of %s: %w", id, err)
 		}
 	}
 	return nil, fmt.Errorf("lode: dataset %s has no snapshot: %w", id, ErrNotFound)
 }
 
-func (headAnchor) pin(*DatasetSnapshot) *DatasetSnapshot { return nil }
-
 func (headAnchor) String() string { return "head" }
 
-// snapshotAnchor opens a view at one named snapshot, which the view keeps:
-// a snapshot never changes once committed.
+// snapshotAnchor opens a view at one named snapshot. The view keeps none of
+// it: like any view, it reads each snapshot from the store when asked.
 type snapshotAnchor struct {
 	id DatasetSnapshotID
 }
@@ -364,19 +358,18 @@ type snapshotAnchor struct {
 func (a snapshotAnchor) resolve(ctx context.Context, candidates []*dataset) (*DatasetSnapshot, error) {
 	id := candidates[0].id
 	s, err := findSnapshot(ctx, candidates, a.id)
-	switch {
-	case err == nil:
+	// An if-chain, not a tagless switch, as in headAnchor.resolve.
+	if err == nil {
 		return s, nil
-	case errors.Is(err, ErrSnapshotExpired):
-		return nil, err
-	case isAbsence(err):
-		return nil, fmt.Errorf("lode: snapshot %s of %s: %w", a.id, id, ErrNotFound)
-	default:
-		return nil, fmt.Errorf("failed to resolve snapshot %s of %s: %w", a.id, id, err)
 	}
+	if errors.Is(err, ErrSnapshotExpired) {
+		return nil, err
+	}
+	if isAbsence(err) {
+		return nil, fmt.Errorf("lode: snapshot %s of %s: %w", a.id, id, ErrNotFound)
+	}
+	return nil, fmt.Errorf("failed to resolve snapshot %s of %s: %w", a.id, id, err)
 }
-
-func (snapshotAnchor) pin(opened *DatasetSnapshot) *DatasetSnapshot { return opened }
 
 func (a snapshotAnchor) String() string { return "snapshot " + string(a.id) }
 

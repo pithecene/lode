@@ -11,7 +11,7 @@ and Lode adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- **`AtSnapshot` selects the snapshot at which a view opens**: a view opened with this option reads the named snapshot's canonical manifest in place of the pointer and the head. It checks the codec and path names against that manifest. The view's `Snapshot` then returns a copy of that snapshot without a store call. A reader that holds a snapshot ID therefore opens the view and loads the snapshot with two store reads in place of four. Opening a view at an expired snapshot returns `ErrSnapshotExpired`.
+- **`WithPinnedSnapshot` selects the snapshot at which a view opens**: a view opened with this option reads the named snapshot's canonical manifest in place of the pointer and the head. The view checks its codec and the root's path names against that manifest. A reader that holds a snapshot ID therefore opens the view and loads the snapshot with three store reads in place of four. Opening a view at an expired snapshot returns `ErrSnapshotExpired`.
 - **`volume.Reader.ReaderAt` reads a snapshot without reloading its manifest**: this method loads a snapshot's manifest once and returns a `SnapshotReaderAt`, an `io.ReaderAt` whose reads fetch block data only. `ReadAt` loads the manifest on every call. A caller that reads a snapshot in several ranges therefore saves one store read for each range after the first. The reader's `Blocks` returns a copy of the committed blocks. A type that implements `volume.Reader` outside Lode must add the method.
 
 ---

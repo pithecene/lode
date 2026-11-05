@@ -86,18 +86,18 @@ func TestKeyScope_EveryEntryPoint(t *testing.T) {
 			_, err := f.records.Snapshot(t.Context(), id)
 			return err
 		}),
-		"AtSnapshot": func(t *testing.T, f keyScopeFixture) {
+		"WithPinnedSnapshot": func(t *testing.T, f keyScopeFixture) {
 			t.Helper()
 			for _, id := range f.escapingSnapshotIDs() {
 				var err error
 				keys := f.store.Recorded(func() {
-					_, err = OpenReadOnly(Use(f.store)).Records(t.Context(), "a", JSONL[D](), AtSnapshot(id))
+					_, err = OpenReadOnly(Use(f.store)).Records(t.Context(), "a", JSONL[D](), WithPinnedSnapshot(id))
 				})
 				if !errors.Is(err, ErrInvalidArgument) {
-					t.Errorf("AtSnapshot(%q) = %v, want ErrInvalidArgument", id, err)
+					t.Errorf("WithPinnedSnapshot(%q) = %v, want ErrInvalidArgument", id, err)
 				}
 				if len(keys) > 0 {
-					t.Errorf("AtSnapshot(%q) reached %v before rejecting the ID", id, keys)
+					t.Errorf("WithPinnedSnapshot(%q) reached %v before rejecting the ID", id, keys)
 				}
 			}
 		},
