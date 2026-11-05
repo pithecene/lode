@@ -551,7 +551,7 @@ func (h *History[ID, M]) PointedHead(ctx context.Context) (ID, error) {
 		return "", fmt.Errorf("failed to resolve head: %w", err)
 	}
 	if !IsGeneratedID(id) {
-		return "", fmt.Errorf("lode: latest pointer holds %q, which is not a snapshot ID", id)
+		return "", pointerNotSnapshotID{content: string(id)}
 	}
 	return id, nil
 }
@@ -564,7 +564,7 @@ func (h *History[ID, M]) ConfirmCommitted(ctx context.Context, id ID) error {
 	// A corrupt pointer must not reach a path or stand for the head: Lode
 	// writes only generated IDs there, which are path-safe.
 	if !IsGeneratedID(id) {
-		return fmt.Errorf("lode: latest pointer holds %q, which is not a snapshot ID", id)
+		return pointerNotSnapshotID{content: string(id)}
 	}
 	committed, err := h.hasManifest(ctx, id)
 	if err != nil {
@@ -814,6 +814,20 @@ type manifestUncertain struct{ err error }
 func (e manifestUncertain) Error() string        { return e.err.Error() }
 func (e manifestUncertain) Unwrap() error        { return e.err }
 func (e manifestUncertain) Is(target error) bool { return target == ErrManifestUncertain }
+
+// ErrPointerNotSnapshotID marks a head pointer whose content is not a
+// snapshot ID: a hand edit or a corrupt object, which can never name the
+// head. Errors carrying it keep the message that names the content.
+var ErrPointerNotSnapshotID = errors.New("latest pointer holds no snapshot ID")
+
+// pointerNotSnapshotID is the error for a pointer that holds content, which
+// matches ErrPointerNotSnapshotID.
+type pointerNotSnapshotID struct{ content string }
+
+func (e pointerNotSnapshotID) Error() string {
+	return fmt.Sprintf("lode: latest pointer holds %q, which is not a snapshot ID", e.content)
+}
+func (e pointerNotSnapshotID) Is(target error) bool { return target == ErrPointerNotSnapshotID }
 
 // Advance commits a snapshot: the staged copy when the kind stages, the
 // pointer (CAS against expected), then every manifest path, then the removal
