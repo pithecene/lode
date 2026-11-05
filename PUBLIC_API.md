@@ -151,7 +151,9 @@ semantics. The constructor takes a `lode.Factory[lode.RangeStore]`, so a
 call that passes a store without range reads does not compile. It returns a `volume.Volume`, whose write and read
 methods form the `volume.Writer` and `volume.Reader` interfaces. The `id`
 is a `volume.ID`. `Commit` returns a `volume.Snapshot`, which holds its
-`volume.SnapshotID` and its `volume.Manifest`.
+`volume.SnapshotID` and its `volume.Manifest`. `ReaderAt(ctx, snapshotID)`
+loads a snapshot's manifest once and returns a `volume.SnapshotReaderAt`,
+an `io.ReaderAt` whose reads fetch block data only.
 
 A Dataset constructs complete objects before committing, whereas a Volume
 commits data incrementally as sparse byte ranges. A Volume suits a byte
@@ -245,6 +247,7 @@ apply to a handle does not compile with it.
 | `WithRetryMaxDelay(d)` | `DatasetOption` | | ✅ | | Maximum delay of the backoff (default: 2 s) |
 | `WithRetryJitter(j)` | `DatasetOption` | | ✅ | | Jitter factor from 0.0 to 1.0 (default: 1.0) |
 | `WithRetryObserver(fn)` | `DatasetOption` | | ✅ | | A callback invoked on each retry, for observability |
+| `AtSnapshot(id)` | `ViewOption` | | | ✅ | The snapshot `id` at which the view opens, in place of the head (CONTRACT_READ_API §Opening a View) |
 
 A view takes no layout or retry: the layout comes from the dataset's
 manifests, and a view never commits. A view accepts a `ViewOption`, and

@@ -151,6 +151,11 @@ type Reader interface {
 	// Returns ErrRangeMissing if any sub-range is uncommitted.
 	ReadAt(ctx context.Context, snapshotID SnapshotID, offset, length int64) ([]byte, error)
 
+	// ReaderAt loads snapshot snapshotID's manifest once and returns a
+	// reader of its committed bytes, whose reads fetch block data only.
+	// Returns lode.ErrNotFound if the snapshot does not exist.
+	ReaderAt(ctx context.Context, snapshotID SnapshotID) (SnapshotReaderAt, error)
+
 	// Latest returns the most recently committed snapshot.
 	// Returns lode.ErrNoSnapshots if no snapshots exist.
 	Latest(ctx context.Context) (*Snapshot, error)
@@ -161,6 +166,27 @@ type Reader interface {
 	// Snapshot retrieves a specific snapshot by ID.
 	// Returns lode.ErrNotFound if the snapshot does not exist.
 	Snapshot(ctx context.Context, id SnapshotID) (*Snapshot, error)
+}
+
+// SnapshotReaderAt reads the committed bytes of one snapshot. Reader.ReaderAt
+// returns one, which holds the manifest that ReaderAt loaded, so each read
+// fetches block data only, using the context passed to ReaderAt. An
+// implementation is safe for concurrent use.
+type SnapshotReaderAt interface {
+	// ReadAt reads len(p) bytes at offset off of the snapshot into p, as
+	// io.ReaderAt specifies. A read that extends past the end of the volume
+	// returns io.EOF together with the bytes from off to the end. A read of
+	// a range that is not fully committed returns ErrRangeMissing and no
+	// bytes, as Reader.ReadAt does.
+	io.ReaderAt
+
+	// ID returns the ID of the snapshot that the reader reads.
+	ID() SnapshotID
+
+	// Blocks returns a copy of the snapshot's committed blocks, sorted by
+	// offset, so that a caller can check coverage before it reads. A change
+	// to the copy leaves the reader and later copies intact.
+	Blocks() []BlockRef
 }
 
 // Volume composes the full read/write surface for a sparse byte space.

@@ -117,6 +117,7 @@ The following one-time costs add to the fixed counts in the table above
 | `Root.Records`, `Root.Blobs` (warm: the pointer names a manifest) | 1 `Get` of the pointer + 1 `Get` of the manifest |
 | `Root.Records`, `Root.Blobs` (empty dataset) | 1 `Get` of the pointer + the scan fallback + 1 `List` of the dataset's directory |
 | `ReadRoot.Records`, `ReadRoot.Blobs` (warm) | 1 `Get` of the pointer + at most 2 `Get` calls of the manifest |
+| `ReadRoot.Records`, `ReadRoot.Blobs` with `AtSnapshot(id)` | At most 2 `Get` calls of snapshot `id`'s canonical manifest, and no `Get` of the pointer. The view's `Snapshot(ctx, id)` then makes no store call. |
 | `ReadRoot.Records`, `ReadRoot.Blobs` (no pointer) | 1 `Get` of the pointer + the scan fallback under each manifest directory (snapshots and segments) |
 
 A view cannot determine whether the dataset is partitioned before it reads

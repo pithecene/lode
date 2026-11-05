@@ -249,8 +249,9 @@ func (r *ReadRoot) Blobs(ctx context.Context, id DatasetID, opts ...ViewOption) 
 	return &blobView{dataset: d}, nil
 }
 
-// openView resolves a view's layout from the dataset's head and checks the
-// head against the view's codec and the root's names.
+// openView resolves the snapshot at which the view opens (its anchor),
+// takes the view's layout from that snapshot, and checks the snapshot
+// against the view's codec and the root's names.
 func (r *ReadRoot) openView(ctx context.Context, id DatasetID, opts []ViewOption, codec codecIdentity) (*dataset, error) {
 	if err := validateDatasetID(id); err != nil {
 		return nil, err
@@ -259,51 +260,77 @@ func (r *ReadRoot) openView(ctx context.Context, id DatasetID, opts []ViewOption
 	if err != nil {
 		return nil, err
 	}
-	head, scheme, err := resolveViewHead(ctx, r.store, r.names, id)
+	opened, err := resolveAnchor(ctx, r.store, r.names, id, cfg.anchor)
 	if err != nil {
 		return nil, err
 	}
-	if err := validateManifest(head); err != nil {
-		return nil, fmt.Errorf("head of %s: %w", id, err)
+	if err := validateManifest(opened.Manifest); err != nil {
+		return nil, fmt.Errorf("%s of %s: %w", cfg.anchor, id, err)
 	}
-	if err := matchCodec(head, codec); err != nil {
+	if err := matchCodec(opened.Manifest, codec); err != nil {
 		return nil, err
 	}
-	recorded, err := recordedSettings(head, r.names.Flat)
+	recorded, err := recordedSettings(opened.Manifest, r.names.Flat)
 	if err != nil {
 		return nil, err
 	}
 	if want, have := r.names, recorded.paths; have != want {
 		return nil, fmt.Errorf("lode: path names mismatch: dataset records %#v, root has %#v: %w", have, want, ErrSettingsMismatch)
 	}
-	d := newDataset(id, r.store, newPathLayout(r.names, scheme))
-	d.components = *cfg
+	d := newDataset(id, r.store, newPathLayout(r.names, opened.partitioning()))
+	d.components = cfg.components
 	d.codec = codec
+	d.pinned = cfg.anchor.pin(opened)
 	return d, nil
 }
 
-// hiveGrammar stands for every Hive scheme while a view's layout is not yet
-// known: reading needs only the grammar, not the keys.
-var hiveGrammar = partitionScheme{name: hivePartitioner}
-
-// resolveViewHead finds the dataset's head manifest without knowing its
-// layout. The pointer names the head but not whether the dataset is
-// partitioned, so the canonical manifest is read under the snapshots
-// directory, then the segments directory: because the names are distinct,
-// at most one exists. Without a pointer, or when the pointer names a
-// snapshot whose manifest is not persisted, each grammar's scan selects the
-// head, as Latest does, without creating the pointer. It returns the head's
-// manifest and the partitioning it records; ErrSettingsMismatch when the
-// dataset's directory holds a manifest under other path names; ErrNotFound
-// when the dataset has no snapshot.
-func resolveViewHead(ctx context.Context, store Store, names ManifestPaths, id DatasetID) (*Manifest, partitionScheme, error) {
-	candidates := []*dataset{
-		newDataset(id, store, newPathLayout(names, noopScheme)),
-		newDataset(id, store, newPathLayout(names, hiveGrammar)),
+// resolveAnchor finds the anchor's snapshot of dataset id without knowing
+// the dataset's layout. When the anchor has no snapshot, it returns
+// ErrSettingsMismatch if the dataset's directory holds a manifest under
+// other path names, and the anchor's absence otherwise.
+func resolveAnchor(ctx context.Context, store Store, names ManifestPaths, id DatasetID, anchor viewAnchor) (*DatasetSnapshot, error) {
+	candidates := viewCandidates(store, names, id)
+	opened, err := anchor.resolve(ctx, candidates)
+	if !isAbsence(err) {
+		return opened, err
 	}
+	if foreign := rejectForeignManifest(ctx, store, id, candidates[0].layout, candidates[1].layout); foreign != nil {
+		return nil, foreign
+	}
+	return nil, err
+}
+
+// viewAnchor is the snapshot at which a view opens: the dataset's head
+// (headAnchor) or the snapshot that AtSnapshot names (snapshotAnchor).
+type viewAnchor interface {
+	// resolve finds the anchor's snapshot among the candidates, one dataset
+	// core per grammar, because a view does not know its layout until it
+	// reads a manifest. It returns an absence (isAbsence) when the anchor
+	// has no snapshot.
+	resolve(ctx context.Context, candidates []*dataset) (*DatasetSnapshot, error)
+
+	// pin returns the snapshot that the view keeps for Snapshot to serve,
+	// or nil when the view keeps none.
+	pin(opened *DatasetSnapshot) *DatasetSnapshot
+
+	// String names the anchor in error messages.
+	String() string
+}
+
+// headAnchor opens a view at the dataset's head, and the view keeps no
+// snapshot: its head may move.
+type headAnchor struct{}
+
+// resolve finds the head without knowing the layout. The pointer names the
+// head but not whether the dataset is partitioned, so the head's canonical
+// manifest is read under each grammar. Without a pointer, or when the
+// pointer names a snapshot whose manifest is not persisted, each grammar's
+// scan selects the head, as Latest does, without creating the pointer.
+func (headAnchor) resolve(ctx context.Context, candidates []*dataset) (*DatasetSnapshot, error) {
+	id := candidates[0].id
 	pointed, err := candidates[0].history.ReadPointer(ctx)
 	if err != nil && !errors.Is(err, ErrNotFound) {
-		return nil, partitionScheme{}, err
+		return nil, err
 	}
 	loaders := make([]func(*dataset) (*DatasetSnapshot, error), 0, 2)
 	if err == nil {
@@ -311,20 +338,61 @@ func resolveViewHead(ctx context.Context, store Store, names ManifestPaths, id D
 	}
 	loaders = append(loaders, func(d *dataset) (*DatasetSnapshot, error) { return fromHistory(d.history.Newest(ctx)) })
 	for _, load := range loaders {
-		for _, d := range candidates {
-			s, err := load(d)
-			if err == nil {
-				return s.Manifest, partitionScheme{name: partitioner(s.Partitioner), keys: s.PartitionKeys}, nil
-			}
-			if !errors.Is(err, ErrNotFound) && !errors.Is(err, ErrNoSnapshots) {
-				return nil, partitionScheme{}, fmt.Errorf("failed to resolve the head of %s: %w", id, err)
-			}
+		s, err := firstFound(candidates, load)
+		switch {
+		case err == nil:
+			return s, nil
+		case !isAbsence(err):
+			return nil, fmt.Errorf("failed to resolve the head of %s: %w", id, err)
 		}
 	}
-	if err := rejectForeignManifest(ctx, store, id, candidates[0].layout, candidates[1].layout); err != nil {
-		return nil, partitionScheme{}, err
+	return nil, fmt.Errorf("lode: dataset %s has no snapshot: %w", id, ErrNotFound)
+}
+
+func (headAnchor) pin(*DatasetSnapshot) *DatasetSnapshot { return nil }
+
+func (headAnchor) String() string { return "head" }
+
+// snapshotAnchor opens a view at one named snapshot, which the view keeps:
+// a snapshot never changes once committed.
+type snapshotAnchor struct {
+	id DatasetSnapshotID
+}
+
+// resolve finds the snapshot as Snapshot does (findSnapshot), with one
+// candidate per grammar in place of the handle's own core.
+func (a snapshotAnchor) resolve(ctx context.Context, candidates []*dataset) (*DatasetSnapshot, error) {
+	id := candidates[0].id
+	s, err := findSnapshot(ctx, candidates, a.id)
+	switch {
+	case err == nil:
+		return s, nil
+	case errors.Is(err, ErrSnapshotExpired):
+		return nil, err
+	case isAbsence(err):
+		return nil, fmt.Errorf("lode: snapshot %s of %s: %w", a.id, id, ErrNotFound)
+	default:
+		return nil, fmt.Errorf("failed to resolve snapshot %s of %s: %w", a.id, id, err)
 	}
-	return nil, partitionScheme{}, fmt.Errorf("lode: dataset %s has no snapshot: %w", id, ErrNotFound)
+}
+
+func (snapshotAnchor) pin(opened *DatasetSnapshot) *DatasetSnapshot { return opened }
+
+func (a snapshotAnchor) String() string { return "snapshot " + string(a.id) }
+
+// hiveGrammar stands for every Hive scheme while a view's layout is not yet
+// known: reading needs only the grammar, not the keys.
+var hiveGrammar = partitionScheme{name: hivePartitioner}
+
+// viewCandidates are the dataset cores of each grammar a view may find,
+// while its layout is not yet known. A canonical manifest lies under the
+// snapshots directory or the segments directory; because the names are
+// distinct, at most one exists.
+func viewCandidates(store Store, names ManifestPaths, id DatasetID) []*dataset {
+	return []*dataset{
+		newDataset(id, store, newPathLayout(names, noopScheme)),
+		newDataset(id, store, newPathLayout(names, hiveGrammar)),
+	}
 }
 
 // recordView implements RecordView[T].

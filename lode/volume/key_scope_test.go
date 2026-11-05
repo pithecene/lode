@@ -116,6 +116,10 @@ func TestKeyScope_EveryEntryPoint(t *testing.T) {
 			_, err := f.a.ReadAt(t.Context(), id, 0, 4)
 			return err
 		}),
+		"Reader.ReaderAt": readFinds(func(f keyScopeFixture, id SnapshotID) error {
+			_, err := f.a.ReaderAt(t.Context(), id)
+			return err
+		}),
 	}
 
 	declared, err := testutil.EntryPoints(".", "ID", "SnapshotID")

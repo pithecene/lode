@@ -1,0 +1,24 @@
+name: 🧰 Setup
+description: Install the tools pinned in mise.toml, with a cache keyed by the runner image.
+
+inputs:
+  install_args:
+    description: The tools to install; empty installs every pinned tool.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    # A tool that pipx installs, such as yamllint, links to the runner's own
+    # Python. A new runner image can move that Python, which breaks the cached
+    # tool while the mise.toml key still matches, so the image is in the key.
+    - name: 🏷️ Runner image
+      shell: bash
+      run: echo "MISE_RUNNER_IMAGE=$ImageOS-$ImageVersion" >> "$GITHUB_ENV"
+
+    - name: 🧰 Mise
+      uses: jdx/mise-action@v2
+      with:
+        install_args: ${{ inputs.install_args }}
+        cache_key_prefix: mise-v0-${{ env.MISE_RUNNER_IMAGE }}
