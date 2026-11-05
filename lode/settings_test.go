@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/pithecene/lode/internal/testutil"
 )
 
 // jsonl is the default codec of these tests.
@@ -270,6 +272,97 @@ func TestWrite_SettingsOfAPendingFirstCommit(t *testing.T) {
 		}
 		if _, err := tryWrite(t, store, jsonl, R(D{"a": 4}), WithCompressor(NewGzipCompressor())); !errors.Is(err, ErrSettingsMismatch) {
 			t.Fatalf("got %v, want the newest manifest's settings enforced", err)
+		}
+	})
+	// A commit on a pending first commit stages its manifest too: when it is
+	// abandoned in turn, the dataset holds no canonical manifest, and its
+	// staged copy is the only record of the settings.
+	t.Run("an abandoned commit on a pending first commit is staged", func(t *testing.T) {
+		store := NewMemory()
+		first, err := tryWrite(t, store, jsonl, R(D{"a": 1}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		pendFirst(t, store, first.ID)
+		faulty := testutil.NewFaultStore(store)
+		faulty.SetPutError(errors.New("injected: manifest write lost"), "/manifest.json")
+		abandoned, err := tryWrite(t, faulty, jsonl, R(D{"a": 2}))
+		if err == nil {
+			t.Fatalf("got %+v, want the commit to fail after it advanced the pointer", abandoned)
+		}
+		recorder := testutil.NewKeyRecorder(store)
+		ds := openOn(t, recorder, jsonl)
+		next, err := ds.Write(t.Context(), R(D{"a": 3}), nil)
+		if err != nil {
+			t.Fatalf("got %v, want the abandoned commit's staged copy to record the settings", err)
+		}
+		if next.ParentSnapshotID == first.ID {
+			t.Fatalf("parent = %s, want the abandoned commit on %s", next.ParentSnapshotID, first.ID)
+		}
+		if exists(t, store, "datasets/events/staged/"+string(next.ParentSnapshotID)+".json") {
+			t.Error("the adopted commit's staged manifest remains after its child committed")
+		}
+		// The child persisted a canonical manifest, so the handle's next
+		// commit stages nothing.
+		keys := recorder.Recorded(func() { _, err = ds.Write(t.Context(), R(D{"a": 4}), nil) })
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i := slices.IndexFunc(keys, func(k string) bool { return strings.Contains(k, "/staged/") }); i >= 0 {
+			t.Errorf("a commit after a completed one reached %s, want no staged copy", keys[i])
+		}
+	})
+	// A writer that adopted a pending first commit when it opened may commit
+	// on a later pending commit, which it never loaded; its commit removes
+	// the staged copies of both.
+	t.Run("a commit removes the staged copies of its pending ancestors", func(t *testing.T) {
+		store := NewMemory()
+		first, err := tryWrite(t, store, jsonl, R(D{"a": 1}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		pendFirst(t, store, first.ID)
+		late := openOn(t, store, jsonl)
+		faulty := testutil.NewFaultStore(store)
+		faulty.SetPutError(errors.New("injected: manifest write lost"), "/manifest.json")
+		if _, err := tryWrite(t, faulty, jsonl, R(D{"a": 2})); err == nil {
+			t.Fatal("want the commit to fail after it advanced the pointer")
+		}
+		snap, err := late.Write(t.Context(), R(D{"a": 3}), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, id := range []DatasetSnapshotID{first.ID, snap.ParentSnapshotID} {
+			if exists(t, store, "datasets/events/staged/"+string(id)+".json") {
+				t.Errorf("the staged copy of %s remains after its descendant committed", id)
+			}
+		}
+	})
+	// A commit retried under its snapshot ID stages again; the copy of an
+	// earlier attempt, which remains when the pointer could not be read, is
+	// kept rather than failing the commit, and removed once the commit
+	// persists its canonical manifest.
+	t.Run("a staged copy of an earlier attempt is kept", func(t *testing.T) {
+		store := NewMemory()
+		first, err := tryWrite(t, store, jsonl, R(D{"a": 1}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		pendFirst(t, store, first.ID)
+		faulty := testutil.NewFaultStore(store)
+		var stale string
+		faulty.SetBeforePut(func(p string) {
+			if stale == "" && strings.Contains(p, "/staged/") {
+				stale = p
+				putObject(t, store, p)
+			}
+		})
+		snap, err := tryWrite(t, faulty, jsonl, R(D{"a": 2}))
+		if err != nil {
+			t.Fatalf("got %v, want the earlier attempt's staged copy kept", err)
+		}
+		if stale != "datasets/events/staged/"+string(snap.ID)+".json" || exists(t, store, stale) {
+			t.Fatalf("staged %q, want the commit's copy staged and then removed", stale)
 		}
 	})
 }

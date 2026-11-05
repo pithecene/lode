@@ -88,7 +88,6 @@ func (d *writer) commit(ctx context.Context, p *pendingSnapshot) (*DatasetSnapsh
 		return nil, err
 	}
 	d.settled = true // the dataset's head now records this writer's settings
-	d.removeAdoptedStaged(ctx)
 	return &DatasetSnapshot{ID: p.id, Manifest: manifest}, nil
 }
 

@@ -140,6 +140,12 @@ manifest as a pending commit:
   the first commit, the next commit reads the dataset's settings from the
   staged copy, adopts the abandoned snapshot as its parent, and removes the
   copy after it commits.
+- A writer that adopts a pending first commit MUST stage each of its
+  commits until one of them persists its canonical manifest. Until one of them
+  does so, the dataset might have no canonical manifest. If such a commit staged
+  nothing and its writer abandoned it, no manifest would record the
+  dataset's settings. Every writer would then return `ErrSnapshotConflict`
+  until an operator repaired the pointer.
 - Parent resolution selects the largest snapshot ID only when the pointer
   is missing or does not contain a snapshot ID. One content that is not a
   snapshot ID is reserved: the removal marker `lode:removed`, which

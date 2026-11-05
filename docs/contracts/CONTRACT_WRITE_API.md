@@ -417,7 +417,11 @@ Each run of the check costs the following store calls:
 | `Records.StreamWrite` | 4 fixed | O(1) streaming |
 
 A dataset's first commit adds **one `Put` and one `Delete`** for its staged
-manifest (CONTRACT_CORE §Head Pointer).
+manifest (CONTRACT_CORE §Head Pointer). A writer that adopted a pending first
+commit incurs the same two calls on each later commit. The writer stops incurring
+them once one of its commits persists a canonical manifest. That commit adds at
+most **two `Delete` calls**: one for the adopted commit's staged manifest and
+one for the staged manifest of the parent that the writer's commit names.
 
 A commit may incur **one additional read**: `CompareAndSwap` reads the current pointer before the
 conditional write when it cannot otherwise establish the precondition. The

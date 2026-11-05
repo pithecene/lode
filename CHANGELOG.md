@@ -17,6 +17,7 @@ and Lode adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixed
 
 - **A write that races a dataset's first commit no longer returns `ErrSnapshotConflict`**: a writer checks its settings against the head's canonical manifest and then against the staged copy of that manifest. The first commit could persist the manifest after the first read and remove the copy before the second, so neither read found a manifest. The writer then listed the manifests, and when the listing omitted the new manifest, the writer returned the error. The writer now reads the canonical manifest again before it lists the manifests.
+- **Two abandoned commits no longer leave a dataset that no writer can open**: a writer that adopted a pending first commit staged nothing for its own commit. That writer could also terminate between its pointer update and its manifest write. Then no manifest recorded the dataset's settings, and every writer returned `ErrSnapshotConflict` until an operator repaired the pointer. A writer that adopts a pending first commit now stages each of its commits until one of those commits persists a canonical manifest.
 
 ---
 

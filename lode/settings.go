@@ -174,21 +174,6 @@ func (d *writer) checkSettings(ctx context.Context, parent DatasetSnapshotID) er
 	return nil
 }
 
-// removeAdoptedStaged removes the staged manifest of a pending first
-// commit that this writer's commit adopted as its parent. Later commits
-// stage nothing, so no other commit would remove it. Best-effort: a staged
-// copy that remains is never listed as a snapshot. If the pending commit's
-// writer is still running, it persists its canonical manifest regardless,
-// and a writer that checks its settings meanwhile reads this writer's
-// manifest, which records the same settings.
-func (d *writer) removeAdoptedStaged(ctx context.Context) {
-	if d.adoptedStaged == "" {
-		return
-	}
-	_ = d.store.Delete(ctx, d.adoptedStaged)
-	d.adoptedStaged = ""
-}
-
 // rejectForeignHistory returns ErrSettingsMismatch when the dataset's
 // directory holds a manifest this layout does not persist: a history
 // written under another layout, whose manifests the configured layout
@@ -244,13 +229,7 @@ func (d *writer) settingsManifest(ctx context.Context, parent DatasetSnapshotID)
 	canonical := func() (*DatasetSnapshot, error) { return fromHistory(d.history.Snapshot(ctx, parent)) }
 	loaders := []func() (*DatasetSnapshot, error){
 		canonical,
-		func() (*DatasetSnapshot, error) {
-			s, err := fromHistory(d.history.LoadStaged(ctx, parent))
-			if err == nil {
-				d.adoptedStaged = d.layout.stagedManifestPath(d.id, parent)
-			}
-			return s, err
-		},
+		func() (*DatasetSnapshot, error) { return fromHistory(d.history.LoadStaged(ctx, parent)) },
 		canonical,
 		func() (*DatasetSnapshot, error) { return fromHistory(d.history.Newest(ctx)) },
 	}
