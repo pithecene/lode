@@ -229,6 +229,25 @@ func TestWithPinnedSnapshot_ChecksTheNamedSnapshotsSettings(t *testing.T) {
 	}
 }
 
+// An invalid manifest of the named snapshot fails the open with
+// ErrManifestInvalid, and the error names that snapshot, as an invalid head
+// fails a view of the head.
+func TestWithPinnedSnapshot_RejectsAnInvalidManifest(t *testing.T) {
+	t.Parallel()
+	f := newPinnedFixture(t)
+	p := "datasets/ds/snapshots/" + string(f.older.ID) + "/manifest.json"
+	m := readManifest(t, f.store, p)
+	m.Paths = ManifestPaths{}
+	writeManifestAt(t, f.store, p, m)
+	_, _, err := f.open(t, WithPinnedSnapshot(f.older.ID))
+	if !errors.Is(err, ErrManifestInvalid) {
+		t.Fatalf("open at an invalid manifest: %v, want ErrManifestInvalid", err)
+	}
+	if want := "snapshot " + string(f.older.ID) + " of ds"; !strings.Contains(err.Error(), want) {
+		t.Fatalf("error %q does not name %q", err, want)
+	}
+}
+
 // partitionManifests returns the partition manifests of snapshot id with
 // their bytes, so a test can put them back after a complete expiry.
 func (f pinnedFixture) partitionManifests(t *testing.T, id DatasetSnapshotID) map[string][]byte {

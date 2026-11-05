@@ -337,12 +337,14 @@ func (headAnchor) resolve(ctx context.Context, candidates []*dataset) (*DatasetS
 		loaders = append(loaders, func(d *dataset) (*DatasetSnapshot, error) { return fromHistory(d.history.Snapshot(ctx, pointed)) })
 	}
 	loaders = append(loaders, func(d *dataset) (*DatasetSnapshot, error) { return fromHistory(d.history.Newest(ctx)) })
+	// An if-chain, not a tagless switch: gremlins reports switch case
+	// expressions as not covered (go-gremlins/gremlins#298).
 	for _, load := range loaders {
 		s, err := firstFound(candidates, load)
-		switch {
-		case err == nil:
+		if err == nil {
 			return s, nil
-		case !isAbsence(err):
+		}
+		if !isAbsence(err) {
 			return nil, fmt.Errorf("failed to resolve the head of %s: %w", id, err)
 		}
 	}
@@ -364,16 +366,17 @@ type snapshotAnchor struct {
 func (a snapshotAnchor) resolve(ctx context.Context, candidates []*dataset) (*DatasetSnapshot, error) {
 	id := candidates[0].id
 	s, err := findSnapshot(ctx, candidates, a.id)
-	switch {
-	case err == nil:
+	// An if-chain, not a tagless switch, as in headAnchor.resolve.
+	if err == nil {
 		return s, nil
-	case errors.Is(err, ErrSnapshotExpired):
-		return nil, err
-	case isAbsence(err):
-		return nil, fmt.Errorf("lode: snapshot %s of %s: %w", a.id, id, ErrNotFound)
-	default:
-		return nil, fmt.Errorf("failed to resolve snapshot %s of %s: %w", a.id, id, err)
 	}
+	if errors.Is(err, ErrSnapshotExpired) {
+		return nil, err
+	}
+	if isAbsence(err) {
+		return nil, fmt.Errorf("lode: snapshot %s of %s: %w", a.id, id, ErrNotFound)
+	}
+	return nil, fmt.Errorf("failed to resolve snapshot %s of %s: %w", a.id, id, err)
 }
 
 func (snapshotAnchor) pin(opened *DatasetSnapshot) *DatasetSnapshot { return opened }
