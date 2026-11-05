@@ -180,9 +180,6 @@ type SnapshotReaderAt interface {
 	// bytes, as Reader.ReadAt does.
 	io.ReaderAt
 
-	// ID returns the ID of the snapshot that the reader reads.
-	ID() SnapshotID
-
 	// Blocks returns a copy of the snapshot's committed blocks, sorted by
 	// offset, so that a caller can check coverage before it reads. A change
 	// to the copy leaves the reader and later copies intact.

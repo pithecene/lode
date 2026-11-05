@@ -657,9 +657,6 @@ func (r *snapshotReaderAt) ReadAt(p []byte, off int64) (int, error) {
 	return int(n), nil
 }
 
-// ID implements SnapshotReaderAt.
-func (r *snapshotReaderAt) ID() SnapshotID { return r.snapshot.ID }
-
 // Blocks implements SnapshotReaderAt. A BlockRef holds no reference, so a
 // copy of the slice shares no memory with the reader's manifest.
 func (r *snapshotReaderAt) Blocks() []BlockRef { return slices.Clone(r.snapshot.Manifest.Blocks) }
