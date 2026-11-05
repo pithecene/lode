@@ -50,9 +50,9 @@ func (f pinnedFixture) open(t *testing.T, opts ...ViewOption) (RecordView[D], []
 }
 
 // A view opened at a snapshot reads that snapshot's canonical manifest and
-// neither the pointer nor the head, takes the layout from it, and serves the
-// snapshot it read with no further request. Its other reads behave as on a
-// view of the head.
+// neither the pointer nor the head, and takes the layout from it. With the
+// layout known, the view's Snapshot reads the canonical manifest with one
+// request. Its other reads behave as on a view of the head.
 func TestWithPinnedSnapshot_OpensAtTheNamedSnapshot(t *testing.T) {
 	t.Parallel()
 	layouts := map[string][]DatasetOption{
@@ -77,8 +77,8 @@ func TestWithPinnedSnapshot_OpensAtTheNamedSnapshot(t *testing.T) {
 			if err != nil || snap.ID != f.older.ID {
 				t.Fatalf("Snapshot(%s) = %v, %v", f.older.ID, snap, err)
 			}
-			if len(reads) > 0 {
-				t.Errorf("Snapshot of the opened snapshot reached %v, want no request", reads)
+			if len(reads) != 1 || !strings.HasSuffix(reads[0], string(f.older.ID)+"/manifest.json") {
+				t.Errorf("Snapshot of the opened snapshot reached %v, want its canonical manifest alone", reads)
 			}
 			recs, err := view.Read(t.Context(), f.older.ID)
 			if err != nil || len(recs) != 1 || recs[0]["n"] != float64(1) {
@@ -92,34 +92,6 @@ func TestWithPinnedSnapshot_OpensAtTheNamedSnapshot(t *testing.T) {
 				t.Fatalf("Snapshot(%s) = %v, %v", f.latest.ID, other, err)
 			}
 		})
-	}
-}
-
-// The snapshot that the view returns is a copy: a caller that changes it
-// changes neither the next Snapshot nor a Read of the snapshot.
-func TestWithPinnedSnapshot_ReturnsACopy(t *testing.T) {
-	t.Parallel()
-	f := newPinnedFixture(t)
-	view, _, err := f.open(t, WithPinnedSnapshot(f.older.ID))
-	if err != nil {
-		t.Fatal(err)
-	}
-	first, err := view.Snapshot(t.Context(), f.older.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := first.Files[0].Path
-	first.Files[0].Path = "elsewhere"
-	first.Files = nil
-	second, err := view.Snapshot(t.Context(), f.older.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if second.ID != f.older.ID || len(second.Files) != 1 || second.Files[0].Path != want {
-		t.Fatalf("Snapshot after a change to the returned copy = %s %v, want %s %s", second.ID, second.Files, f.older.ID, want)
-	}
-	if recs, err := view.Read(t.Context(), f.older.ID); err != nil || len(recs) != 1 {
-		t.Fatalf("Read after a change to the returned copy = %v, %v", recs, err)
 	}
 }
 

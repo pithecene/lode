@@ -72,10 +72,9 @@ func (o viewOption) applyView(cfg *viewConfig) error { return o(cfg) }
 // WithPinnedSnapshot opens a view at snapshot id in place of the head. Opening
 // reads that snapshot's canonical manifest and neither the pointer nor the
 // head, and it checks the view's codec and the root's path names against
-// that manifest. The view's Snapshot of id returns a copy of that snapshot
-// without a store call; its other methods behave as on any view. Opening
-// returns ErrSnapshotExpired for an expired snapshot and ErrNotFound for an
-// absent one.
+// that manifest. The view keeps no snapshot, and its methods behave as on
+// any view. Opening returns ErrSnapshotExpired for an expired snapshot and
+// ErrNotFound for an absent one.
 func WithPinnedSnapshot(id DatasetSnapshotID) ViewOption {
 	return viewOption(func(cfg *viewConfig) error {
 		if !storepath.Segment(string(id)) {
@@ -264,11 +263,6 @@ type dataset struct {
 
 	// history owns the snapshot sequence and its head pointer (internal/history).
 	history history.History[DatasetSnapshotID, Manifest]
-
-	// pinned is the snapshot that a view opened with WithPinnedSnapshot read when it
-	// opened. Snapshot returns a copy of it for its ID. It is nil for every
-	// other handle, and nothing changes it once the view is open.
-	pinned *DatasetSnapshot
 }
 
 // writer is the core of a writer handle: its dataset, its retry policy,
@@ -366,21 +360,6 @@ var (
 	_ history.Stager[DatasetSnapshotID]         = datasetKind{}
 )
 
-// clone returns a copy of s that shares no memory with s, as a fresh load
-// of its manifest does: a caller that changes the copy leaves s intact. The
-// manifest passes through JSON, the encoding in which manifests persist.
-func (s *DatasetSnapshot) clone() (*DatasetSnapshot, error) {
-	data, err := json.Marshal(s.Manifest)
-	if err != nil {
-		return nil, fmt.Errorf("lode: failed to copy the manifest of %s: %w", s.ID, err)
-	}
-	m, err := datasetKind{}.Decode(bytes.NewReader(data))
-	if err != nil {
-		return nil, err
-	}
-	return &DatasetSnapshot{ID: s.ID, Manifest: m}, nil
-}
-
 func toDatasetSnapshot(s *history.Snapshot[DatasetSnapshotID, Manifest]) *DatasetSnapshot {
 	return &DatasetSnapshot{ID: s.ID, Manifest: s.Manifest}
 }
@@ -408,15 +387,10 @@ func (d *dataset) ID() DatasetID {
 	return d.id
 }
 
-// Snapshot loads a snapshot by ID, in the order of findSnapshot. A view
-// opened with WithPinnedSnapshot returns a copy of the snapshot that it pinned when it
-// opened, for that snapshot's ID.
+// Snapshot loads a snapshot by ID, in the order of findSnapshot.
 func (d *dataset) Snapshot(ctx context.Context, id DatasetSnapshotID) (*DatasetSnapshot, error) {
 	if err := validateSnapshotID(id); err != nil {
 		return nil, err
-	}
-	if d.pinned != nil && d.pinned.ID == id {
-		return d.pinned.clone()
 	}
 	return findSnapshot(ctx, []*dataset{d}, id)
 }

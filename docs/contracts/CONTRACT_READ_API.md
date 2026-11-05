@@ -180,7 +180,7 @@ interpret** the data.
   accepts no layout option.
 - Opening a view of a dataset without snapshots MUST yield `ErrNotFound`.
 - A view opened with `WithPinnedSnapshot(id)` MUST resolve snapshot `id` in place
-  of the head, and it MUST NOT read the pointer or the head. It reads the
+  of the head, and it MUST NOT read the pointer or resolve the head. It reads the
   canonical manifest of `id`, first under the snapshots directory and then
   under the segments directory. When neither directory holds that manifest
   and `id` has expired, both opening the view and calling `Snapshot`
@@ -189,10 +189,9 @@ interpret** the data.
   `id`. When no manifest of `id` exists, opening the view MUST yield `ErrNotFound`.
   Each rule of this section that names the head's manifest applies to the
   manifest of `id` instead.
-- On a view opened with `WithPinnedSnapshot(id)`, the `Snapshot` method MUST
-  return a copy of the resolved snapshot for `id` and make no store call.
-  A change to one returned copy MUST NOT change a later result. The view's
-  other methods MUST behave as they do on a view of the head.
+- A view opened with `WithPinnedSnapshot(id)` MUST hold no snapshot in memory
+  after it opens, and its methods MUST behave as they do on a view of the
+  head.
 - `WithPinnedSnapshot` MUST reject with `ErrInvalidArgument` any ID that is not
   one path segment, before any store call (CONTRACT_STORAGE §Names in
   Keys).
