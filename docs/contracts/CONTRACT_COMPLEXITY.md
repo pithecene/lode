@@ -126,11 +126,20 @@ The following one-time costs add to the fixed counts in the table above
 | `ReadRoot.Records`, `ReadRoot.Blobs` (warm) | 1 `Get` of the pointer + at most 2 `Get` calls of the manifest |
 | `ReadRoot.Records`, `ReadRoot.Blobs` with `WithPinnedSnapshot(id)` | At most 2 `Get` calls of snapshot `id`'s canonical manifest, and no `Get` of the pointer |
 | `ReadRoot.Records`, `ReadRoot.Blobs` (no pointer) | 1 `Get` of the pointer + the scan fallback under each manifest directory (snapshots and segments) |
+| `ReadRoot.Records`, `ReadRoot.Blobs` with `WithLayout(l)` | The same calls as without `WithLayout`, except that each canonical manifest costs 1 `Get` and the scan fallback covers only the manifest directory of `l` |
 
-A view cannot determine whether the dataset is partitioned before it reads
-a manifest. It therefore reads the canonical manifest under the snapshots
-directory first and under the segments directory second. Because at most
-one of the two manifests exists, the view needs no further reads. Opening
+A view without `WithLayout` cannot determine whether the dataset is
+partitioned before it reads a manifest. It therefore reads the canonical
+manifest under the snapshots directory first and under the segments
+directory second. Because at most one of the two manifests exists, the
+view needs no further reads. A view with `WithLayout(l)` reads only the
+manifest directory of `l`. When that directory holds no manifest of the
+snapshot that the pointer names, the view also issues 1 `Exists` for that
+snapshot's canonical manifest in the other directory. A Hive view that opens at a manifest of format
+version 1.0.0 verifies the layout's keys with the writer's settings check
+(CONTRACT_WRITE_API §Settings Check). That check follows parents from the
+opened snapshot to the first snapshot that contains files and costs 1 `Get`
+per parent. Opening
 a handle writes nothing to the store. A writer's open check is the
 settings check of CONTRACT_WRITE_API §Settings Check. After that check
 completes, each commit incurs only the costs in the Dataset Write

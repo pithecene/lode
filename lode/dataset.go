@@ -49,18 +49,22 @@ type DatasetOption interface {
 }
 
 // ViewOption configures a view: ReadRoot.Records or ReadRoot.Blobs. A view
-// takes its layout and components from the dataset's manifests; only a
+// takes its layout and components from the dataset's manifests. Only a
 // custom compressor or checksum, which Lode cannot reconstruct from its
-// name, is passed to it, and WithPinnedSnapshot names the snapshot that the view
-// opens at in place of the head.
+// name, is passed to it. WithLayout states the layout that the view
+// expects, and WithPinnedSnapshot names the snapshot that the view opens
+// at in place of the head.
 type ViewOption interface {
 	applyView(cfg *viewConfig) error
 }
 
-// viewConfig is what a view's options set: its components, and the anchor
-// it opens at, the head unless WithPinnedSnapshot names a snapshot.
+// viewConfig is what a view's options set: its components, the layout it
+// expects (nil when it takes the layout from the snapshot it opens at), and
+// the anchor it opens at, the head unless WithPinnedSnapshot names a
+// snapshot.
 type viewConfig struct {
 	components components
+	layout     *partitionScheme
 	anchor     viewAnchor
 }
 
@@ -96,25 +100,41 @@ type datasetOption func(cfg *datasetConfig) error
 
 func (o datasetOption) applyDataset(cfg *datasetConfig) error { return o(cfg) }
 
-// componentOption sets a component on a writer handle and on a view.
+// componentOption sets a setting on a writer handle and on a view.
 type componentOption struct {
 	dataset func(cfg *datasetConfig) error
-	view    func(cfg *components) error
+	view    func(cfg *viewConfig) error
 }
 
 func (o componentOption) applyDataset(cfg *datasetConfig) error { return o.dataset(cfg) }
-func (o componentOption) applyView(cfg *viewConfig) error       { return o.view(&cfg.components) }
+func (o componentOption) applyView(cfg *viewConfig) error       { return o.view(cfg) }
 
 // WithLayout sets how a dataset is partitioned: Unpartitioned (the default)
-// or Hive.
-func WithLayout(l Layout) DatasetOption {
-	return datasetOption(func(cfg *datasetConfig) error {
-		if validate.Nil(l) {
-			return validate.Argument("WithLayout: layout must not be nil")
-		}
-		cfg.layout = l
-		return nil
-	})
+// or Hive. For a view it states the layout the view expects. The view then
+// looks for manifests only where that layout persists them, and opening
+// returns ErrSettingsMismatch when the snapshot it opens at records another
+// layout, as a writer's settings check does.
+func WithLayout(l Layout) ComponentOption {
+	return componentOption{
+		dataset: func(cfg *datasetConfig) error {
+			if validate.Nil(l) {
+				return validate.Argument("WithLayout: layout must not be nil")
+			}
+			cfg.layout = l
+			return nil
+		},
+		view: func(cfg *viewConfig) error {
+			if validate.Nil(l) {
+				return validate.Argument("WithLayout: layout must not be nil")
+			}
+			scheme, err := l.scheme()
+			if err != nil {
+				return err
+			}
+			cfg.layout = &scheme
+			return nil
+		},
+	}
 }
 
 // WithCompressor sets the compressor of a writer handle (default:
@@ -135,11 +155,11 @@ func WithCompressor(c Compressor) ComponentOption {
 			cfg.compressor = c
 			return nil
 		},
-		view: func(cfg *components) error {
+		view: func(cfg *viewConfig) error {
 			if validate.Nil(c) {
 				return validate.Argument("WithCompressor: compressor must not be nil")
 			}
-			cfg.compressor = c
+			cfg.components.compressor = c
 			return nil
 		},
 	}
@@ -160,7 +180,7 @@ func WithChecksum(c Checksum) ComponentOption {
 	}
 	return componentOption{
 		dataset: func(cfg *datasetConfig) error { return set(&cfg.checksum) },
-		view:    func(cfg *components) error { return set(&cfg.checksum) },
+		view:    func(cfg *viewConfig) error { return set(&cfg.components.checksum) },
 	}
 }
 

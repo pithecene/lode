@@ -35,7 +35,7 @@ func (r *testReader) view(ctx context.Context, id DatasetID) (*dataset, error) {
 	if err := validateDatasetID(id); err != nil {
 		return nil, err
 	}
-	head, err := resolveAnchor(ctx, r.root.store, r.root.names, id, headAnchor{})
+	head, err := resolveAnchor(ctx, r.root.store, id, viewCandidates(r.root.store, r.root.names, id, nil), headAnchor{})
 	if err != nil {
 		return nil, err
 	}

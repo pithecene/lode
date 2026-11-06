@@ -9,6 +9,10 @@ and Lode adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **A view accepts `WithLayout`**: the option now has the type `ComponentOption`, which both writers and views accept. With this option, a view reads manifests only from its layout's manifest directory, so a Hive view reads the head's manifest with one store read in place of two. Opening the view returns `ErrSettingsMismatch` when the view's snapshot records a layout other than the option's. A manifest of format version 1.0.0 records no partition keys. For such a manifest, a Hive view, like a writer, verifies the layout's keys against the partition paths.
+
 ---
 
 ## [0.16.0] - 2026-11-05

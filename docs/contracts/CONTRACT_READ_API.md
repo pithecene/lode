@@ -176,8 +176,26 @@ interpret** the data.
   absent or names no persisted manifest, the view scans as `Latest` does
   instead. It MUST NOT create a missing pointer (CONTRACT_CORE §Head Pointer), so it
   needs no `CompareAndSwap`.
-- A view MUST read the dataset's layout from the head's manifest, and it
-  accepts no layout option.
+- A view opened without `WithLayout` MUST read the dataset's layout from
+  the head's manifest.
+- A view opened with `WithLayout(l)` MUST look for every manifest only in
+  the manifest directory of `l`. The view therefore reads one directory in
+  place of the snapshots and segments directories. Opening the view MUST yield
+  `ErrSettingsMismatch` when the head's manifest records a partitioner other than
+  that of `l`. When the head's manifest has format version 1.1.0, opening the
+  view MUST also yield `ErrSettingsMismatch` if that manifest records partition keys other than those of `l`. For a
+  manifest of format version 1.0.0, the view MUST verify the keys of a Hive
+  layout as a writer verifies them (CONTRACT_WRITE_API §Settings), and a
+  key set that fails verification yields `ErrSettingsMismatch`.
+  Opening the view MUST also yield `ErrSettingsMismatch` when the head's
+  canonical manifest lies in the snapshots or segments directory that `l`
+  does not use. Opening the view MUST also yield `ErrSettingsMismatch` when
+  the manifest directory of `l` holds no manifest and the dataset's
+  directory holds one elsewhere. A writer's settings check rejects such a
+  dataset in the same way (CONTRACT_WRITE_API §Settings).
+  When no directory holds the head's manifest, the head is a pending
+  commit, and the view scans the manifest directory of `l` as `Latest`
+  does.
 - Opening a view of a dataset without snapshots MUST yield `ErrNotFound`.
 - A view opened with `WithPinnedSnapshot(id)` MUST resolve snapshot `id` in place
   of the head, and it MUST NOT read the pointer or resolve the head. It reads the
