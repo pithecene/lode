@@ -2,6 +2,7 @@ package testutil
 
 import (
 	"runtime"
+	"runtime/debug"
 	"testing"
 )
 
@@ -34,7 +35,10 @@ const AllocGateCalls = 1 + (gateRuns + 1) + gateRuns
 // toolchain, but the race detector adds allocations of its own, so callers
 // exclude race builds. Each measurement starts after a garbage collection:
 // the figures count the allocations of the whole test binary, and a
-// collection that earlier tests leave pending otherwise adds to them. Each
+// collection that earlier tests leave pending otherwise adds to them. No
+// collection runs during a measurement either: a collection empties the
+// caches of sync.Pool, and the operation then allocates what it would have
+// reused, by an amount that depends on when the collection falls. Each
 // gate logs the ceilings its measured figures call for, so `task gates`
 // reports them without an edit to the gate table.
 func RunAllocGates(t *testing.T, gates []AllocGate) {
@@ -43,6 +47,9 @@ func RunAllocGates(t *testing.T, gates []AllocGate) {
 		t.Run(g.Name, func(t *testing.T) {
 			op := g.Setup(t)
 			op()
+			// A collection still runs on runtime.GC, but none starts on its
+			// own until the gate restores the collector's target.
+			defer debug.SetGCPercent(debug.SetGCPercent(-1))
 			runtime.GC()
 			allocs := testing.AllocsPerRun(gateRuns, op)
 			runtime.GC()
