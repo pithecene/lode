@@ -133,7 +133,9 @@ writer opens, Lode returns `ErrSettingsMismatch` at the writer's commit. Opening
 Opening a view reads the head without creating a missing pointer, takes the
 layout from the head's manifest, and returns `ErrNotFound` for a dataset
 without snapshots. A view reads each snapshot with the compressor that
-snapshot's manifest names.
+snapshot's manifest names. A view opened with `WithLayout(l)` reads only
+the manifest directory of `l` and returns `ErrSettingsMismatch` when the
+head records another layout.
 
 ### Volume (Experimental, Package `lode/volume`)
 
@@ -239,7 +241,7 @@ apply to a handle does not compile with it.
 | Option | Type | Root | Writer (`Records`, `Blobs`) | View | Notes |
 |--------|------|:----:|:-------:|:----:|-------|
 | `With*Dir`, `WithManifestFile`, `WithFlatPaths()` | `RootOption` | ✅ | | | Path names (§Path Names) |
-| `WithLayout(l)` | `DatasetOption` | | ✅ | | `Unpartitioned()` (default) or `Hive(keys...)` |
+| `WithLayout(l)` | `ComponentOption` | | ✅ | ✅ | Writer: `Unpartitioned()` (default) or `Hive(keys...)`. View: the layout the view expects (CONTRACT_READ_API §Opening a View) |
 | `WithCompressor(c)` | `ComponentOption` | | ✅ | ✅ | Writer: the compressor (default: NoOp). View: a custom compressor, matched by name |
 | `WithChecksum(c)` | `ComponentOption` | | ✅ | ✅ | Writer: file checksums (default: none). View: a custom checksum, matched by name |
 | `WithRetry(n)` | `DatasetOption` | | ✅ | | A bounded number of CAS retries after a conflict |

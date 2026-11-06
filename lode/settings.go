@@ -130,9 +130,45 @@ func (s settings) mismatch(have settings) error {
 			settingComparison{"partition keys", fmt.Sprintf("%q", s.partitioning.keys), fmt.Sprintf("%q", have.partitioning.keys)},
 		)
 	}
+	return firstMismatch("writer", comparisons)
+}
+
+// layoutMismatch returns the first difference between want, the layout a
+// view expects, and the partitioning that have, a manifest's settings,
+// records, or nil. As in mismatch, a legacy manifest's partition keys are
+// verified separately (verifyLegacyKeys).
+func layoutMismatch(want partitionScheme, have settings) error {
+	comparisons := []settingComparison{{"partitioner", string(want.name), string(have.partitioning.name)}}
+	if !have.legacy {
+		comparisons = append(comparisons, settingComparison{"partition keys", fmt.Sprintf("%q", want.keys), fmt.Sprintf("%q", have.partitioning.keys)})
+	}
+	return firstMismatch("view", comparisons)
+}
+
+// checkExpectedLayout verifies expected, the layout a view expects (nil when
+// it expects none), against m, the manifest of the snapshot at which the
+// view opens, whose settings recorded holds. Against a legacy manifest it
+// verifies Hive keys as a writer does (verifyLegacyKeys), with d, whose
+// layout is the expected one.
+func (d *dataset) checkExpectedLayout(ctx context.Context, expected *partitionScheme, m *Manifest, recorded settings) error {
+	if expected == nil {
+		return nil
+	}
+	if err := layoutMismatch(*expected, recorded); err != nil {
+		return err
+	}
+	if recorded.legacy && !expected.isNoop() {
+		return d.verifyLegacyKeys(ctx, m, "view")
+	}
+	return nil
+}
+
+// firstMismatch returns ErrSettingsMismatch for the first comparison whose
+// values differ, or nil; holder names the handle whose setting differs.
+func firstMismatch(holder string, comparisons []settingComparison) error {
 	for _, c := range comparisons {
 		if c.want != c.have {
-			return fmt.Errorf("lode: %s mismatch: dataset records %q, writer has %q: %w", c.name, c.have, c.want, ErrSettingsMismatch)
+			return fmt.Errorf("lode: %s mismatch: dataset records %q, %s has %q: %w", c.name, c.have, holder, c.want, ErrSettingsMismatch)
 		}
 	}
 	return nil
@@ -166,7 +202,7 @@ func (d *writer) checkSettings(ctx context.Context, parent DatasetSnapshotID) er
 		return err
 	}
 	if recorded.legacy && !mine.partitioning.isNoop() {
-		if err := d.verifyLegacyKeys(ctx, head); err != nil {
+		if err := d.verifyLegacyKeys(ctx, head, "writer"); err != nil {
 			return err
 		}
 	}
@@ -248,13 +284,15 @@ func (d *writer) settingsManifest(ctx context.Context, parent DatasetSnapshotID)
 	return nil, fmt.Errorf("lode: latest pointer names %s, and no manifest records the dataset's settings: %w", parent, ErrSnapshotConflict)
 }
 
-// verifyLegacyKeys verifies the writer's partition keys against a dataset
-// whose manifests predate recorded keys: by name and in order, against the
-// partition path of the first snapshot with files, following parents from
-// head. A chain without files contains no partition path, so any keys are
-// consistent with it; a chain that ends at a missing or expired parent, or
-// repeats a snapshot, before a snapshot with files cannot be verified.
-func (d *writer) verifyLegacyKeys(ctx context.Context, head *Manifest) error {
+// verifyLegacyKeys verifies the partition keys of d's layout, a writer's or
+// the one a view expects, against a dataset whose manifests predate
+// recorded keys: by name and in order, against the partition path of the
+// first snapshot with files, following parents from head. A chain without
+// files contains no partition path, so any keys are consistent with it; a
+// chain that ends at a missing or expired parent, or repeats a snapshot,
+// before a snapshot with files cannot be verified. holder names the handle
+// in errors.
+func (d *dataset) verifyLegacyKeys(ctx context.Context, head *Manifest, holder string) error {
 	want := d.layout.partitioning().keys
 	visited := map[DatasetSnapshotID]bool{}
 	for m := head; ; {
@@ -265,7 +303,7 @@ func (d *writer) verifyLegacyKeys(ctx context.Context, head *Manifest) error {
 		if len(m.Files) > 0 {
 			have := partitionKeyNames(d.layout.extractPartitionPath(m.Files[0].Path))
 			if !slices.Equal(want, have) {
-				return fmt.Errorf("lode: partition keys mismatch: dataset has %q, writer has %q: %w", have, want, ErrSettingsMismatch)
+				return fmt.Errorf("lode: partition keys mismatch: dataset has %q, %s has %q: %w", have, holder, want, ErrSettingsMismatch)
 			}
 			return nil
 		}
