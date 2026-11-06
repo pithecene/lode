@@ -78,7 +78,10 @@ given toolchain, so the gates run in every `go test` without the race
 detector, which adds allocations of its own. The gates count the
 allocations of the whole test binary, so each measurement starts after a
 garbage collection; a collection that earlier tests leave pending would
-otherwise add to a figure. The byte ceiling catches a
+otherwise add to a figure. No collection runs during a measurement either.
+A collection empties the caches of `sync.Pool`, and the measured operation
+then allocates what it would have reused, by an amount that depends on when
+the collection falls. The byte ceiling catches a
 single oversized allocation, such as a fixed buffer, which the allocation
 count does not; each byte ceiling is the measured figure rounded up to the
 next 64 bytes, because map growth in the in-memory store varies it by a few
@@ -93,7 +96,7 @@ figures in the other sections were measured with Go 1.25.
 | Record StreamWrite of three records | 63 | 7,296 |
 | JSONL Decode of three records | 33 | 5,504 |
 | Volume ReadAt within one of ten blocks | 41 | 10,816 |
-| Volume Commit of one block onto a small volume | 136 | 252,032 |
+| Volume Commit of one block onto a small volume | 135 | 252,032 |
 
 A change that exceeds a ceiling fails the test and must justify the increase
 in its pull request before the ceiling is raised. A change that reduces a
