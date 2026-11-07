@@ -39,9 +39,9 @@ Based on the full-history audit of the production dataset
   as an optional capability (D5), the error-message rule (D6), the removal
   of the S3 test double (D7), and the partition index (D10b). The earliest
   pass of each of these windows is 2026-11-20 (§1, §2). The API freeze
-  and option freeze windows restart with v0.16.0 (2026-11-05), which adds
-  the view option `WithPinnedSnapshot`. The earliest pass of both windows
-  is 2026-12-03 (§1). No decision is open.
+  and option freeze windows restart with v0.17.0 (2026-11-06), which makes
+  `WithLayout` an option of views as well as writers. The earliest pass of
+  both windows is 2026-12-04 (§1). No decision is open.
 - **Not yet met, evidence missing:** native AWS S3 (§6), steady-state snapshot
   reads (§3), checksum-backed corruption checks (no production file carries a
   checksum, §10).
@@ -161,6 +161,8 @@ partitions, one dataset on R2.
 > Date: 2026-11-03 | Observer: @pithecene | Project: lode, quarry
 > **Evidence:** Window restarted by v0.16.0 (2026-11-05), which adds the view option `WithPinnedSnapshot`. No existing signature changes. The release also adds `volume.Reader.ReaderAt` and `volume.SnapshotReaderAt`, which the criterion excludes as part of the experimental Volume (D9). Earliest pass: 2026-12-03.
 > Date: 2026-11-05 | Observer: @pithecene | Project: lode, quarry
+> **Evidence:** Window restarted by v0.17.0 (2026-11-06), which changes the result type of `WithLayout` from `DatasetOption` to `ComponentOption`. Every call that passed `WithLayout` to a writer still compiles. No other signature changes, and Lode has no open pull request or issue that changes the v1.0-promised surface. Earliest pass: 2026-12-04.
+> Date: 2026-11-06 | Observer: @pithecene | Project: lode, quarry
 > Summary: Not met; window restarts on every API change.
 > Issue: lode#175
 
@@ -227,6 +229,9 @@ partitions, one dataset on R2.
 >
 > **Evidence:** Window restarted by v0.16.0 (2026-11-05), which adds the view option `WithPinnedSnapshot`, for a reader that holds a snapshot ID (Quarry's commit index). Earliest pass: 2026-12-03.
 > Date: 2026-11-05 | Observer: @pithecene | Project: lode, quarry
+>
+> **Evidence:** Window restarted by v0.17.0 (2026-11-06), which makes `WithLayout` an option of views as well as writers. A caller now states a view's layout as it states a writer's. When a caller opens a view with `WithPinnedSnapshot` and `WithLayout`, the view reads only the manifest directory of the layout that `WithLayout` names. The maintainers plan no further option changes before v1.0. Earliest pass: 2026-12-04.
+> Date: 2026-11-06 | Observer: @pithecene | Project: lode, quarry
 > Summary: Not met.
 
 ### 2. Manifest Format Freeze
