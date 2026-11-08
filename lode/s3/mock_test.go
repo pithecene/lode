@@ -7,7 +7,7 @@ package s3
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
+	"crypto/md5" //nolint:gosec // the mock reproduces S3's ETag
 	"fmt"
 	"io"
 	"strings"
@@ -64,11 +64,12 @@ func (m *MockS3Client) ResetCounts() {
 	m.uploadPartCalls = 0
 }
 
-// objectETag returns a deterministic ETag for the given data. It is derived
-// from the content, as S3's ETag of a single-part upload is, so two versions
-// of an object carry different ETags and If-Match distinguishes them.
+// objectETag returns the ETag S3 gives a single-part object: the quoted hex
+// MD5 of its bytes. Two versions of an object carry different ETags, so
+// If-Match distinguishes them, and a Put that meets its own object
+// recognises it.
 func objectETag(data []byte) string {
-	return fmt.Sprintf("\"%x\"", sha256.Sum256(data))
+	return fmt.Sprintf("\"%x\"", md5.Sum(data)) //nolint:gosec // the mock reproduces S3's ETag, not a security hash
 }
 
 // PutObject implements API.PutObject for testing.
@@ -150,14 +151,17 @@ func (m *MockS3Client) HeadObject(_ context.Context, params *s3.HeadObjectInput,
 	key := aws.ToString(params.Key)
 
 	m.mu.RLock()
-	_, exists := m.objects[key]
+	data, exists := m.objects[key]
 	m.mu.RUnlock()
 
 	if !exists {
 		return nil, &types.NoSuchKey{}
 	}
 
-	return &s3.HeadObjectOutput{}, nil
+	return &s3.HeadObjectOutput{
+		ContentLength: aws.Int64(int64(len(data))),
+		ETag:          aws.String(objectETag(data)),
+	}, nil
 }
 
 // CreateMultipartUpload implements API.CreateMultipartUpload for testing.

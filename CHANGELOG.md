@@ -9,6 +9,10 @@ and Lode adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **A retried upload no longer fails as another writer's**: when the S3 adapter's conditional `PutObject` meets a refusal because the path exists, the adapter reads the object's length and ETag. It returns success when they equal the payload's length and MD5. The SDK retries a request whose response the network lost, and the retry met the object the first attempt stored, so a `Put` that had succeeded returned `ErrPathExists`. A multipart ETag never matches. `CONTRACT_STORAGE.md` § `Put` states the rule.
+
 ---
 
 ## [0.17.0] - 2026-11-06

@@ -58,6 +58,8 @@ package s3
 
 import (
 	"context"
+	"crypto/md5" //nolint:gosec // S3 names a single-part object by its MD5
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -200,7 +202,12 @@ func shouldUseAtomicPath(size int64) bool {
 //
 // Atomic path (≤5GB): Spools to temp file, then uses PutObject with
 // If-None-Match for atomic no-overwrite protection. O(1) memory usage.
-// Duplicate writes return ErrPathExists.
+// Duplicate writes return ErrPathExists, unless the object the backend
+// refuses to overwrite is this call's own upload. The SDK retries a request
+// whose response the network lost, and the retry then meets the object the
+// first attempt stored. Put compares the stored object's length and ETag
+// with the payload's length and MD5 and returns nil when they agree
+// (CONTRACT_STORAGE §Put).
 //
 // Multipart path (>5GB): Uses preflight HeadObject check then multipart
 // upload. Provides best-effort no-overwrite protection with a TOCTOU window.
@@ -223,8 +230,10 @@ func (s *Store) Put(ctx context.Context, key string, r io.Reader) error {
 		_ = os.Remove(tmpFile.Name())
 	}()
 
-	// Copy to temp file, tracking size
-	size, err := io.Copy(tmpFile, r)
+	// Copy to temp file, tracking size and the payload's MD5, which a
+	// single-part object's ETag repeats.
+	digest := md5.New() //nolint:gosec // S3 names a single-part object by its MD5; this is a comparison, not a security hash
+	size, err := io.Copy(tmpFile, io.TeeReader(r, digest))
 	if err != nil {
 		return fmt.Errorf("s3: writing temp file: %w", err)
 	}
@@ -236,7 +245,7 @@ func (s *Store) Put(ctx context.Context, key string, r io.Reader) error {
 
 	// Route based on size
 	if shouldUseAtomicPath(size) {
-		return s.putAtomicFromFile(ctx, fullKey, tmpFile, size)
+		return s.putAtomicFromFile(ctx, fullKey, tmpFile, size, hex.EncodeToString(digest.Sum(nil)))
 	}
 	return s.putMultipartFromFile(ctx, fullKey, tmpFile, size)
 }
@@ -244,7 +253,9 @@ func (s *Store) Put(ctx context.Context, key string, r io.Reader) error {
 // putAtomicFromFile implements atomic Put via PutObject with If-None-Match.
 // Supports uploads up to 5GB (S3 PutObject limit).
 // The file is passed directly to the SDK for memory-efficient streaming.
-func (s *Store) putAtomicFromFile(ctx context.Context, fullKey string, file io.ReadSeeker, size int64) error {
+// md5Hex is the payload's MD5, which decides whether a refused write met
+// this call's own object.
+func (s *Store) putAtomicFromFile(ctx context.Context, fullKey string, file io.ReadSeeker, size int64, md5Hex string) error {
 	_, err := s.client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket:        aws.String(s.bucket),
 		Key:           aws.String(fullKey),
@@ -254,11 +265,31 @@ func (s *Store) putAtomicFromFile(ctx context.Context, fullKey string, file io.R
 	})
 	if err != nil {
 		if hasErrorCode(err, preconditionCodes...) {
+			if s.ownUpload(ctx, fullKey, size, md5Hex) {
+				return nil
+			}
 			return lode.ErrPathExists // object already exists
 		}
 		return fmt.Errorf("s3: put object: %w", err)
 	}
 	return nil
+}
+
+// ownUpload reports whether the object at fullKey is the payload a refused
+// conditional write carried: the same length, and an ETag equal to the
+// payload's MD5, which S3 and its compatible stores give a single-part
+// object. A multipart ETag carries a part count after a dash and never
+// matches. When the HEAD fails the question stays open, and the caller
+// keeps the refusal (CONTRACT_STORAGE §Put).
+func (s *Store) ownUpload(ctx context.Context, fullKey string, size int64, md5Hex string) bool {
+	out, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(fullKey),
+	})
+	if err != nil {
+		return false
+	}
+	return aws.ToInt64(out.ContentLength) == size && strings.Trim(aws.ToString(out.ETag), `"`) == md5Hex
 }
 
 // putMultipartFromFile implements multipart upload for objects > 5GB.

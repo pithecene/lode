@@ -3,7 +3,9 @@ package s3
 import (
 	"bytes"
 	"context"
+	"crypto/md5" //nolint:gosec // S3 names a single-part object by its MD5
 	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -248,7 +250,8 @@ func TestStore_PutAtomic(t *testing.T) {
 		}
 
 		// Call internal atomic path directly
-		err = store.putAtomicFromFile(ctx, "atomic-test.txt", tmpFile, int64(len(data)))
+		sum := md5.Sum(data) //nolint:gosec // the payload's MD5, as S3 names a single-part object
+		err = store.putAtomicFromFile(ctx, "atomic-test.txt", tmpFile, int64(len(data)), hex.EncodeToString(sum[:]))
 		if err != nil {
 			t.Fatalf("putAtomicFromFile failed: %v", err)
 		}
@@ -280,10 +283,16 @@ func TestStore_PutAtomic(t *testing.T) {
 			t.Fatalf("first Put failed: %v", err)
 		}
 
-		// Second write should return ErrPathExists (atomic detection via PreconditionFailed)
-		err = store.Put(ctx, "atomic-dup.txt", bytes.NewReader(data))
+		// A second write of other bytes meets another writer's object and
+		// returns ErrPathExists (atomic detection via PreconditionFailed).
+		err = store.Put(ctx, "atomic-dup.txt", bytes.NewReader([]byte("other")))
 		if !errors.Is(err, lode.ErrPathExists) {
 			t.Errorf("expected ErrPathExists, got: %v", err)
+		}
+		// A second write of the same bytes is the path's own payload, which
+		// the store accepts (CONTRACT_STORAGE §Put).
+		if err := store.Put(ctx, "atomic-dup.txt", bytes.NewReader(data)); err != nil {
+			t.Errorf("a write of the stored bytes should succeed, got: %v", err)
 		}
 	})
 
