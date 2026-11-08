@@ -28,7 +28,17 @@ data without reporting the conflict.
   a path's final segment begins with the reserved prefix `.lode-tmp-`, `Put`
   MUST also return `ErrInvalidPath` on every adapter, because the filesystem adapter names
   its temporary files with that prefix (below).
-- If `Put` detects an existing path, it MUST return `ErrPathExists`.
+- If `Put` detects an existing path, it MUST return `ErrPathExists`, with
+  one exception. A transport can retry a request whose first attempt the
+  backend stored and whose response the network lost, so the retry then
+  meets the object the call itself created. Where the backend reports a content
+  digest the adapter can compare with its payload's, the adapter MUST
+  compare the stored object's length and digest with the payload's. When
+  both agree, `Put` MUST return success, since the path holds the bytes the
+  caller asked for. When either differs, or the comparison itself fails,
+  `Put` returns `ErrPathExists`. The S3 adapter compares the length and
+  the ETag, which an S3 store gives a single-part object as the MD5 of its
+  bytes, with the payload's. A multipart ETag never matches.
 - The detection mechanism and its guarantee vary by upload path (see the
   table below).
 - On upload paths with a time-of-check-to-time-of-use (TOCTOU) interval, a
@@ -78,7 +88,8 @@ and the backend's capabilities:
 
 **Atomic Path** (at or below the threshold):
 - MUST use an atomic conditional create where the backend supports one.
-- A duplicate write MUST return `ErrPathExists` atomically.
+- A duplicate write MUST return `ErrPathExists` atomically, unless the
+  stored object is the call's own payload, the one exception of §Put.
 - The atomic path requires no coordination beyond the adapter.
 - MAY buffer the payload in a temporary file to conserve memory, and MUST
   then remove that temporary file automatically.
