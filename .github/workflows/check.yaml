@@ -15,7 +15,8 @@ permissions:
 concurrency:
   # An edit of the title or body runs in its own group, so it never cancels
   # the check of a push.
-  group: check-${{ github.event.pull_request.number || github.ref }}${{ github.event.action == 'edited' && '-edit' || '' }}
+  group: >-
+    check-${{ github.event.pull_request.number || github.ref }}${{ github.event.action == 'edited' && '-edit' || '' }}
   cancel-in-progress: true
 
 jobs:
