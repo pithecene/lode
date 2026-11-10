@@ -130,9 +130,10 @@ AI governance: repo-local skill definitions and agent bookkeeping.
 CI/CD workflows (GitHub Actions).
 
 - `workflows/ci.yml` — continuous integration
+- `workflows/check.yaml` — the internal check on the repository and on each pull request's title and body
 - `workflows/nightly.yml` — nightly checks (run on demand)
 - `workflows/chaos.yml` — chaos harness (run on demand)
-- `workflows/release.yml` — release automation; its release check and the changelog job of `ci.yml` run inside the image of the internal check's current release
+- `workflows/release.yml` — release automation; its release check and the changelog job of `check.yaml` run inside the image of the internal check's current release
 
 ---
 
