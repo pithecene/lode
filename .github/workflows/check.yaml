@@ -36,6 +36,9 @@ jobs:
       credentials:
         username: bosun
         password: ${{ secrets.BOSUN_REGISTRY_TOKEN }}
+    # The same read-only token reads Pithecene's layer, which bosun.yaml extends.
+    env:
+      BOSUN_REGISTRY_TOKEN: ${{ secrets.BOSUN_REGISTRY_TOKEN }}
     steps:
       - name: 📥 Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
