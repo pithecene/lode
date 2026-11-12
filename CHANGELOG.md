@@ -11,7 +11,7 @@ and Lode adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
-## [0.17.1] - 2026-11-11
+## [0.17.1] - 2026-11-12
 
 ### Fixed
 
