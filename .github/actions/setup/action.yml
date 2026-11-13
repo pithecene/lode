@@ -17,6 +17,13 @@ runs:
       shell: bash
       run: echo "MISE_RUNNER_IMAGE=$ImageOS-$ImageVersion" >> "$GITHUB_ENV"
 
+    # CI runs Bosun as the image of the release that mise.toml pins. That
+    # release is private, and no runner's token reads it, so no step of the
+    # job installs Bosun as a mise tool, through this action or a shim.
+    - name: 🔖 Bosun stays out
+      shell: bash
+      run: echo "MISE_DISABLE_TOOLS=github:pithecene/bosun" >> "$GITHUB_ENV"
+
     - name: 🧰 Mise
       uses: jdx/mise-action@v2
       with:

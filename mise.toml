@@ -1,4 +1,7 @@
 [tools]
+# This line pins the Bosun release that runs this repository's checks, stages and submissions. CI runs the
+# image of the same release, which it reads from this line.
+"github:pithecene/bosun" = "0.19.0"
 "aqua:go-task/task" = "3.47.0"
 "aqua:golangci/golangci-lint" = "2.15.0"
 go = "1.27.3"

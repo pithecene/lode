@@ -1,9 +1,10 @@
 # Lode configures Bosun's checks (pithecene/bosun, CONTRACT_CONFIG): the release gate holds the changelog to the
 # changelog contract, and the prose gate holds it to the prose contract, which the changelog contract applies to
-# every entry. CI runs them in the changelog job of .github/workflows/check.yaml. Pithecene's layer, which this
+# every entry. CI runs them in the changelog job of .github/workflows/check.yaml, inside the image of the Bosun
+# release that mise.toml pins. Pithecene's layer, which this
 # file extends, routes each change into its track's stack of pull requests.
 version: 1
-extends: ghcr.io/pithecene/bosun-config:v1
+extends: ghcr.io/pithecene/bosun-config:v2
 prose:
   documents:
     - CHANGELOG.md
