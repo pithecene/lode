@@ -8,22 +8,6 @@ permissions:
   contents: read
 
 jobs:
-  # This job reads the Bosun release that mise.toml pins, which names the image of the job that runs Bosun.
-  bosun_release:
-    name: 🔖 Bosun Release
-    runs-on: ubuntu-latest
-    outputs:
-      version: ${{ steps.pin.outputs.version }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - id: pin
-        run: |
-          version=$(sed -n 's/^"github:pithecene\/bosun" = "\(.*\)"$/\1/p' mise.toml)
-          test -n "$version" || { echo "mise.toml pins no github:pithecene/bosun" >&2; exit 1; }
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-
   tag_check:
     name: 🔎 Tag Check
     runs-on: ubuntu-latest
@@ -40,11 +24,11 @@ jobs:
   release_check:
     name: 🧾 Release Check
     runs-on: ubuntu-latest
-    needs: [tag_check, bosun_release]
+    needs: [tag_check]
     if: ${{ needs.tag_check.outputs.semver_match != '' }}
-    # The job runs inside the image of the Bosun release that mise.toml pins.
+    # The job runs inside the image of the internal check's pinned release.
     container:
-      image: ghcr.io/pithecene/bosun:${{ needs.bosun_release.outputs.version }}
+      image: ghcr.io/pithecene/bosun:0.19.0
       credentials:
         username: bosun
         password: ${{ secrets.BOSUN_REGISTRY_TOKEN }}

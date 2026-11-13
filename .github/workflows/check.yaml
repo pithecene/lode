@@ -20,25 +20,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # This job reads the Bosun release that mise.toml pins, which names the image of the job that runs Bosun.
-  bosun_release:
-    name: 🔖 Bosun Release
-    runs-on: ubuntu-latest
-    outputs:
-      version: ${{ steps.pin.outputs.version }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - id: pin
-        run: |
-          version=$(sed -n 's/^"github:pithecene\/bosun" = "\(.*\)"$/\1/p' mise.toml)
-          test -n "$version" || { echo "mise.toml pins no github:pithecene/bosun" >&2; exit 1; }
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-
   changelog:
     name: 🧾 Changelog
-    needs: bosun_release
     # The release check is private to the maintainers. A pull request that a
     # fork or Dependabot opens creates no job, rather than a job that fails
     # for want of access to the check.
@@ -47,9 +30,9 @@ jobs:
       (github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.user.login != 'dependabot[bot]')
     runs-on: ubuntu-latest
-    # The job runs inside the image of the Bosun release that mise.toml pins.
+    # The job runs inside the image of the internal check's pinned release.
     container:
-      image: ghcr.io/pithecene/bosun:${{ needs.bosun_release.outputs.version }}
+      image: ghcr.io/pithecene/bosun:0.19.0
       credentials:
         username: bosun
         password: ${{ secrets.BOSUN_REGISTRY_TOKEN }}
