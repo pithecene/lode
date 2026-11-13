@@ -3,7 +3,7 @@
 # every entry. CI runs them in the changelog job of .github/workflows/check.yaml. Pithecene's layer, which this
 # file extends, routes each change into its track's stack of pull requests.
 version: 1
-extends: ghcr.io/pithecene/bosun-config:v1
+extends: ghcr.io/pithecene/bosun-config:v2
 prose:
   documents:
     - CHANGELOG.md

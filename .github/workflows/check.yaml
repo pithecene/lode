@@ -30,9 +30,9 @@ jobs:
       (github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.user.login != 'dependabot[bot]')
     runs-on: ubuntu-latest
-    # The job runs inside the image of the internal check's current release.
+    # The job runs inside the image of the internal check's pinned release.
     container:
-      image: ghcr.io/pithecene/bosun:latest
+      image: ghcr.io/pithecene/bosun:0.19.0
       credentials:
         username: bosun
         password: ${{ secrets.BOSUN_REGISTRY_TOKEN }}
