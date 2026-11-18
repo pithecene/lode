@@ -12,16 +12,18 @@ mise install
 This command installs:
 - Go 1.27.3
 - [Task](https://taskfile.dev/) 3.47.0
-- [golangci-lint](https://golangci-lint.run/) 2.8.0
+- [golangci-lint](https://golangci-lint.run/) 2.15.0
+- [deadcode](https://pkg.go.dev/golang.org/x/tools/cmd/deadcode) 0.53.0
 - [benchstat](https://pkg.go.dev/golang.org/x/perf/cmd/benchstat)
 
 ## Development Tasks
 
 | Command | Description |
 |---------|-------------|
-| `task test` | Run the tests |
+| `task test` | Run the tests (including hot-path allocation gates) |
 | `task test:race` | Run the tests with the race detector |
-| `task lint` | Run the linters |
+| `task gates` | Measure and report hot-path allocation ceilings |
+| `task lint` | Run `golangci-lint`, `deadcode`, and `yamllint` |
 | `task fmt` | Format the code and apply automatic fixes |
 | `task build` | Build all packages |
 | `task examples` | Run all examples |

@@ -160,3 +160,107 @@ func specNames(spec ast.Spec) []string {
 	}
 	return nil
 }
+
+var (
+	contractFilePattern = regexp.MustCompile(`\bCONTRACT_[A-Z0-9_]+\.md\b`)
+	goFencePattern      = regexp.MustCompile("(?s)```go\n(.*?)```")
+	contractTypeDecl    = regexp.MustCompile(`(?m)^type\s+([A-Z][A-Za-z0-9_]*)\b`)
+	matrixTestRef       = regexp.MustCompile("`((?:Test|Benchmark|Fuzz)[A-Za-z0-9_]+)(?:/[^`]*)?`")
+)
+
+func TestEveryContractIsIndexedAndTypesExist(t *testing.T) {
+	t.Parallel()
+	indexData, err := os.ReadFile(filepath.Join(root, "docs", "ARCH_INDEX.md"))
+	if err != nil {
+		t.Fatalf("read docs/ARCH_INDEX.md: %v", err)
+	}
+	indexed := map[string]bool{}
+	for _, m := range contractFilePattern.FindAllString(string(indexData), -1) {
+		indexed[m] = true
+	}
+
+	allTypes := map[string]bool{}
+	for _, dir := range packages {
+		for _, exp := range exports(t, dir) {
+			allTypes[exp] = true
+		}
+	}
+
+	contractsDir := filepath.Join(root, "docs", "contracts")
+	entries, err := os.ReadDir(contractsDir)
+	if err != nil {
+		t.Fatalf("read docs/contracts: %v", err)
+	}
+	onDisk := map[string]bool{}
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasPrefix(name, "CONTRACT_") || !strings.HasSuffix(name, ".md") {
+			continue
+		}
+		onDisk[name] = true
+		if !indexed[name] {
+			t.Errorf("docs/contracts/%s is not listed in docs/ARCH_INDEX.md", name)
+		}
+		body, err := os.ReadFile(filepath.Join(contractsDir, name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		for _, block := range goFencePattern.FindAllStringSubmatch(string(body), -1) {
+			for _, tm := range contractTypeDecl.FindAllStringSubmatch(block[1], -1) {
+				if !allTypes[tm[1]] {
+					t.Errorf("docs/contracts/%s declares type %s, which no public package exports", name, tm[1])
+				}
+			}
+		}
+	}
+	for name := range indexed {
+		if !onDisk[name] {
+			t.Errorf("docs/ARCH_INDEX.md lists %s, which does not exist in docs/contracts/", name)
+		}
+	}
+}
+
+func TestMatrixNamesExistingTests(t *testing.T) {
+	t.Parallel()
+	matrixData, err := os.ReadFile(filepath.Join(root, "ai", "TEST_MATRIX.md"))
+	if err != nil {
+		t.Fatalf("read ai/TEST_MATRIX.md: %v", err)
+	}
+	declaredTests := collectTestFuncs(t)
+	for _, m := range matrixTestRef.FindAllStringSubmatch(string(matrixData), -1) {
+		if !declaredTests[m[1]] {
+			t.Errorf("ai/TEST_MATRIX.md references %s, which does not exist in *_test.go", m[1])
+		}
+	}
+}
+
+func collectTestFuncs(t *testing.T) map[string]bool {
+	t.Helper()
+	found := map[string]bool{}
+	fset := token.NewFileSet()
+	for _, base := range []string{"lode", "internal"} {
+		err := filepath.WalkDir(filepath.Join(root, base), func(path string, d fs.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if d.IsDir() || !strings.HasSuffix(d.Name(), "_test.go") {
+				return nil
+			}
+			file, err := parser.ParseFile(fset, path, nil, 0)
+			if err != nil {
+				t.Fatalf("parse %s: %v", path, err)
+			}
+			for _, decl := range file.Decls {
+				fn, ok := decl.(*ast.FuncDecl)
+				if ok && fn.Recv == nil && fn.Name.IsExported() {
+					found[fn.Name.Name] = true
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("walk %s: %v", base, err)
+		}
+	}
+	return found
+}
