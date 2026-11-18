@@ -13,57 +13,36 @@ import (
 	"github.com/pithecene/lode/internal/history"
 )
 
-// Data file roles: a blob dataset stores one blob per snapshot, a record
-// dataset stores encoded records. The compressor's extension is
-// appended to the role to name the file.
 const (
 	blobFile = "blob"
 	dataFile = "data"
 )
 
-// pendingSnapshot is a snapshot whose data files are persisted but whose
-// manifest is not yet committed. Everything in it is stable across commit
-// retries: only the parent changes when the head moves underneath it.
 type pendingSnapshot struct {
-	id         DatasetSnapshotID
+	id         SnapshotID
 	metadata   Metadata
-	files      []FileRef
-	partitions []string // partition key of each file, for manifest fan-out
+	objects    []ObjectRef
+	partitions []string
 	rowCount   int64
 	timestamps timestampRange
-
-	// streamed names a streamed data object, which is deleted best-effort when
-	// the commit fails for good (PUBLIC_API §Cleanup Behavior). Buffered writes
-	// leave their files in place.
-	streamed string
+	streamed   string
 }
 
-// newPending starts a snapshot with a fresh ID. Data files are written under
-// paths derived from the ID, so it must not change once staging begins. The
-// metadata is encoded first, so a value that is not a JSON object is
-// rejected before any store call.
 func (d *writer) newPending(metadata any) (pendingSnapshot, error) {
-	m, err := newMetadata(metadata)
+	m, err := NewMetadata(metadata)
 	if err != nil {
 		return pendingSnapshot{}, err
 	}
-	// Files starts non-nil, so a write of no records persists "files": []
-	// rather than null, which a manifest must not hold.
-	return pendingSnapshot{id: DatasetSnapshotID(history.NewID()), metadata: m, files: []FileRef{}}, nil
+	return pendingSnapshot{id: SnapshotID(history.NewID()), metadata: m, objects: []ObjectRef{}}, nil
 }
 
-// add records a persisted data file and the partition it belongs to.
-func (p *pendingSnapshot) add(ref FileRef, partition string) {
-	p.files = append(p.files, ref)
+func (p *pendingSnapshot) add(ref ObjectRef, partition string) {
+	p.objects = append(p.objects, ref)
 	p.partitions = append(p.partitions, partition)
 }
 
-// commit publishes a pending snapshot: resolve the head, write the manifest
-// under the current parent, and advance the pointer. On conflict the loop
-// refreshes and retries with the same snapshot ID, since its data files are
-// already in place and no manifest was written for it.
-func (d *writer) commit(ctx context.Context, p *pendingSnapshot) (*DatasetSnapshot, error) {
-	slices.SortFunc(p.files, func(a, b FileRef) int { return strings.Compare(a.Path, b.Path) })
+func (d *writer) commit(ctx context.Context, p *pendingSnapshot) (*Snapshot, error) {
+	slices.SortFunc(p.objects, func(a, b ObjectRef) int { return strings.Compare(a.Path, b.Path) })
 
 	var manifest *Manifest
 	err := d.history.CommitLoop(ctx, &d.retry, func() error {
@@ -79,23 +58,15 @@ func (d *writer) commit(ctx context.Context, p *pendingSnapshot) (*DatasetSnapsh
 	})
 	if err != nil {
 		err = d.classifyConflict(ctx, err)
-		// Once a manifest write has been attempted, the snapshot may be
-		// visible (a Put whose response was lost still stores the object),
-		// so its data stays; if the commit did fail, Sweep reclaims it.
 		if !errors.Is(err, history.ErrManifestUncertain) {
 			d.discard(ctx, p.streamed)
 		}
 		return nil, err
 	}
-	d.settled = true // the dataset's head now records this writer's settings
-	return &DatasetSnapshot{ID: p.id, Manifest: manifest}, nil
+	d.settled = true
+	return &Snapshot{ID: p.id, Manifest: manifest}, nil
 }
 
-// classifyConflict reports a conflict that a writer never checked against a
-// manifest (it lost a first commit, or every retry) as ErrSettingsMismatch
-// when the winner's settings differ, regardless of the retry budget: a
-// retry could never succeed (CONTRACT_WRITE_API §Settings). Any other
-// conflict, or a refresh that fails, is returned as it was.
 func (d *writer) classifyConflict(ctx context.Context, err error) error {
 	if d.settled || !errors.Is(err, ErrSnapshotConflict) {
 		return err
@@ -113,8 +84,7 @@ func (d *writer) classifyConflict(ctx context.Context, err error) error {
 	return err
 }
 
-// manifest describes a pending snapshot under the given parent.
-func (d *writer) manifest(p *pendingSnapshot, parent DatasetSnapshotID) *Manifest {
+func (d *writer) manifest(p *pendingSnapshot, parent SnapshotID) *Manifest {
 	m := &Manifest{
 		SchemaName:       manifestSchemaName,
 		FormatVersion:    manifestFormatVersion,
@@ -122,7 +92,7 @@ func (d *writer) manifest(p *pendingSnapshot, parent DatasetSnapshotID) *Manifes
 		SnapshotID:       p.id,
 		CreatedAt:        time.Now().UTC(),
 		Metadata:         p.metadata,
-		Files:            p.files,
+		Objects:          p.objects,
 		ParentSnapshotID: parent,
 		RowCount:         p.rowCount,
 		MinTimestamp:     p.timestamps.min,
@@ -132,11 +102,7 @@ func (d *writer) manifest(p *pendingSnapshot, parent DatasetSnapshotID) *Manifes
 	return m
 }
 
-// manifestPaths returns where a snapshot's manifest is written: always the
-// canonical path (O(1) Snapshot lookup) and, on layouts that place segments
-// under partitions, one copy per partition the snapshot touches so partition
-// listings can find it. Partitionless layouts have only the canonical path.
-func (d *dataset) manifestPaths(snapshotID DatasetSnapshotID, partitionKeys []string) []string {
+func (d *dataset) manifestPaths(snapshotID SnapshotID, partitionKeys []string) []string {
 	canonical := d.layout.manifestPath(d.id, snapshotID)
 	paths := []string{canonical}
 	if !d.layout.supportsPartitions() {
@@ -156,8 +122,6 @@ func (d *dataset) manifestPaths(snapshotID DatasetSnapshotID, partitionKeys []st
 	return paths
 }
 
-// discard deletes the data file of a commit that failed before any manifest
-// was written. No-op for an empty path.
 func (d *writer) discard(ctx context.Context, path string) {
 	if path != "" {
 		_ = d.store.Delete(ctx, path)
@@ -168,9 +132,8 @@ func (d *writer) discard(ctx context.Context, path string) {
 // Buffered staging (Write)
 // -----------------------------------------------------------------------------
 
-// stageBlob persists one blob as the snapshot's single data file.
 func (d *writer) stageBlob(ctx context.Context, p *pendingSnapshot, blob []byte) error {
-	ref, err := d.putFile(ctx, d.filePath(p.id, "", blobFile), blobContent(blob))
+	ref, err := d.putObject(ctx, d.filePath(p.id, "", blobFile), blobContent(blob))
 	if err != nil {
 		return fmt.Errorf("failed to write blob: %w", err)
 	}
@@ -179,19 +142,20 @@ func (d *writer) stageBlob(ctx context.Context, p *pendingSnapshot, blob []byte)
 	return nil
 }
 
-// stageRecords persists records as one encoded data file per partition.
-func stageRecords[T any](ctx context.Context, r *recordDataset[T], p *pendingSnapshot, records []T) error {
+func stageRecords[T any](ctx context.Context, r *Records[T], p *pendingSnapshot, records []T) error {
 	d := r.writer
 	partitions, err := groupRecords(records, r.partitionKey, !d.layout.partitioning().isNoop())
 	if err != nil {
 		return fmt.Errorf("partitioning failed: %w", err)
 	}
 	for key, group := range partitions {
-		ref, err := d.putFile(ctx, d.filePath(p.id, key, dataFile), encodedRecords[T]{r.codec, group})
+		var stats *ObjectStats
+		content := &encodedRecords[T]{codec: r.codec, records: group, stats: &stats}
+		ref, err := d.putObject(ctx, d.filePath(p.id, key, dataFile), content)
 		if err != nil {
-			return fmt.Errorf("failed to write data file: %w", err)
+			return fmt.Errorf("failed to write data object: %w", err)
 		}
-		ref.Stats = fileStats(r.codec)
+		ref.Stats = stats
 		p.add(ref, key)
 	}
 	p.rowCount = int64(len(records))
@@ -203,45 +167,39 @@ func stageRecords[T any](ctx context.Context, r *recordDataset[T], p *pendingSna
 	return nil
 }
 
-// filePath places a data file of the given role in the snapshot's directory.
-func (d *writer) filePath(id DatasetSnapshotID, partition, role string) string {
+func (d *writer) filePath(id SnapshotID, partition, role string) string {
 	return d.layout.dataFilePath(d.id, id, partition, role+d.components.compressor.Extension())
 }
 
-// putFile compresses content into memory and stores it as one immutable
-// object, returning a reference that describes the stored bytes. Errors are
-// wrapped with the content's operation, keeping the established messages.
-func (d *writer) putFile(ctx context.Context, path string, content fileContent) (FileRef, error) {
-	ref, err := d.storeFile(ctx, path, content)
+func (d *writer) putObject(ctx context.Context, path string, content objectContent) (ObjectRef, error) {
+	ref, err := d.storeObject(ctx, path, content)
 	if err != nil {
-		return FileRef{}, fmt.Errorf("%s: %w", content.op(), err)
+		return ObjectRef{}, fmt.Errorf("%s: %w", content.op(), err)
 	}
 	return ref, nil
 }
 
-func (d *writer) storeFile(ctx context.Context, path string, content fileContent) (FileRef, error) {
+func (d *writer) storeObject(ctx context.Context, path string, content objectContent) (ObjectRef, error) {
 	var buf bytes.Buffer
 	comp, err := d.components.compressor.Compress(&buf)
 	if err != nil {
-		return FileRef{}, err
+		return ObjectRef{}, err
 	}
 	if err := content.writeTo(comp); err != nil {
 		_ = comp.Close()
-		return FileRef{}, err
+		return ObjectRef{}, err
 	}
 	if err := comp.Close(); err != nil {
-		return FileRef{}, err
+		return ObjectRef{}, err
 	}
 
 	data := buf.Bytes()
 	if err := d.store.Put(ctx, path, bytes.NewReader(data)); err != nil {
-		return FileRef{}, err
+		return ObjectRef{}, err
 	}
-	return FileRef{Path: path, SizeBytes: int64(len(data)), Checksum: d.checksumBytes(data)}, nil
+	return ObjectRef{Path: path, SizeBytes: int64(len(data)), Checksum: d.checksumBytes(data)}, nil
 }
 
-// checksumBytes computes a checksum of data using the dataset's configured
-// checksum algorithm. Returns empty string if no checksum is configured.
 func (d *writer) checksumBytes(data []byte) string {
 	if d.components.checksum == nil {
 		return ""
@@ -251,10 +209,7 @@ func (d *writer) checksumBytes(data []byte) string {
 	return hasher.Sum()
 }
 
-// fileContent is what a buffered data file holds before compression: a raw
-// blob, or a record batch that encodes through the codec on demand. op names
-// the operation in errors ("write blob", "write data file"), as before.
-type fileContent interface {
+type objectContent interface {
 	writeTo(w io.Writer) error
 	op() string
 }
@@ -271,22 +226,30 @@ func (blobContent) op() string { return "write blob" }
 type encodedRecords[T any] struct {
 	codec   Codec[T]
 	records []T
+	stats   **ObjectStats
 }
 
-func (e encodedRecords[T]) writeTo(w io.Writer) error { return e.codec.Encode(w, e.records) }
-func (encodedRecords[T]) op() string                  { return "write data file" }
+func (e *encodedRecords[T]) writeTo(w io.Writer) error {
+	if sc, ok := e.codec.(StatisticalCodec[T]); ok {
+		s, err := sc.EncodeWithStats(w, e.records)
+		if err != nil {
+			return err
+		}
+		*e.stats = s
+		return nil
+	}
+	return e.codec.Encode(w, e.records)
+}
 
-// fileStats returns per-file statistics when the codec or stream encoder
-// reports them (StatisticalCodec), nil otherwise.
-func fileStats(encoder any) *FileStats {
-	if s, ok := encoder.(StatisticalCodec); ok {
-		return s.FileStats()
+func (*encodedRecords[T]) op() string { return "write data object" }
+
+func streamEncoderStats(encoder any) *ObjectStats {
+	if s, ok := encoder.(StatisticalStreamEncoder); ok {
+		return s.ObjectStats()
 	}
 	return nil
 }
 
-// timestampRange accumulates the earliest and latest Timestamp over the
-// records it observes; records that are not Timestamped are ignored.
 type timestampRange struct {
 	min, max *time.Time
 }

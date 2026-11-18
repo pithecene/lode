@@ -44,23 +44,23 @@ func TestHead(t *testing.T) {
 		}, lode.ErrNoSnapshots},
 		{"a committed head", func(t *testing.T, fs *testutil.FaultStore) SnapshotID {
 			vol := newTestVolume(t, "v", newFaultStoreFactory(fs), 10)
-			commitBlocks(t, vol, []BlockRef{stageBlock(t, vol, 0, []byte("A"))}, Metadata{})
-			return commitBlocks(t, vol, []BlockRef{stageBlock(t, vol, 5, []byte("B"))}, Metadata{}).ID
+			commitBlocks(t, vol, []BlockRef{stageBlock(t, vol, 0, []byte("A"))}, nil)
+			return commitBlocks(t, vol, []BlockRef{stageBlock(t, vol, 5, []byte("B"))}, nil).ID
 		}, nil},
 		{"a pending commit", func(t *testing.T, fs *testutil.FaultStore) SnapshotID {
 			vol := newTestVolume(t, "v", newFaultStoreFactory(fs), 10)
-			commitBlocks(t, vol, []BlockRef{stageBlock(t, vol, 0, []byte("A"))}, Metadata{})
+			commitBlocks(t, vol, []BlockRef{stageBlock(t, vol, 0, []byte("A"))}, nil)
 			blk := stageBlock(t, vol, 5, []byte("B"))
 			fs.SetPutError(testutil.ErrInjectedPut, "manifest.json")
 			defer fs.SetPutError(nil)
-			if _, err := vol.Commit(t.Context(), []BlockRef{blk}, Metadata{}); err == nil {
+			if _, err := vol.Commit(t.Context(), []BlockRef{blk}, nil); err == nil {
 				t.Fatal("commit with a failing manifest write succeeded")
 			}
 			return SnapshotID(pointerContent(t, fs, "v"))
 		}, nil},
 		{"a removed volume", func(t *testing.T, fs *testutil.FaultStore) SnapshotID {
 			vol := newTestVolume(t, "v", newFaultStoreFactory(fs), 10)
-			commitBlocks(t, vol, []BlockRef{stageBlock(t, vol, 0, []byte("A"))}, Metadata{})
+			commitBlocks(t, vol, []BlockRef{stageBlock(t, vol, 0, []byte("A"))}, nil)
 			if err := Remove(t.Context(), "v", newFaultStoreFactory(fs)); err != nil {
 				t.Fatal(err)
 			}
@@ -68,7 +68,7 @@ func TestHead(t *testing.T) {
 		}, ErrRemoved},
 		{"an absent pointer beside a manifest", func(t *testing.T, fs *testutil.FaultStore) SnapshotID {
 			vol := newTestVolume(t, "v", newFaultStoreFactory(fs), 10)
-			commitBlocks(t, vol, []BlockRef{stageBlock(t, vol, 0, []byte("A"))}, Metadata{})
+			commitBlocks(t, vol, []BlockRef{stageBlock(t, vol, 0, []byte("A"))}, nil)
 			if err := fs.Delete(t.Context(), volumeLatestPointerPath("v")); err != nil {
 				t.Fatal(err)
 			}

@@ -23,6 +23,23 @@ import (
 //
 // Contract reference: ai/TEST_MATRIX.md §Streaming Cancellation
 
+// cancelAfterRead yields data on the first Read, then cancels ctx and returns
+// context.Canceled on the subsequent Read.
+type cancelAfterRead struct {
+	data   []byte
+	cancel context.CancelFunc
+	sent   bool
+}
+
+func (r *cancelAfterRead) Read(p []byte) (int, error) {
+	if !r.sent {
+		r.sent = true
+		return copy(p, r.data), nil
+	}
+	r.cancel()
+	return 0, context.Canceled
+}
+
 func TestFSAdapter_ContextCancel(t *testing.T) {
 	// TestFSAdapter_StreamWrite_ContextCancel_NoSnapshot verifies that when context
 	// is canceled during a streaming write, no snapshot becomes visible.
@@ -47,41 +64,19 @@ func TestFSAdapter_ContextCancel(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		// Create a cancellable context
 		cancelCtx, cancel := context.WithCancel(ctx)
+		r := &cancelAfterRead{data: []byte("data that will be canceled"), cancel: cancel}
 
-		sw, err := ds.StreamWrite(cancelCtx, D{"test": "cancel"})
-		if err != nil {
-			t.Fatal(err)
+		_, err = ds.StreamWrite(cancelCtx, r, D{"test": "cancel"})
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected context.Canceled, got: %v", err)
 		}
 
-		// Write some data
-		_, err = sw.Write([]byte("data that will be canceled"))
-		if err != nil {
-			t.Fatalf("Write failed: %v", err)
-		}
-
-		// Cancel before commit
-		cancel()
-
-		// Commit should fail due to canceled context
-		_, err = sw.Commit(cancelCtx)
-		if err == nil {
-			// If commit succeeds, the cancellation didn't propagate in time.
-			// This is valid behavior - we just verify no dangling state.
-			t.Log("Note: commit completed before cancel took effect (timing-dependent)")
-		} else if !errors.Is(err, context.Canceled) {
-			// Expected path: commit failed due to cancellation
-			t.Logf("Note: commit failed with non-cancel error: %v", err)
-		}
-
-		// Core invariant: if commit didn't return a snapshot ID, no snapshot is visible
-		// Use fresh context since cancelCtx is canceled
+		// Core invariant: no manifest was written so no snapshot is visible.
 		freshCtx := t.Context()
 		_, err = ds.Latest(freshCtx)
 		if !errors.Is(err, ErrNoSnapshots) {
-			// If a snapshot IS visible, that's only valid if commit succeeded
-			t.Log("Snapshot visible after cancel - commit completed before cancel")
+			t.Errorf("expected ErrNoSnapshots after canceled stream write, got: %v", err)
 		}
 	})
 
@@ -104,23 +99,19 @@ func TestFSAdapter_ContextCancel(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		// Create records
 		records := []D{
 			{"id": "1", "data": "first"},
 			{"id": "2", "data": "second"},
 			{"id": "3", "data": "third"},
 		}
 
-		// Create a cancellable context with short timeout
 		cancelCtx, cancel := context.WithTimeout(ctx, 10*time.Millisecond)
 		defer cancel()
 
-		// StreamWriteRecords may or may not complete before timeout
 		iter := seqOf(records...)
 		_, err = ds.StreamWrite(cancelCtx, iter, D{"test": "cancel"})
 
 		if err == nil {
-			// Completed before cancel - valid, verify snapshot exists
 			freshCtx := t.Context()
 			snap, err := ds.Latest(freshCtx)
 			if err != nil {
@@ -130,7 +121,6 @@ func TestFSAdapter_ContextCancel(t *testing.T) {
 				t.Errorf("Expected %d rows, got %d", len(records), snap.RowCount)
 			}
 		} else {
-			// Failed (likely due to cancel) - verify no snapshot visible
 			freshCtx := t.Context()
 			_, err := ds.Latest(freshCtx)
 			if !errors.Is(err, ErrNoSnapshots) {
@@ -140,10 +130,7 @@ func TestFSAdapter_ContextCancel(t *testing.T) {
 	})
 
 	// TestFSAdapter_Write_ContextCancel_Cleanup verifies that cleanup is attempted
-	// when context is canceled during write operations.
-	//
-	// Note: Whether cleanup completes is timing-dependent. This test verifies the
-	// attempt is made by checking for absence of orphan data files.
+	// when context is canceled during compressed streaming write operations.
 	t.Run("write context cancel cleanup", func(t *testing.T) {
 		ctx := t.Context()
 		tmpDir, err := os.MkdirTemp("", "lode-timing-test-*")
@@ -156,43 +143,25 @@ func TestFSAdapter_ContextCancel(t *testing.T) {
 			return NewFS(tmpDir)
 		}
 
-		ds, err := Open(storeFactory).Blobs(t.Context(), "cleanup-test")
+		ds, err := Open(storeFactory).Blobs(t.Context(), "cleanup-test", WithCompressor(Gzip()))
 		if err != nil {
 			t.Fatal(err)
 		}
 
-		// Create a context that cancels quickly
 		cancelCtx, cancel := context.WithCancel(ctx)
+		r := &cancelAfterRead{data: []byte("data"), cancel: cancel}
 
-		sw, err := ds.StreamWrite(cancelCtx, nil)
-		if err != nil {
-			t.Fatal(err)
+		_, err = ds.StreamWrite(cancelCtx, r, nil)
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected context.Canceled, got: %v", err)
 		}
 
-		// Write some data
-		_, err = sw.Write([]byte("data"))
-		if err != nil {
-			t.Fatalf("Write failed: %v", err)
-		}
-
-		// Cancel immediately
-		cancel()
-
-		// Abort should succeed (cleanup is best-effort)
-		_ = sw.Abort(cancelCtx)
-
-		// Wait a moment for any async cleanup to settle
 		time.Sleep(10 * time.Millisecond)
 
-		// Verify no manifest (core invariant)
 		freshCtx := t.Context()
 		_, err = ds.Latest(freshCtx)
 		if !errors.Is(err, ErrNoSnapshots) {
-			t.Errorf("Expected ErrNoSnapshots after abort, got: %v", err)
+			t.Errorf("Expected ErrNoSnapshots after canceled stream write, got: %v", err)
 		}
-
-		// Note: Checking for orphan data files would require enumerating the store,
-		// which is adapter-specific. The core invariant (no manifest) is sufficient
-		// to ensure snapshot invisibility per CONTRACT_CORE.md.
 	})
 }

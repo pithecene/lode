@@ -44,7 +44,7 @@ func TestRetryOptions_ExactBounds(t *testing.T) {
 }
 
 func TestRecords_Write_Commit(t *testing.T) {
-	// Manifest.Files is sorted by Path regardless of partition write order.
+	// Manifest.Objects is sorted by Path regardless of partition write order.
 	t.Run("manifest files sorted by path", func(t *testing.T) {
 		ds, err := Open(Memory()).Records(t.Context(), "test-ds", JSONL[D](), hive("day"))
 		if err != nil {
@@ -54,12 +54,12 @@ func TestRecords_Write_Commit(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		paths := make([]string, 0, len(snap.Files))
-		for _, f := range snap.Files {
-			paths = append(paths, f.Path)
+		paths := make([]string, 0, len(snap.Objects))
+		for _, obj := range snap.Objects {
+			paths = append(paths, obj.Path)
 		}
 		if len(paths) != 3 || !sort.StringsAreSorted(paths) {
-			t.Fatalf("manifest files not sorted by path: %v", paths)
+			t.Fatalf("manifest objects not sorted by path: %v", paths)
 		}
 	})
 

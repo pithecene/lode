@@ -1,619 +1,224 @@
 # Lode Volume Model Contract
 
-This document defines the contract for the `Volume` persistence paradigm.
-It is authoritative for all Volume implementations.
+This document defines the contract for the `Volume` persistence paradigm in
+package `lode/volume`.
 
 ---
 
 ## Goals
 
-1. Represent sparse, resumable persistence of byte ranges explicitly.
-2. Preserve manifest-driven commit semantics for workflows that materialize
-   data partially.
-3. Keep adapter behavior independent of the backend, and make lifecycle
-   semantics explicit.
+1. Represent sparse, resumable persistence of fixed-length byte address
+   spaces explicitly.
+2. Preserve manifest-driven commit visibility with cumulative,
+   self-contained manifests.
+3. Prevent staged write collisions across retries while maintaining read
+   compatibility with earlier persisted block paths.
 
 ---
 
 ## Non-Goals
 
-- BitTorrent protocol behavior (pieces, peers, trackers).
-- Networking, scheduling, runtime orchestration, or execution policy.
-- Concealed background mutation, or inference of missing ranges.
+- Transport protocols, peer scheduling, or runtime orchestration.
+- Implicit zero-filling of uncommitted gaps.
+- Overlapping block overwrites or background compaction.
 
 ---
 
 ## Conceptual Model
 
-### Volume
-
-A Volume is a logical byte address space `[0..N)`. Its `ID` and
-`TotalLength` identify it.
-
-### Snapshot
-
-A snapshot is an immutable commit that records the **cumulative** set of
-all verified, committed blocks across the volume's history. Each snapshot is
-self-contained: its manifest alone determines which data a reader of that
-snapshot can read.
-
-### SnapshotID
-
-A `SnapshotID` is a stable identifier for a committed Volume snapshot.
-Volume generates it in the same form as `DatasetSnapshotID` (CONTRACT_CORE
-§Snapshot ID).
-
-### BlockRef
-
-A `BlockRef` references a staged or committed byte block by offset, length,
-and object path. A block is not committed until a snapshot manifest includes it.
-
-`BlockRef` is a Volume type. The dataset read API uses
-`ManifestRef` for dataset manifest locators.
-
-### Volume Manifest
-
-A Volume manifest is the authoritative description of a snapshot's
-committed blocks. Manifests are **cumulative**: each manifest contains the
-complete set of committed blocks, not only the blocks that its own commit
-added, so a reader can interpret any snapshot without traversing the
-chain.
-
----
-
-## Manifest Requirements
-
-Volume manifests MUST include at least:
-- the schema name and version
-- the volume ID
-- the snapshot ID
-- the parent snapshot ID, except in the first snapshot
-- the total length
-- the creation time
-- an explicit metadata object
-- the list of committed blocks (**cumulative**: all blocks, not only the new
-  ones)
-
-Each committed block MUST record:
-- its offset
-- its length
-- an immutable object reference or path
-- checksum metadata, when configured
-
-Manifests are cumulative:
-- Each manifest contains every block from earlier commits, plus the blocks
-  that its own commit adds.
-- A single manifest suffices to determine complete read visibility.
-- Interpreting a snapshot requires no traversal of the chain.
-
-Absence from the manifest is meaningful:
-- An implementation MUST treat any range that the manifest omits as
-  uncommitted and MUST NOT infer its contents.
-
----
-
-## Write Lifecycle
-
-The Volume write lifecycle consists of three explicit steps:
-
-1. **Stage**: the caller writes data to its final storage path. Staged data is not
-   visible to readers, because no manifest references it. Staged data files
-   use the path `volumes/<volume_id>/data/<offset>-<length>.bin`.
-2. **Verify**: the caller or runtime validates the data externally (for
-   example, by verifying a hash).
-3. **Commit**: Volume records the verified blocks in a new immutable
-   snapshot manifest, together with all previously committed blocks.
-
-The following rules govern the write lifecycle:
-- Unverified or uncommitted blocks MUST NOT appear in committed manifests.
-- Commit visibility is manifest-driven, as for Datasets.
-- Snapshots are immutable once committed.
-- Overlapping committed blocks within a snapshot are invalid, and `Commit`
-  MUST return `ErrOverlappingBlocks` for them. Overlap validation applies to
-  the complete cumulative set of blocks (existing and new), not only to the
-  new blocks.
-- A commit MUST include at least one new block. An empty commit (one without
-  new blocks) is invalid. A retry of a pending commit is the one exception
-  (§Error Semantics).
-
-### Staged Data Lifecycle
-
-The caller writes staged data directly to the final object path. Because
-visibility is manifest-driven, uncommitted data files are invisible to
-readers, exactly as for a Dataset's partial writes.
-
-- Abandoned staged data, which no commit references, is harmless but may
-  remain in storage.
-- The caller removes abandoned staged data.
-- This contract requires no Volume-level `Abort` API.
-- Volume performs no implicit background removal.
-
-### Resumption Semantics
-
-The caller initiates resumption explicitly.
-
-- `Volume.Latest(ctx)` returns the most recent committed snapshot, which
-  contains the cumulative set of all committed blocks.
-- The caller determines which ranges are missing and stages them again.
-- Volume does NOT discover or recover uncommitted staged data.
-- Volume MUST NOT infer uncommitted ranges or scan the data directory.
-
----
-
-## Read Semantics
-
-Volume serves reads by byte range:
-- `ReadAt(snapshotID, offset, length)` succeeds only if committed blocks
-  cover the entire requested range.
-- `ReaderAt(snapshotID)` MUST load the snapshot's manifest once and return a
-  `SnapshotReaderAt`, and each read through that reader MUST fetch block
-  data only. The reader's `ReadAt(p, off)` MUST follow `io.ReaderAt`: a read that extends
-  past the end of the address space returns `io.EOF` and the bytes from
-  its offset to the end. The range-read rules of this section apply to the bytes within
-  the address space.
-  Each read through the reader MUST use the context that `ReaderAt` received, and
-  the reader MUST be safe for concurrent use.
-- `SnapshotReaderAt.Blocks()` MUST return a copy of the snapshot's committed
-  blocks, sorted by offset, so that a change to one copy alters neither the
-  bytes that the reader returns nor a later copy.
-
-A range read MUST behave as follows:
-- If any part of the range is missing, the read returns an explicit
-  missing-range error.
-- A read never fills missing bytes with zeros.
-- A read of committed data never succeeds partially.
-- A read of a snapshot MUST reflect exactly the state of its manifest at
-  commit time.
+- **Volume**: a fixed-length byte address space `[0..TotalLength)` identified
+  by `volume.ID` (a single canonical path segment).
+- **BlockRef**: a staged or committed byte range `(Offset, Length, Path,
+  Checksum)`.
+- **Manifest**: cumulative snapshot record (`SchemaName`
+  `"lode-volume-manifest"`, `FormatVersion` `"1.0.0"`) containing the sorted,
+  non-overlapping union of all committed `Blocks` up to and including the
+  snapshot, `TotalLength`, `ParentSnapshotID`, `ChecksumAlgorithm`, and
+  `Metadata` (`lode.Metadata`).
+- **Snapshot**: pairs `volume.SnapshotID` (generated in `<instant>-<nonce>`
+  form per [`CONTRACT_CORE.md`](CONTRACT_CORE.md) §Snapshot ID) with
+  `*volume.Manifest`.
 
 ---
 
 ## Public API Surface
 
-Volume resides in the package `lode/volume`. This contract governs its
-behavior in every release. Every release reads the data that an earlier
-release persisted, because the storage layout and the manifest format
-(§Storage Layout, §Manifest Requirements) are stable persisted formats.
-
-The public Volume API is explicit and minimal and comprises the `Writer` and
-`Reader` interfaces in the package `volume`. Names prefixed with `lode.`
-denote the shared types of that API:
-
 ```go
-// ID uniquely identifies a volume. It is one path segment
-// (CONTRACT_STORAGE §Names in Keys).
 type ID string
 
-// SnapshotID uniquely identifies an immutable volume snapshot.
 type SnapshotID string
 
-// BlockRef references a staged or committed byte block within a volume.
 type BlockRef struct {
-    Offset   int64
-    Length   int64
-    Path     string
-    Checksum string // populated when WithChecksum is configured
+    Offset   int64  `json:"offset"`
+    Length   int64  `json:"length"`
+    Path     string `json:"path"`
+    Checksum string `json:"checksum,omitempty"`
 }
 
-// Snapshot represents an immutable point-in-time view of a volume.
+type Manifest struct {
+    SchemaName        string        `json:"schema_name"`
+    FormatVersion     string        `json:"format_version"`
+    VolumeID          ID            `json:"volume_id"`
+    SnapshotID        SnapshotID    `json:"snapshot_id"`
+    CreatedAt         time.Time     `json:"created_at"`
+    Metadata          lode.Metadata `json:"metadata"`
+    TotalLength       int64         `json:"total_length"`
+    Blocks            []BlockRef    `json:"blocks"`
+    ParentSnapshotID  SnapshotID    `json:"parent_snapshot_id,omitempty"`
+    ChecksumAlgorithm string        `json:"checksum_algorithm,omitempty"`
+}
+
 type Snapshot struct {
     ID       SnapshotID
     Manifest *Manifest
 }
 
-// Writer defines the write surface for a volume.
 type Writer interface {
-    // StageWriteAt writes data at an offset and returns a block handle.
-    // Staged data is not visible until Commit is called.
     StageWriteAt(ctx context.Context, offset int64, r io.Reader) (BlockRef, error)
-
-    // Commit records the provided blocks into a new immutable snapshot.
-    // The resulting manifest is cumulative: it includes all previously committed
-    // blocks plus the new blocks. Commit MUST include at least one new block,
-    // except in a retry of a commit whose manifest write failed after the
-    // pointer advanced: when the pending snapshot already holds every block,
-    // Commit completes that commit and returns its snapshot
-    // (CONTRACT_VOLUME §Error Semantics).
-    Commit(ctx context.Context, blocks []BlockRef, metadata Metadata) (*Snapshot, error)
+    Commit(ctx context.Context, blocks []BlockRef, metadata any) (*Snapshot, error)
 }
 
-// Reader defines the read surface for a volume.
 type Reader interface {
-    // ReadAt reads a fully committed range from a snapshot.
     ReadAt(ctx context.Context, snapshotID SnapshotID, offset, length int64) ([]byte, error)
-
-    // ReaderAt loads a snapshot's manifest once and returns a reader of its
-    // committed bytes, whose reads fetch block data only.
-    // Returns lode.ErrNotFound if the snapshot does not exist.
     ReaderAt(ctx context.Context, snapshotID SnapshotID) (SnapshotReaderAt, error)
-
-    // Latest returns the most recently committed snapshot.
-    // Returns lode.ErrNoSnapshots if no snapshots exist.
     Latest(ctx context.Context) (*Snapshot, error)
-
-    // Snapshots lists all committed snapshots.
     Snapshots(ctx context.Context) ([]*Snapshot, error)
-
-    // Snapshot retrieves a specific snapshot by ID.
-    // Returns lode.ErrNotFound if the snapshot does not exist.
     Snapshot(ctx context.Context, id SnapshotID) (*Snapshot, error)
 }
 
-// SnapshotReaderAt reads the committed bytes of one snapshot.
 type SnapshotReaderAt interface {
     io.ReaderAt
-
-    // Blocks returns a copy of the snapshot's committed blocks.
     Blocks() []BlockRef
 }
 
-// Volume composes the full read/write surface for a sparse byte space.
 type Volume interface {
     Writer
     Reader
     ID() ID
 }
 
-// New creates a volume with a fixed total length.
 func New(id ID, storeFactory lode.Factory[lode.RangeStore], totalLength int64, opts ...Option) (Volume, error)
+func Remove(ctx context.Context, id ID, storeFactory lode.Factory[lode.RangeStore], opts ...Option) error
+func Head(ctx context.Context, id ID, storeFactory lode.Factory[lode.RangeStore]) (SnapshotID, error)
 ```
 
-### Volume Options
+### Volume Options (`volume.Option`)
 
-Volume has its own `Option` type. Dataset options (`DatasetOption`,
-`ViewOption`, and `RootOption`) have different types, so the compiler
-rejects them as Volume options. Volume provides the following options:
-
-- `WithChecksum(c lode.Checksum)`: integrity checksums on staged blocks
-  (disabled by default).
-- `WithRetryCount(n)`: a bounded number of automatic CAS retries after a
-  commit conflict.
-- `WithRetryBaseDelay(d)`, `WithRetryMaxDelay(d)`, `WithRetryJitter(j)`:
-  the backoff interval between CAS retries.
-- `WithRetryObserver(fn)`: a callback invoked on each retry, with the same
-  semantics as for a Dataset (see [`CONTRACT_WRITE_API.md`](CONTRACT_WRITE_API.md) §Optimistic
-  Concurrency (CAS)).
-
-Retry options share the Dataset defaults and validation: an out-of-range
-value produces `lode.ErrInvalidArgument` with the same message as for a
-Dataset.
-
-### API Constraints
-
-- `StageWriteAt` MUST NOT make any block visible in a snapshot.
-- `Commit` MUST make blocks visible only through the manifest and MUST
-  produce an immutable snapshot.
-- `Commit` MUST include at least one new block, except when it completes a
-  pending commit (§Error Semantics).
-- `Commit` MUST verify that no blocks overlap in the complete cumulative
-  set.
-- `ReadAt` MUST return `volume.ErrRangeMissing` if any part of the range is
-  uncommitted.
-- The `Reader` methods correspond to the Dataset read surface.
-- `Volume` composes `Writer` and `Reader`.
+- `WithChecksum(c lode.Checksum)`: computes and records hex digests on staged
+  blocks and records `ChecksumAlgorithm` in manifests (rejects `nil` with
+  `lode.ErrInvalidArgument`).
+- `WithRetry(n)`, `WithRetryBaseDelay(d)`, `WithRetryMaxDelay(d)`,
+  `WithRetryJitter(j)`, `WithRetryObserver(fn)`: automatic CAS retry
+  configuration for `Commit` and `Remove`, sharing Dataset defaults and
+  validation.
+- `nil` options passed to `New` or `Remove` MUST fail with
+  `lode.ErrInvalidArgument` before calling `storeFactory`.
 
 ---
 
-## Error Semantics
+## Storage Layout and Nonced Block Paths
 
-- A missing committed range MUST produce `volume.ErrRangeMissing`.
-- Overlapping blocks at `Commit` MUST produce `volume.ErrOverlappingBlocks`.
-- An empty block list at `Commit` MUST produce an error.
-- `Commit` MUST convert `nil` metadata to empty metadata
-  (`volume.Metadata{}`).
-- Range reads MUST NOT return partial data without an error.
-- `Latest` on an empty volume MUST return `lode.ErrNoSnapshots`.
-- `Snapshot` for an unknown ID MUST return `lode.ErrNotFound`.
-- An obsolete parent at `Commit` MUST produce `lode.ErrSnapshotConflict`.
-- Commit MUST persist and remove a staged copy of its manifest as
-  CONTRACT_CORE §Head Pointer specifies.
-- A commit can fail after it advanced the pointer, while it persists its
-  canonical manifest. Its snapshot is then pending, and its staged copy
-  holds the blocks. A later commit whose blocks that pending snapshot
-  already holds MUST complete the pending commit and return its snapshot.
-  To complete it, Commit persists the canonical manifest from the staged
-  copy, byte for byte, and then removes the copy. The metadata of the
-  returned snapshot is the pending commit's. A retry of the failed commit
-  therefore succeeds while the commit is pending.
-- Another writer can complete the same commit first. A snapshot ID carries
-  a random nonce, so every writer of the canonical manifest writes the
-  staged copy's bytes. A `Put` refused with `lode.ErrPathExists`, or a
-  staged copy that is gone beside a canonical manifest, MUST therefore
-  count as completion. The completion MUST NOT read or delete a path whose
-  `Put` it lost (CONTRACT_STORAGE §Put).
-- A removal (§Removal) can fence the Volume while a completion runs. The
-  completion MUST read the pointer after every outcome. When the pointer
-  holds the removal marker, the completion MUST produce `ErrRemoved`, and
-  it MUST delete the manifest when its own `Put` stored it. A removal
-  fences before it lists, so a pointer read that precedes the fence leaves
-  the manifest to the removal's own listing.
-- Once the parent has a canonical manifest, such a commit has no new block
-  and MUST produce `lode.ErrInvalidArgument`. A retry that arrives after
-  another writer completed the commit therefore fails, and `Latest` then
-  holds the blocks.
-- After a failed manifest write, the handle MUST resolve the parent from
-  storage at its next commit, so that the commit adopts the pending
-  snapshot instead of conflicting. Any other handle that remembers an
-  earlier head conflicts as a stale handle does (§Optimistic Concurrency),
-  and its retry resolves the parent from storage.
-- The head pointer can name the snapshot of a pending or abandoned commit,
-  and that snapshot lacks a canonical manifest (CONTRACT_CORE §Head
-  Pointer). Commit MUST then load that snapshot from its staged copy, adopt
-  it as the parent, and merge its blocks. An abandoned commit therefore
-  does not prevent later commits.
-- The pointer can name a snapshot that has neither a canonical manifest
-  nor a staged copy. This state arises when a release earlier than v0.11.0
-  persisted the commit or when an operator edited the pointer manually.
-  Commit MUST then return `lode.ErrSnapshotConflict`, because it cannot
-  merge the parent's blocks. If the caller configures retries, Commit
-  retries. Commits return `lode.ErrSnapshotConflict` until the pointer
-  names a snapshot that has a manifest: either an operator persists the
-  missing manifest, or an operator sets the pointer to an earlier
-  snapshot. A `Volume` value that caches an earlier head continues to
-  expect that head's pointer content. After the repair, the caller MUST
-  therefore call `Latest` or open the volume again, unless the caller
-  configures retries (each retry refreshes the head).
-- A removed Volume (§Removal) MUST produce `volume.ErrRemoved` from
-  `Latest` and `Commit`.
-- `Latest`, `Snapshot`, and `Snapshots` never read staged copies. An
-  abandoned commit has no canonical manifest, so no listing includes it, and
-  its blocks become visible through the next commit, which merges them. That
-  commit's `ParentSnapshotID` names the abandoned snapshot.
-
----
-
-## Concurrency
-
-The snapshot history of a Volume is linear.
-
-### Volume Write Concurrency Matrix
-
-| Pattern | Writers | Blocks | History | Supported |
-|---------|---------|--------|---------|-----------|
-| Single writer | 1 process | Non-overlapping blocks | Linear (guaranteed) | Yes |
-| Multiple processes, serialized | N processes, external coordination | Non-overlapping blocks | Linear (enforced by the caller) | Yes, with coordination that the caller provides |
-| Multiple processes, uncoordinated | N processes, no coordination | Non-overlapping blocks | Linear (enforced by CAS) | Yes, because a later commit adopts an abandoned commit from its staged manifest (§Error Semantics) |
-| Multiple writers in one process, store wrapped with `lode.SingleProcess` | N goroutines, each with its own `Volume`, sharing one wrapped store | Non-overlapping blocks | Linear (enforced by the process lock) | Yes |
-
-### Optimistic Concurrency (CAS)
-
-Volume detects concurrent commits and returns `ErrSnapshotConflict`.
-
-Volume detects conflicts as a Dataset does (see
-[`CONTRACT_WRITE_API.md`](CONTRACT_WRITE_API.md) §Optimistic Concurrency
-(CAS)). The two differ only in how a retry assigns the snapshot ID.
-Conflict detection consists of three steps:
-- `Commit` records the expected parent when it resolves the parent.
-- `Commit` updates the pointer with `CompareAndSwap`.
-- An obsolete parent produces `ErrSnapshotConflict`.
-
-A Volume CAS retry merges non-overlapping blocks:
-- On retry, the caller merges non-overlapping blocks from concurrent
-  writers by calling `Latest()` again, adding the new blocks to the updated
-  cumulative manifest, and committing again.
-- Overlapping blocks remain invalid regardless of CAS (see
-  `ErrOverlappingBlocks`).
-
-Volume also supports automatic retry, which is disabled by default.
-`WithRetryCount(n)` enables a bounded number of automatic retries within
-`Commit`. On `ErrSnapshotConflict`, the commit:
-1. Waits for an exponential backoff interval with jitter.
-2. Calls `Latest()` to refresh the in-memory CAS cache.
-3. Resolves the parent again and merges the blocks against the new parent.
-4. Verifies that no blocks overlap in the merged cumulative set.
-5. Retries the pointer CAS with a new snapshot ID.
-
-A Volume retry may draw a new snapshot ID because block paths do not contain
-it (`volumes/<id>/data/<offset>-<length>.bin`). A Dataset retry retains its
-ID because its data paths contain the ID (V1_API_DECISIONS D10c).
-
-`ErrOverlappingBlocks` terminates the retry loop immediately, because it is
-not retryable. If the caller configures `WithRetryObserver(fn)`, `Commit`
-calls `fn` once per retry, before step 1. When `Commit` exhausts all
-retries, it returns `ErrSnapshotConflict` as it does without retries.
-
-Optimistic concurrency preserves compatibility with single-writer workflows:
-- Single-writer workflows are unaffected.
-- External coordination remains valid but is not required.
-
----
-
-## Adapter Obligations
-
-Volume requires no new type of storage engine.
-
-The capabilities of a `lode.RangeStore` are sufficient:
-- immutable object writes
-- `List`, `Exists`, `Get`, and `Delete`
-- range reads (`RangeReader`, CONTRACT_STORAGE §Range Reads), which `New`
-  requires through its parameter type
-- `CompareAndSwap` (CONTRACT_STORAGE §ConditionalWriter Capability)
-
-Adapters MUST preserve the rule that the manifest alone defines the
-committed blocks.
-
-## Storage Layout
-
-Volume uses a **fixed internal layout**, which is not configurable. The
-`Layout` abstraction is specific to Datasets and does not apply to Volume.
+Volume uses a fixed internal storage layout:
 
 ```
+volumes/<volume_id>/latest
 volumes/<volume_id>/snapshots/<snapshot_id>/manifest.json
 volumes/<volume_id>/staged/<snapshot_id>.json
-volumes/<volume_id>/data/<offset>-<length>.bin
+volumes/<volume_id>/data/<offset>-<length>-<nonce>.bin
 ```
 
-- Manifest paths follow the same commit-visibility pattern as for a
-  Dataset.
-- A staged manifest lies outside the snapshots prefix, so no snapshot
-  listing includes it (§Error Semantics). A staged manifest that remains
-  after a failed commit is harmless, like abandoned staged data.
-- Volume names data files by byte range to facilitate debugging.
-- This layout is not part of the public API, but it is a stable persisted
-  format (§Public API Surface).
+- `StageWriteAt` MUST generate a fresh 16-character lowercase hex nonce from
+  a cryptographically secure random source for every staged block
+  (`volumes/<volume_id>/data/<offset>-<length>-<nonce>.bin`). If a staging
+  attempt or subsequent commit is abandoned, retrying `StageWriteAt` at the
+  same `(offset, length)` writes to a distinct key and never fails with
+  `lode.ErrPathExists`.
+- Backward compatibility: `Commit` block validation and manifest validation
+  MUST accept both nonced paths (`<offset>-<length>-<16hex>.bin`) and legacy
+  pre-v1 unnonced paths (`<offset>-<length>.bin`) scoped under
+  `volumes/<volume_id>/data/`. Any path outside `volumes/<volume_id>/data/`
+  is rejected (`lode.ErrInvalidArgument` on `Commit`, `lode.ErrManifestInvalid`
+  on manifest load).
 
 ---
 
-## Removal
+## Write and Commit Semantics
 
-A Volume is removed whole, by `Remove(ctx, id, factory, opts...)`. A
-Volume has no expiry of single snapshots, because its snapshots are
-cumulative (CONTRACT_RETENTION §Non-Goals).
-
-`Remove` MUST proceed in this order:
-
-1. It replaces the head pointer with the removal marker `lode:removed`
-   through `CompareAndSwap` against the content it read, and creates the
-   pointer with the marker when the Volume has none. The marker is not a
-   snapshot ID, so no commit can parent on it. A commit that races the
-   swap makes it conflict. `Remove` retries the swap as a commit retries
-   (§Optimistic Concurrency), and returns `lode.ErrSnapshotConflict` once
-   the retries are spent, having deleted nothing.
-2. It checks that the head it replaced has a canonical manifest. A head
-   without one belongs to a commit that advanced the pointer and has not
-   persisted its manifest, pending or abandoned (CONTRACT_CORE §Head
-   Pointer). `Remove` then returns `lode.ErrHeadUncommitted` and deletes
-   nothing. The marker is written, so that commit can finish and no other
-   can start, and a later call, which finds the marker, deletes whatever
-   then exists.
-3. It deletes every other object of the Volume: manifests, staged
-   manifests and blocks.
-
-A commit that persists its manifest after a later call's listing leaves
-that one manifest behind. No commit can parent on it, its blocks are
-gone, and the next `Remove` deletes it.
-
-The pointer stays. It is the fence that keeps the Volume removed:
-
-- Once the pointer holds the marker, `Latest` and `Commit` on every handle
-  of the Volume MUST return `ErrRemoved`. A handle that remembers an
-  earlier head commits without reading the pointer, so its swap is where
-  it meets the marker. A commit whose swap conflicts MUST therefore read
-  the pointer again, and MUST return `ErrRemoved` when it holds the
-  marker, whether or not the caller configured retries. A writer that
-  held the Volume open through the removal never advances the pointer.
-- A store may report an object the removal deletes as missing
-  (CONTRACT_STORAGE §Delete), as when two removals overlap. `Remove` MUST
-  treat it as deleted.
-- `Remove` MUST NOT delete the pointer, and removing a removed Volume
-  deletes what remains, so a second call completes an interrupted one.
-  A block staged into a removed Volume is an abandoned staged object,
-  which the next `Remove` deletes.
-- A removed Volume therefore keeps one small object, as an expired
-  Dataset snapshot keeps its tombstone.
-
-`Remove` checks its arguments before it creates the store: a Volume ID that
-is not one canonical path segment yields `lode.ErrInvalidArgument`
-(CONTRACT_STORAGE §Names in Keys), so a removal never reaches another
-Volume's objects.
+- `StageWriteAt(ctx, offset, r)` validates `offset >= 0`, non-empty payload,
+  and `offset + length <= totalLength` (`lode.ErrInvalidArgument` otherwise),
+  stages the block via `Store.Put`, and returns its `BlockRef`. Staged blocks
+  are invisible to readers until committed.
+- `Commit(ctx, blocks, metadata)` validates `metadata` via
+  `lode.NewMetadata(metadata)` (`nil` persists as `{}`; non-object values
+  return `lode.ErrInvalidArgument` before any store call), validates non-empty
+  `blocks` within `[0, totalLength)`, resolves the parent (adopting a staged
+  manifest at `volumes/<id>/staged/<parent>.json` if the parent commit is
+  pending), merges `blocks` with the parent's cumulative blocks, rejects any
+  overlap with `ErrOverlappingBlocks`, stages its own manifest, advances
+  `latest` via `CompareAndSwap`, writes the canonical manifest, and deletes
+  the staged manifest ([`CONTRACT_CORE.md`](CONTRACT_CORE.md) §Head Pointer).
+- Pending-commit completion: if `Commit` is retried with blocks that are
+  already all present in a pending parent snapshot (whose pointer advanced
+  before its canonical manifest write failed), `Commit` completes that
+  pending parent from its staged copy and returns its `*Snapshot` (re-checking
+  for `lode:removed` afterward). Once the parent's canonical manifest exists,
+  committing with zero new blocks returns `lode.ErrInvalidArgument`.
+- On CAS conflict with `WithRetry(n)`, `Commit` backs off, refreshes parent
+  blocks, re-merges, re-validates non-overlap (`ErrOverlappingBlocks` aborts
+  immediately), and retries with a newly generated `SnapshotID`.
 
 ---
 
-## Head
+## Read Semantics
 
-`Head(ctx, id, factory)` returns the snapshot ID that the head pointer of
-a Volume names, and requires no total length. A caller that knows a
-Volume's ID but not its length can therefore date the Volume's last
-commit, because a generated snapshot ID begins with the instant its
-commit began (CONTRACT_CORE §Snapshot ID).
-
-- `Head` MUST read the pointer and MUST NOT write any object.
-- `Head` MUST NOT require a manifest. A pointer that names a pending or
-  abandoned commit yields that commit's snapshot ID (CONTRACT_CORE §Head
-  Pointer).
-- A Volume with no pointer and no manifest has no commit, and `Head` MUST
-  return `lode.ErrNoSnapshots`. A Volume that holds only staged blocks is
-  such a Volume.
-- A removed Volume MUST produce `ErrRemoved`.
-- A pointer that is absent while manifests exist cannot tell the head,
-  and `Head` MUST return `lode.ErrHeadUncommitted`, as `Expire` does.
-- A pointer that holds no snapshot ID MUST produce an error, and `Head`
-  MUST NOT return the pointer's content.
-- `Head` checks its arguments before it creates the store, as `Remove`
-  does.
+- `ReadAt(ctx, snapshotID, offset, length)` validates `offset >= 0`,
+  `length > 0`, and `offset + length <= totalLength`
+  (`lode.ErrInvalidArgument`), loads snapshot `snapshotID`, finds covering
+  blocks in `O(log B + R)` time via binary search, returns `ErrRangeMissing`
+  if any sub-range is uncovered (never zero-filling or returning partial
+  bytes), and fetches covered slices via `RangeStore.ReadRange`.
+- `ReaderAt(ctx, snapshotID)` loads and validates `snapshotID`'s manifest
+  once and returns a concurrency-safe `SnapshotReaderAt` whose `ReadAt(p,
+  off)` fetches block ranges only (returning `io.EOF` at or past
+  `TotalLength` per `io.ReaderAt`) and whose `Blocks()` returns a defensive
+  copy of the sorted `[]BlockRef`.
 
 ---
 
-## Dataset Boundary
+## Removal and Head Inspection
 
-`Dataset` and `Volume` are distinct containers built on one snapshot-history
-core (the snapshot chain, the latest pointer, and the CAS commit), and they
-have distinct semantics:
-
-- Dataset streaming constructs complete objects atomically.
-- Volume streaming commits partial data incrementally.
-- Neither container wraps the other or forms a special case of it.
-
-A workflow that requires sparse, resumable, out-of-order, or range-verified
-data belongs to `Volume`, not to `Dataset`.
-
-Two design principles maintain this boundary:
-- Adapters remain minimal, and lifecycle semantics remain in the Lode core.
-- Policy that depends on the runtime (scheduling, peer management, execution
-  strategy) belongs in consuming systems, not in Lode.
+- `ErrRemoved` in package `volume` is an alias for `lode.ErrRemoved`
+  (`volume.ErrRemoved == lode.ErrRemoved`).
+- `Remove(ctx, id, storeFactory, opts...)`:
+  1. Validates arguments (`lode.ErrInvalidArgument`) before calling
+     `storeFactory`.
+  2. Replaces `volumes/<id>/latest` with `lode:removed` via `CompareAndSwap`
+     (retrying conflicts per `WithRetry*`, else returning
+     `lode.ErrSnapshotConflict` with nothing deleted).
+  3. Checks that any replaced generated snapshot ID has a canonical manifest
+     (returning `lode.ErrHeadUncommitted` with objects intact behind the
+     fence if pending).
+  4. Deletes all manifests, staged manifests, and blocks under
+     `volumes/<id>/`, leaving `volumes/<id>/latest` in place as the permanent
+     fence so `Latest`, `Head`, and `Commit` return `ErrRemoved`.
+- `Head(ctx, id, storeFactory)` reads `volumes/<id>/latest` without requiring
+  `totalLength` and without writing: returns `SnapshotID` (including pending
+  commits), `lode.ErrNoSnapshots` when empty, `ErrRemoved` when removed, or
+  `lode.ErrHeadUncommitted` when the pointer is absent alongside existing
+  manifests.
 
 ---
 
 ## Complexity Bounds
 
-[CONTRACT_COMPLEXITY.md](CONTRACT_COMPLEXITY.md) gives complete definitions
-and a glossary of variables.
-
-### Write Operations
-
 | Operation | Store Calls (warm) | Memory | CPU |
 |-----------|-------------------|--------|-----|
-| `StageWriteAt` | 1 Put | O(block) | O(block) |
-| `Commit` | 5 fixed | O(B) manifest | O(B + K log K) |
-
-The size of the cumulative manifest is O(B), a cost inherent in the
-cumulative design.
-
-### Read Operations
-
-| Operation | Store Calls | Memory | CPU |
-|-----------|-------------|--------|-----|
-| `ReadAt` | 1 `Get` + R `ReadRange` | O(L) | **O(log B + R)** |
+| `StageWriteAt` | 1 `Put` | O(block) | O(block) |
+| `Commit` | 5 fixed (`Get` parent + `Put` staged + CAS + `Put` canonical + `Delete` staged) | O(B) | O(B + K log K) |
+| `ReadAt` | 1 `Get` + `R` `ReadRange` | O(L) | O(log B + R) |
 | `ReaderAt` | 1 `Get` | O(B) | O(B) validation |
-| `SnapshotReaderAt.ReadAt` | R `ReadRange` | O(L) | **O(log B + R)** |
-| `Latest` | 2 (pointer + manifest) | O(B) | O(1) |
+| `SnapshotReaderAt.ReadAt` | `R` `ReadRange` | O(L) | O(log B + R) |
+| `Latest` | 2 `Get` calls | O(B) | O(1) |
 | `Snapshot(id)` | 1 `Get` | O(B) | O(B) validation |
-| `Snapshots` | 1 `List` + S `Get` calls | O(S × B_avg) | O(S × B_avg + S log S) |
-
-Block lookup MUST be O(log B + R), where R is the number of covering
-blocks. Implementations MUST verify the sort order when they load the
-manifest and MUST NOT verify it on each range read.
-
-The cost of `Snapshots()` grows with the snapshot count multiplied by the
-cumulative block count. Callers MUST NOT use `Snapshots()` on
-hot paths.
-
----
-
-## Prohibited Behaviors
-
-- Inferring committed blocks that are absent from the manifest.
-- Treating staged or unverified data as committed.
-- Compacting or mutating committed blocks implicitly in the background.
-
----
-
-## Completeness
-
-A Volume is complete when the union of its committed blocks covers the
-entire address space `[0..N)`. Implementations derive completeness from the
-committed blocks and do not store it as a separate flag.
-
----
-
-## Invariants
-
-The following invariants MUST hold:
-
-1. A snapshot's manifest is the sole authority for read visibility.
-2. Each manifest is self-contained: its blocks are cumulative, so a reader
-   need not traverse the chain.
-3. No data is readable unless a committed snapshot references it.
-4. All committed blocks are immutable.
-5. Committed blocks within a snapshot MUST NOT overlap.
-6. The snapshot history of a Volume is linear.
-7. Implementations derive completeness solely from committed blocks.
+| `Snapshots` | 1 `List` + `S` `Get` calls | O(S × B_avg) | O(S × B_avg + S log S) |
+| `Head` | 1 `Get` (+1 `List` only when pointer absent) | O(1) | O(1) |

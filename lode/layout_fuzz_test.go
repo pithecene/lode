@@ -11,30 +11,14 @@ import (
 // fuzzHive is the Hive scheme the fuzz targets partition by.
 var fuzzHive = partitionScheme{name: "hive", keys: []string{"day", "region"}}
 
-// customNames are path names a root could choose, every one of them
-// different from the defaults.
-func customNames() ManifestPaths {
-	return ManifestPaths{
-		Datasets: "tables", Snapshots: "snaps", Partitions: "parts", Segments: "segs",
-		Manifest: "_m.json", Data: "d", Expired: "gone", Staged: "pending",
-	}
-}
-
-// flatNames are the default names with flat paths.
-func flatNames() ManifestPaths {
-	return defaultPaths(true)
-}
-
 // fuzzLayouts are the layouts the fuzz targets cover: each partitioning
-// under the default, flat, and custom names.
+// under default and flat paths.
 func fuzzLayouts(testing.TB) map[string]*pathLayout {
 	return map[string]*pathLayout{
-		"default":     newPathLayout(defaultPaths(false), noopScheme),
-		"hive":        newPathLayout(defaultPaths(false), fuzzHive),
-		"flat":        newPathLayout(flatNames(), noopScheme),
-		"flat hive":   newPathLayout(flatNames(), fuzzHive),
-		"custom":      newPathLayout(customNames(), noopScheme),
-		"custom hive": newPathLayout(customNames(), fuzzHive),
+		"default":   newPathLayout(false, noopScheme),
+		"hive":      newPathLayout(false, fuzzHive),
+		"flat":      newPathLayout(true, noopScheme),
+		"flat hive": newPathLayout(true, fuzzHive),
 	}
 }
 
@@ -96,7 +80,7 @@ func FuzzLayout_RoundTrip(f *testing.F) {
 			if l.supportsPartitions() {
 				partition = "day=" + day + "/region=" + region
 			}
-			id, snap := DatasetID(dataset), DatasetSnapshotID(snapshot)
+			id, snap := DatasetID(dataset), SnapshotID(snapshot)
 			for kind, p := range map[pathKind]string{
 				manifestLeaf: l.manifestPathInPartition(id, snap, partition),
 				dataLeaf:     l.dataFilePath(id, snap, partition, file),
@@ -120,11 +104,9 @@ func isPlainSegment(s string) bool {
 	if s == "" || s == "." || s == ".." || strings.ContainsAny(s, "/\\=") {
 		return false
 	}
-	for _, n := range []ManifestPaths{defaultPaths(false), customNames()} {
-		switch s {
-		case n.Datasets, n.Snapshots, n.Manifest, n.Data, n.Partitions, n.Segments, latestFile, n.Expired, n.Staged:
-			return false
-		}
+	switch s {
+	case datasetsDir, snapshotsDir, manifestFile, dataDir, partitionsDir, segmentsDir, latestFile, expiredDir, stagedDir:
+		return false
 	}
 	key, ok := storepath.Key(s)
 	return ok && key == s
@@ -137,7 +119,7 @@ func FuzzPartitionPrefix(f *testing.F) {
 	for _, seed := range []string{"day=1", "day=1/", "day=1/region=us", "../other", "day=1/../../x", "/day=1", "a\\b", "", "./day"} {
 		f.Add(seed)
 	}
-	hive := newPathLayout(defaultPaths(false), fuzzHive)
+	hive := newPathLayout(false, fuzzHive)
 	f.Fuzz(func(t *testing.T, prefix string) {
 		if !validPartitionPrefix(prefix) {
 			return

@@ -115,7 +115,7 @@ func runConditionalRace(t *testing.T, base *Store, race conditionalRace, key str
 // the versions that base wrote, so that each writer reads before it writes.
 func writerStore(t *testing.T, base *Store) *Store {
 	t.Helper()
-	store, err := New(base.client, Config{Bucket: base.bucket})
+	store, err := New(base.client, base.bucket)
 	if err != nil {
 		t.Fatalf("new writer store: %v", err)
 	}

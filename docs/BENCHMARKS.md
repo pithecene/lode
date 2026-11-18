@@ -91,7 +91,7 @@ figures in the other sections were measured with Go 1.25.
 | Gate | Allocations | Bytes |
 |------|------------:|------:|
 | Write of three records | 53 | 6,656 |
-| Read of three records | 60 | 10,176 |
+| Read of three records | 61 | 10,368 |
 | Blob StreamWrite of one kibibyte | 31 | 7,232 |
 | Record StreamWrite of three records | 63 | 7,296 |
 | JSONL Decode of three records | 33 | 5,504 |
@@ -100,23 +100,22 @@ figures in the other sections were measured with Go 1.25.
 
 A change that exceeds a ceiling fails the test and must justify the increase
 in its pull request before the ceiling is raised. A change that reduces a
-figure lowers the ceiling to the new figure in the same pull request, so the
-gates never retain unused headroom. Manifest format 1.1.0 records the
-codec description, partition keys, and path names in every manifest, which
-raised the byte ceilings of the four Dataset gates, and one allocation of
-the Read gate, by the size of the larger manifest. The typed handles of
-V1_API_DECISIONS D11 lowered the Write, Read, and Blob StreamWrite gates:
-metadata is persisted as written rather than decoded into a map, and the
-JSONL codec decodes a map record through an interface value, which costs
-jsoniter three fewer allocations per record than its map decoder. The
-Record StreamWrite gate rose by two allocations, the cost of the iterator
-protocol (`iter.Seq2`): the caller's iterator closure and the loop body
-that ranges over it. A toolchain or dependency upgrade that
-moves the figures resets the ceilings in the upgrade's pull request.
-`task gates` runs each gate three times and reports the ceilings that each
-run calls for, with the byte figure already rounded. A byte figure near a
-multiple of 64 can round to either side, so a ceiling is reset to the
-highest figure that a gate reports.
+figure lowers the ceiling to the new figure in the same pull request (`task
+gates` reports the exact figures), so the gates never retain unused headroom.
+Manifest format `1.1.0` recorded the codec description, partition keys, and
+path names in every manifest, whereas format `1.2.0` (`V1_API_DECISIONS.md`
+D12) replaces the `paths` object with `flat,omitempty`, shrinking manifests
+on default layouts. D12 also streams uncompressed `Blobs.StreamWrite` calls
+directly into `Store.Put` without an `io.Pipe` or background goroutine,
+retains the opened manifest on `WithAnchor(id)` views so `Snapshot(id)` and
+`Read(id)` avoid a second manifest `Get`, derives `ListPartitions` directly
+from listed Hive keys with zero manifest `Get` calls when indexed, and uses
+`PrefixLister` in `ListDatasets` (`O(D)` instead of `O(N)`). A toolchain or
+dependency upgrade that moves the figures resets the ceilings in the
+upgrade's pull request. `task gates` runs each gate three times and reports
+the ceilings that each run calls for, with the byte figure already rounded. A
+byte figure near a multiple of 64 can round to either side, so a ceiling is
+reset to the highest figure that a gate reports.
 
 Two gates vary between measurements. Under Go 1.27, `encoding/json` uses
 its v2 implementation, and in a few percent of measurements the Dataset

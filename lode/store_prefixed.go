@@ -13,7 +13,8 @@ import (
 // Prefixed returns a factory whose store keeps every object of the store
 // that factory creates under prefix (CONTRACT_STORAGE §Prefixed Stores).
 // A key k addresses the object prefix/k, a listing returns keys without
-// the prefix, and objects outside the prefix are invisible.
+// the prefix, and objects outside the prefix are invisible. When the inner
+// store implements PrefixLister, the prefixed store preserves it.
 //
 // The store applies the key rules of §Put to each key before it adds the
 // prefix, so a key such as "../x" is refused with ErrInvalidPath rather
@@ -21,8 +22,8 @@ import (
 // and must not escape the root, or the factory returns ErrInvalidArgument
 // when it is called, before it calls factory.
 //
-// The factory may create any RangeStore implementation, such as the
-// *s3.Store that Use(s3Store) returns a factory of.
+// The factory may create any RangeStore implementation, such as s3.Bucket
+// or Use(s3Store).
 func Prefixed[S RangeStore](factory Factory[S], prefix string) Factory[RangeStore] {
 	return func() (RangeStore, error) {
 		if factory == nil {
@@ -39,10 +40,14 @@ func Prefixed[S RangeStore](factory Factory[S], prefix string) Factory[RangeStor
 		if err != nil {
 			return nil, err
 		}
-		if validate.Nil(inner) { // a typed nil too, which would panic at first use
+		if validate.Nil(inner) {
 			return nil, validate.Argument("store factory returned nil store")
 		}
-		return &prefixedStore{inner: inner, prefix: p}, nil
+		base := &prefixedStore{inner: inner, prefix: p}
+		if prefixes, ok := any(inner).(PrefixLister); ok {
+			return &prefixedPrefixStore{prefixedStore: base, prefixes: prefixes}, nil
+		}
+		return base, nil
 	}
 }
 
@@ -53,7 +58,11 @@ type prefixedStore struct {
 	prefix string // ends with "/"
 }
 
-// key returns the inner key for a key of this store, or ErrInvalidPath.
+type prefixedPrefixStore struct {
+	*prefixedStore
+	prefixes PrefixLister
+}
+
 func (s *prefixedStore) key(k string) (string, error) {
 	cleaned, ok := storepath.Key(k)
 	if !ok {
@@ -94,8 +103,6 @@ func (s *prefixedStore) Delete(ctx context.Context, path string) error {
 	return s.inner.Delete(ctx, k)
 }
 
-// List lists the inner store under the prefix and returns the keys without
-// it. Every key the inner store returns begins with the prefix it was given.
 func (s *prefixedStore) List(ctx context.Context, prefix string) ([]string, error) {
 	p, ok := storepath.Prefix(prefix)
 	if !ok {
@@ -110,6 +117,26 @@ func (s *prefixedStore) List(ctx context.Context, prefix string) ([]string, erro
 		rel, found := strings.CutPrefix(k, s.prefix)
 		if !found {
 			return nil, fmt.Errorf("lode: store listed %q outside the prefix %q", k, s.prefix)
+		}
+		out = append(out, rel)
+	}
+	return out, nil
+}
+
+func (s *prefixedPrefixStore) ListPrefixes(ctx context.Context, prefix string) ([]string, error) {
+	p, ok := storepath.Prefix(prefix)
+	if !ok {
+		return nil, fmt.Errorf("lode: invalid prefix %q: %w", prefix, ErrInvalidPath)
+	}
+	prefixes, err := s.prefixes.ListPrefixes(ctx, s.prefix+p)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(prefixes))
+	for _, cp := range prefixes {
+		rel, found := strings.CutPrefix(cp, s.prefix)
+		if !found {
+			return nil, fmt.Errorf("lode: store listed prefix %q outside the prefix %q", cp, s.prefix)
 		}
 		out = append(out, rel)
 	}
@@ -140,4 +167,8 @@ func (s *prefixedStore) CompareAndSwap(ctx context.Context, path, expected, repl
 	return s.inner.CompareAndSwap(ctx, k, expected, replacement)
 }
 
-var _ RangeStore = (*prefixedStore)(nil)
+var (
+	_ RangeStore   = (*prefixedStore)(nil)
+	_ RangeStore   = (*prefixedPrefixStore)(nil)
+	_ PrefixLister = (*prefixedPrefixStore)(nil)
+)

@@ -47,7 +47,7 @@ func (c *lostResponseClient) HeadObject(ctx context.Context, params *s3.HeadObje
 func TestStore_Put_OwnUploadAfterLostResponse(t *testing.T) {
 	ctx := t.Context()
 	mock := &lostResponseClient{MockS3Client: NewMockS3Client()}
-	store, _ := New(mock, Config{Bucket: "test"})
+	store, _ := New(mock, "test")
 
 	payload := []byte("stored once, answered twice")
 	if err := store.Put(ctx, "obj", bytes.NewReader(payload)); err != nil {
@@ -68,7 +68,7 @@ func TestStore_Put_OwnUploadAfterLostResponse(t *testing.T) {
 func TestStore_Put_OtherWritersObjectStaysRefused(t *testing.T) {
 	ctx := t.Context()
 	mock := NewMockS3Client()
-	store, _ := New(mock, Config{Bucket: "test"})
+	store, _ := New(mock, "test")
 
 	if err := store.Put(ctx, "obj", bytes.NewReader([]byte("theirs"))); err != nil {
 		t.Fatal(err)
@@ -84,7 +84,7 @@ func TestStore_Put_OtherWritersObjectStaysRefused(t *testing.T) {
 func TestStore_Put_UnconfirmedRefusalStaysRefused(t *testing.T) {
 	ctx := t.Context()
 	mock := &lostResponseClient{MockS3Client: NewMockS3Client(), headErr: errors.New("head unavailable")}
-	store, _ := New(mock, Config{Bucket: "test"})
+	store, _ := New(mock, "test")
 
 	err := store.Put(ctx, "obj", bytes.NewReader([]byte("unconfirmed")))
 	if !errors.Is(err, lode.ErrPathExists) {
@@ -97,7 +97,7 @@ func TestStore_Put_UnconfirmedRefusalStaysRefused(t *testing.T) {
 func TestStore_Put_MultipartETagNeverMatches(t *testing.T) {
 	ctx := t.Context()
 	mock := &lostResponseClient{MockS3Client: NewMockS3Client()}
-	store, _ := New(mock, Config{Bucket: "test"})
+	store, _ := New(mock, "test")
 	mock.mu.Lock()
 	mock.objects["obj"] = []byte("x")
 	mock.mu.Unlock()
@@ -119,13 +119,13 @@ func TestStore_Put_ConditionalRequestConflictMapped(t *testing.T) {
 	for _, code := range []string{"ConditionalRequestConflict", "409"} {
 		t.Run(code, func(t *testing.T) {
 			own := &lostResponseClient{MockS3Client: NewMockS3Client(), code: code}
-			ownStore, _ := New(own, Config{Bucket: "test"})
+			ownStore, _ := New(own, "test")
 			if err := ownStore.Put(ctx, "own", bytes.NewReader([]byte("mine"))); err != nil {
 				t.Fatalf("own upload after %s: got %v, want nil", code, err)
 			}
 
 			other := &lostResponseClient{MockS3Client: NewMockS3Client(), code: code, headErr: errors.New("other writer in flight")}
-			otherStore, _ := New(other, Config{Bucket: "test"})
+			otherStore, _ := New(other, "test")
 			if err := otherStore.Put(ctx, "other", bytes.NewReader([]byte("theirs"))); !errors.Is(err, lode.ErrPathExists) {
 				t.Fatalf("other writer %s: got %v, want ErrPathExists", code, err)
 			}

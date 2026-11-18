@@ -25,7 +25,7 @@ func (f *failingReader) Read(p []byte) (int, error) {
 func TestStore_Put_AllOrNothing(t *testing.T) {
 	ctx := t.Context()
 	mock := NewMockS3Client()
-	store, _ := New(mock, Config{Bucket: "test"})
+	store, _ := New(mock, "test")
 
 	err := store.Put(ctx, "obj", &failingReader{prefix: bytes.NewReader([]byte("partial"))})
 	if !errors.Is(err, errReaderBoom) {
