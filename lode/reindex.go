@@ -3,7 +3,6 @@ package lode
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -173,12 +172,9 @@ func (d *dataset) readCanonical(ctx context.Context, id DatasetSnapshotID, p str
 	if err != nil {
 		return nil, nil, fmt.Errorf("lode: failed to read manifest %s: %w", p, err)
 	}
-	var m Manifest
-	if err := json.Unmarshal(data, &m); err != nil {
-		return nil, nil, fmt.Errorf("lode: failed to decode manifest %s: %w", p, err)
-	}
-	if err := d.validateCopy(&m, id); err != nil {
+	m, err := newDatasetKind(d.id, d.layout, d.store).Decode(id, bytes.NewReader(data))
+	if err != nil {
 		return nil, nil, fmt.Errorf("failed to load manifest %s: %w", p, err)
 	}
-	return data, &m, nil
+	return data, m, nil
 }

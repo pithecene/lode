@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"reflect"
 	"slices"
 	"time"
 
@@ -96,6 +97,9 @@ type parquetCodec struct {
 // schema.Fields. This guarantees that all fieldOrder entries (derived from
 // schema.Fields) will be present in fieldsByName.
 func validateSchema(schema ParquetSchema) (map[string]ParquetField, error) {
+	if len(schema.Fields) == 0 {
+		return nil, fmt.Errorf("parquet: %w: schema must have at least one field", ErrSchemaViolation)
+	}
 	fieldsByName := make(map[string]ParquetField, len(schema.Fields))
 	for _, field := range schema.Fields {
 		if field.Type < 0 || field.Type >= parquetTypeMax {
@@ -145,7 +149,9 @@ func newParquetCodec(schema ParquetSchema, opts ...ParquetOption) (*parquetCodec
 		fieldsByName: fieldsByName,
 	}
 	for _, opt := range opts {
-		opt(c)
+		if opt != nil {
+			opt(c)
+		}
 	}
 	pqSchema, err := buildParquetSchema(schema)
 	if err != nil {
@@ -277,6 +283,11 @@ func (c *parquetCodec) Decode(r io.Reader) ([]D, error) {
 		return nil, fmt.Errorf("parquet: %w: %w", ErrInvalidFormat, err)
 	}
 
+	plan, err := c.planDecodeColumns(file.Schema())
+	if err != nil {
+		return nil, err
+	}
+
 	numRows := file.NumRows()
 	if numRows == 0 {
 		return []D{}, nil
@@ -292,7 +303,10 @@ func (c *parquetCodec) Decode(r io.Reader) ([]D, error) {
 		n, err := reader.ReadRows(rows)
 		if n > 0 {
 			for i := 0; i < n; i++ {
-				record := c.rowToRecord(rows[i])
+				record, rowErr := c.rowToRecord(rows[i], plan)
+				if rowErr != nil {
+					return nil, rowErr
+				}
 				records = append(records, record)
 			}
 		}
@@ -355,22 +369,98 @@ func (c *parquetCodec) recordToRow(m D, index int) (parquet.Row, error) {
 	return row, nil
 }
 
-// rowToRecord converts a parquet Row back to a map.
-func (c *parquetCodec) rowToRecord(row parquet.Row) map[string]any {
-	record := make(map[string]any, len(c.fieldOrder))
-	for i, fieldName := range c.fieldOrder {
-		if i >= len(row) {
-			continue
-		}
-		field := c.getFieldByName(fieldName)
-		val := row[i]
-		if val.IsNull() {
-			record[fieldName] = nil
-			continue
-		}
-		record[fieldName] = c.convertFromParquetValue(val, field)
+// decodeColumn maps one physical column in a Parquet file to its declared
+// schema field, when the column is part of the codec's schema.
+type decodeColumn struct {
+	field   ParquetField
+	matched bool
+}
+
+// decodePlan holds validated physical-to-schema column mappings and any
+// nullable schema fields absent from the physical file.
+type decodePlan struct {
+	columns         []decodeColumn
+	missingNullable []string
+}
+
+// expectedParquetKind maps each ParquetType to the physical Parquet kind its
+// leaf column must carry.
+var expectedParquetKind = [parquetTypeMax]parquet.Kind{
+	ParquetInt32:     parquet.Int32,
+	ParquetInt64:     parquet.Int64,
+	ParquetFloat32:   parquet.Float,
+	ParquetFloat64:   parquet.Double,
+	ParquetString:    parquet.ByteArray,
+	ParquetBool:      parquet.Boolean,
+	ParquetBytes:     parquet.ByteArray,
+	ParquetTimestamp: parquet.Int64,
+}
+
+// planDecodeColumns validates a Parquet file's schema against c.schema and
+// maps each physical leaf column by name, so files with any column order
+// (including external writers and pre-v1 alphabetical files) decode safely.
+func (c *parquetCodec) planDecodeColumns(fileSchema *parquet.Schema) (decodePlan, error) {
+	if fileSchema == nil {
+		return decodePlan{}, fmt.Errorf("parquet: %w: missing file schema", ErrInvalidFormat)
 	}
-	return record
+	fileFields := fileSchema.Fields()
+	cols := make([]decodeColumn, len(fileFields))
+	seen := make(map[string]bool, len(fileFields))
+
+	for i, pf := range fileFields {
+		name := pf.Name()
+		if seen[name] {
+			return decodePlan{}, fmt.Errorf("parquet: %w: duplicate column %q in file schema", ErrInvalidFormat, name)
+		}
+		seen[name] = true
+		expected, ok := c.fieldsByName[name]
+		if !ok {
+			continue
+		}
+		if !pf.Leaf() || pf.Repeated() {
+			return decodePlan{}, fmt.Errorf("parquet: %w: column %q is not a scalar leaf", ErrInvalidFormat, name)
+		}
+		if got, want := pf.Type().Kind(), expectedParquetKind[expected.Type]; got != want {
+			return decodePlan{}, fmt.Errorf("parquet: %w: column %q has physical kind %s, want %s", ErrInvalidFormat, name, got, want)
+		}
+		cols[i] = decodeColumn{field: expected, matched: true}
+	}
+
+	var missingNullable []string
+	for _, field := range c.schema.Fields {
+		if seen[field.Name] {
+			continue
+		}
+		if !field.Nullable {
+			return decodePlan{}, fmt.Errorf("parquet: %w: missing required column %q", ErrInvalidFormat, field.Name)
+		}
+		missingNullable = append(missingNullable, field.Name)
+	}
+	return decodePlan{columns: cols, missingNullable: missingNullable}, nil
+}
+
+// rowToRecord converts a parquet Row back to a map using the validated column plan.
+func (c *parquetCodec) rowToRecord(row parquet.Row, plan decodePlan) (map[string]any, error) {
+	record := make(map[string]any, len(c.schema.Fields))
+	for _, name := range plan.missingNullable {
+		record[name] = nil
+	}
+	for _, val := range row {
+		colIdx := val.Column()
+		if colIdx < 0 || colIdx >= len(plan.columns) || !plan.columns[colIdx].matched {
+			continue
+		}
+		field := plan.columns[colIdx].field
+		if val.IsNull() {
+			if !field.Nullable {
+				return nil, fmt.Errorf("parquet: %w: null value in required column %q", ErrInvalidFormat, field.Name)
+			}
+			record[field.Name] = nil
+			continue
+		}
+		record[field.Name] = c.convertFromParquetValue(val, field)
+	}
+	return record, nil
 }
 
 // convertToParquetValue converts a Go value to a parquet Value.
@@ -514,17 +604,47 @@ func (c *parquetCodec) convertFromParquetValue(val parquet.Value, field ParquetF
 	}
 }
 
-// buildParquetSchema creates a parquet-go schema from our schema definition.
+// orderedGroup is a parquet root group node that preserves declared schema
+// field order rather than parquet.Group's alphabetical map order.
+type orderedGroup struct {
+	parquet.Group
+	fields []parquet.Field
+}
+
+func (g orderedGroup) Fields() []parquet.Field { return g.fields }
+
+type orderedField struct {
+	parquet.Node
+	name string
+}
+
+func (f *orderedField) Name() string { return f.name }
+
+func (f *orderedField) Value(base reflect.Value) reflect.Value {
+	if base.Kind() == reflect.Interface {
+		if base.IsNil() {
+			return reflect.ValueOf(nil)
+		}
+		if base = base.Elem(); base.Kind() == reflect.Pointer && base.IsNil() {
+			return reflect.ValueOf(nil)
+		}
+	}
+	return base.MapIndex(reflect.ValueOf(f.name))
+}
+
+// buildParquetSchema creates a parquet-go schema preserving schema.Fields order.
 func buildParquetSchema(schema ParquetSchema) (*parquet.Schema, error) {
 	group := make(parquet.Group, len(schema.Fields))
-	for _, field := range schema.Fields {
+	fields := make([]parquet.Field, len(schema.Fields))
+	for i, field := range schema.Fields {
 		node, err := buildFieldNode(field)
 		if err != nil {
 			return nil, err
 		}
 		group[field.Name] = node
+		fields[i] = &orderedField{Node: node, name: field.Name}
 	}
-	return parquet.NewSchema("record", group), nil
+	return parquet.NewSchema("record", orderedGroup{Group: group, fields: fields}), nil
 }
 
 func buildFieldNode(field ParquetField) (parquet.Node, error) {
@@ -562,18 +682,6 @@ func buildFieldNode(field ParquetField) (parquet.Node, error) {
 // Per-file statistics
 // -----------------------------------------------------------------------------
 
-// orderable maps ParquetType to whether min/max comparisons are meaningful.
-var orderable = map[ParquetType]bool{
-	ParquetInt32:     true,
-	ParquetInt64:     true,
-	ParquetFloat32:   true,
-	ParquetFloat64:   true,
-	ParquetString:    true,
-	ParquetTimestamp: true,
-	ParquetBool:      false,
-	ParquetBytes:     false,
-}
-
 // computeFileStats computes per-column statistics from the input records.
 func computeFileStats(schema ParquetSchema, records []D) *FileStats {
 	columns := make([]ColumnStats, len(schema.Fields))
@@ -602,22 +710,54 @@ func (a *columnAccumulator) observe(val any) {
 		return
 	}
 
-	if !orderable[a.field.Type] {
+	norm, ok := normalizeStatValue(a.field.Type, val)
+	if !ok {
 		return
 	}
 
 	if !a.hasValue {
-		a.min = val
-		a.max = val
+		a.min = norm
+		a.max = norm
 		a.hasValue = true
 		return
 	}
 
-	if lessThan(a.field.Type, val, a.min) {
-		a.min = val
+	if lessThan(a.field.Type, norm, a.min) {
+		a.min = norm
 	}
-	if lessThan(a.field.Type, a.max, val) {
-		a.max = val
+	if lessThan(a.field.Type, a.max, norm) {
+		a.max = norm
+	}
+}
+
+// normalizeStatValue coerces a validated record value to the canonical decoded
+// Go type for its Parquet column and filters out unordered types (bool, bytes)
+// and non-finite floats (NaN, ±Inf), which JSON manifests cannot represent.
+func normalizeStatValue(ptype ParquetType, val any) (any, bool) {
+	switch ptype {
+	case ParquetInt32:
+		return int32(toInt64(val)), true
+	case ParquetInt64:
+		return toInt64(val), true
+	case ParquetFloat32:
+		f := float32(toFloat64(val))
+		if math.IsNaN(float64(f)) || math.IsInf(float64(f), 0) {
+			return nil, false
+		}
+		return f, true
+	case ParquetFloat64:
+		f := toFloat64(val)
+		if math.IsNaN(f) || math.IsInf(f, 0) {
+			return nil, false
+		}
+		return f, true
+	case ParquetString:
+		s, ok := val.(string)
+		return s, ok
+	case ParquetTimestamp:
+		return toTimestamp(val).UTC(), true
+	default:
+		return nil, false
 	}
 }
 

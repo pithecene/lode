@@ -264,7 +264,7 @@ func (s *Store) putAtomicFromFile(ctx context.Context, fullKey string, file io.R
 		IfNoneMatch:   aws.String("*"),
 	})
 	if err != nil {
-		if hasErrorCode(err, preconditionCodes...) {
+		if hasErrorCode(err, slices.Concat(preconditionCodes, conflictCodes)...) {
 			if s.ownUpload(ctx, fullKey, size, md5Hex) {
 				return nil
 			}

@@ -69,7 +69,7 @@ func (volumeKind) NotExpired(context.Context, SnapshotID) (bool, error) {
 	return true, nil
 }
 
-func (k volumeKind) Decode(r io.Reader) (*Manifest, error) {
+func (k volumeKind) Decode(id SnapshotID, r io.Reader) (*Manifest, error) {
 	var m Manifest
 	if err := json.NewDecoder(r).Decode(&m); err != nil {
 		return nil, fmt.Errorf("lode: failed to decode volume manifest: %w", err)
@@ -78,10 +78,22 @@ func (k volumeKind) Decode(r io.Reader) (*Manifest, error) {
 		return nil, err
 	}
 	if m.VolumeID != k.id {
-		return nil, fmt.Errorf("lode: manifest volume_id %q does not match volume %q", m.VolumeID, k.id)
+		return nil, &validate.ManifestError{
+			Field:   "volume_id",
+			Message: fmt.Sprintf("got %q, want %q", m.VolumeID, k.id),
+		}
+	}
+	if m.SnapshotID != id {
+		return nil, &validate.ManifestError{
+			Field:   "snapshot_id",
+			Message: fmt.Sprintf("got %q, want %q", m.SnapshotID, id),
+		}
 	}
 	if m.TotalLength != k.totalLength {
-		return nil, fmt.Errorf("lode: manifest total_length %d does not match volume total_length %d", m.TotalLength, k.totalLength)
+		return nil, &validate.ManifestError{
+			Field:   "total_length",
+			Message: fmt.Sprintf("got %d, want %d", m.TotalLength, k.totalLength),
+		}
 	}
 	return &m, nil
 }
@@ -143,6 +155,9 @@ func New(id ID, storeFactory lode.Factory[lode.RangeStore], totalLength int64, o
 		retry: retry.Default(),
 	}
 	for _, opt := range opts {
+		if opt == nil {
+			return nil, validate.Argument("option must not be nil")
+		}
 		if err := opt.apply(cfg); err != nil {
 			return nil, err // option errors carry the lode: prefix
 		}
@@ -153,7 +168,7 @@ func New(id ID, storeFactory lode.Factory[lode.RangeStore], totalLength int64, o
 	if err != nil {
 		return nil, fmt.Errorf("failed to create store: %w", err)
 	}
-	if store == nil {
+	if validate.Nil(store) {
 		return nil, validate.Argument("store factory returned nil store")
 	}
 
@@ -192,6 +207,9 @@ func Remove(ctx context.Context, id ID, storeFactory lode.Factory[lode.RangeStor
 	}
 	cfg := &config{retry: retry.Default()}
 	for _, opt := range opts {
+		if opt == nil {
+			return validate.Argument("option must not be nil")
+		}
 		if err := opt.apply(cfg); err != nil {
 			return err
 		}
@@ -757,11 +775,29 @@ func parseVolumeSnapshotID(p string) SnapshotID {
 // Volume manifest validation
 // -----------------------------------------------------------------------------
 
-// validateBlock checks one block's bounds against the volume's total length.
+// isVolumeBlockPath reports whether p is a canonical data block key inside
+// volumes/<id>/data/, without allocating on the valid path.
+func isVolumeBlockPath(id ID, p string) bool {
+	if !storepath.Segment(string(id)) {
+		return false
+	}
+	rest, ok := strings.CutPrefix(p, "volumes/")
+	if !ok {
+		return false
+	}
+	rest, ok = strings.CutPrefix(rest, string(id))
+	if !ok {
+		return false
+	}
+	rest, ok = strings.CutPrefix(rest, "/data/")
+	return ok && storepath.Segment(rest)
+}
+
+// validateBlock checks one block's bounds and path scope against the volume.
 // Written as an if-chain, not a tagless switch: gremlins reports switch case
 // expressions as not covered (go-gremlins/gremlins#298), which would hide
 // these guards from the mutation gate.
-func validateBlock(i int, b BlockRef, totalLength int64) error {
+func validateBlock(i int, id ID, b BlockRef, totalLength int64) error {
 	if b.Offset < 0 {
 		return &validate.ManifestError{Field: fmt.Sprintf("blocks[%d].offset", i), Message: "must be non-negative"}
 	}
@@ -775,6 +811,12 @@ func validateBlock(i int, b BlockRef, totalLength int64) error {
 		return &validate.ManifestError{
 			Field:   fmt.Sprintf("blocks[%d]", i),
 			Message: fmt.Sprintf("exceeds total_length (offset=%d, length=%d, total_length=%d)", b.Offset, b.Length, totalLength),
+		}
+	}
+	if !isVolumeBlockPath(id, b.Path) {
+		return &validate.ManifestError{
+			Field:   fmt.Sprintf("blocks[%d].path", i),
+			Message: fmt.Sprintf("path %q is outside volume %s", b.Path, id),
 		}
 	}
 	return nil
@@ -815,7 +857,7 @@ func validateVolumeManifest(m *Manifest) error {
 	// formatting them for every block on every load would allocate on the
 	// read path.
 	for i, b := range m.Blocks {
-		if err := validateBlock(i, b, m.TotalLength); err != nil {
+		if err := validateBlock(i, m.VolumeID, b, m.TotalLength); err != nil {
 			return err
 		}
 	}

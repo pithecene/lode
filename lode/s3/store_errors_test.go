@@ -79,21 +79,16 @@ func (c *codeClient) rangeSeen() string {
 var conditionalCodes = []string{"PreconditionFailed", "412", "ConditionalRequestConflict", "409"}
 
 func TestStore_MapsPreconditionCodes(t *testing.T) {
-	t.Run("put maps precondition codes", func(t *testing.T) {
+	t.Run("put maps precondition and conflict codes", func(t *testing.T) {
 		ctx := t.Context()
-		for _, code := range []string{"PreconditionFailed", "412"} {
+		for _, code := range append(conditionalCodes, "SlowDown") {
 			client := &codeClient{MockS3Client: NewMockS3Client(), putCode: code}
 			store, _ := New(client, Config{Bucket: "test"})
-			if err := store.Put(ctx, "k", bytes.NewReader([]byte("x"))); !errors.Is(err, lode.ErrPathExists) {
-				t.Errorf("code %s: got %v, want ErrPathExists", code, err)
+			err := store.Put(ctx, "k", bytes.NewReader([]byte("x")))
+			wantExists := code != "SlowDown"
+			if errors.Is(err, lode.ErrPathExists) != wantExists || err == nil {
+				t.Errorf("code %s: got %v, want ErrPathExists=%v", code, err, wantExists)
 			}
-		}
-		// Atomic PutObject only treats the 412 spellings as "exists"; a bare
-		// conflict code is surfaced as a plain error.
-		client := &codeClient{MockS3Client: NewMockS3Client(), putCode: "409"}
-		store, _ := New(client, Config{Bucket: "test"})
-		if err := store.Put(ctx, "k", bytes.NewReader([]byte("x"))); err == nil || errors.Is(err, lode.ErrPathExists) {
-			t.Errorf("code 409: got %v, want a non-ErrPathExists error", err)
 		}
 	})
 

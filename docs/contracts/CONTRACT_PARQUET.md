@@ -104,6 +104,7 @@ ds, err := root.Records(ctx, "events", codec) // returns a schema error
 error, and so do `Encode` and `Decode` when a caller invokes them directly.
 Validation fails for:
 
+- empty schemas (`len(schema.Fields) == 0`),
 - invalid `ParquetType` values (out of range),
 - empty field names, and
 - duplicate field names (which would cause the codec to drop columns
@@ -297,10 +298,13 @@ statistics through `FileStats()` after each `Encode` call:
   minimum or maximum.
 - The codec computes statistics during `Encode` from the Go record values,
   not from Parquet's internal metadata.
-- Minimum and maximum values use the same Go types as the input records.
-  JSON serialization renders a `time.Time` as an RFC 3339 string with
-  nanosecond precision, so consumers must interpret values according to the
-  schema.
+- Minimum and maximum values use the canonical decoded Go types for the
+  column (`int32`, `int64`, `float32`, `float64`, `string`, and UTC
+  `time.Time`). JSON serialization renders a `time.Time` as an RFC 3339
+  string with nanosecond precision, so consumers must interpret values
+  according to the schema.
+- Non-finite floating-point values (`NaN`, `+Inf`, and `-Inf`), which JSON
+  manifests cannot represent, are excluded from `Min` and `Max`.
 
 ---
 
