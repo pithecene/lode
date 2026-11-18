@@ -110,16 +110,7 @@ func BenchmarkDataset_StreamWrite(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		sw, err := ds.StreamWrite(b.Context(), nil)
-		if err != nil {
-			b.Fatal(err)
-		}
-
-		if _, err := sw.Write(payload); err != nil {
-			b.Fatal(err)
-		}
-
-		if _, err := sw.Commit(b.Context()); err != nil {
+		if _, err := ds.StreamWrite(b.Context(), bytes.NewReader(payload), nil); err != nil {
 			b.Fatal(err)
 		}
 	}

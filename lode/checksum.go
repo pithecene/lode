@@ -1,32 +1,41 @@
 package lode
 
 import (
-	"crypto/md5"
+	"crypto/md5" //nolint:gosec // non-cryptographic integrity digest for persisted objects
+	"crypto/sha256"
 	"encoding/hex"
 	"hash"
+	"hash/crc32"
 )
 
 // -----------------------------------------------------------------------------
-// MD5 Checksum
+// Bundled Checksums
 // -----------------------------------------------------------------------------
 
-// md5Checksum implements Checksum using MD5.
-type md5Checksum struct{}
+var crc32cTable = crc32.MakeTable(crc32.Castagnoli)
 
-// NewMD5Checksum creates an MD5 checksum component.
-//
-// MD5 produces 128-bit hashes represented as 32 hex characters.
-// Use with WithChecksum to enable checksums for a dataset.
-func NewMD5Checksum() Checksum {
-	return &md5Checksum{}
+// SHA256 returns a SHA-256 checksum component (64 hex characters, wire name "sha256").
+func SHA256() Checksum { return checksumAlgo{name: "sha256", newHash: sha256.New} }
+
+// CRC32C returns a Castagnoli CRC-32C checksum component (8 hex characters, wire name "crc32c").
+func CRC32C() Checksum {
+	return checksumAlgo{name: "crc32c", newHash: func() hash.Hash { return crc32.New(crc32cTable) }}
 }
 
-func (c *md5Checksum) Name() string {
-	return "md5"
+// MD5 returns an MD5 checksum component (32 hex characters, wire name "md5").
+func MD5() Checksum {
+	return checksumAlgo{name: "md5", newHash: md5.New} //nolint:gosec // integrity checksum, not security hash
 }
 
-func (c *md5Checksum) NewHasher() HashWriter {
-	return &hashWriter{h: md5.New()}
+type checksumAlgo struct {
+	name    string
+	newHash func() hash.Hash
+}
+
+func (c checksumAlgo) Name() string { return c.name }
+
+func (c checksumAlgo) NewHasher() HashWriter {
+	return &hashWriter{h: c.newHash()}
 }
 
 // hashWriter wraps a hash.Hash to implement HashWriter.

@@ -278,6 +278,69 @@ func TestStore_List(t *testing.T) {
 	t.Run("string prefix semantics", func(t *testing.T) { forEachStore(t, assertStringPrefixSemantics) })
 }
 
+func TestStore_ListPrefixes(t *testing.T) {
+	forEachStore(t, func(t *testing.T, store RangeStore) {
+		lister, ok := store.(PrefixLister)
+		if !ok {
+			t.Fatalf("%T does not implement PrefixLister", store)
+		}
+		ctx := t.Context()
+
+		if got, err := lister.ListPrefixes(ctx, "datasets/"); err != nil || len(got) != 0 {
+			t.Fatalf("empty ListPrefixes = %v, %v; want empty", got, err)
+		}
+		if _, err := lister.ListPrefixes(ctx, "../escape"); !errors.Is(err, ErrInvalidPath) {
+			t.Fatalf("traversal ListPrefixes = %v, want ErrInvalidPath", err)
+		}
+
+		for _, key := range []string{
+			"datasets/alpha/snapshots/s1/manifest.json",
+			"datasets/alpha/latest",
+			"datasets/alps/snapshots/s1/manifest.json",
+			"datasets/beta/latest",
+			"top-file.txt",
+		} {
+			if err := store.Put(ctx, key, bytes.NewReader([]byte("x"))); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		gotRoot, err := lister.ListPrefixes(ctx, "")
+		if err != nil || !slices.Equal(gotRoot, []string{"datasets/"}) {
+			t.Errorf("ListPrefixes(\"\") = %v, %v; want [datasets/]", gotRoot, err)
+		}
+		gotDS, err := lister.ListPrefixes(ctx, "datasets/")
+		if err != nil || !slices.Equal(gotDS, []string{"datasets/alpha/", "datasets/alps/", "datasets/beta/"}) {
+			t.Errorf("ListPrefixes(\"datasets/\") = %v, %v; want alpha, alps, beta", gotDS, err)
+		}
+		gotPartial, err := lister.ListPrefixes(ctx, "datasets/alp")
+		if err != nil || !slices.Equal(gotPartial, []string{"datasets/alpha/", "datasets/alps/"}) {
+			t.Errorf("ListPrefixes(\"datasets/alp\") = %v, %v; want alpha, alps", gotPartial, err)
+		}
+	})
+}
+
+func TestFS_WithSync(t *testing.T) {
+	tmpDir := t.TempDir()
+	if _, err := NewFS(tmpDir, nil); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("NewFS(nil option) = %v, want ErrInvalidArgument", err)
+	}
+	store, err := FS(tmpDir, WithSync())()
+	if err != nil {
+		t.Fatalf("FS(WithSync): %v", err)
+	}
+	ctx := t.Context()
+	if err := store.Put(ctx, "a/b.txt", bytes.NewReader([]byte("durable"))); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if got := readOrAbsent(t, store, "a/b.txt"); got != "durable" {
+		t.Fatalf("Get = %q, want durable", got)
+	}
+	if err := store.(ConditionalWriter).CompareAndSwap(ctx, "ptr/latest", "", "s1"); err != nil && !errors.Is(err, errors.ErrUnsupported) {
+		t.Fatalf("CompareAndSwap: %v", err)
+	}
+}
+
 func TestStore_ReadRange(t *testing.T) {
 	t.Run("basic", func(t *testing.T) {
 		forEachStore(t, func(t *testing.T, store RangeStore) {

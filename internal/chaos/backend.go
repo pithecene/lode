@@ -146,7 +146,11 @@ type s3Area struct {
 
 // backend is the run's store over the area, released by emptying it.
 func (a s3Area) backend() (Backend, error) {
-	store, err := s3.New(a.client, s3.Config{Bucket: a.bucket, Prefix: a.prefix})
+	factory := s3.Bucket(a.client, a.bucket)
+	if a.prefix != "" {
+		factory = lode.Prefixed(factory, a.prefix)
+	}
+	store, err := factory()
 	if err != nil {
 		return Backend{}, err
 	}

@@ -3,6 +3,8 @@ package volume
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +13,7 @@ import (
 	"path"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -29,17 +32,14 @@ const (
 // volume implements the Volume interface.
 type volume struct {
 	id          ID
-	store       lode.RangeStore // reads are built on range reads (V1_API_DECISIONS D5)
+	store       lode.RangeStore
 	totalLength int64
 	checksum    lode.Checksum
 	retry       retry.Config
 
-	// history owns the snapshot sequence and its head pointer (internal/history).
 	history history.History[SnapshotID, Manifest]
 }
 
-// volumeKind is the volume's snapshot grammar for history: a fixed layout
-// (CONTRACT_VOLUME.md), and manifests validated against this volume on read.
 type volumeKind struct {
 	id          ID
 	totalLength int64
@@ -47,14 +47,8 @@ type volumeKind struct {
 
 func (k volumeKind) SnapshotsPrefix() string           { return volumeSnapshotsPrefix(k.id) }
 func (k volumeKind) ManifestPath(id SnapshotID) string { return volumeManifestPath(k.id, id) }
-
-// StagedPath makes a volume a history.Stager: a commit merges its parent's
-// blocks, so the parent's manifest must be loadable even when the parent's
-// writer terminated before persisting it (CONTRACT_VOLUME §Error Semantics).
-func (k volumeKind) StagedPath(id SnapshotID) string { return volumeStagedManifestPath(k.id, id) }
-
-// StagesCommit is true: every Volume commit is merged by the next.
-func (volumeKind) StagesCommit(string) bool { return true }
+func (k volumeKind) StagedPath(id SnapshotID) string   { return volumeStagedManifestPath(k.id, id) }
+func (volumeKind) StagesCommit(string) bool            { return true }
 
 func (k volumeKind) ParseManifest(p string) (SnapshotID, bool) {
 	if !strings.HasSuffix(p, "manifest.json") {
@@ -64,7 +58,6 @@ func (k volumeKind) ParseManifest(p string) (SnapshotID, bool) {
 	return id, id != ""
 }
 
-// NotExpired is always true: Volumes have no retention.
 func (volumeKind) NotExpired(context.Context, SnapshotID) (bool, error) {
 	return true, nil
 }
@@ -107,8 +100,6 @@ func toVolumeSnapshot(s *history.Snapshot[SnapshotID, Manifest]) *Snapshot {
 	return &Snapshot{ID: s.ID, Manifest: s.Manifest}
 }
 
-// historyErrors are the sentinels a volume's history returns, so history
-// errors keep lode's public identities.
 var historyErrors = history.Errors{
 	NotFound:         lode.ErrNotFound,
 	NoSnapshots:      lode.ErrNoSnapshots,
@@ -118,10 +109,6 @@ var historyErrors = history.Errors{
 	PathExists:       lode.ErrPathExists,
 }
 
-// validateID rejects a volume ID that is not one canonical path segment
-// (CONTRACT_STORAGE §Names in Keys). Every path of a volume is built from
-// its ID and cleaned, so "../datasets/x" would otherwise address a
-// dataset's objects, and "a/data" the objects of volume "a".
 func validateID(id ID) error {
 	if !storepath.Segment(string(id)) {
 		return validate.Argument("volume ID %q must be %s", id, storepath.SegmentRule)
@@ -129,9 +116,6 @@ func validateID(id ID) error {
 	return nil
 }
 
-// validateSnapshotID reports lode.ErrNotFound for a snapshot ID that is not
-// one canonical path segment (CONTRACT_STORAGE §Names in Keys): no snapshot
-// has such an ID, and a read never builds a path outside the volume.
 func validateSnapshotID(id SnapshotID) error {
 	if !storepath.Segment(string(id)) {
 		return fmt.Errorf("lode: snapshot %q: a snapshot ID is %s: %w", id, storepath.SegmentRule, lode.ErrNotFound)
@@ -159,11 +143,10 @@ func New(id ID, storeFactory lode.Factory[lode.RangeStore], totalLength int64, o
 			return nil, validate.Argument("option must not be nil")
 		}
 		if err := opt.apply(cfg); err != nil {
-			return nil, err // option errors carry the lode: prefix
+			return nil, err
 		}
 	}
 
-	// Arguments are checked before any store work (CONTRACT_ERRORS §5).
 	store, err := storeFactory()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create store: %w", err)
@@ -189,15 +172,11 @@ func (v *volume) ID() ID { return v.id }
 // (CONTRACT_VOLUME §Removal). It first replaces the head pointer with the
 // removal marker, so Latest and Commit on any handle of the volume return
 // ErrRemoved from then on, and then deletes every other object of the
-// volume: manifests, staged manifests and blocks. The pointer stays, as the
-// fence that keeps the volume removed. Removing a removed volume deletes
-// what remains, so a second call completes an interrupted one.
+// volume: manifests, staged manifests, and blocks.
 //
-// A commit that races the removal makes the pointer swap conflict. With
-// WithRetryCount the swap is retried; otherwise, or once the retries are
-// spent, Remove returns lode.ErrSnapshotConflict and deletes nothing.
-// Remove takes the retry options of New; any other option is accepted and
-// has no effect.
+// With WithRetry the pointer swap is retried on racing commits; otherwise, or
+// once retries are spent, Remove returns lode.ErrSnapshotConflict and deletes
+// nothing.
 func Remove(ctx context.Context, id ID, storeFactory lode.Factory[lode.RangeStore], opts ...Option) error {
 	if storeFactory == nil {
 		return validate.Argument("store factory must not be nil")
@@ -227,12 +206,6 @@ func Remove(ctx context.Context, id ID, storeFactory lode.Factory[lode.RangeStor
 	if err != nil {
 		return err
 	}
-	// The head this call fenced may belong to a commit that advanced the
-	// pointer and has not persisted its manifest yet (CONTRACT_CORE §Head
-	// Pointer). Deleting now would leave that manifest, once persisted,
-	// naming deleted blocks. The fence is up, so no other commit can start:
-	// this call refuses, the commit finishes or stays abandoned, and the
-	// next call, which finds the marker, deletes whatever then exists.
 	if previous != "" && previous != history.RemovedPointer {
 		if err := pendingCommit(ctx, store, id, SnapshotID(previous)); err != nil {
 			return err
@@ -242,12 +215,11 @@ func Remove(ctx context.Context, id ID, storeFactory lode.Factory[lode.RangeStor
 	if err != nil {
 		return fmt.Errorf("failed to list volume objects: %w", err)
 	}
+	lockKey := pointer + ".lock"
 	for _, k := range keys {
-		if k == pointer {
+		if k == pointer || k == lockKey {
 			continue
 		}
-		// A store may report a missing object (CONTRACT_STORAGE §Delete), as
-		// one a concurrent removal deleted first: the object is gone either way.
 		if err := store.Delete(ctx, k); err != nil && !errors.Is(err, lode.ErrNotFound) {
 			return fmt.Errorf("failed to delete volume object %s: %w", k, err)
 		}
@@ -257,13 +229,6 @@ func Remove(ctx context.Context, id ID, storeFactory lode.Factory[lode.RangeStor
 
 // Head returns the ID of the snapshot that the head pointer of volume id
 // names, read without the volume's total length (CONTRACT_VOLUME §Head).
-// The snapshot may belong to a pending commit, whose manifest is not yet
-// persisted. A snapshot ID carries the instant its commit began
-// (CONTRACT_CORE §Snapshot ID), so Head dates a volume's last commit for a
-// caller that cannot open it. Head returns lode.ErrNoSnapshots for a
-// volume with no commit, ErrRemoved for a removed volume, and
-// lode.ErrHeadUncommitted when the pointer is absent while manifests
-// exist. It never writes.
 func Head(ctx context.Context, id ID, storeFactory lode.Factory[lode.RangeStore]) (SnapshotID, error) {
 	if storeFactory == nil {
 		return "", validate.Argument("store factory must not be nil")
@@ -278,8 +243,6 @@ func Head(ctx context.Context, id ID, storeFactory lode.Factory[lode.RangeStore]
 	if validate.Nil(store) {
 		return "", validate.Argument("store factory returned nil store")
 	}
-	// The kind serves only its paths: PointedHead decodes no manifest, so
-	// the total length a decode would check is never read.
 	h := history.New(store, volumeKind{id: id}, volumeLatestPointerPath(id), "volume manifest", historyErrors)
 	return h.PointedHead(ctx)
 }
@@ -288,10 +251,6 @@ func Head(ctx context.Context, id ID, storeFactory lode.Factory[lode.RangeStore]
 // Path helpers (fixed layout per CONTRACT_VOLUME.md)
 // -----------------------------------------------------------------------------
 
-// pendingCommit is lode.ErrHeadUncommitted when head, the snapshot the
-// pointer named before the removal, has no canonical manifest: its commit
-// is pending or abandoned, and no persisted state tells which. A pointer
-// that held anything but a generated ID named no commit.
 func pendingCommit(ctx context.Context, store lode.RangeStore, id ID, head SnapshotID) error {
 	if !history.IsGeneratedID(head) {
 		return nil
@@ -306,8 +265,6 @@ func pendingCommit(ctx context.Context, store lode.RangeStore, id ID, head Snaps
 	return nil
 }
 
-// volumePrefix holds every object of volume id. The trailing slash keeps
-// volume "a" from listing the objects of volume "ab".
 func volumePrefix(id ID) string {
 	return path.Join("volumes", string(id)) + "/"
 }
@@ -324,8 +281,57 @@ func volumeStagedManifestPath(id ID, snapID SnapshotID) string {
 	return path.Join("volumes", string(id), "staged", string(snapID)+".json")
 }
 
-func volumeBlockPath(id ID, offset, length int64) string {
-	return path.Join("volumes", string(id), "data", fmt.Sprintf("%d-%d.bin", offset, length))
+// newVolumeBlockPath generates a nonced block path
+// volumes/<id>/data/<offset>-<length>-<nonce>.bin so an aborted StageWriteAt
+// never permanently occupies a byte range with ErrPathExists.
+func newVolumeBlockPath(id ID, offset, length int64) string {
+	var nonce [8]byte
+	_, _ = rand.Read(nonce[:])
+	return path.Join("volumes", string(id), "data", fmt.Sprintf("%d-%d-%s.bin", offset, length, hex.EncodeToString(nonce[:])))
+}
+
+// isStagedBlockPath reports whether p is a valid block path for (id, offset, length),
+// accepting both nonced paths (<offset>-<length>-<16hex>.bin) and legacy
+// pre-v1 paths (<offset>-<length>.bin).
+func isStagedBlockPath(id ID, offset, length int64, p string) bool {
+	rest, ok := strings.CutPrefix(p, "volumes/")
+	if !ok {
+		return false
+	}
+	rest, ok = strings.CutPrefix(rest, string(id))
+	if !ok {
+		return false
+	}
+	rest, ok = strings.CutPrefix(rest, "/data/")
+	if !ok || !storepath.Segment(rest) {
+		return false
+	}
+	rest, ok = strings.CutPrefix(rest, strconv.FormatInt(offset, 10)+"-"+strconv.FormatInt(length, 10))
+	if !ok {
+		return false
+	}
+	if rest == ".bin" {
+		return true
+	}
+	rest, ok = strings.CutPrefix(rest, "-")
+	if !ok {
+		return false
+	}
+	nonce, ok := strings.CutSuffix(rest, ".bin")
+	return ok && isLowerHex16(nonce)
+}
+
+func isLowerHex16(s string) bool {
+	if len(s) != 16 {
+		return false
+	}
+	for i := range len(s) {
+		c := s[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 func volumeLatestPointerPath(id ID) string {
@@ -356,7 +362,7 @@ func (v *volume) StageWriteAt(ctx context.Context, offset int64, r io.Reader) (B
 		return BlockRef{}, validate.Argument("block exceeds volume address space (offset=%d, length=%d, totalLength=%d)", offset, length, v.totalLength)
 	}
 
-	blockPath := volumeBlockPath(v.id, offset, length)
+	blockPath := newVolumeBlockPath(v.id, offset, length)
 
 	var checksumStr string
 	if v.checksum != nil {
@@ -379,17 +385,16 @@ func (v *volume) StageWriteAt(ctx context.Context, offset int64, r io.Reader) (B
 	}, nil
 }
 
-// Commit records the provided blocks into a new immutable snapshot.
-func (v *volume) Commit(ctx context.Context, blocks []BlockRef, metadata Metadata) (*Snapshot, error) {
-	if metadata == nil {
-		metadata = Metadata{}
+// Commit records the provided blocks and metadata into a new immutable snapshot.
+func (v *volume) Commit(ctx context.Context, blocks []BlockRef, metadata any) (*Snapshot, error) {
+	encodedMeta, err := lode.NewMetadata(metadata)
+	if err != nil {
+		return nil, err
 	}
 	if len(blocks) == 0 {
 		return nil, validate.Argument("commit must include at least one new block")
 	}
 
-	// Validate all new blocks have required fields, conform to fixed layout, and are within bounds.
-	// This is invariant across retries — checked once before the commit loop.
 	for _, b := range blocks {
 		if b.Offset < 0 {
 			return nil, validate.Argument("block offset must be non-negative (offset=%d)", b.Offset)
@@ -400,14 +405,13 @@ func (v *volume) Commit(ctx context.Context, blocks []BlockRef, metadata Metadat
 		if b.Length > v.totalLength-b.Offset {
 			return nil, validate.Argument("block exceeds volume address space (offset=%d, length=%d, totalLength=%d)", b.Offset, b.Length, v.totalLength)
 		}
-		expectedPath := volumeBlockPath(v.id, b.Offset, b.Length)
-		if b.Path != expectedPath {
-			return nil, validate.Argument("block path %q does not match expected layout path %q", b.Path, expectedPath)
+		if !isStagedBlockPath(v.id, b.Offset, b.Length, b.Path) {
+			return nil, validate.Argument("block path %q does not match layout path for volume %q at (%d, %d)", b.Path, v.id, b.Offset, b.Length)
 		}
 	}
 
 	var result *Snapshot
-	err := v.history.CommitLoop(ctx, &v.retry, func() error {
+	err = v.history.CommitLoop(ctx, &v.retry, func() error {
 		parent, expectedPointer, err := v.history.ResolveParent(ctx)
 		if err != nil {
 			return err
@@ -421,15 +425,12 @@ func (v *volume) Commit(ctx context.Context, blocks []BlockRef, metadata Metadat
 			return v.completeParent(ctx, parent, &result)
 		}
 
-		// Cumulative block set, sorted by offset for O(log B) lookups: existing
-		// blocks are already sorted, so only the new ones are sorted and merged.
-		// Overlaps are a logic error and are not retried.
 		cumulative := mergeBlocks(existing, blocks)
 		if err := validateNoOverlaps(cumulative); err != nil {
 			return err
 		}
 
-		manifest := v.buildManifest(SnapshotID(history.NewID()), parentID, metadata, cumulative)
+		manifest := v.buildManifest(SnapshotID(history.NewID()), parentID, encodedMeta, cumulative)
 		if err := v.history.Advance(ctx, expectedPointer, manifest.SnapshotID, manifest, []string{volumeManifestPath(v.id, manifest.SnapshotID)}); err != nil {
 			return err
 		}
@@ -442,12 +443,6 @@ func (v *volume) Commit(ctx context.Context, blocks []BlockRef, metadata Metadat
 	return result, nil
 }
 
-// completeParent settles a commit whose blocks the parent already holds.
-// A parent loaded from its staged copy is a pending commit, and a retry
-// of that commit after its manifest write failed asks for exactly its
-// blocks: the pending commit is completed and becomes the result
-// (CONTRACT_VOLUME §Error Semantics). A parent with a canonical manifest
-// committed the blocks already, and the commit has no new block.
 func (v *volume) completeParent(ctx context.Context, parent *history.Snapshot[SnapshotID, Manifest], result **Snapshot) error {
 	if parent == nil || !parent.Pending {
 		return validate.Argument("commit must include at least one new block (all provided blocks already committed)")
@@ -459,7 +454,6 @@ func (v *volume) completeParent(ctx context.Context, parent *history.Snapshot[Sn
 	return nil
 }
 
-// hasNewBlock reports whether any of blocks is absent from existing.
 func hasNewBlock(existing, blocks []BlockRef) bool {
 	seen := make(map[string]struct{}, len(existing))
 	for _, b := range existing {
@@ -473,8 +467,7 @@ func hasNewBlock(existing, blocks []BlockRef) bool {
 	return false
 }
 
-// buildManifest constructs the manifest for a snapshot of this volume.
-func (v *volume) buildManifest(snapshotID, parentID SnapshotID, metadata Metadata, blocks []BlockRef) *Manifest {
+func (v *volume) buildManifest(snapshotID, parentID SnapshotID, metadata lode.Metadata, blocks []BlockRef) *Manifest {
 	var checksumAlgorithm string
 	if v.checksum != nil {
 		checksumAlgorithm = v.checksum.Name()
@@ -493,9 +486,6 @@ func (v *volume) buildManifest(snapshotID, parentID SnapshotID, metadata Metadat
 	}
 }
 
-// mergeBlocks merges two block slices into a single sorted-by-offset result.
-// sorted must already be in ascending Offset order (from a prior commit).
-// unsorted is sorted first, then the two are merged in O(N + K log K).
 func mergeBlocks(sorted, unsorted []BlockRef) []BlockRef {
 	if len(unsorted) == 0 {
 		out := make([]BlockRef, len(sorted))
@@ -503,14 +493,12 @@ func mergeBlocks(sorted, unsorted []BlockRef) []BlockRef {
 		return out
 	}
 
-	// Sort new blocks (K is small — typically 1–10 blocks per commit).
 	newBlocks := make([]BlockRef, len(unsorted))
 	copy(newBlocks, unsorted)
 	sort.Slice(newBlocks, func(i, j int) bool {
 		return newBlocks[i].Offset < newBlocks[j].Offset
 	})
 
-	// Merge two sorted slices.
 	result := make([]BlockRef, 0, len(sorted)+len(newBlocks))
 	i, j := 0, 0
 	for i < len(sorted) && j < len(newBlocks) {
@@ -527,23 +515,15 @@ func mergeBlocks(sorted, unsorted []BlockRef) []BlockRef {
 	return result
 }
 
-// validateNoOverlaps checks that blocks do not overlap in the cumulative set.
-// Blocks MUST be sorted by Offset before calling. Callers:
-//   - validateVolumeManifest: sorts at load time
-//   - Commit: receives output of mergeBlocks (always sorted)
 func validateNoOverlaps(blocks []BlockRef) error {
 	if len(blocks) <= 1 {
 		return nil
 	}
-
 	for i := 1; i < len(blocks); i++ {
-		// Overflow-safe: equivalent to blocks[i-1].Offset + blocks[i-1].Length > blocks[i].Offset.
-		// Safe because blocks is in ascending Offset order, so the subtraction is non-negative.
 		if blocks[i-1].Length > blocks[i].Offset-blocks[i-1].Offset {
 			return ErrOverlappingBlocks
 		}
 	}
-
 	return nil
 }
 
@@ -551,7 +531,6 @@ func validateNoOverlaps(blocks []BlockRef) error {
 // Read surface
 // -----------------------------------------------------------------------------
 
-// ReadAt reads a fully committed range from a snapshot.
 func (v *volume) ReadAt(ctx context.Context, snapshotID SnapshotID, offset, length int64) ([]byte, error) {
 	if err := validateSnapshotID(snapshotID); err != nil {
 		return nil, err
@@ -585,17 +564,11 @@ func (v *volume) ReadAt(ctx context.Context, snapshotID SnapshotID, offset, leng
 	return result, nil
 }
 
-// readPlan is one range of a snapshot and the committed blocks that cover
-// it. planRead checks the coverage before a caller allocates or reads, so a
-// read of a gap in a sparse volume, which may be far larger than its
-// committed bytes, fails without allocating the range.
 type readPlan struct {
 	offset, length int64
 	blocks         []BlockRef
 }
 
-// planRead plans the read of [offset, offset+length) from manifest m. It
-// returns ErrRangeMissing when committed blocks do not cover the range.
 func planRead(m *Manifest, offset, length int64) (readPlan, error) {
 	blocks, err := findCoveringBlocks(m.Blocks, offset, length)
 	if err != nil {
@@ -604,11 +577,8 @@ func planRead(m *Manifest, offset, length int64) (readPlan, error) {
 	return readPlan{offset: offset, length: length, blocks: blocks}, nil
 }
 
-// fill reads the planned range from store into dst, which holds exactly
-// the range's length.
 func (p readPlan) fill(ctx context.Context, store lode.RangeStore, dst []byte) error {
 	for _, b := range p.blocks {
-		// Compute the intersection of [p.offset, p.offset+p.length) and [b.Offset, b.Offset+b.Length).
 		readStart := max(p.offset, b.Offset)
 		readEnd := min(p.offset+p.length, b.Offset+b.Length)
 		readLen := readEnd - readStart
@@ -627,8 +597,6 @@ func (p readPlan) fill(ctx context.Context, store lode.RangeStore, dst []byte) e
 	return nil
 }
 
-// ReaderAt loads a snapshot once and returns a reader of its committed
-// bytes.
 func (v *volume) ReaderAt(ctx context.Context, snapshotID SnapshotID) (SnapshotReaderAt, error) {
 	snapshot, err := v.Snapshot(ctx, snapshotID)
 	if err != nil {
@@ -637,11 +605,7 @@ func (v *volume) ReaderAt(ctx context.Context, snapshotID SnapshotID) (SnapshotR
 	return &snapshotReaderAt{ctx: ctx, volume: v, snapshot: snapshot}, nil
 }
 
-// snapshotReaderAt is the SnapshotReaderAt that ReaderAt returns. It holds
-// the snapshot that ReaderAt loaded and never changes it, so concurrent
-// reads share no mutable state.
 type snapshotReaderAt struct {
-	// ctx is the context of ReaderAt: io.ReaderAt passes none to a read.
 	ctx      context.Context
 	volume   *volume
 	snapshot *Snapshot
@@ -649,7 +613,6 @@ type snapshotReaderAt struct {
 
 var _ SnapshotReaderAt = (*snapshotReaderAt)(nil)
 
-// ReadAt implements SnapshotReaderAt.
 func (r *snapshotReaderAt) ReadAt(p []byte, off int64) (int, error) {
 	if off < 0 {
 		return 0, validate.Argument("offset must be non-negative")
@@ -675,34 +638,21 @@ func (r *snapshotReaderAt) ReadAt(p []byte, off int64) (int, error) {
 	return int(n), nil
 }
 
-// Blocks implements SnapshotReaderAt. A BlockRef holds no reference, so a
-// copy of the slice shares no memory with the reader's manifest.
 func (r *snapshotReaderAt) Blocks() []BlockRef { return slices.Clone(r.snapshot.Manifest.Blocks) }
 
-// findCoveringBlocks returns the blocks that fully cover [offset, offset+length).
-// Returns ErrRangeMissing if any sub-range is not covered.
-//
-// Blocks MUST be sorted by Offset (guaranteed by validateVolumeManifest at load time).
-// Uses binary search for O(log B + R) where R is the number of covering blocks.
 func findCoveringBlocks(blocks []BlockRef, offset, length int64) ([]BlockRef, error) {
 	requestEnd := offset + length
 
-	// Binary search: find first block whose end exceeds the requested offset.
 	start := sort.Search(len(blocks), func(i int) bool {
 		return blocks[i].Offset+blocks[i].Length > offset
 	})
 
-	// The relevant blocks are a contiguous run of the sorted blocks, so they
-	// are returned as a subslice rather than copied: a read needs no memory
-	// for them beyond its buffer. The capacity is capped so that an append
-	// to the result cannot overwrite the manifest's blocks.
 	end := start
 	for end < len(blocks) && blocks[end].Offset < requestEnd {
 		end++
 	}
 	relevant := blocks[start:end:end]
 
-	// Verify contiguous coverage from offset to requestEnd.
 	cursor := offset
 	for _, b := range relevant {
 		if b.Offset > cursor {
@@ -720,7 +670,6 @@ func findCoveringBlocks(blocks []BlockRef, offset, length int64) ([]BlockRef, er
 	return relevant, nil
 }
 
-// Latest returns the head snapshot.
 func (v *volume) Latest(ctx context.Context) (*Snapshot, error) {
 	s, err := v.history.Latest(ctx)
 	if err != nil {
@@ -729,7 +678,6 @@ func (v *volume) Latest(ctx context.Context) (*Snapshot, error) {
 	return toVolumeSnapshot(s), nil
 }
 
-// Snapshots lists every snapshot, oldest first.
 func (v *volume) Snapshots(ctx context.Context) ([]*Snapshot, error) {
 	all, err := v.history.Snapshots(ctx)
 	if err != nil {
@@ -745,7 +693,6 @@ func (v *volume) Snapshots(ctx context.Context) ([]*Snapshot, error) {
 	return snapshots, nil
 }
 
-// Snapshot loads a snapshot by ID.
 func (v *volume) Snapshot(ctx context.Context, id SnapshotID) (*Snapshot, error) {
 	if err := validateSnapshotID(id); err != nil {
 		return nil, err
@@ -760,11 +707,8 @@ func (v *volume) Snapshot(ctx context.Context, id SnapshotID) (*Snapshot, error)
 	return toVolumeSnapshot(s), nil
 }
 
-// parseVolumeSnapshotID extracts the snapshot ID from a volume manifest path.
-// Expected format: volumes/<id>/snapshots/<snapID>/manifest.json
 func parseVolumeSnapshotID(p string) SnapshotID {
 	parts := strings.Split(p, "/")
-	// volumes/<id>/snapshots/<snapID>/manifest.json → 5 parts
 	if len(parts) < 5 {
 		return ""
 	}
@@ -775,8 +719,6 @@ func parseVolumeSnapshotID(p string) SnapshotID {
 // Volume manifest validation
 // -----------------------------------------------------------------------------
 
-// isVolumeBlockPath reports whether p is a canonical data block key inside
-// volumes/<id>/data/, without allocating on the valid path.
 func isVolumeBlockPath(id ID, p string) bool {
 	if !storepath.Segment(string(id)) {
 		return false
@@ -793,10 +735,6 @@ func isVolumeBlockPath(id ID, p string) bool {
 	return ok && storepath.Segment(rest)
 }
 
-// validateBlock checks one block's bounds and path scope against the volume.
-// Written as an if-chain, not a tagless switch: gremlins reports switch case
-// expressions as not covered (go-gremlins/gremlins#298), which would hide
-// these guards from the mutation gate.
 func validateBlock(i int, id ID, b BlockRef, totalLength int64) error {
 	if b.Offset < 0 {
 		return &validate.ManifestError{Field: fmt.Sprintf("blocks[%d].offset", i), Message: "must be non-negative"}
@@ -822,7 +760,6 @@ func validateBlock(i int, id ID, b BlockRef, totalLength int64) error {
 	return nil
 }
 
-// ensureBlocksSortedByOffset sorts blocks by ascending Offset if not already sorted.
 func ensureBlocksSortedByOffset(blocks []BlockRef) {
 	if !sort.SliceIsSorted(blocks, func(i, j int) bool {
 		return blocks[i].Offset < blocks[j].Offset
@@ -833,8 +770,6 @@ func ensureBlocksSortedByOffset(blocks []BlockRef) {
 	}
 }
 
-// validateVolumeManifest checks that a volume manifest contains all required
-// fields per CONTRACT_VOLUME.md.
 func validateVolumeManifest(m *Manifest) error {
 	if m == nil {
 		return &validate.ManifestError{Field: "manifest", Message: "is nil"}
@@ -845,26 +780,19 @@ func validateVolumeManifest(m *Manifest) error {
 		{Invalid: m.VolumeID == "", Field: "volume_id", Message: "is required"},
 		{Invalid: m.SnapshotID == "", Field: "snapshot_id", Message: "is required"},
 		{Invalid: m.CreatedAt.IsZero(), Field: "created_at", Message: "is required"},
-		{Invalid: m.Metadata == nil, Field: "metadata", Message: "must not be nil (use empty map for no metadata)"},
+		{Invalid: !m.Metadata.Valid(), Field: "metadata", Message: "must be a JSON object (use {} for no metadata)"},
 		{Invalid: m.Blocks == nil, Field: "blocks", Message: "must not be nil (use empty slice for no blocks)"},
 		{Invalid: m.TotalLength <= 0, Field: "total_length", Message: "must be positive"},
 	}
 	if err := validate.FirstInvalid(checks); err != nil {
 		return err
 	}
-	// Block checks run only once total_length is known valid. They are plain
-	// conditions, not table entries: field names carry the block index, and
-	// formatting them for every block on every load would allocate on the
-	// read path.
 	for i, b := range m.Blocks {
 		if err := validateBlock(i, m.VolumeID, b, m.TotalLength); err != nil {
 			return err
 		}
 	}
 
-	// Sort blocks by offset at load time so downstream consumers
-	// (findCoveringBlocks, validateNoOverlaps) can assume sorted input.
-	// One-time O(B log B) amortized across all reads.
 	ensureBlocksSortedByOffset(m.Blocks)
 
 	if err := validateNoOverlaps(m.Blocks); err != nil {

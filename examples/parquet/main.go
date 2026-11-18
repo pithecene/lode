@@ -1,10 +1,9 @@
-// Example: Parquet Codec Round-Trip
+// Example: Parquet Codec Round-Trip (Typed Structs and Map Records)
 //
-// This example demonstrates columnar storage with Parquet codec:
-//
-//   - Schema-explicit encoding with typed fields
-//   - Nullable field support
-//   - Internal Parquet compression (Snappy by default)
+// This example demonstrates columnar storage with the generic Parquet[T] codec:
+//   - Schema-explicit encoding with Go structs (zero schema inference)
+//   - Nullable pointer field support (*float64)
+//   - Reading the same dataset back as typed structs or map records (lode.D)
 //
 // Run with: go run ./examples/parquet
 package main
@@ -14,7 +13,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/pithecene/lode/lode"
@@ -26,10 +24,20 @@ func main() {
 	}
 }
 
+// User is a typed record mapped explicitly against ParquetSchema.
+type User struct {
+	ID        int64     `parquet:"id"`
+	Name      string    `parquet:"name"`
+	Score     *float64  `parquet:"score"`
+	Active    bool      `parquet:"active"`
+	CreatedAt time.Time `parquet:"created_at"`
+}
+
+func ptr[T any](v T) *T { return &v }
+
 func run() error {
 	ctx := context.Background()
 
-	// Create a temporary directory for storage
 	tmpDir, err := os.MkdirTemp("", "lode-parquet-example-*")
 	if err != nil {
 		return fmt.Errorf("failed to create temp dir: %w", err)
@@ -38,11 +46,10 @@ func run() error {
 
 	fmt.Printf("Storage root: %s\n\n", tmpDir)
 
-	// Open a root over the filesystem store.
 	root := lode.Open(lode.FS(tmpDir))
 
 	// -------------------------------------------------------------------------
-	// SCHEMA: Define Parquet schema with typed fields
+	// SCHEMA: Define explicit Parquet schema
 	// -------------------------------------------------------------------------
 	fmt.Println("=== SCHEMA ===")
 
@@ -56,7 +63,6 @@ func run() error {
 		},
 	}
 
-	fmt.Println("Schema fields:")
 	for _, f := range schema.Fields {
 		nullable := ""
 		if f.Nullable {
@@ -66,31 +72,24 @@ func run() error {
 	}
 	fmt.Println()
 
-	// Create the Parquet codec for map records. An invalid schema is
-	// recorded and returned when the dataset opens.
-	codec := lode.Parquet(schema)
-
 	// -------------------------------------------------------------------------
-	// WRITE: Create dataset and write data
+	// WRITE: Write typed Go struct records
 	// -------------------------------------------------------------------------
-	fmt.Println("=== WRITE ===")
+	fmt.Println("=== WRITE (Typed Structs) ===")
 
-	// Open the dataset with the Parquet codec. The default NoOp compressor
-	// suits it: Parquet compresses internally (Snappy by default).
-	ds, err := root.Records(ctx, "users", codec)
+	ds, err := root.Records(ctx, "users", lode.Parquet[User](schema))
 	if err != nil {
 		return fmt.Errorf("failed to create dataset: %w", err)
 	}
 
-	// Write typed records - Parquet validates against schema
 	now := time.Now().UTC().Truncate(time.Nanosecond)
-	records := lode.R(
-		lode.D{"id": int64(1), "name": "alice", "score": 95.5, "active": true, "created_at": now},
-		lode.D{"id": int64(2), "name": "bob", "score": nil, "active": true, "created_at": now},
-		lode.D{"id": int64(3), "name": "charlie", "score": 88.0, "active": false, "created_at": now},
-	)
+	users := []User{
+		{ID: 1, Name: "alice", Score: ptr(95.5), Active: true, CreatedAt: now},
+		{ID: 2, Name: "bob", Score: nil, Active: true, CreatedAt: now},
+		{ID: 3, Name: "charlie", Score: ptr(88.0), Active: false, CreatedAt: now},
+	}
 
-	snapshot, err := ds.Write(ctx, records, lode.D{"source": "parquet-example"})
+	snapshot, err := ds.Write(ctx, users, lode.D{"source": "parquet-example"})
 	if err != nil {
 		return fmt.Errorf("failed to write: %w", err)
 	}
@@ -98,59 +97,43 @@ func run() error {
 	fmt.Printf("Created snapshot: %s\n", snapshot.ID)
 	fmt.Printf("Row count: %d\n", snapshot.RowCount)
 	fmt.Printf("Codec: %s, Compressor: %s\n", snapshot.Codec, snapshot.Compressor)
-	fmt.Printf("Files:\n")
-	for _, f := range snapshot.Files {
-		fmt.Printf("  - %s (%d bytes)\n", f.Path, f.SizeBytes)
-	}
-	fmt.Println()
-
-	// Show file structure
-	fmt.Println("File structure:")
-	err = filepath.Walk(tmpDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, _ := filepath.Rel(tmpDir, path)
-		if rel != "." {
-			if info.IsDir() {
-				fmt.Printf("  %s/\n", rel)
-			} else {
-				fmt.Printf("  %s\n", rel)
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		return err
+	for _, obj := range snapshot.Objects {
+		fmt.Printf("  - %s (%d bytes, stats rows=%d)\n", obj.Path, obj.SizeBytes, obj.Stats.RowCount)
 	}
 	fmt.Println()
 
 	// -------------------------------------------------------------------------
-	// READ: Read data back with typed values
+	// READ: Read back as typed structs AND as ad-hoc lode.D maps
 	// -------------------------------------------------------------------------
 	fmt.Println("=== READ ===")
 
-	readRecords, err := ds.Read(ctx, snapshot.ID)
+	readUsers, err := ds.Read(ctx, snapshot.ID)
 	if err != nil {
-		return fmt.Errorf("failed to read: %w", err)
+		return fmt.Errorf("failed to read typed structs: %w", err)
+	}
+	fmt.Printf("Typed User structs (%d):\n", len(readUsers))
+	for _, u := range readUsers {
+		score := "<nil>"
+		if u.Score != nil {
+			score = fmt.Sprintf("%.1f", *u.Score)
+		}
+		fmt.Printf("  id=%d name=%s score=%s active=%v created_at=%s\n",
+			u.ID, u.Name, score, u.Active, u.CreatedAt.Format(time.RFC3339))
 	}
 
-	fmt.Printf("Records read back (%d):\n", len(readRecords))
-	for _, rec := range readRecords {
-		fmt.Printf("  id=%v name=%v score=%v active=%v created_at=%v\n",
-			rec["id"], rec["name"], rec["score"], rec["active"], rec["created_at"])
+	// An ad-hoc reader without the User struct can open the same dataset with
+	// lode.Parquet[lode.D](schema) because Codec.Describe depends only on schema.
+	mapView, err := lode.OpenReadOnly(lode.FS(tmpDir)).Records(ctx, "users",
+		lode.Parquet[lode.D](schema), lode.WithAnchor(snapshot.ID))
+	if err != nil {
+		return fmt.Errorf("failed to open map view: %w", err)
 	}
-
-	// Demonstrate type preservation
-	fmt.Println("\nType verification:")
-	first := readRecords[0]
-	fmt.Printf("  id type: %T (value: %v)\n", first["id"], first["id"])
-	fmt.Printf("  score type: %T (value: %v)\n", first["score"], first["score"])
-	fmt.Printf("  created_at type: %T\n", first["created_at"])
-
-	// Show nullable handling
-	second := readRecords[1]
-	fmt.Printf("  bob's score (nullable): %v (nil=%v)\n", second["score"], second["score"] == nil)
+	mapRecords, err := mapView.Read(ctx, snapshot.ID)
+	if err != nil {
+		return fmt.Errorf("failed to read map records: %w", err)
+	}
+	fmt.Printf("\nAd-hoc lode.D map records (%d), bob score nil=%v\n",
+		len(mapRecords), mapRecords[1]["score"] == nil)
 
 	fmt.Println("\n=== SUCCESS ===")
 	fmt.Println("Parquet codec round-trip complete!")
@@ -158,7 +141,6 @@ func run() error {
 	return nil
 }
 
-// typeName returns a human-readable name for a ParquetType.
 func typeName(t lode.ParquetType) string {
 	names := map[lode.ParquetType]string{
 		lode.ParquetInt32:     "int32",

@@ -68,6 +68,13 @@ func (f *fsStore) CompareAndSwap(_ context.Context, path, expected, replacement 
 		_ = os.Remove(tmpName)
 		return fmt.Errorf("fs: cas write temp: %w", err)
 	}
+	if f.sync {
+		if err := tmp.Sync(); err != nil {
+			_ = tmp.Close()
+			_ = os.Remove(tmpName)
+			return fmt.Errorf("fs: cas sync temp: %w", err)
+		}
+	}
 	if err := tmp.Close(); err != nil {
 		_ = os.Remove(tmpName)
 		return fmt.Errorf("fs: cas close temp: %w", err)
@@ -78,6 +85,9 @@ func (f *fsStore) CompareAndSwap(_ context.Context, path, expected, replacement 
 	if err := replaceFile(tmpName, fullPath); err != nil {
 		_ = os.Remove(tmpName)
 		return fmt.Errorf("fs: cas rename: %w", err)
+	}
+	if f.sync {
+		syncDir(dir)
 	}
 
 	return nil

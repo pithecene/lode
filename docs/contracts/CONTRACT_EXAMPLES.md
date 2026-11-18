@@ -7,20 +7,20 @@ in Lode.
 
 ## Authority
 
-- [`PUBLIC_API.md`](../../PUBLIC_API.md) is canonical for call-site conventions and API
-  signatures.
-- Example code must not diverge from [`PUBLIC_API.md`](../../PUBLIC_API.md).
-- If an example and [`PUBLIC_API.md`](../../PUBLIC_API.md) conflict, [`PUBLIC_API.md`](../../PUBLIC_API.md) is
-  authoritative.
+- [`PUBLIC_API.md`](../../PUBLIC_API.md) is canonical for call-site
+  conventions and API signatures.
+- Example code MUST NOT diverge from [`PUBLIC_API.md`](../../PUBLIC_API.md).
+- If an example and [`PUBLIC_API.md`](../../PUBLIC_API.md) conflict,
+  [`PUBLIC_API.md`](../../PUBLIC_API.md) is authoritative.
 
 ---
 
-## Record Construction Conventions
+## Record and Blob Construction Conventions
 
 ### Typed Records as the Preferred Form
 
-When a record has a known shape, define a struct and let the codec set the
-handle's record type:
+When a record has a known shape, define a Go struct and let the codec infer
+the handle's record type (for both `JSONL[T]()` and `Parquet[T](schema)`):
 
 ```go
 events, err := root.Records(ctx, "events", lode.JSONL[Event]())
@@ -31,7 +31,8 @@ Partition typed records with `lode.Hive(keys...).By(func(Event) lode.Partition)`
 
 ### Map Records with `lode.R(...)`
 
-Use `lode.R(...)` with `lode.JSONL[lode.D]()` for inline map record literals:
+Use `lode.R(...)` with `lode.JSONL[lode.D]()` or `lode.Parquet[lode.D](schema)`
+for inline map record literals passed to `Write`:
 
 ```go
 records := lode.R(
@@ -41,16 +42,14 @@ records := lode.R(
 snapshot, err := ds.Write(ctx, records, nil)
 ```
 
-Examples use `R(...)` because it states records concisely and constructs
-the `[]lode.D` that `Records[lode.D].Write` takes.
-
 ### `[]lode.D` as Permitted Iterator Backing
 
-Use a `[]lode.D` literal when the slice backs an iterator for
-`Records.StreamWrite`:
+Use a `[]lode.D` literal only when the slice backs an `iter.Seq2[lode.D, error]`
+iterator for `Records.StreamWrite`, accompanied by a brief explanatory
+comment:
 
 ```go
-// []lode.D is appropriate here: it backs the iterator
+// []lode.D is appropriate here because the slice backs the iterator.
 records := []lode.D{
     {"id": "1", "name": "alice"},
     {"id": "2", "name": "bob"},
@@ -58,23 +57,22 @@ records := []lode.D{
 snapshot, err := ds.StreamWrite(ctx, each(records), nil)
 ```
 
-When using `[]lode.D`, add a brief comment explaining that the slice backs
-the iterator.
-
 ### Blobs
 
-For blobs, open a blob dataset and pass the bytes to its `Write` method:
+Open a `*lode.Blobs` handle and pass `[]byte` to `Write` or an `io.Reader` to
+`StreamWrite`:
 
 ```go
-blobs, err := root.Blobs(ctx, "artifacts")
+blobs, err := root.Blobs(ctx, "artifacts", lode.WithChecksum(lode.SHA256()))
 snapshot, err := blobs.Write(ctx, blobData, nil)
+streamSnap, err := blobs.StreamWrite(ctx, reader, lode.D{"filename": "archive.tar"})
 ```
 
 ### Metadata
 
-Pass metadata as a struct when the caller knows its shape, and decode it
-with `snapshot.Metadata.Decode(&v)`. For ad hoc keys, use a `lode.D`, and
-when a write carries no metadata, pass `nil`.
+Pass metadata as a typed struct when the caller knows its shape and decode it
+with `snapshot.Metadata.Decode(&v)`. Use `lode.D` for ad hoc keys, and pass
+`nil` when a write carries no metadata.
 
 ---
 
@@ -83,39 +81,35 @@ when a write carries no metadata, pass `nil`.
 | Variable | Purpose |
 |----------|---------|
 | `root` | A `*lode.Root` (or `readRoot` for a `*lode.ReadRoot`) |
-| `records` | A slice of records that a caller passes to `Write` or that backs an iterator |
+| `records` | A slice of records passed to `Write` or backing an iterator |
 | `metadata` | A metadata value (a struct, a `lode.D`, or `nil`) |
-| `snapshot` | The snapshot returned by a write operation |
-| `ds` | A dataset handle (`Records[T]` or `Blobs`) |
-| `view` | A read-only view (`RecordView[T]` or `BlobView`) |
-| `ctx` | A context |
+| `snapshot` | A `*lode.Snapshot` (or `*volume.Snapshot`) returned by a write or commit |
+| `ds` | A dataset writer handle (`*lode.Records[T]` or `*lode.Blobs`) |
+| `view` | A read-only view (`*lode.RecordView[T]` or `*lode.BlobView`) |
+| `ctx` | A `context.Context` |
 
 ---
 
-## Pre-v1 Ergonomics Changes
+## Ergonomics and API Changes
 
-The project permits an ergonomic change before v1, such as reordering
-parameters, only when:
-
-1. the PR that makes the change also updates every contract that describes
-   the changed call,
-2. the same PR updates [`PUBLIC_API.md`](../../PUBLIC_API.md),
-3. the same PR updates all tests,
-4. the same PR updates all examples, and
-5. the CHANGELOG includes a migration note.
-
-After the change, no call site may retain the former form.
+Any change to public call-site ergonomics requires updating together in a
+single change:
+1. every contract under `docs/contracts/` that describes the call,
+2. [`PUBLIC_API.md`](../../PUBLIC_API.md) and [`README.md`](../../README.md),
+3. all tests,
+4. all runnable programs under `examples/`, and
+5. [`CHANGELOG.md`](../../CHANGELOG.md).
 
 ---
 
 ## Agent Behavior
 
-Agents must:
-- stop and ask the maintainer when an example diverges from the conventions
-  of [`PUBLIC_API.md`](../../PUBLIC_API.md)
+Agents MUST:
+- stop and ask the maintainer when an example diverges from
+  [`PUBLIC_API.md`](../../PUBLIC_API.md),
 - stop and ask the maintainer before introducing a call-site pattern that
-  this contract does not address
-- prefer editing existing examples to creating new ones
+  this contract does not address, and
+- prefer editing existing examples to creating new ones.
 
 ---
 

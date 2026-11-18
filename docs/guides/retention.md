@@ -1,28 +1,27 @@
 # Expiring Snapshots and Reclaiming Residual Data
 
 This guide explains how to remove obsolete data from a Lode dataset with
-`Dataset.Expire` and `Dataset.Sweep`, how Lode performs each operation, and
-why it does so. The guide is explanatory.
-[`CONTRACT_RETENTION.md`](../contracts/CONTRACT_RETENTION.md) defines the
-normative rules and prevails wherever the two documents differ.
+`Expire` and `Sweep` on writer handles (`*Records[T]` and `*Blobs`), how to
+remove an entire dataset with `Root.RemoveDataset`, and why each step works
+as it does. The guide is explanatory;
+[`CONTRACT_RETENTION.md`](../contracts/CONTRACT_RETENTION.md) and
+[`CONTRACT_WRITE_API.md`](../contracts/CONTRACT_WRITE_API.md) define the
+normative rules.
 
-## The Two Operations
+## The Operations
 
-| | `Expire` | `Sweep` |
-|---|---|---|
-| Removes | Selected snapshots, with their manifests and data | Residual data: the remainder of interrupted expiries, and the data of writes that never committed |
-| The caller specifies | Which snapshots to remove (`IDs`, `Partition`, `Before`) | The minimum age at which an uncommitted write is reclaimed (`Grace`) |
-| Typical frequency | Whenever the retention policy designates data as obsolete | Periodically, for example daily |
+| | `Expire` | `Sweep` | `Root.RemoveDataset` |
+|---|---|---|---|
+| Scope | Selected historical snapshots (head is always kept) | Interrupted expiries, missing Hive partition manifests, and uncommitted orphans older than `Grace` | Whole dataset, including its head snapshot |
+| Caller specifies | `IDs`, `Partition`, and/or `Before` (plus optional `DryRun`) | Positive `Grace` duration (plus optional `DryRun`) | `DatasetID` (plus optional `WithRetry*`) |
+| Typical frequency | When retention policy marks runs or time windows obsolete | Periodically (for example, daily) | When retiring a dataset permanently |
 
-Both operations accept a `DryRun` flag. With the flag set, an operation
-reports exactly what a real run would do and modifies nothing. Each
-operation always returns a report of the work completed, even when it also
-returns an error.
+Both `Expire` and `Sweep` always return a non-nil report (`*ExpireReport`,
+`*SweepReport`), even when returning an error, so callers can inspect all
+work completed prior to any failure.
 
-Lode never initiates removal: no background process runs, and Lode removes
-nothing unless the caller invokes one of these operations. The retention
-policy belongs to the caller, and Lode provides a safe primitive for
-applying it.
+Lode never runs background deletion: retention policy and scheduling belong
+entirely to the caller.
 
 ## The Life Cycle of an Expired Snapshot
 
@@ -38,54 +37,34 @@ stateDiagram-v2
         fully readable
     end note
     note right of Expired
-        Snapshot and Read return
-        ErrSnapshotExpired
+        Snapshot, Read, and WithAnchor
+        return ErrSnapshotExpired
     end note
 ```
 
-- **Live**: the snapshot has its manifests and data, and no tombstone.
-- **Expiring**: a tombstone exists, and the canonical manifest remains. The
-  snapshot is fully readable. The tombstone records the decision to expire
-  the snapshot, but Lode has not yet performed the expiry.
-- **Expired**: Lode has deleted the canonical manifest. `Snapshot` and
-  `Read` return `ErrSnapshotExpired`, which also matches `ErrNotFound`, so a
-  caller can distinguish a deliberately removed snapshot from one that never
-  existed.
-- **Settled**: Lode has deleted every manifest and data object, and only
-  the tombstone remains, permanently.
-
-A snapshot in an older Hive dataset that predates canonical manifests has
-no canonical manifest, so its tombstone alone renders it expired.
+- **Live**: manifests and data objects exist, and no tombstone exists.
+- **Expiring**: a tombstone exists and the canonical manifest still exists;
+  the snapshot remains readable.
+- **Expired**: the canonical manifest has been deleted. `Snapshot`, `Read`,
+  and `WithAnchor` return `ErrSnapshotExpired`, which also matches
+  `ErrNotFound`.
+- **Settled**: all canonical and partition manifests and all owned data
+  objects are deleted; only the permanent tombstone remains.
 
 ## Tombstone Contents
 
-A tombstone is a small object at `<dataset>/expired/<snapshot ID>` that
-`Expire` writes **before it deletes any object**. The tombstone records:
+A tombstone is a create-only JSON object at `<dataset dir>/expired/<snapshot_id>`
+written **before any manifest or data object is deleted**. It records:
+- `snapshot_id`,
+- `requested_at`,
+- `manifest_created_at`, and
+- `objects` (the path and byte size of every data object in the snapshot's
+  `Manifest.Objects`, while also decoding legacy `"files"` tombstones).
 
-- the snapshot ID,
-- the time of the expiry request,
-- the manifest's `CreatedAt`, and
-- the snapshot's inventory: every data file's path and size, copied from
-  the manifest.
-
-Writing the tombstone makes the expiry irrevocable: once the tombstone
-exists, the same run, the next `Expire` that names the ID, or `Sweep`
-completes the expiry. The tombstone makes expiry **resumable**. Without it, a failure between deletions would leave data that
-no manifest describes and no record explains. With it, every later step
-operates on the inventory that the tombstone contains, never on manifests
-that an earlier step may already have deleted. The recorded sizes also allow a resumed
-run to report `Bytes`.
-
-Lode never removes a tombstone. It records an expiry by creating a new
-object, never by modifying an existing one. Retention thereby preserves
-Lode's rule that no operation rewrites committed state.
-
-A tombstone governs only a manifest that it **describes**, that is, one with
-the same `CreatedAt` and the same file list. Lode reports a tombstone that
-it cannot read, or that contradicts a manifest still present
-(`SweepReport.Unparseable` or an `Expire` error), and never acts on it.
-No recovery step rewrites or removes such a tombstone, and an operator
-resolves the fault.
+Because the tombstone outlives the manifests, an interrupted expiry can
+always be resumed by `Sweep` or a repeated `Expire` naming the ID without
+losing track of which data objects belonged to the snapshot or what their
+byte sizes were.
 
 ## Snapshot Removal by `Expire`
 
@@ -97,89 +76,54 @@ sequenceDiagram
     participant S as Store
     E->>P: recheck the head
     Note over E,P: the head is never expired
-    E->>S: check the tombstone against every manifest copy
-    E->>S: write the tombstone expired/ID (create-only)
+    E->>S: validate every surviving manifest copy against the tombstone
+    E->>S: create tombstone expired/ID (CompareAndSwap from empty)
     E->>S: delete the canonical manifest
     Note over E,S: the snapshot is now expired
     E->>S: delete the partition manifests
-    E->>S: delete the data files in the inventory
+    E->>S: delete owned data objects in the inventory
 ```
-
-Every step is idempotent: a step that finds its target already deleted
-succeeds. If the process terminates after it writes the tombstone, the next
-`Expire` that names the same ID, or the next `Sweep`, resumes from the
-tombstone.
 
 ### Selecting Snapshots
 
-- `IDs` selects the named snapshots, including any whose expiry an earlier
-  run began but did not complete.
-- `Partition` selects snapshots that have a manifest in the given partition
-  or beneath it (Hive layouts only). Matching compares whole path segments,
-  so `run_id=run-1` never selects `run_id=run-10`. `Expire` retains a
-  snapshot with files outside the partition and reports it in `Mixed`. A
-  caller expires such a snapshot by naming it in `IDs` in a request that
-  omits `Partition`. Because the fields combine by intersection, `Expire` still
-  reports the snapshot as mixed when a request specifies both.
-- `Before` selects snapshots whose write began before the given instant.
-  Lode derives each snapshot's write time from its snapshot ID, so
-  selection loads no manifest.
+- `IDs` selects the named `SnapshotID` values, including snapshots whose
+  expiry an earlier run recorded in a tombstone without finishing.
+- `Partition` selects snapshots that have a partition manifest in that
+  partition or beneath it on Hive datasets. Matching compares whole path
+  segments (`run_id=run-1` never selects `run_id=run-10`). Snapshots that
+  also own data objects outside `Partition` are kept and reported in
+  `ExpireReport.Mixed`.
+- `Before` selects snapshots whose write began strictly before the given
+  instant, read directly from the `SnapshotID` prefix without loading
+  manifests.
 
-The fields combine by intersection. `Expire` returns `ErrInvalidArgument`
-for a request that specifies none of them.
+Set fields combine by intersection; leaving all three unset returns
+`ErrInvalidArgument`.
 
 ### Head Retention
 
-`Expire` retains the snapshot that the `latest` pointer names and reports it
-in `RetainedHead`, even when the selection includes it. Selecting the head is
-not an error, so a `Before` request on a dataset without newer writes still
-succeeds. Repeating the request after a newer commit removes the formerly
-retained head.
+`Expire` never deletes the head snapshot named by `latest`. When the
+selection includes the head, `Expire` retains it and records its ID in
+`ExpireReport.RetainedHead`. If `latest` names a pending commit without a
+persisted manifest, or is absent alongside existing snapshots or tombstones,
+`Expire` returns `ErrHeadUncommitted`.
 
-Only the pointer identifies the head. Retention never infers the head from
-snapshot IDs, because a clock that jumps backward can assign the most
-recent commit the smaller ID. `Expire` therefore returns
-`ErrHeadUncommitted` in two cases:
+## Residual Reclamation and Partition Reindexing by `Sweep`
 
-- The pointer names a snapshot without a persisted manifest, which
-  indicates a pending commit ([CONTRACT_CORE §Head
-  Pointer](../contracts/CONTRACT_CORE.md#head-pointer)). A caller can retry
-  the request once the commit completes. If `Expire` detects this condition before the run
-  begins, it expires nothing. If it detects the condition partway through
-  the run, the snapshots already expired remain expired, and the report
-  lists them. A pointer left by an abandoned commit remains
-  until the next commit replaces it: `Latest` never replaces a pointer, because no
-  persisted state distinguishes an abandoned commit from a pending one.
-- The dataset has snapshots or tombstones but no pointer, because Lode
-  wrote them before it introduced the head pointer. `Expire` expires nothing. Any commit
-  creates the pointer, after which retention proceeds.
+`Sweep` performs three tasks in one run:
 
-Retention treats a pointer as corrupt when the pointer does not contain a
-snapshot ID that Lode could have generated, and retention then fails rather
-than rely on the pointer.
-
-## Residual Data Reclamation by `Sweep`
-
-`Sweep` performs two tasks in a single run.
-
-**It completes interrupted expiries.** For each tombstone whose snapshot
-still has manifests or data, `Sweep` verifies the tombstone against every
-manifest copy, deletes the manifests, and then reclaims the data. The grace
-period does not apply, because the tombstone already records the decision.
-`Sweep` excludes three kinds of tombstone from this step and retains their
-data:
-
-- a misplaced tombstone that names the committed head, because Lode never
-  writes a tombstone for the head
-- every tombstone while a commit is pending, because the head is then
-  undetermined
-- a tombstone that is invalid or contradicts a manifest copy, because Lode
-  cannot rely on it (`Sweep` reports such a tombstone in `Unparseable`)
-
-**It reclaims orphaned data.** `Sweep` deletes every data object that is
-older than `Grace` and whose snapshot has neither a manifest nor a
-tombstone. Such an object belongs to a write that never committed, such as
-a write from an aborted stream or a terminated process.
+1. **Completes interrupted expiries** (`Settled`): verifies valid tombstones,
+   deletes any remaining canonical and partition manifests, and deletes their
+   data objects regardless of `Grace` (holding back any snapshot protected by
+   `latest` or carrying an invalid/contradicted tombstone, which is reported
+   in `Unparseable`).
+2. **Reclaims orphaned data** (`Orphans`): deletes data objects older than
+   `Grace` whose snapshot ID has neither a manifest nor a tombstone (such as
+   objects from aborted streams or crashed writers).
+3. **Repairs Hive partition indexes** (`Reindexed`): for live committed Hive
+   snapshots older than `Grace` whose canonical manifest is present without
+   one or more partition manifest copies, copies the canonical manifest to
+   each missing partition path.
 
 ```mermaid
 flowchart TD
@@ -196,45 +140,18 @@ flowchart TD
     O -- no --> K
 ```
 
-`Sweep` does not rely on a listing to establish that a manifest is absent.
-A store's listing can lag behind its writes. Before `Sweep` completes an
-expiry for a listed snapshot or reclaims an orphaned object, it therefore
-queries the manifest paths directly. In each run, `Sweep` skips any
-tombstoned snapshot that is absent from the listing. A later run whose listing shows the residual objects processes
-them.
-
-Reclamation operates per snapshot, not per file. `Sweep` retains every
-object under a live snapshot's data prefix, whether or not its manifest
-lists the object, and deletes every object under a settled snapshot's
-prefix.
-Apart from the manifests of the snapshots it settles, `Sweep` modifies
-nothing outside the layout's data paths: auxiliary files such as
-`partitions/<k=v>/run.json` remain the caller's responsibility, and `Sweep`
-never deletes the pointer or a tombstone.
-
 ### Choosing a Grace Period
 
-`Grace` has no default and must be positive. A write in progress has data
-objects but no manifest, so `Sweep` cannot distinguish it from an aborted
-write. Only age differentiates them. `Sweep` measures age from the instant
-in the snapshot ID, and the **writer's** clock supplies that instant. The
-grace period must exceed the sum of:
+`Grace` has no default and must be positive (`ErrInvalidArgument` otherwise).
+It must exceed the sum of the longest expected write duration and the maximum
+clock skew between any writing host and the host running `Sweep`. Twenty-four
+hours is a conservative starting point.
 
-- the duration of the longest expected write, and
-- the largest clock difference between any writing host and the host that
-  runs `Sweep` (whether from skew or from a clock that moved backward).
-
-Twenty-four hours is a conservative initial value.
-
-## A Typical Schedule
-
-Consider a crawler that writes each run into a Hive dataset partitioned by
-`run_id` and retains each raw run until a downstream system imports it. The
-crawler schedules retention as follows:
+## Typical Schedule
 
 <!-- illustrative -->
 ```go
-// Once a run is imported downstream, expire its raw snapshots.
+// Once a run is imported downstream, preview and expire its raw snapshots.
 preview, err := ds.Expire(ctx, lode.ExpireRequest{Partition: "run_id=" + runID, DryRun: true})
 // ... inspect preview.Expired, preview.Mixed, preview.Bytes ...
 report, err := ds.Expire(ctx, lode.ExpireRequest{Partition: "run_id=" + runID})
@@ -243,46 +160,18 @@ report, err := ds.Expire(ctx, lode.ExpireRequest{Partition: "run_id=" + runID})
 swept, err := ds.Sweep(ctx, lode.SweepRequest{Grace: 24 * time.Hour})
 ```
 
-The runnable version is [`examples/retention`](../../examples/retention).
-
-## Interpreting the Reports
-
-| Field | Meaning |
-|---|---|
-| `ExpireReport.Expired` | Snapshots expired (or, on a dry run, those that would be expired) |
-| `ExpireReport.Mixed` | Snapshots retained because they have files outside `Partition` |
-| `ExpireReport.RetainedHead` | The head, if the selection included it |
-| `ExpireReport.Skipped` | Inventory paths that are not data objects of the snapshot, which `Expire` leaves in place |
-| `SweepReport.Settled` | Interrupted expiries whose remaining manifests this run found and removed. When an earlier run has already deleted an expiry's manifests, this run reclaims the expiry's data but omits the expiry from this list. |
-| `SweepReport.Orphans` | Objects of writes that never committed |
-| `SweepReport.Unparseable` | Tombstones that Lode cannot trust, and objects whose ID contains no instant. Lode deletes nothing listed here. |
-| `Objects`, `Bytes`, `Unsized` | The objects deleted, as the run's listing reported them. Lode takes sizes from tombstone inventories and counts objects without a recorded size in `Unsized`. |
-
-The counts are only as exact as the store's listing. Concurrent runs can
-both count the same object, and a run deletes but does not count an object
-that a lagging listing omitted.
-
-## Known Limitations
-
-- **A late partition manifest.** On a Hive layout, a commit can still be
-  writing its partition manifests when a later commit advances the head and
-  an `Expire` removes the first commit's snapshot. The slower writer can
-  then add a partition manifest after the expiry, and `ListManifests` and
-  `ListPartitions` may report it until the next `Sweep` or `Expire` removes
-  it. Leaving a margin in `Before` avoids this situation.
-- **Snapshot ID collisions.** IDs are unique except in the event of a 64-bit
-  random collision within a single nanosecond (see [Snapshot
-  IDs](snapshot-ids.md)). Should a collision occur, retention declines to
-  act on the older tombstone unless the new manifest has the same commit
-  time and files. However, `Sweep` could reclaim data that the new write
-  stages before its manifest exists.
+The runnable example is [`examples/retention`](../../examples/retention). To
+retire an entire dataset (including its head snapshot), call
+`root.RemoveDataset(ctx, "crawls")`, after which opens, reads, and commits on
+that dataset return `lode.ErrRemoved`.
 
 ## Errors
 
 | Error | Meaning | Remedy |
 |---|---|---|
-| `ErrHeadUncommitted` | `Expire`: a commit is pending. Both operations: the dataset has snapshots or tombstones but no pointer. (`Sweep` succeeds while a commit is pending but completes no expiry in that run.) | Retry, or, for a dataset written before the pointer was introduced, perform one commit |
-| `ErrSnapshotExpired` | The requested snapshot has been expired (the error also matches `ErrNotFound`) | None, because this is the expected result after expiry |
-| `ErrInvalidArgument` | An `ExpireRequest` without a selector, or a `Grace` that is not positive | Correct the request |
-| `ErrInvalidPath` | `Partition` is not a canonical relative partition path | Correct the partition path |
-| `ErrPartitionPrefixNotSupported` | `Partition` was specified on a layout without partitions | Select by `IDs` or `Before` |
+| `ErrHeadUncommitted` | `Expire`: a commit is pending. Both: the dataset has snapshots or tombstones without a `latest` pointer. | Retry after the commit finishes, or perform one commit on a pre-pointer dataset |
+| `ErrSnapshotExpired` | The requested snapshot was expired (also matches `ErrNotFound`) | Expected outcome after expiry |
+| `ErrRemoved` | The dataset was permanently removed via `Root.RemoveDataset` | Expected outcome after dataset removal |
+| `ErrInvalidArgument` | Empty `ExpireRequest` selectors, or `Grace <= 0` | Supply valid request fields |
+| `ErrInvalidPath` | `Partition` is not a canonical relative partition path | Fix the partition path |
+| `ErrNotPartitioned` | `Partition` was set on an unpartitioned dataset | Select by `IDs` or `Before` |

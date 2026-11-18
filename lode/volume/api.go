@@ -20,12 +20,9 @@ import (
 	"context"
 	"io"
 	"time"
-)
 
-// Metadata holds user-defined key-value pairs stored with a volume
-// snapshot. Volume is experimental (V1_API_DECISIONS D9) and keeps the map
-// form that datasets replaced with lode.Metadata (D11).
-type Metadata map[string]any
+	"github.com/pithecene/lode/lode"
+)
 
 // ID uniquely identifies a volume.
 type ID string
@@ -68,8 +65,8 @@ type Manifest struct {
 	// CreatedAt records when the snapshot was committed.
 	CreatedAt time.Time `json:"created_at"`
 
-	// Metadata contains user-provided key-value pairs.
-	Metadata Metadata `json:"metadata"`
+	// Metadata is the caller's metadata, a JSON object.
+	Metadata lode.Metadata `json:"metadata"`
 
 	// TotalLength is the volume's total byte address space.
 	TotalLength int64 `json:"total_length"`
@@ -99,7 +96,7 @@ type Snapshot struct {
 
 // Volume-specific sentinels. A Volume also returns lode's shared sentinels:
 // lode.ErrNotFound, lode.ErrNoSnapshots, lode.ErrSnapshotConflict,
-// lode.ErrInvalidArgument and lode.ErrManifestInvalid.
+// lode.ErrInvalidArgument, lode.ErrManifestInvalid, and lode.ErrRemoved.
 var (
 	// ErrRangeMissing indicates a requested byte range is not fully committed.
 	ErrRangeMissing error = errRangeMissing{}
@@ -108,14 +105,10 @@ var (
 	// cumulative manifest.
 	ErrOverlappingBlocks error = errOverlappingBlocks{}
 
-	// ErrRemoved indicates the volume was removed (Remove): its head and
-	// its commits are refused for good.
-	ErrRemoved error = errRemoved{}
+	// ErrRemoved indicates the volume was removed (Remove); it is an alias for
+	// lode.ErrRemoved so callers matching either sentinel succeed.
+	ErrRemoved error = lode.ErrRemoved
 )
-
-type errRemoved struct{}
-
-func (errRemoved) Error() string { return "volume removed" }
 
 type errRangeMissing struct{}
 
@@ -135,14 +128,15 @@ type Writer interface {
 	// Staged data is not visible until Commit is called.
 	StageWriteAt(ctx context.Context, offset int64, r io.Reader) (BlockRef, error)
 
-	// Commit records the provided blocks into a new immutable snapshot.
+	// Commit records the provided blocks and metadata (any JSON-object-shaped
+	// struct or map, or nil for {}) into a new immutable snapshot.
 	// The resulting manifest is cumulative: it includes all previously committed
 	// blocks plus the new blocks. Commit MUST include at least one new block,
 	// except in a retry of a commit whose manifest write failed after the
 	// pointer advanced: when the pending snapshot already holds every block,
 	// Commit completes that commit and returns its snapshot
 	// (CONTRACT_VOLUME §Error Semantics).
-	Commit(ctx context.Context, blocks []BlockRef, metadata Metadata) (*Snapshot, error)
+	Commit(ctx context.Context, blocks []BlockRef, metadata any) (*Snapshot, error)
 }
 
 // Reader defines the read surface for a volume.
@@ -173,16 +167,7 @@ type Reader interface {
 // fetches block data only, using the context passed to ReaderAt. An
 // implementation is safe for concurrent use.
 type SnapshotReaderAt interface {
-	// ReadAt reads len(p) bytes at offset off of the snapshot into p, as
-	// io.ReaderAt specifies. A read that extends past the end of the volume
-	// returns io.EOF together with the bytes from off to the end. A read of
-	// a range that is not fully committed returns ErrRangeMissing and no
-	// bytes, as Reader.ReadAt does.
 	io.ReaderAt
-
-	// Blocks returns a copy of the snapshot's committed blocks, sorted by
-	// offset, so that a caller can check coverage before it reads. A change
-	// to the copy leaves the reader and later copies intact.
 	Blocks() []BlockRef
 }
 

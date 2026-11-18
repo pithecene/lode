@@ -20,9 +20,10 @@ type Config struct {
 	// Writers and Readers are the numbers of concurrent goroutines, each
 	// with its own Dataset handle.
 	Writers, Readers int
-	// Layout is "default" or "hive".
+	// Layout names the dataset workload ("default", "hive", "parquet",
+	// "parquet-hive", or "blobs").
 	Layout string
-	// Retries is the WithRetryCount each handle is opened with.
+	// Retries is the WithRetry count each handle is opened with.
 	Retries int
 	// Faults are injected into every writer's and reader's store calls.
 	Faults Faults

@@ -29,7 +29,7 @@ func (d *writer) Sweep(ctx context.Context, req SweepRequest) (*SweepReport, err
 	}
 	run := sweepRun{
 		ds: d.dataset, inv: inv, dryRun: req.DryRun, cutoff: time.Now().Add(-req.Grace),
-		settled: make(map[DatasetSnapshotID]tombstone), cleared: make(map[DatasetSnapshotID]bool),
+		settled: make(map[SnapshotID]tombstone), cleared: make(map[SnapshotID]bool),
 		held: d.rejectedTombstoneIDs(inv.invalidTombstones),
 	}
 	if err := run.settle(ctx, report); err != nil {
@@ -49,10 +49,10 @@ func (d *writer) Sweep(ctx context.Context, req SweepRequest) (*SweepReport, err
 type sweepInventory struct {
 	tombstones        []tombstone // valid tombstones, oldest first
 	invalidTombstones []string
-	manifests         map[DatasetSnapshotID][]string // every manifest key, by snapshot
-	objects           []snapshotKeys                 // every data object key, by snapshot
-	dataOf            map[DatasetSnapshotID][]string // the same keys, looked up by snapshot
-	guard             headGuardian                   // what the pointer says this run must not remove
+	manifests         map[SnapshotID][]string // every manifest key, by snapshot
+	objects           []snapshotKeys          // every data object key, by snapshot
+	dataOf            map[SnapshotID][]string // the same keys, looked up by snapshot
+	guard             headGuardian            // what the pointer says this run must not remove
 }
 
 func (d *dataset) sweepInventory(ctx context.Context) (sweepInventory, error) {
@@ -65,13 +65,13 @@ func (d *dataset) sweepInventory(ctx context.Context) (sweepInventory, error) {
 	if err != nil {
 		return inv, fmt.Errorf("failed to list snapshots: %w", err)
 	}
-	all := func(DatasetSnapshotID) bool { return true }
-	inv.manifests = make(map[DatasetSnapshotID][]string)
+	all := func(SnapshotID) bool { return true }
+	inv.manifests = make(map[SnapshotID][]string)
 	for _, g := range groupBySnapshot(keys, d.objectsOfKind(manifestLeaf, all)) {
 		inv.manifests[g.id] = g.paths
 	}
 	inv.objects = groupBySnapshot(keys, d.objectsOfKind(dataLeaf, all))
-	inv.dataOf = make(map[DatasetSnapshotID][]string, len(inv.objects))
+	inv.dataOf = make(map[SnapshotID][]string, len(inv.objects))
 	for _, g := range inv.objects {
 		inv.dataOf[g.id] = g.paths
 	}
@@ -105,41 +105,41 @@ func (d *dataset) inventoryTombstones(ctx context.Context) (valid []tombstone, i
 // rejectedTombstoneIDs is the snapshots whose tombstone failed validation,
 // named by key. They are held: a tombstone Lode cannot trust says nothing
 // about whether the snapshot's objects are garbage.
-func (d *dataset) rejectedTombstoneIDs(keys []string) map[DatasetSnapshotID]bool {
+func (d *dataset) rejectedTombstoneIDs(keys []string) map[SnapshotID]bool {
 	prefix := d.layout.tombstonesPrefix(d.id)
-	held := make(map[DatasetSnapshotID]bool, len(keys))
+	held := make(map[SnapshotID]bool, len(keys))
 	for _, k := range keys {
-		held[DatasetSnapshotID(strings.TrimPrefix(k, prefix))] = true
+		held[SnapshotID(strings.TrimPrefix(k, prefix))] = true
 	}
 	return held
 }
 
 // headGuardian is what the pointer tells a sweep it must not remove: the
-// committed head, or, while a commit is in flight, that the head is
+// committed head, or, while a commit is pending, that the head is
 // unknown. Lode never tombstones a head, so it only keeps a misplaced object
 // under expired/ or a stray object under the head's prefix from removing it.
 type headGuardian struct {
-	named    DatasetSnapshotID // the snapshot the pointer names, "" with no pointer
-	inFlight bool              // it has no manifest: a commit is in flight
+	named   SnapshotID // the snapshot the pointer names, "" with no pointer
+	pending bool       // it has no manifest: a commit is pending
 }
 
 // holdsTombstone reports whether a tombstoned snapshot must stay unsettled:
 // the one the pointer names, or every one while the head is unknown.
-func (g headGuardian) holdsTombstone(id DatasetSnapshotID) bool {
-	return g.inFlight || id == g.named
+func (g headGuardian) holdsTombstone(id SnapshotID) bool {
+	return g.pending || id == g.named
 }
 
 // holdsObjects reports whether a snapshot's objects are kept whatever the
 // listing shows: those of the committed head are never orphans. A crashed
 // commit the pointer still names is not committed, so its data ages out.
-func (g headGuardian) holdsObjects(id DatasetSnapshotID) bool {
-	return !g.inFlight && g.named != "" && id == g.named
+func (g headGuardian) holdsObjects(id SnapshotID) bool {
+	return !g.pending && g.named != "" && id == g.named
 }
 
 // sweepGuard reads the pointer once (CONTRACT_RETENTION §Head Protection):
 //   - a pointer naming a committed snapshot guards that one;
-//   - a pointer naming a snapshot with no manifest means a commit is in
-//     flight and the head is unknown, so no tombstoned snapshot is settled
+//   - a pointer naming a snapshot with no manifest means a commit is
+//     pending and the head is unknown, so no tombstoned snapshot is settled
 //     this run (orphans past grace still are);
 //   - with no pointer, a dataset showing a manifest or a tombstone is
 //     refused with ErrHeadUncommitted, and one showing neither has no head.
@@ -157,7 +157,7 @@ func (d *dataset) sweepGuard(ctx context.Context, inv sweepInventory) (headGuard
 	// One pointer read decides: the value just read is the one confirmed.
 	err = d.history.ConfirmCommitted(ctx, head)
 	if errors.Is(err, ErrHeadUncommitted) {
-		return headGuardian{named: head, inFlight: true}, nil
+		return headGuardian{named: head, pending: true}, nil
 	}
 	return headGuardian{named: head}, err
 }
@@ -171,10 +171,10 @@ type sweepRun struct {
 	ds      *dataset
 	inv     sweepInventory
 	dryRun  bool
-	cutoff  time.Time                       // an orphan whose write began before this is reclaimed
-	settled map[DatasetSnapshotID]tombstone // settled this run or earlier, with its inventory
-	cleared map[DatasetSnapshotID]bool      // settled from what this run found, unlisted objects included
-	held    map[DatasetSnapshotID]bool      // protected, or its tombstone rejected: never touched
+	cutoff  time.Time                // an orphan whose write began before this is reclaimed
+	settled map[SnapshotID]tombstone // settled this run or earlier, with its inventory
+	cleared map[SnapshotID]bool      // settled from what this run found, unlisted objects included
+	held    map[SnapshotID]bool      // protected, or its tombstone rejected: never touched
 }
 
 // settle removes the remaining manifests of every tombstoned snapshot,
@@ -202,7 +202,7 @@ func (r sweepRun) settleOne(ctx context.Context, t tombstone, report *SweepRepor
 		r.settled[id] = t
 		return nil
 	}
-	paths := r.ds.allManifestPaths(id, r.inv.manifests[id], append(slices.Clone(t.Files), refsTo(r.inv.dataOf[id])...))
+	paths := r.ds.allManifestPaths(id, r.inv.manifests[id], append(slices.Clone(t.Objects), refsTo(r.inv.dataOf[id])...))
 	copies, err := r.ds.loadCopies(ctx, id, paths)
 	if err != nil {
 		return err
@@ -230,23 +230,23 @@ func (r sweepRun) settleOne(ctx context.Context, t tombstone, report *SweepRepor
 
 // nothingLeft reports whether the listing showed neither a manifest nor a
 // data object of the snapshot.
-func (r sweepRun) nothingLeft(id DatasetSnapshotID) bool {
+func (r sweepRun) nothingLeft(id SnapshotID) bool {
 	_, manifests := r.inv.manifests[id]
 	return !manifests && len(r.inv.dataOf[id]) == 0
 }
 
-// refsTo wraps object paths as FileRefs, from which manifest paths derive.
-func refsTo(paths []string) []FileRef {
-	refs := make([]FileRef, 0, len(paths))
+// refsTo wraps object paths as ObjectRefs, from which manifest paths derive.
+func refsTo(paths []string) []ObjectRef {
+	refs := make([]ObjectRef, 0, len(paths))
 	for _, p := range paths {
-		refs = append(refs, FileRef{Path: p})
+		refs = append(refs, ObjectRef{Path: p})
 	}
 	return refs
 }
 
 // anyManifest reports whether a manifest of snapshot id is present at paths
 // or the canonical path, whether or not a listing showed it.
-func (d *dataset) anyManifest(ctx context.Context, id DatasetSnapshotID, paths []string) (bool, error) {
+func (d *dataset) anyManifest(ctx context.Context, id SnapshotID, paths []string) (bool, error) {
 	for _, p := range d.manifestCopies(id, paths) {
 		present, err := d.store.Exists(ctx, p)
 		if err != nil {
@@ -285,10 +285,9 @@ var objectActions = map[objectClass]objectAction{
 
 // classify decides by settlement, liveness and age. A held snapshot (one
 // the head guard held back, or whose tombstone was rejected) keeps its
-// objects; otherwise the guard is not
-// consulted, so a crashed commit's data, which the pointer may still name,
-// ages out like any other orphan.
-func (r sweepRun) classify(id DatasetSnapshotID) objectClass {
+// objects; otherwise the guard is not consulted, so a crashed commit's
+// data, which the pointer may still name, ages out like any other orphan.
+func (r sweepRun) classify(id SnapshotID) objectClass {
 	if r.held[id] {
 		return classKept
 	}
@@ -350,12 +349,12 @@ func (r sweepRun) reclaimUnlisted(ctx context.Context) error {
 }
 
 // unlisted is the snapshot's own inventory objects its listing did not show.
-func (r sweepRun) unlisted(id DatasetSnapshotID) []string {
+func (r sweepRun) unlisted(id SnapshotID) []string {
 	listed := r.inv.dataOf[id]
 	var out []string
-	for _, f := range r.ds.splitFiles(id, r.settled[id].Files).owned {
-		if !slices.Contains(listed, f.Path) {
-			out = append(out, f.Path)
+	for _, obj := range r.ds.splitObjects(id, r.settled[id].Objects).owned {
+		if !slices.Contains(listed, obj.Path) {
+			out = append(out, obj.Path)
 		}
 	}
 	return out
@@ -386,9 +385,9 @@ func (r sweepRun) delete(ctx context.Context, p string) error {
 // recordedSizes maps each inventory path to its recorded size; empty for a
 // snapshot with no tombstone.
 func recordedSizes(t tombstone) map[string]int64 {
-	sizes := make(map[string]int64, len(t.Files))
-	for _, f := range t.Files {
-		sizes[f.Path] = f.SizeBytes
+	sizes := make(map[string]int64, len(t.Objects))
+	for _, obj := range t.Objects {
+		sizes[obj.Path] = obj.SizeBytes
 	}
 	return sizes
 }
