@@ -1,6 +1,16 @@
 name: 📦 Release
 
 on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: SemVer release tag to verify, approve, and publish (e.g., v1.0.0)
+        required: true
+        type: string
+      notes:
+        description: Annotated tag message / release notes markdown
+        required: true
+        type: string
   push:
     tags: [v*]
 
@@ -12,14 +22,52 @@ jobs:
     name: 🔎 Tag Check
     runs-on: ubuntu-latest
     outputs:
+      version: ${{ steps.resolve.outputs.version }}
       semver_match: ${{ steps.regex-match.outputs.match }}
     steps:
+      - name: 🔎 Resolve Version
+        id: resolve
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          VERSION="${INPUT_VERSION:-${REF_NAME}}"
+          echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
+
       - name: 🔎 Match SemVer Tag
         uses: actions-ecosystem/action-regex-match@v2
         id: regex-match
         with:
-          text: ${{ github.ref_name }}
+          text: ${{ steps.resolve.outputs.version }}
           regex: ^v[0-9]+\.[0-9]+\.[0-9]+$
+
+  verify:
+    name: 🧪 Verify Build, Lint & Race Tests
+    runs-on: ubuntu-latest
+    needs: [tag_check]
+    if: ${{ needs.tag_check.outputs.semver_match != '' }}
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: 🧰 Setup
+        uses: ./.github/actions/setup
+
+      - name: 🧹 Lint & Dead Code
+        run: task lint
+
+      - name: 🧪 Unit & Allocation Gates
+        run: task test
+
+      - name: 🏁 Race Detector
+        run: task test:race
+
+      - name: 📝 Snippets & Examples
+        run: |
+          task snippets
+          task examples
 
   release_check:
     name: 🧾 Release Check
@@ -38,13 +86,18 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: 🏷️ Fetch Annotated Tag
-        # actions/checkout replaces an annotated tag with a lightweight one,
-        # which has no message, so the workflow fetches the tag object again.
-        run: git fetch --quiet --force origin "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
-
-      - name: 📝 Extract Release Notes
-        run: scripts/release-notes.sh "${GITHUB_REF_NAME}" release-notes.md
+      - name: 🏷️ Prepare Release Notes
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_NOTES: ${{ inputs.notes }}
+          VERSION: ${{ needs.tag_check.outputs.version }}
+        run: |
+          if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
+            printf '%s\n' "${INPUT_NOTES}" > release-notes.md
+          else
+            git fetch --quiet --force origin "refs/tags/${VERSION}:refs/tags/${VERSION}"
+            scripts/release-notes.sh "${VERSION}" release-notes.md
+          fi
 
       - name: 🧾 Check Changelog
         run: release-gate check CHANGELOG.md
@@ -55,16 +108,17 @@ jobs:
   package:
     name: 📦 Package
     runs-on: ubuntu-latest
-    needs: [tag_check, release_check]
+    needs: [tag_check, verify, release_check]
     if: ${{ needs.tag_check.outputs.semver_match != '' }}
     steps:
       - name: 📥 Checkout
         uses: actions/checkout@v4
 
       - name: 📦 Package
+        env:
+          VERSION: ${{ needs.tag_check.outputs.version }}
         run: |
           mkdir -p dist
-          VERSION="${GITHUB_REF_NAME}"
           git archive --format=tar.gz --output="dist/lode-${VERSION}.tar.gz" HEAD
           sha256sum "dist/lode-${VERSION}.tar.gz" > "dist/lode-${VERSION}.tar.gz.sha256"
 
@@ -87,20 +141,46 @@ jobs:
   release:
     name: 🚀 GitHub Release
     runs-on: ubuntu-latest
-    needs: [hold]
+    needs: [tag_check, hold]
     permissions:
       contents: write
     steps:
       - name: 📥 Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
         with:
-          persist-credentials: false
+          persist-credentials: ${{ github.event_name == 'workflow_dispatch' }}
 
-      - name: 🏷️ Fetch Annotated Tag
-        run: git fetch --quiet --force origin "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
-
-      - name: 📝 Extract Release Notes
-        run: scripts/release-notes.sh "${GITHUB_REF_NAME}" release-notes.md
+      - name: 🏷️ Tag After Approval & Extract Release Notes
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_NOTES: ${{ inputs.notes }}
+          VERSION: ${{ needs.tag_check.outputs.version }}
+        run: |
+          if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
+            printf '%s\n' "${INPUT_NOTES}" > release-notes.md
+            if git ls-remote --exit-code --tags origin "refs/tags/${VERSION}" >/dev/null 2>&1; then
+              git fetch --quiet --force origin "refs/tags/${VERSION}:refs/tags/${VERSION}"
+              TAG_COMMIT="$(git rev-list -n 1 "${VERSION}")"
+              HEAD_COMMIT="$(git rev-parse HEAD)"
+              if [ "${TAG_COMMIT}" != "${HEAD_COMMIT}" ]; then
+                echo "Existing tag ${VERSION} points to ${TAG_COMMIT}, not ${HEAD_COMMIT}" >&2
+                exit 1
+              fi
+              scripts/release-notes.sh "${VERSION}" existing-notes.md
+              if ! cmp -s release-notes.md existing-notes.md; then
+                echo "Existing tag ${VERSION} notes differ from dispatch input" >&2
+                exit 1
+              fi
+            else
+              git config user.name "github-actions[bot]"
+              git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+              git tag -a "${VERSION}" -F release-notes.md --cleanup=verbatim
+              git push origin "refs/tags/${VERSION}"
+            fi
+          else
+            git fetch --quiet --force origin "refs/tags/${VERSION}:refs/tags/${VERSION}"
+            scripts/release-notes.sh "${VERSION}" release-notes.md
+          fi
 
       - name: ⬇️ Download Artifacts
         uses: actions/download-artifact@v4
@@ -113,7 +193,7 @@ jobs:
         # release, so the job publishes it rather than leaving a draft.
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
+          tag_name: ${{ needs.tag_check.outputs.version }}
           generate_release_notes: false
           body_path: release-notes.md
           draft: false

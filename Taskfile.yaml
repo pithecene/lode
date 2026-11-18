@@ -11,6 +11,12 @@ tasks:
     desc: Run linters (no fixes)
     cmds:
       - golangci-lint run ./...
+      - |
+        out="$(deadcode -test ./...)"
+        if [ -n "$out" ]; then
+          printf '%s\n' "$out"
+          exit 1
+        fi
       - yamllint -s .
 
   test:
@@ -52,7 +58,7 @@ tasks:
       MEMPROFILE: '{{.MEMPROFILE | default ""}}'
     cmds:
       - >-
-        go test ./internal/chaos -run TestChaos -count=1 -v -timeout 0 -chaos
+        go test -race ./internal/chaos -run TestChaos -count=1 -v -timeout 0 -chaos
         -chaos.backends={{shellQuote .BACKENDS}} -chaos.layouts={{shellQuote .LAYOUTS}}
         -chaos.faults={{shellQuote .FAULTS}}
         -chaos.retention={{shellQuote .RETENTION}} -chaos.volume={{shellQuote .VOLUME}}

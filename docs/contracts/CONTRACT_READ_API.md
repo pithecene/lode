@@ -416,12 +416,10 @@ a **reference layout suitable for new users** (not a canonical one):
 
 ```
 /datasets/<dataset>/
-  /partition/<k=v>/<k=v>/
+  /partitions/<k=v>/<k=v>/
     /segments/<segment_id>/
       manifest.json
       /data/
-      /index/
-      /artifacts/
 ```
 
 Alternative layouts are valid provided that:

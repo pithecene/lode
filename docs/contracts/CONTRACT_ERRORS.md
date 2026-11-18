@@ -84,7 +84,7 @@ validation.
 - `DatasetID`: a non-empty dataset identifier
 - `SnapshotID`: a non-empty snapshot identifier
 - `CreatedAt`: a non-zero timestamp
-- `Metadata`: a non-nil map (an empty `{}` is valid)
+- `Metadata`: a JSON object (an empty `{}` is valid)
 - `Files`: a non-nil slice (an empty `[]` is valid)
 - `RowCount`: a non-negative integer
 - `Compressor`: a non-empty compressor name
@@ -103,7 +103,8 @@ validation.
 - Each `FileRef.SizeBytes` MUST be non-negative.
 
 #### Behavior
-- `GetManifest` returns a wrapped `ManifestValidationError` for an invalid
+- `Latest`, `Snapshot`, `Snapshots`, `Read`, `GetManifest`, and `Manifests`
+  return an error matching `ErrManifestInvalid` for an invalid or misplaced
   manifest.
 - `ListManifests` returns an error, rather than omitting the manifest, when
   manifest validation fails.
@@ -322,8 +323,7 @@ returns the shared sentinels of `lode`.
   yet (CONTRACT_VOLUME §Removal).
 
 #### Other Volume Error Behavior
-- `Commit` with an empty block list returns an error.
-- `Commit` with `nil` metadata returns an error.
+- `Commit` with an empty block list returns `lode.ErrInvalidArgument`.
 - `Volume.Latest` returns `ErrNoSnapshots` when no snapshots exist.
 - `Volume.Snapshot` returns `ErrNotFound` when the snapshot ID does not
   exist.
@@ -405,8 +405,7 @@ Snapshot expiry and the sweep of unreferenced objects
 ### Non-Retryable Errors
 - `ErrDatasetsNotModeled`: list datasets under a root with a datasets
   directory.
-- `ManifestValidationError`: the data is corrupt, so investigate its
-  source.
+- `ErrManifestInvalid`: the data is corrupt, so investigate its source.
 - `ErrPathExists`: a logic error in the caller (an attempt to write the same
   path twice). Tombstone creation in retention is the exception: there the
   error means that another run recorded the expiry first, and retention
@@ -508,7 +507,7 @@ view.GetManifest(ctx, ref)
   → store.Get(manifestPath)
   → json.Decode() succeeds
   → ValidateManifest() fails (missing SchemaName)
-  → return nil, ManifestValidationError{Field: "SchemaName", ...}
+  → return nil, err (matches ErrManifestInvalid)
 ```
 
 ### ListManifests with a Corrupt Manifest

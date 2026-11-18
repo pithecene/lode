@@ -30,6 +30,10 @@ linters:
     - gocyclo
     - gocritic
     - misspell
+    - unused
+  settings:
+    unused:
+      field-writes-are-uses: false
 
 formatters:
   enable:
