@@ -28,6 +28,9 @@ func (f optionFunc) apply(c *config) error { return f(c) }
 // in the manifest. Default: none.
 func WithChecksum(c lode.Checksum) Option {
 	return optionFunc(func(cfg *config) error {
+		if validate.Nil(c) {
+			return validate.Argument("WithChecksum: checksum must not be nil")
+		}
 		cfg.checksum = c
 		return nil
 	})

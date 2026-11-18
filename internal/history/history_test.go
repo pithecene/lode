@@ -160,7 +160,7 @@ func (testKind) ParseManifest(p string) (id, bool) {
 // NotExpired is always true: the core has no retention of its own.
 func (testKind) NotExpired(context.Context, id) (bool, error) { return true, nil }
 
-func (testKind) Decode(r io.Reader) (*manifest, error) {
+func (testKind) Decode(_ id, r io.Reader) (*manifest, error) {
 	var m manifest
 	if err := json.NewDecoder(r).Decode(&m); err != nil {
 		return nil, errBoom
@@ -815,7 +815,7 @@ type unmarshalable struct{ F func() }
 // unmarshalableKind is testKind for unmarshalable manifests.
 type unmarshalableKind struct{ testKind }
 
-func (unmarshalableKind) Decode(io.Reader) (*unmarshalable, error) { return nil, errBoom }
+func (unmarshalableKind) Decode(id, io.Reader) (*unmarshalable, error) { return nil, errBoom }
 
 func TestRefresh(t *testing.T) {
 	t.Run("empty is not an error", func(t *testing.T) {

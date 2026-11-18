@@ -733,3 +733,63 @@ func TestValidateManifest_PathsNameEveryDirectory(t *testing.T) {
 		}
 	}
 }
+
+func TestRead_RejectsMisplacedManifestAndForeignDataPaths(t *testing.T) {
+	ctx := t.Context()
+	store := NewMemory()
+	root := Open(Use(store))
+
+	dsB, err := root.Records(ctx, "secret-b", JSONL[D]())
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapB, err := dsB.Write(ctx, R(D{"secret": "classified"}), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dsA, err := root.Records(ctx, "public-a", JSONL[D]())
+	if err != nil {
+		t.Fatal(err)
+	}
+	olderA, err := dsA.Write(ctx, R(D{"v": 1}), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dsA.Write(ctx, R(D{"v": 2}), nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// Tamper olderA's manifest to point its file at secret-b's object.
+	tampered := *olderA.Manifest
+	tampered.Files = []FileRef{{Path: snapB.Files[0].Path, SizeBytes: snapB.Files[0].SizeBytes}}
+	writeManifestAt(t, store, "datasets/public-a/snapshots/"+string(olderA.ID)+"/manifest.json", &tampered)
+
+	if _, err := dsA.Read(ctx, olderA.ID); !errors.Is(err, ErrManifestInvalid) {
+		t.Errorf("Records.Read(foreign path) = %v, want ErrManifestInvalid", err)
+	}
+
+	// Tamper olderA's DatasetID and verify Snapshot and Snapshots reject it.
+	wrongDS := *olderA.Manifest
+	wrongDS.DatasetID = "secret-b"
+	writeManifestAt(t, store, "datasets/public-a/snapshots/"+string(olderA.ID)+"/manifest.json", &wrongDS)
+
+	if _, err := dsA.Snapshot(ctx, olderA.ID); !errors.Is(err, ErrManifestInvalid) {
+		t.Errorf("Snapshot(wrong DatasetID) = %v, want ErrManifestInvalid", err)
+	}
+	if _, err := dsA.Snapshots(ctx); !errors.Is(err, ErrManifestInvalid) {
+		t.Errorf("Snapshots(wrong DatasetID) = %v, want ErrManifestInvalid", err)
+	}
+
+	// Typed-nil map and struct pointer metadata coalesce to {} like untyped nil.
+	var nilMap D
+	var nilStruct *struct{ Tag string }
+	s1, err := dsB.Write(ctx, R(D{"x": 1}), nilMap)
+	if err != nil || string(s1.Metadata.JSON()) != "{}" {
+		t.Errorf("Write(typed-nil map) = %v, %s; want nil, {}", err, s1.Metadata.JSON())
+	}
+	s2, err := dsB.Write(ctx, R(D{"x": 2}), nilStruct)
+	if err != nil || string(s2.Metadata.JSON()) != "{}" {
+		t.Errorf("Write(typed-nil struct ptr) = %v, %s; want nil, {}", err, s2.Metadata.JSON())
+	}
+}

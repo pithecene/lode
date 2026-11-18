@@ -3,8 +3,12 @@ package lode
 import (
 	"bytes"
 	"errors"
+	"math"
+	"slices"
 	"testing"
 	"time"
+
+	"github.com/parquet-go/parquet-go"
 )
 
 // newParquet returns the Parquet codec and the schema error it records,
@@ -16,12 +20,24 @@ func newParquet(schema ParquetSchema, opts ...ParquetOption) (Codec[D], error) {
 
 func TestParquetCodec_Construction(t *testing.T) {
 	t.Run("name", func(t *testing.T) {
-		codec, err := newParquet(ParquetSchema{})
+		codec, err := newParquet(ParquetSchema{
+			Fields: []ParquetField{{Name: "id", Type: ParquetInt64}},
+		})
 		if err != nil {
 			t.Fatalf("newParquet() error = %v", err)
 		}
 		if got := codec.Name(); got != "parquet" {
 			t.Errorf("Name() = %q, want %q", got, "parquet")
+		}
+	})
+
+	t.Run("empty schema rejected", func(t *testing.T) {
+		codec, err := newParquet(ParquetSchema{})
+		if !errors.Is(err, ErrSchemaViolation) {
+			t.Fatalf("newParquet(empty) error = %v, want ErrSchemaViolation", err)
+		}
+		if got := codec.Name(); got != "parquet" {
+			t.Errorf("Name() on invalid codec = %q, want %q", got, "parquet")
 		}
 	})
 
@@ -1189,5 +1205,144 @@ func TestParquetCodec_FileStats_Timestamps(t *testing.T) {
 	}
 	if !maxTs.Equal(t2) {
 		t.Errorf("ts.Max = %v, want %v", maxTs, t2)
+	}
+}
+
+func TestParquetCodec_PreservesColumnOrderAndValidatesDecodeSchema(t *testing.T) {
+	schema := ParquetSchema{
+		Fields: []ParquetField{
+			{Name: "z_id", Type: ParquetInt64},
+			{Name: "a_name", Type: ParquetString},
+			{Name: "m_note", Type: ParquetString, Nullable: true},
+		},
+	}
+	codec, err := newParquet(schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	if err := codec.Encode(&buf, []D{{"z_id": int64(7), "a_name": "zeta", "m_note": "ok"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	file, err := parquet.OpenFile(bytes.NewReader(buf.Bytes()), int64(buf.Len()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gotOrder []string
+	for _, f := range file.Schema().Fields() {
+		gotOrder = append(gotOrder, f.Name())
+	}
+	if wantOrder := []string{"z_id", "a_name", "m_note"}; !slices.Equal(gotOrder, wantOrder) {
+		t.Errorf("physical Parquet column order = %v, want declared order %v", gotOrder, wantOrder)
+	}
+
+	// Decoding a Parquet file whose physical columns were written in alphabetical
+	// order (such as pre-v1 files or external writers) still maps by column name.
+	reorderedCodec, err := newParquet(ParquetSchema{
+		Fields: []ParquetField{
+			{Name: "a_name", Type: ParquetString},
+			{Name: "m_note", Type: ParquetString, Nullable: true},
+			{Name: "z_id", Type: ParquetInt64},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var alphaBuf bytes.Buffer
+	if err := reorderedCodec.Encode(&alphaBuf, []D{{"z_id": int64(99), "a_name": "alpha", "m_note": nil}}); err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := codec.Decode(&alphaBuf)
+	if err != nil {
+		t.Fatalf("Decode(reordered file) error = %v", err)
+	}
+	if len(decoded) != 1 || decoded[0]["z_id"] != int64(99) || decoded[0]["a_name"] != "alpha" || decoded[0]["m_note"] != nil {
+		t.Errorf("Decode(reordered file) = %v", decoded)
+	}
+
+	// Wrong column physical kind returns ErrInvalidFormat instead of panicking.
+	wrongKindCodec, err := newParquet(ParquetSchema{
+		Fields: []ParquetField{
+			{Name: "z_id", Type: ParquetString},
+			{Name: "a_name", Type: ParquetString},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wrongBuf bytes.Buffer
+	if err := wrongKindCodec.Encode(&wrongBuf, []D{{"z_id": "not-an-int", "a_name": "x"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := codec.Decode(&wrongBuf); !errors.Is(err, ErrInvalidFormat) {
+		t.Errorf("Decode(wrong physical kind) = %v, want ErrInvalidFormat", err)
+	}
+
+	// Missing required column returns ErrInvalidFormat.
+	missingReqCodec, err := newParquet(ParquetSchema{
+		Fields: []ParquetField{{Name: "a_name", Type: ParquetString}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var missingBuf bytes.Buffer
+	if err := missingReqCodec.Encode(&missingBuf, []D{{"a_name": "only"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := codec.Decode(&missingBuf); !errors.Is(err, ErrInvalidFormat) {
+		t.Errorf("Decode(missing required column) = %v, want ErrInvalidFormat", err)
+	}
+}
+
+func TestParquetCodec_NonFiniteFloatsAndNormalizedStats(t *testing.T) {
+	ctx := t.Context()
+	schema := ParquetSchema{
+		Fields: []ParquetField{
+			{Name: "count", Type: ParquetInt32},
+			{Name: "val64", Type: ParquetFloat64},
+			{Name: "val32", Type: ParquetFloat32},
+			{Name: "ts", Type: ParquetTimestamp},
+		},
+	}
+	ds, err := Open(Memory()).Records(ctx, "metrics", Parquet(schema), WithCompressor(NewNoOpCompressor()))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	snap, err := ds.Write(ctx, []D{
+		{"count": float64(10), "val64": math.NaN(), "val32": float32(math.Inf(1)), "ts": "2025-03-01T12:00:00Z"},
+		{"count": int(3), "val64": 8.5, "val32": float32(1.25), "ts": time.Date(2025, 1, 1, 0, 0, 0, 0, time.FixedZone("EST", -5*3600))},
+		{"count": int64(7), "val64": math.Inf(-1), "val32": float32(math.NaN()), "ts": "2025-06-01T00:00:00Z"},
+		{"count": int32(5), "val64": 2.25, "val32": float32(4.5), "ts": "2025-02-01T00:00:00Z"},
+	}, nil)
+	if err != nil {
+		t.Fatalf("Write with NaN/±Inf failed: %v", err)
+	}
+
+	stats := snap.Files[0].Stats
+	if stats == nil || len(stats.Columns) != 4 {
+		t.Fatalf("stats = %+v, want 4 columns", stats)
+	}
+	if stats.Columns[0].Min != int32(3) || stats.Columns[0].Max != int32(10) {
+		t.Errorf("count stats = (%v [%T], %v [%T]), want (int32(3), int32(10))", stats.Columns[0].Min, stats.Columns[0].Min, stats.Columns[0].Max, stats.Columns[0].Max)
+	}
+	if stats.Columns[1].Min != 2.25 || stats.Columns[1].Max != 8.5 {
+		t.Errorf("val64 stats = (%v, %v), want (2.25, 8.5)", stats.Columns[1].Min, stats.Columns[1].Max)
+	}
+	if stats.Columns[2].Min != float32(1.25) || stats.Columns[2].Max != float32(4.5) {
+		t.Errorf("val32 stats = (%v, %v), want (1.25, 4.5)", stats.Columns[2].Min, stats.Columns[2].Max)
+	}
+	if _, ok := stats.Columns[3].Min.(time.Time); !ok {
+		t.Errorf("ts.Min type = %T, want time.Time", stats.Columns[3].Min)
+	}
+
+	got, err := ds.Read(ctx, snap.ID)
+	if err != nil {
+		t.Fatalf("Read failed: %v", err)
+	}
+	if len(got) != 4 || !math.IsNaN(got[0]["val64"].(float64)) || !math.IsInf(got[2]["val64"].(float64), -1) {
+		t.Errorf("decoded rows did not preserve NaN/-Inf: %v", got)
 	}
 }
