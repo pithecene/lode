@@ -1530,3 +1530,53 @@ func TestParquetCodec_EmbeddedPointerAndDefinedScalars(t *testing.T) {
 		t.Fatalf("unexported embedded pointer err = %v, want ErrSchemaViolation", err)
 	}
 }
+
+func TestParquetExternalLeafProjectionAndTimestampUnits(t *testing.T) {
+	type group struct {
+		X int64 `parquet:"x"`
+		Y int64 `parquet:"y"`
+	}
+	type external struct {
+		A     group `parquet:"a"`
+		Z     int64 `parquet:"z"`
+		Milli int64 `parquet:"ms,timestamp(millisecond:utc)"`
+		Micro int64 `parquet:"us,timestamp(microsecond:utc)"`
+		Nano  int64 `parquet:"ns,timestamp(nanosecond:utc)"`
+		Local int64 `parquet:"local,timestamp(millisecond:local)"`
+	}
+	var file bytes.Buffer
+	row := external{A: group{11, 22}, Z: 99, Milli: -1250, Micro: 1234567, Nano: 123456789}
+	if err := parquet.Write(&file, []external{row}); err != nil {
+		t.Fatal(err)
+	}
+	schema := ParquetSchema{Fields: []ParquetField{
+		{Name: "z", Type: ParquetInt64},
+		{Name: "ms", Type: ParquetTimestamp},
+		{Name: "us", Type: ParquetTimestamp},
+		{Name: "ns", Type: ParquetTimestamp},
+	}}
+	m, err := Parquet[D](schema).Decode(bytes.NewReader(file.Bytes()))
+	if err != nil || len(m) != 1 {
+		t.Fatalf("map projection: %v, %v", m, err)
+	}
+	type projected struct {
+		Z     int64     `json:"z"`
+		Milli time.Time `json:"ms"`
+		Micro time.Time `json:"us"`
+		Nano  time.Time `json:"ns"`
+	}
+	s, err := Parquet[projected](schema).Decode(bytes.NewReader(file.Bytes()))
+	if err != nil || len(s) != 1 {
+		t.Fatalf("struct projection: %v, %v", s, err)
+	}
+	want := projected{99, time.UnixMilli(row.Milli).UTC(), time.UnixMicro(row.Micro).UTC(), time.Unix(0, row.Nano).UTC()}
+	if s[0] != want || m[0]["z"] != want.Z || m[0]["ms"] != want.Milli || m[0]["us"] != want.Micro || m[0]["ns"] != want.Nano {
+		t.Fatalf("got %v and %+v, want %+v", m[0], s[0], want)
+	}
+	for _, name := range []string{"z", "local"} {
+		codec := Parquet[D](ParquetSchema{Fields: []ParquetField{{Name: name, Type: ParquetTimestamp}}})
+		if _, err := codec.Decode(bytes.NewReader(file.Bytes())); !errors.Is(err, ErrInvalidFormat) {
+			t.Errorf("timestamp projection of %s returned %v, want ErrInvalidFormat", name, err)
+		}
+	}
+}

@@ -448,7 +448,8 @@ func rowToMap(row parquet.Row, plan decodePlan, fieldCount int) (D, error) {
 		if colIdx < 0 || colIdx >= len(plan.columns) || !plan.columns[colIdx].matched {
 			continue
 		}
-		field := plan.columns[colIdx].field
+		col := plan.columns[colIdx]
+		field := col.field
 		if val.IsNull() {
 			if !field.Nullable {
 				return nil, fmt.Errorf("parquet: %w: null value in required column %q", ErrInvalidFormat, field.Name)
@@ -456,7 +457,7 @@ func rowToMap(row parquet.Row, plan decodePlan, fieldCount int) (D, error) {
 			record[field.Name] = nil
 			continue
 		}
-		record[field.Name] = convertFromParquetValue(val, field)
+		record[field.Name] = convertFromParquetValue(val, col)
 	}
 	return record, nil
 }
@@ -693,20 +694,21 @@ func (b structBinder[T]) decodeRow(row parquet.Row, plan decodePlan) (T, error) 
 		fv := fieldByIndexAlloc(rv, acc.index)
 		if acc.isPtr {
 			ptr := reflect.New(acc.elemType)
-			if err := setScalarValue(ptr.Elem(), val, col.field); err != nil {
+			if err := setScalarValue(ptr.Elem(), val, col); err != nil {
 				return out, err
 			}
 			fv.Set(ptr)
 			continue
 		}
-		if err := setScalarValue(fv, val, col.field); err != nil {
+		if err := setScalarValue(fv, val, col); err != nil {
 			return out, err
 		}
 	}
 	return out, nil
 }
 
-func setScalarValue(dst reflect.Value, val parquet.Value, field ParquetField) error {
+func setScalarValue(dst reflect.Value, val parquet.Value, col decodeColumn) error {
+	field := col.field
 	switch field.Type {
 	case ParquetInt32:
 		dst.SetInt(int64(val.Int32()))
@@ -731,7 +733,7 @@ func setScalarValue(dst reflect.Value, val parquet.Value, field ParquetField) er
 		}
 		dst.SetBytes(raw)
 	case ParquetTimestamp:
-		dst.Set(reflect.ValueOf(time.Unix(0, val.Int64()).UTC()))
+		dst.Set(reflect.ValueOf(col.timestamp(val.Int64()).UTC()))
 	}
 	return nil
 }
@@ -741,6 +743,7 @@ func setScalarValue(dst reflect.Value, val parquet.Value, field ParquetField) er
 // -----------------------------------------------------------------------------
 
 type decodeColumn struct {
+	timestamp func(int64) time.Time
 	field     ParquetField
 	schemaIdx int
 	matched   bool
@@ -767,10 +770,10 @@ func (c *parquetCodec[T]) planDecodeColumns(fileSchema *parquet.Schema) (decodeP
 		return decodePlan{}, fmt.Errorf("parquet: %w: missing file schema", ErrInvalidFormat)
 	}
 	fileFields := fileSchema.Fields()
-	cols := make([]decodeColumn, len(fileFields))
+	cols := make([]decodeColumn, len(fileSchema.Columns()))
 	seen := make(map[string]bool, len(fileFields))
 
-	for i, pf := range fileFields {
+	for _, pf := range fileFields {
 		name := pf.Name()
 		if seen[name] {
 			return decodePlan{}, fmt.Errorf("parquet: %w: duplicate column %q in file schema", ErrInvalidFormat, name)
@@ -780,13 +783,22 @@ func (c *parquetCodec[T]) planDecodeColumns(fileSchema *parquet.Schema) (decodeP
 		if !ok {
 			continue
 		}
-		if !pf.Leaf() || pf.Repeated() {
+		leaf, scalar := fileSchema.Lookup(name)
+		if !scalar || pf.Repeated() {
 			return decodePlan{}, fmt.Errorf("parquet: %w: column %q is not a scalar leaf", ErrInvalidFormat, name)
 		}
 		if got, want := pf.Type().Kind(), expectedParquetKind[expected.Type]; got != want {
 			return decodePlan{}, fmt.Errorf("parquet: %w: column %q has physical kind %s, want %s", ErrInvalidFormat, name, got, want)
 		}
-		cols[i] = decodeColumn{field: expected, schemaIdx: c.fieldIndex[name], matched: true}
+		col := decodeColumn{field: expected, schemaIdx: c.fieldIndex[name], matched: true}
+		if expected.Type == ParquetTimestamp {
+			unit, err := timestampDecoder(pf)
+			if err != nil {
+				return decodePlan{}, err
+			}
+			col.timestamp = unit
+		}
+		cols[leaf.ColumnIndex] = col
 	}
 
 	var missingNullable []string
@@ -800,6 +812,23 @@ func (c *parquetCodec[T]) planDecodeColumns(fileSchema *parquet.Schema) (decodeP
 		missingNullable = append(missingNullable, field.Name)
 	}
 	return decodePlan{columns: cols, missingNullable: missingNullable}, nil
+}
+
+// timestampDecoder selects the UTC interpretation once per physical column.
+func timestampDecoder(field parquet.Field) (func(int64) time.Time, error) {
+	logical := field.Type().LogicalType()
+	if logical != nil && logical.Timestamp != nil && logical.Timestamp.IsAdjustedToUTC {
+		unit := logical.Timestamp.Unit
+		switch {
+		case unit.Millis != nil:
+			return time.UnixMilli, nil
+		case unit.Micros != nil:
+			return time.UnixMicro, nil
+		case unit.Nanos != nil:
+			return func(n int64) time.Time { return time.Unix(0, n) }, nil
+		}
+	}
+	return nil, fmt.Errorf("parquet: %w: column %q requires a UTC timestamp with a supported unit", ErrInvalidFormat, field.Name())
 }
 
 // -----------------------------------------------------------------------------
@@ -923,7 +952,8 @@ func convertToParquetValue(val any, field ParquetField, index int) (parquet.Valu
 	}
 }
 
-func convertFromParquetValue(val parquet.Value, field ParquetField) any {
+func convertFromParquetValue(val parquet.Value, col decodeColumn) any {
+	field := col.field
 	switch field.Type {
 	case ParquetInt32:
 		return val.Int32()
@@ -944,7 +974,7 @@ func convertFromParquetValue(val parquet.Value, field ParquetField) any {
 		}
 		return raw
 	case ParquetTimestamp:
-		return time.Unix(0, val.Int64()).UTC()
+		return col.timestamp(val.Int64()).UTC()
 	default:
 		return nil
 	}

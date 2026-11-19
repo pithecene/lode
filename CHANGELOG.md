@@ -33,6 +33,8 @@ and Lode adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Parquet projection and timestamps**: External files can contain extra nested columns. The decoder maps requested fields to physical leaves and honors UTC timestamp units.
+
 - **Snapshot inventory checks**: Decompressed reads use the checksum recorded in the snapshot and reject paths absent from its inventory. Format 1.2.0 ignores the obsolete manifest fields for files and paths.
 - **Filesystem listing cancellation**: Prefix scans check for cancellation while traversing child directories.
 
