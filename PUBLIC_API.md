@@ -333,7 +333,7 @@ of every read object automatically and return `ErrChecksumMismatch` if an
 object's digest is missing or does not match. `OpenObject` and `ReaderAt`
 return raw stored bytes without decompression or checksum verification, while
 `OpenDecompressed(ctx, manifest, obj)` streams the decompressed payload and
-verifies any recorded checksum at `io.EOF`.
+verifies the checksum from the matching manifest entry at `io.EOF`. A path absent from the manifest returns `ErrInvalidArgument`.
 
 **Record helpers and metadata:**
 - `D`: alias for `map[string]any`

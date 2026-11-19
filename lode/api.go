@@ -145,6 +145,9 @@ func (m *Manifest) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	*m = Manifest(wire.manifestAlias)
+	if m.FormatVersion != legacyFormatVersion && m.FormatVersion != v11FormatVersion {
+		return nil
+	}
 	if m.Objects == nil && wire.LegacyFiles != nil {
 		m.Objects = wire.LegacyFiles
 	}

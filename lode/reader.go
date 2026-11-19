@@ -515,7 +515,12 @@ func (d *dataset) OpenDecompressed(ctx context.Context, m *Manifest, obj ObjectR
 	if !d.layout.isObjectOf(d.id, m.SnapshotID, dataLeaf, obj.Path) {
 		return nil, validate.Argument("object %q does not belong to snapshot %s of dataset %s", obj.Path, m.SnapshotID, d.id)
 	}
-	return d.openObjectStream(ctx, m, obj)
+	for _, recorded := range m.Objects {
+		if recorded.Path == obj.Path {
+			return d.openObjectStream(ctx, m, recorded)
+		}
+	}
+	return nil, validate.Argument("object %q is absent from the inventory of snapshot %s", obj.Path, m.SnapshotID)
 }
 
 // ReaderAt returns an io.ReaderAt for random access to the raw stored bytes of

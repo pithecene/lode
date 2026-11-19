@@ -55,16 +55,33 @@ func TestOpenDecompressed_StreamsAndVerifiesChecksums(t *testing.T) {
 				t.Fatalf("payload len = %d, want %d", len(got), len(want))
 			}
 
-			tampered := snap.Objects[0]
-			tampered.Checksum = strings.Repeat("0", 64)
-			badRC, err := view.OpenDecompressed(ctx, snap.Manifest, tampered)
+			// The manifest owns the digest. A detached caller reference can carry stale metadata.
+			ref := snap.Objects[0]
+			ref.Checksum = ""
+			rc, err = view.OpenDecompressed(ctx, snap.Manifest, ref)
 			if err != nil {
-				t.Fatalf("OpenDecompressed tampered = %v", err)
+				t.Fatal(err)
 			}
-			_, err = io.ReadAll(badRC)
-			_ = badRC.Close()
+			_, err = io.Copy(io.Discard, rc)
+			if closeErr := rc.Close(); err != nil || closeErr != nil {
+				t.Fatalf("reading with manifest digest: read %v, close %v", err, closeErr)
+			}
+
+			if err := store.Delete(ctx, ref.Path); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.Put(ctx, ref.Path, strings.NewReader("corrupt object")); err != nil {
+				t.Fatal(err)
+			}
+			bad, err := view.OpenDecompressed(ctx, snap.Manifest, ref)
+			if err == nil {
+				_, err = io.Copy(io.Discard, bad)
+				if closeErr := bad.Close(); closeErr != nil {
+					t.Errorf("Close: %v", closeErr)
+				}
+			}
 			if !errors.Is(err, lode.ErrChecksumMismatch) {
-				t.Fatalf("ReadAll tampered = %v, want ErrChecksumMismatch", err)
+				t.Fatalf("corrupt object = %v, want ErrChecksumMismatch", err)
 			}
 		})
 	}
@@ -98,6 +115,11 @@ func TestOpenDecompressed_RejectsForeignDatasetAndSnapshotMismatch(t *testing.T)
 		t.Fatal(err)
 	}
 
+	unlisted := snapA1.Objects[0]
+	unlisted.Path += ".orphan"
+	if _, err := a.OpenDecompressed(ctx, snapA1.Manifest, unlisted); !errors.Is(err, lode.ErrInvalidArgument) {
+		t.Fatalf("unlisted object = %v, want ErrInvalidArgument", err)
+	}
 	if _, err := a.OpenDecompressed(ctx, snapB.Manifest, snapB.Objects[0]); !errors.Is(err, lode.ErrManifestInvalid) {
 		t.Fatalf("foreign manifest = %v, want ErrManifestInvalid", err)
 	}
