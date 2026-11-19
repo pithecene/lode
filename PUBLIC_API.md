@@ -112,7 +112,7 @@ writer or view opens the dataset with a different `WithFlatPaths()` setting.
 `Root.Records[T](ctx, id, codec, opts...) (*Records[T], error)` opens a
 dataset of records of type `T`, inferred from `codec`. `*Records[T]` provides
 reading (`ID`, `Latest`, `Snapshot`, `Snapshots`, `Read`, `ListPartitions`,
-`Manifests`, `OpenObject`, `ReaderAt`), writing (`Write`, `StreamWrite`), and
+`Manifests`, `OpenObject`, `OpenDecompressed`, `ReaderAt`), writing (`Write`, `StreamWrite`), and
 retention (`Expire`, `Sweep`).
 
 `ReadRoot.Records[T](ctx, id, codec, opts...) (*RecordView[T], error)` opens
@@ -331,7 +331,9 @@ When a snapshot manifest records a checksum algorithm, `Records.Read`,
 `RecordView.Read`, `Blobs.Read`, and `BlobView.Read` verify the stored bytes
 of every read object automatically and return `ErrChecksumMismatch` if an
 object's digest is missing or does not match. `OpenObject` and `ReaderAt`
-return raw stored bytes without decompression or checksum verification.
+return raw stored bytes without decompression or checksum verification, while
+`OpenDecompressed(ctx, manifest, obj)` streams the decompressed payload and
+verifies any recorded checksum at `io.EOF`.
 
 **Record helpers and metadata:**
 - `D`: alias for `map[string]any`

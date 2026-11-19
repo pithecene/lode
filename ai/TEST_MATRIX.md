@@ -755,3 +755,4 @@ does not depend on that timing.
 `TestFSAdapter_ContextCancel` and `TestIntegration_Writes/stream_write_context_cancel`
 exercise a cancellation on the filesystem and S3 adapters. Their outcome
 depends on timing, so they assert no invariant.
+- `TestOpenDecompressed_StreamsAndVerifiesChecksums` and `TestOpenDecompressed_RejectsForeignDatasetAndSnapshotMismatch` (`lode/reader_decompressed_test.go`)

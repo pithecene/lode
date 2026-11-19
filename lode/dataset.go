@@ -435,26 +435,92 @@ func (d *writer) Latest(ctx context.Context) (*Snapshot, error) {
 // checksum when the manifest records a checksum algorithm and streaming the
 // decompressed bytes to decode.
 func (d *dataset) readObject(ctx context.Context, m *Manifest, obj ObjectRef, decode func(io.Reader) error) error {
-	compressor, err := d.compressorFor(m)
+	rc, err := d.openObjectStream(ctx, m, obj)
 	if err != nil {
 		return err
+	}
+	defer closer(rc)()
+
+	if err := decode(rc); err != nil {
+		return rc.verifyOnError(err)
+	}
+	return rc.verifyComplete()
+}
+
+type verifiedObjectStream struct {
+	decompressed io.ReadCloser
+	source       io.ReadCloser
+	raw          io.Reader
+	hasher       HashWriter
+	obj          ObjectRef
+	verified     bool
+	verifyErr    error
+}
+
+func (v *verifiedObjectStream) Read(p []byte) (int, error) {
+	n, err := v.decompressed.Read(p)
+	if err == nil {
+		return n, nil
+	}
+	if errors.Is(err, io.EOF) {
+		if vErr := v.verifyComplete(); vErr != nil {
+			return n, vErr
+		}
+		return n, io.EOF
+	}
+	return n, v.verifyOnError(err)
+}
+
+func (v *verifiedObjectStream) verifyComplete() error {
+	if v.verified {
+		return v.verifyErr
+	}
+	v.verified = true
+	v.verifyErr = verifyStoredBytes(v.raw, v.hasher, v.obj)
+	return v.verifyErr
+}
+
+func (v *verifiedObjectStream) verifyOnError(cause error) error {
+	if v.verified {
+		if errors.Is(v.verifyErr, ErrChecksumMismatch) {
+			return v.verifyErr
+		}
+		return cause
+	}
+	v.verified = true
+	v.verifyErr = verifyStoredBytesOnError(v.raw, v.hasher, v.obj, cause)
+	return v.verifyErr
+}
+
+func (v *verifiedObjectStream) Close() error {
+	dErr := v.decompressed.Close()
+	sErr := v.source.Close()
+	if dErr != nil {
+		return dErr
+	}
+	return sErr
+}
+
+func (d *dataset) openObjectStream(ctx context.Context, m *Manifest, obj ObjectRef) (*verifiedObjectStream, error) {
+	compressor, err := d.compressorFor(m)
+	if err != nil {
+		return nil, err
 	}
 	var checksum Checksum
 	if m.ChecksumAlgorithm != "" {
 		checksum, err = d.checksumFor(m)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if obj.Checksum == "" {
-			return fmt.Errorf("lode: object %s in snapshot %s is missing %s checksum: %w", obj.Path, m.SnapshotID, m.ChecksumAlgorithm, ErrChecksumMismatch)
+			return nil, fmt.Errorf("lode: object %s in snapshot %s is missing %s checksum: %w", obj.Path, m.SnapshotID, m.ChecksumAlgorithm, ErrChecksumMismatch)
 		}
 	}
 
 	rc, err := d.store.Get(ctx, obj.Path)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	defer closer(rc)()
 
 	raw := io.Reader(rc)
 	var hasher HashWriter
@@ -465,14 +531,17 @@ func (d *dataset) readObject(ctx context.Context, m *Manifest, obj ObjectRef, de
 
 	decompressed, err := compressor.Decompress(raw)
 	if err != nil {
-		return verifyStoredBytesOnError(raw, hasher, obj, err)
+		vErr := verifyStoredBytesOnError(raw, hasher, obj, err)
+		_ = rc.Close()
+		return nil, vErr
 	}
-	defer closer(decompressed)()
-
-	if err := decode(decompressed); err != nil {
-		return verifyStoredBytesOnError(raw, hasher, obj, err)
-	}
-	return verifyStoredBytes(raw, hasher, obj)
+	return &verifiedObjectStream{
+		decompressed: decompressed,
+		source:       rc,
+		raw:          raw,
+		hasher:       hasher,
+		obj:          obj,
+	}, nil
 }
 
 func verifyStoredBytes(raw io.Reader, hasher HashWriter, obj ObjectRef) error {

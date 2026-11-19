@@ -11,6 +11,7 @@ and Lode adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`OpenDecompressed` on dataset handles and views**: `*Records[T]`, `*RecordView[T]`, `*Blobs`, and `*BlobView` now expose `OpenDecompressed(ctx, manifest, obj)` to stream decompressed object bytes in constant memory while verifying any recorded checksum at `io.EOF`.
 - **Bundled checksums verify object bytes on read**: `lode.SHA256`, `lode.CRC32C`, and `lode.MD5` compute stored-byte digests. When a manifest records a checksum algorithm, `Read` verifies each object and returns `ErrChecksumMismatch` on any mismatch.
 - **`Root.RemoveDataset` removes a dataset behind a pointer fence**: the method writes `lode:removed` to `latest` with `CompareAndSwap` and deletes the dataset's objects. Subsequent opens, reads, listings, and commits return `lode.ErrRemoved`.
 - **`PrefixLister` lists child prefixes without scanning objects**: `FS`, `Memory`, and `s3.Store` implement `ListPrefixes`, and `Prefixed`, `SingleProcess`, and read-only roots preserve it. `ListDatasets` now discovers committed datasets in `O(D)` calls.

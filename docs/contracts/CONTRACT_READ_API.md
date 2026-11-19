@@ -120,6 +120,7 @@ Snapshots(ctx context.Context) ([]*Snapshot, error)
 ListPartitions(ctx context.Context, opts PartitionListOptions) ([]PartitionPath, error)
 Manifests(ctx context.Context, partition PartitionPath, opts ManifestListOptions) iter.Seq2[LoadedManifest, error]
 OpenObject(ctx context.Context, obj ObjectRef) (io.ReadCloser, error)
+OpenDecompressed(ctx context.Context, m *Manifest, obj ObjectRef) (io.ReadCloser, error)
 ReaderAt(ctx context.Context, obj ObjectRef) (io.ReaderAt, error)
 
 // Typed payload read:
@@ -282,6 +283,7 @@ committed snapshots).
 | `Read(id)` | `1 + F` `Get` calls (`F` `Get` calls when `id` matches `WithAnchor(id)`) | O(R_total) |
 | `Snapshots` | 1 `List` + `S` `Get` calls | O(S × manifest) |
 | `OpenObject` | 1 `Get` | O(1) streaming |
+| `OpenDecompressed` | 1 `Get` | O(1) streaming |
 
 ---
 
