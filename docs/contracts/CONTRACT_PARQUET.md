@@ -156,6 +156,11 @@ Explicit coercions and overflow checks:
 - `int` and `int64` inputs to `ParquetInt32` outside `int32` bounds fail with
   `ErrSchemaViolation`. On 32-bit platforms, decoding a `ParquetInt64` value
   that overflows a struct `int` field fails with `ErrInvalidFormat`.
+- Projection uses physical leaf-column indices. Extra nested columns do not
+  change the meaning of a requested scalar column.
+- A timestamp column must carry a UTC-adjusted timestamp annotation in
+  milliseconds, microseconds, or nanoseconds. Decode returns the corresponding
+  UTC instant. Other annotations and bare integers yield `ErrInvalidFormat`.
 - RFC 3339 / RFC 3339Nano strings convert to `ParquetTimestamp`; invalid
   timestamp strings fail with `ErrSchemaViolation`.
 
