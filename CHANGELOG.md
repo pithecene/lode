@@ -33,6 +33,8 @@ and Lode adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Commit ancestry after a lost CAS response**: Writers follow persisted parent links when a concurrent writer has advanced the head. A confirmed ancestor keeps its original parent. An incomplete or cyclic chain leaves the attempt uncertain and preserves its staged data.
+
 - **Parquet projection and timestamps**: External files can contain extra nested columns. The decoder maps requested fields to physical leaves and honors UTC timestamp units.
 
 - **Snapshot inventory checks**: Decompressed reads use the checksum recorded in the snapshot and reject paths absent from its inventory. Format 1.2.0 ignores the obsolete manifest fields for files and paths.

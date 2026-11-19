@@ -848,9 +848,9 @@ naming seams left over from v0:
    read-surface addition to break mock implementers, while `DatasetSnapshot`,
    `DatasetSnapshotID`, `FileRef`, and `FileStats` mixed "dataset" and "file"
    nouns beside `ObjectRef` and `ObjectStore`.
-2. Eight `With*Dir` and `WithManifestFile` root options (from D11) duplicated
-   the bucket-scoping use case that `lode.Prefixed` (v0.13.0) solved cleanly,
-   while adding a nine-field `ManifestPaths` object to every manifest.
+2. Eight root options from D11 customized internal directory and file names.
+   Each manifest recorded that convention in `ManifestPaths`. The separate
+   `lode.Prefixed` option scopes the whole store to a prefix.
 3. `ListManifests`, `GetManifest`, and `PartitionRef` duplicated `Manifests`
    and `PartitionPath`; `ListPartitions` still loaded every manifest (`M`
    `Get` calls); `ListDatasets` scanned every object key (`O(N)`) and
@@ -867,10 +867,10 @@ naming seams left over from v0:
    `WithRetryCount` spelling, and datasets had no `RemoveDataset` counterpart
    to `volume.Remove`.
 
-**Decided.** Unify the public surface and wire format once before tagging
-`v1.0.0`, while preserving full read compatibility with every `1.0.0` and
-`1.1.0` dataset manifest, pre-`1.2.0` tombstone, and pre-v1 volume block
-path:
+**Decided.** Unify the public surface and wire format before tagging
+`v1.0.0`. Formats `1.0.0` and `1.1.0` remain readable in place in standard
+and flat layouts with standard internal names. Readers retain support for
+pre-`1.2.0` tombstones in those layouts and for historical Volume block paths.
 
 | Area | Unified v1.0.0 Shape | Replaces / Removes |
 |---|---|---|
@@ -879,14 +879,16 @@ path:
 | Root topology & format `1.2.0` | Fixed internal segment names; `WithFlatPaths()` (`RootOption`) persists `flat: true` in format `1.2.0`; custom bucket prefixes use `lode.Prefixed` | `WithDatasetsDir`, `WithSnapshotsDir`, `WithPartitionsDir`, `WithSegmentsDir`, `WithManifestFile`, `WithDataDir`, `WithExpiredDir`, `WithStagedDir`, `ManifestPaths` (standard and flat legacy paths remain readable in place; custom internal names require replay into a fresh root) |
 | Single-call blob streaming | `Blobs.StreamWrite(ctx, io.Reader, metadata) (*Snapshot, error)` (direct `Store.Put` without `io.Pipe` when uncompressed) | `StreamWriter` (`Commit`, `Abort`, `Close`) |
 | Generic stateless Parquet | `Parquet[T](schema, opts...) Codec[T]` supporting both `lode.D` and flat Go structs (`parquet` tag, `json` tag, or field name); stateless `StatisticalCodec[T].EncodeWithStats` and `StatisticalStreamEncoder.ObjectStats` | Map-only `Parquet(schema) Codec[D]` and stateful `FileStats()` |
-| Listings & anchored views | `Manifests` as the sole manifest iterator; `ListPartitions` returning `[]PartitionPath` with `0` `Get` calls when Hive-indexed; `PrefixLister` (`ListPrefixes`) giving `ListDatasets` `O(D)` discovery (returning `[]DatasetID{}` when empty); `WithAnchor(id)` retaining the opened `*Snapshot` for `0`-extra-`Get` `Snapshot(id)` / `Read(id)` | `ListManifests`, `GetManifest`, `PartitionRef`, `WithPinnedSnapshot`, `ErrNoManifests` |
+| Listings & anchored views | `Manifests` is the manifest iterator. Indexed Hive partition discovery reads the fence and lists keys. S3 uses delimiter listing, Memory scans keys, and FS can traverse descendants. Anchored reads check the fence and canonical object existence before reusing a private manifest copy. | `ListManifests`, `GetManifest`, `PartitionRef`, `WithPinnedSnapshot`, `ErrNoManifests` |
 | Components & checksums | `Uncompressed()`, `Gzip()`, `Zstd()`, `SHA256()`, `CRC32C()`, `MD5()`, `NewMetadata(v)`; automatic read-time checksum verification returning `ErrChecksumMismatch`; `OpenObject` / `ReaderAt` serving raw stored bytes | `NewNoOpCompressor`, `NewGzipCompressor`, `NewZstdCompressor`, `NewMD5Checksum` |
 | Filesystem & S3 stores | `FS(root, opts...)` / `NewFS(root, opts...)` with `FSOption` (`WithSync()`); `s3.New(client, bucket, opts...)` and `s3.Bucket(client, bucket, opts...)` with `s3.Option` | `s3.Config`, `s3.Factory` |
 | Whole-dataset removal & sentinels | `Root.RemoveDataset(ctx, id, opts...)` fencing `latest` with `lode:removed` and returning `ErrRemoved` (shared with `volume.ErrRemoved`); `ErrNotPartitioned`; `nil` iterator/reader folded into `ErrInvalidArgument` | `ErrPartitionPrefixNotSupported`, `ErrNilIterator` |
 | Volume alignment | Nonced block paths `volumes/<id>/data/<offset>-<length>-<nonce>.bin` (accepting legacy `<offset>-<length>.bin` on read/commit), `Commit(..., metadata any)` backed by `lode.Metadata`, `volume.WithRetry(n)` | `volume.Metadata`, `volume.WithRetryCount` |
 
 **Breaks.** Pre-v1 callers of the replaced constructors, options, listing
-methods, and `StreamWriter` update call sites once for `v1.0.0`. Persisted
-data from v0.11.0 through v0.17.1 requires zero migration.
+methods, and `StreamWriter` update call sites once for `v1.0.0`. Datasets with custom internal names
+require replay into a separate root.
+The upgrade procedure in [`PUBLIC_API.md`](../../PUBLIC_API.md#upgrading-a-dataset-with-custom-internal-names)
+covers snapshot ID mapping and verification before cutover.
 
 **Status.** Accepted and implemented (2026-11-18) on `feat/v1-api-unification`.

@@ -99,6 +99,11 @@ One-time cold/first-commit additions:
   for the staged manifest in `staged/`.
 - Hot-path commits after open MUST NOT call `Store.List`.
 
+After a failed Dataset or Volume pointer CAS, reconciliation reads the pointer.
+For a different head, it reads at most two manifest paths per ancestor it
+examines and retains one visited ID per ancestor. A successful CAS adds no
+ancestry reads.
+
 ---
 
 ## Dataset Read Operations

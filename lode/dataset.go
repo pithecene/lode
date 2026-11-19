@@ -278,6 +278,18 @@ func (k datasetKind) ParseManifest(p string) (SnapshotID, bool) {
 	return sp.snapshot, ok && sp.snapshot != ""
 }
 
+// Concurrent first writers can choose different layouts under one pointer.
+// Only a canonical Dataset manifest fixes its parent across commit retries.
+func (k datasetKind) AlternateAncestorPath(id SnapshotID) string {
+	other := hiveGrammar
+	if k.paths.supportsPartitions() {
+		other = noopScheme
+	}
+	return newPathLayout(k.paths.isFlat(), other).manifestPath(k.id, id)
+}
+
+func (datasetKind) ParentID(m *Manifest) SnapshotID { return m.ParentSnapshotID }
+
 func (k datasetKind) NotExpired(ctx context.Context, id SnapshotID) (bool, error) {
 	absent, err := k.expired.absent(ctx, id)
 	if err != nil || absent {

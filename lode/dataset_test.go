@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"slices"
 	"strings"
@@ -3030,15 +3031,16 @@ func assertNoTimestamps(t *testing.T, snap *Snapshot) {
 
 type lostPointerResponse struct {
 	Store
-	loseNext bool
+	afterCAS func(SnapshotID)
 }
 
 func (s *lostPointerResponse) CompareAndSwap(ctx context.Context, path, expected, replacement string) error {
 	if err := s.Store.CompareAndSwap(ctx, path, expected, replacement); err != nil {
 		return err
 	}
-	if s.loseNext {
-		s.loseNext = false
+	if after := s.afterCAS; after != nil {
+		s.afterCAS = nil
+		after(SnapshotID(replacement))
 		return ErrSnapshotConflict
 	}
 	return nil
@@ -3050,7 +3052,7 @@ func TestWriteReconcilesAppliedCAS(t *testing.T) {
 	ds := recordsOn(t, store, "shared", WithRetry(1))
 	var previous SnapshotID
 	for range 2 {
-		store.loseNext = true
+		store.afterCAS = func(SnapshotID) {}
 		snap, err := ds.Write(ctx, R(D{"key": "value"}), nil)
 		if err != nil {
 			t.Fatal(err)
@@ -3063,5 +3065,52 @@ func TestWriteReconcilesAppliedCAS(t *testing.T) {
 			t.Fatalf("snapshot %s has parent %s, want %s", snap.ID, loaded.ParentSnapshotID, previous)
 		}
 		previous = snap.ID
+	}
+}
+
+func TestWriteReconcilesAppliedCASAfterDescendants(t *testing.T) {
+	for _, count := range []int{1, 3} {
+		t.Run(fmt.Sprintf("%d descendants", count), func(t *testing.T) {
+			ctx := t.Context()
+			store := &lostPointerResponse{Store: NewMemory()}
+			a := recordsOn(t, store, "shared", WithRetry(1))
+			b := recordsOn(t, store, "shared")
+			var lineage []SnapshotID
+			store.afterCAS = func(id SnapshotID) {
+				lineage = append(lineage, id)
+				for range count {
+					child, err := b.Write(ctx, R(D{"writer": "B"}), nil)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if child.ParentSnapshotID != lineage[len(lineage)-1] {
+						t.Fatalf("child has parent %s", child.ParentSnapshotID)
+					}
+					lineage = append(lineage, child.ID)
+				}
+			}
+			first, err := a.Write(ctx, R(D{"writer": "A"}), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if first.ID != lineage[0] || first.ParentSnapshotID != "" {
+				t.Fatalf("writer A returned %s with parent %s, want root %s", first.ID, first.ParentSnapshotID, lineage[0])
+			}
+			var parent SnapshotID
+			for _, id := range lineage {
+				stored, err := b.Snapshot(ctx, id)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if stored.ParentSnapshotID != parent {
+					t.Fatalf("stored %s has parent %s, want %s", id, stored.ParentSnapshotID, parent)
+				}
+				parent = id
+			}
+			head, err := b.Latest(ctx)
+			if err != nil || head.ID != parent {
+				t.Fatalf("head = %v, %v, want %s", head, err, parent)
+			}
+		})
 	}
 }

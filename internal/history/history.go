@@ -80,6 +80,11 @@ type Kind[ID ~string, M any] interface {
 	ParseManifest(path string) (ID, bool)
 	// Decode reads and validates a manifest for snapshot id.
 	Decode(id ID, r io.Reader) (*M, error)
+	// AlternateAncestorPath is a second authoritative source of the parent ID
+	// when the canonical manifest is absent, or "" when there is none.
+	AlternateAncestorPath(ID) string
+	// ParentID reads the parent recorded in a validated manifest.
+	ParentID(*M) ID
 	// NotExpired reports whether a pointer-less scan may take snapshot id as
 	// the head: false only for one retention has expired.
 	NotExpired(ctx context.Context, id ID) (bool, error)
@@ -832,11 +837,9 @@ func (h *History[ID, M]) resolve(ctx context.Context) (id ID, scanned *Snapshot[
 	return s.ID, s, observed, nil
 }
 
-// ErrManifestUncertain marks a commit that failed after its pointer advanced,
-// while it was writing manifests. A failed Put does not say whether the
-// object was stored (a lost response stores it), so the snapshot may be
-// visible, and nothing it references may be deleted. Errors carrying it keep
-// the message of the underlying failure.
+// ErrManifestUncertain marks a commit whose pointer or manifests may have
+// reached storage. Retrying the same ID or deleting its data could corrupt
+// a snapshot already present in the history.
 var ErrManifestUncertain = errors.New("the commit's manifest may have been persisted")
 
 // manifestUncertain wraps a manifest write failure so that it matches
@@ -868,7 +871,8 @@ func (e pointerNotSnapshotID) Is(target error) bool { return target == ErrPointe
 // (CONTRACT_CORE §Head Pointer), never a committed manifest the pointer
 // skips; the staged copy precedes the pointer so that parent can be loaded
 // (stagedParent). A failure after the pointer advanced matches
-// ErrManifestUncertain. On success the new head is remembered.
+// ErrManifestUncertain. A commit confirmed beneath a descendant leaves the
+// remembered head empty so the next writer resolves the current head.
 func (h *History[ID, M]) Advance(ctx context.Context, expected string, id ID, manifest *M, paths []string) error {
 	data, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
@@ -878,7 +882,8 @@ func (h *History[ID, M]) Advance(ctx context.Context, expected string, id ID, ma
 	if err := h.stage(ctx, staged, data); err != nil {
 		return fmt.Errorf("failed to stage %s: %w", h.noun, err)
 	}
-	if err := h.advancePointer(ctx, expected, id, staged); err != nil {
+	head, err := h.advancePointer(ctx, expected, id, staged)
+	if err != nil {
 		return err
 	}
 	for _, p := range paths {
@@ -893,7 +898,9 @@ func (h *History[ID, M]) Advance(ctx context.Context, expected string, id ID, ma
 		}
 	}
 	h.unstage(ctx, staged)
-	h.remember(id, string(id))
+	if head == id {
+		h.remember(id, string(id))
+	}
 	return nil
 }
 
@@ -973,26 +980,71 @@ func (h *History[ID, M]) unstage(ctx context.Context, staged string) {
 	}
 }
 
-// advancePointer reconciles a lost response before retrying or releasing staged
-// bytes. Observing our unique ID lets Advance publish the original manifest.
-func (h *History[ID, M]) advancePointer(ctx context.Context, expected string, id ID, staged string) error {
-	err := h.writePointer(ctx, expected, id)
-	if err == nil {
-		return nil
+// advancePointer returns the observed head. A descendant proves that the CAS
+// took effect even after another writer advanced the pointer again.
+func (h *History[ID, M]) advancePointer(ctx context.Context, expected string, id ID, staged string) (ID, error) {
+	writeErr := h.writePointer(ctx, expected, id)
+	if writeErr == nil {
+		return id, nil
 	}
 	h.Forget()
-	pointed, readErr := h.ReadPointer(ctx)
-	switch {
-	case readErr == nil && pointed == id:
-		return nil
-	case h.errs.Removed != nil && errors.Is(readErr, h.errs.Removed):
-		return readErr
-	case readErr != nil && !errors.Is(readErr, h.errs.NotFound):
-		return manifestUncertain{fmt.Errorf("failed to update latest pointer: %w", errors.Join(err, readErr))}
-	default:
-		h.unstage(ctx, staged)
-		return fmt.Errorf("failed to update latest pointer: %w", err)
+	head, err := h.ReadPointer(ctx)
+	if h.errs.Removed != nil && errors.Is(err, h.errs.Removed) {
+		return "", err
 	}
+	if err == nil {
+		var applied bool
+		applied, err = h.containsAttempt(ctx, head, id, ID(expected))
+		if applied {
+			return head, nil
+		}
+	} else if errors.Is(err, h.errs.NotFound) && expected == "" {
+		// A missing pointer still matches the first commit's precondition.
+		err = nil
+	}
+	if err != nil {
+		return "", manifestUncertain{fmt.Errorf("failed to reconcile latest pointer: %w", errors.Join(writeErr, err))}
+	}
+	h.unstage(ctx, staged)
+	return "", fmt.Errorf("failed to update latest pointer: %w", writeErr)
+}
+
+// containsAttempt follows persisted parent links to the attempted ID,
+// its expected predecessor, or the root. A gap or cycle leaves the outcome
+// uncertain. Each kind identifies the copies that reliably record its parent.
+func (h *History[ID, M]) containsAttempt(ctx context.Context, head, attempt, expected ID) (bool, error) {
+	seen := make(map[ID]bool)
+	for id := head; id != expected && id != ""; {
+		if id == attempt {
+			return true, nil
+		}
+		if !IsGeneratedID(id) {
+			return false, pointerNotSnapshotID{content: string(id)}
+		}
+		if seen[id] {
+			return false, fmt.Errorf("lode: snapshot ancestry repeats %s", id)
+		}
+		seen[id] = true
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+		snapshot, err := h.ancestor(ctx, id)
+		if err != nil {
+			return false, fmt.Errorf("failed to read ancestor %s: %w", id, err)
+		}
+		id = h.kind.ParentID(snapshot.Manifest)
+	}
+	return false, nil
+}
+
+func (h *History[ID, M]) ancestor(ctx context.Context, id ID) (*Snapshot[ID, M], error) {
+	s, err := h.Snapshot(ctx, id)
+	if errors.Is(err, h.errs.NotFound) {
+		if path := h.kind.AlternateAncestorPath(id); path != "" {
+			return h.LoadAt(ctx, id, path)
+		}
+	}
+	return s, err
 }
 
 // Refresh re-reads the head from storage between commit attempts so a retry
