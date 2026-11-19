@@ -364,11 +364,14 @@ func (f *fsStore) ListPrefixes(ctx context.Context, prefix string) ([]string, er
 
 	prefixes := make([]string, 0, len(entries))
 	for _, e := range entries {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		name := e.Name()
 		if !e.IsDir() || isTemporary(name) || (partial != "" && !strings.HasPrefix(name, partial)) {
 			continue
 		}
-		hasObj, err := hasAnyObject(filepath.Join(parentDir, name))
+		hasObj, err := hasAnyObject(ctx, filepath.Join(parentDir, name))
 		if err != nil {
 			return nil, err
 		}
@@ -381,7 +384,10 @@ func (f *fsStore) ListPrefixes(ctx context.Context, prefix string) ([]string, er
 
 // hasAnyObject reports whether dir contains at least one published object,
 // returning on the first regular non-temporary file encountered.
-func hasAnyObject(dir string) (bool, error) {
+func hasAnyObject(ctx context.Context, dir string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
 	entries, err := os.ReadDir(dir)
 	if os.IsNotExist(err) {
 		return false, nil
@@ -390,13 +396,16 @@ func hasAnyObject(dir string) (bool, error) {
 		return false, fmt.Errorf("fs: list prefixes: %w", err)
 	}
 	for _, e := range entries {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
 		if isTemporary(e.Name()) {
 			continue
 		}
 		if !e.IsDir() {
 			return true, nil
 		}
-		ok, err := hasAnyObject(filepath.Join(dir, e.Name()))
+		ok, err := hasAnyObject(ctx, filepath.Join(dir, e.Name()))
 		if err != nil || ok {
 			return ok, err
 		}

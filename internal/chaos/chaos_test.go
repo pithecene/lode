@@ -256,37 +256,42 @@ func TestChaos_RemoveDatasetFence(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	done := make(chan error, 4)
-	for w := range 3 {
-		go func(worker int) {
-			done <- writeUntilRemoved(ctx, root, worker)
-		}(w)
-	}
-	go func() {
-		done <- root.RemoveDataset(ctx, "fenced", lode.WithRetry(8))
-	}()
-
-	for range 4 {
-		if err := <-done; err != nil && !errors.Is(err, lode.ErrRemoved) && !errors.Is(err, lode.ErrHeadUncommitted) {
-			t.Fatalf("unexpected concurrent RemoveDataset error: %v", err)
+	const writers = 3
+	var handles [writers]*lode.Records[lode.D]
+	for i := range handles {
+		handle, err := root.Records(ctx, "fenced", lode.JSONL[lode.D](), lode.WithRetry(4))
+		if err != nil {
+			t.Fatal(err)
 		}
+		handles[i] = handle
+	}
+	done := make(chan error, writers)
+	for worker, handle := range handles {
+		go func() {
+			done <- writeUntilRemoved(ctx, handle, worker)
+		}()
+	}
+	removeErr := root.RemoveDataset(ctx, "fenced", lode.WithRetry(8))
+	for range writers {
+		if err := <-done; err != nil && !errors.Is(err, lode.ErrRemoved) && !errors.Is(err, lode.ErrHeadUncommitted) {
+			t.Errorf("concurrent write: %v", err)
+		}
+	}
+	if removeErr != nil && !errors.Is(removeErr, lode.ErrHeadUncommitted) {
+		t.Fatalf("concurrent removal: %v", removeErr)
+	}
+	if _, err := root.Records(ctx, "fenced", lode.JSONL[lode.D]()); !errors.Is(err, lode.ErrRemoved) {
+		t.Fatalf("Records after concurrent removal = %v, want ErrRemoved", err)
 	}
 	if err := root.RemoveDataset(ctx, "fenced", lode.WithRetry(4)); err != nil {
 		t.Fatalf("final RemoveDataset = %v, want nil", err)
 	}
-	if _, err := root.Records(ctx, "fenced", lode.JSONL[lode.D]()); !errors.Is(err, lode.ErrRemoved) {
-		t.Fatalf("Records after RemoveDataset = %v, want ErrRemoved", err)
-	}
 }
 
-func writeUntilRemoved(ctx context.Context, root *lode.Root, worker int) error {
-	h, err := root.Records(ctx, "fenced", lode.JSONL[lode.D](), lode.WithRetry(4))
-	if err != nil {
-		return err
-	}
+func writeUntilRemoved(ctx context.Context, h *lode.Records[lode.D], worker int) error {
 	for i := range 10 {
-		if _, err := h.Write(ctx, lode.R(lode.D{"w": worker, "i": i}), nil); errors.Is(err, lode.ErrRemoved) {
-			return nil
+		if _, err := h.Write(ctx, lode.R(lode.D{"w": worker, "i": i}), nil); err != nil && !errors.Is(err, lode.ErrSnapshotConflict) {
+			return err
 		}
 	}
 	return nil

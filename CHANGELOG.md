@@ -34,6 +34,7 @@ and Lode adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixed
 
 - **Snapshot inventory checks**: Decompressed reads use the checksum recorded in the snapshot and reject paths absent from its inventory. Format 1.2.0 ignores the obsolete manifest fields for files and paths.
+- **Filesystem listing cancellation**: Prefix scans check for cancellation while traversing child directories.
 
 - **Stream cleanup and filesystem cancellation**: `Records.StreamWrite` and `Blobs.StreamWrite` now delete uncommitted data objects with a detached bounded context when commit cancellation occurs, and the filesystem store checks `ctx.Err()` before and during directory listings.
 - **Aborted Volume staging no longer blocks retries on the same range**: `StageWriteAt` adds a random nonce to each block path. An uncommitted block no longer causes a later write at the same offset and length to return `ErrPathExists`.
