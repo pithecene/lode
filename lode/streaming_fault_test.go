@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pithecene/lode/internal/history"
 	"github.com/pithecene/lode/internal/testutil"
 )
 
@@ -33,6 +34,32 @@ func TestStreamWrite_CommitFailure(t *testing.T) {
 		}
 		if !slices.ContainsFunc(fs.DeleteCalls(), func(p string) bool { return strings.Contains(p, "/data/") }) {
 			t.Errorf("data object was not removed after the pointer failed: %v", fs.DeleteCalls())
+		}
+	})
+
+	t.Run("incomplete ancestry preserves the staged manifest and blob", func(t *testing.T) {
+		ctx := t.Context()
+		store := &lostPointerResponse{Store: NewMemory()}
+		ds := blobsOn(t, store, "events", WithRetry(1))
+		var attempted SnapshotID
+		rival := history.NewID()
+		pointer := ds.layout.latestPointerPath(ds.id)
+		store.afterCAS = func(id SnapshotID) {
+			attempted = id
+			if err := store.Store.CompareAndSwap(ctx, pointer, string(id), rival); err != nil {
+				t.Fatal(err)
+			}
+		}
+		_, err := ds.StreamWrite(ctx, strings.NewReader("payload"), nil)
+		if !errors.Is(err, history.ErrManifestUncertain) || !errors.Is(err, ErrSnapshotConflict) {
+			t.Fatalf("StreamWrite = %v, want an uncertain CAS conflict", err)
+		}
+		if got := readObject(t, store, pointer); got != rival {
+			t.Fatalf("pointer = %q, want %q", got, rival)
+		}
+		staged := readManifest(t, store, ds.layout.stagedManifestPath(ds.id, attempted))
+		if len(staged.Objects) != 1 || readObject(t, store, staged.Objects[0].Path) != "payload" {
+			t.Fatal("missing staged blob after an uncertain commit")
 		}
 	})
 

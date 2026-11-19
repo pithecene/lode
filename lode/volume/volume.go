@@ -58,6 +58,11 @@ func (k volumeKind) ParseManifest(p string) (SnapshotID, bool) {
 	return id, id != ""
 }
 
+// Volume gives each CAS attempt a fresh ID, so its staged parent is final.
+func (k volumeKind) AlternateAncestorPath(id SnapshotID) string { return k.StagedPath(id) }
+
+func (volumeKind) ParentID(m *Manifest) SnapshotID { return m.ParentSnapshotID }
+
 func (volumeKind) NotExpired(context.Context, SnapshotID) (bool, error) {
 	return true, nil
 }

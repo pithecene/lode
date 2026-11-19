@@ -131,7 +131,8 @@ func (s *memStore) CompareAndSwap(_ context.Context, path, expected, replacement
 type id string
 
 type manifest struct {
-	Tag string `json:"tag"`
+	Tag    string `json:"tag"`
+	Parent id     `json:"parent,omitempty"`
 }
 
 // testKind lays snapshots out as c/snapshots/<id>/[copy/]manifest.json with
@@ -142,6 +143,10 @@ const (
 	prefix  = "c/snapshots/"
 	pointer = "c/latest"
 )
+
+func (testKind) AlternateAncestorPath(id) string { return "" }
+
+func (testKind) ParentID(m *manifest) id { return m.Parent }
 
 func (testKind) SnapshotsPrefix() string { return prefix }
 func (testKind) ManifestPath(i id) string {
@@ -802,6 +807,8 @@ type unmarshalable struct{ F func() }
 // unmarshalableKind is testKind for unmarshalable manifests.
 type unmarshalableKind struct{ testKind }
 
+func (unmarshalableKind) ParentID(*unmarshalable) id { return "" }
+
 func (unmarshalableKind) Decode(id, io.Reader) (*unmarshalable, error) { return nil, errBoom }
 
 func TestRefresh(t *testing.T) {
@@ -961,6 +968,7 @@ func TestAdvance_Staged(t *testing.T) {
 	t.Run("lost race discards the staged copy", func(t *testing.T) {
 		s := newMemStore()
 		s.objects[pointer] = []byte("4")
+		s.objects[testKind{}.ManifestPath("4")] = []byte(`{"tag":"rival"}`)
 		h := newStagingHistory(s)
 		if err := h.Advance(t.Context(), "", "5", &manifest{}, paths); !errors.Is(err, errConflict) {
 			t.Fatalf("got %v, want a conflict", err)
@@ -989,6 +997,21 @@ func TestAdvance_Staged(t *testing.T) {
 			t.Fatal("missing canonical manifest after confirmed pointer advance")
 		}
 	})
+}
+
+func TestAdvancePreservesAnUncertainAttemptOnCyclicAncestry(t *testing.T) {
+	s := newMemStore()
+	s.objects[pointer] = []byte("3")
+	s.objects[testKind{}.ManifestPath("3")] = []byte(`{"parent":"2"}`)
+	s.objects[testKind{}.ManifestPath("2")] = []byte(`{"parent":"3"}`)
+	h := newStagingHistory(s)
+	err := h.Advance(t.Context(), "", "5", &manifest{}, []string{testKind{}.ManifestPath("5")})
+	if !errors.Is(err, ErrManifestUncertain) || !errors.Is(err, errConflict) {
+		t.Fatalf("Advance = %v, want uncertain conflict", err)
+	}
+	if _, ok := s.objects[stagingKind{}.StagedPath("5")]; !ok {
+		t.Fatal("lost staging while the ancestry was uncertain")
+	}
 }
 
 func TestAdvance_StagesOnlyAcceptedCommits(t *testing.T) {
