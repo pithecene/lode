@@ -35,29 +35,19 @@ type codeClient struct {
 	lastRange    string
 }
 
+type mockOption = func(*s3api.Options)
+
 func apiErr(code string) error { return &smithyAPIError{code: code, message: code} }
 
-func (c *codeClient) PutObject(ctx context.Context, p *s3api.PutObjectInput, o ...func(*s3api.Options)) (*s3api.PutObjectOutput, error) {
-	c.mu.Lock()
-	code := c.putCode
-	c.mu.Unlock()
-	if code != "" {
-		return nil, apiErr(code)
-	}
-	return c.MockS3Client.PutObject(ctx, p, o...)
+func (c *codeClient) PutObject(ctx context.Context, p *s3api.PutObjectInput, o ...mockOption) (*s3api.PutObjectOutput, error) {
+	return callUnlessInjected(ctx, c.injectedError(&c.putCode), c.MockS3Client.PutObject, p, o)
 }
 
-func (c *codeClient) CompleteMultipartUpload(ctx context.Context, p *s3api.CompleteMultipartUploadInput, o ...func(*s3api.Options)) (*s3api.CompleteMultipartUploadOutput, error) {
-	c.mu.Lock()
-	code := c.completeCode
-	c.mu.Unlock()
-	if code != "" {
-		return nil, apiErr(code)
-	}
-	return c.MockS3Client.CompleteMultipartUpload(ctx, p, o...)
+func (c *codeClient) CompleteMultipartUpload(ctx context.Context, p *s3api.CompleteMultipartUploadInput, o ...mockOption) (*s3api.CompleteMultipartUploadOutput, error) {
+	return callUnlessInjected(ctx, c.injectedError(&c.completeCode), c.MockS3Client.CompleteMultipartUpload, p, o)
 }
 
-func (c *codeClient) GetObject(ctx context.Context, p *s3api.GetObjectInput, o ...func(*s3api.Options)) (*s3api.GetObjectOutput, error) {
+func (c *codeClient) GetObject(ctx context.Context, p *s3api.GetObjectInput, o ...mockOption) (*s3api.GetObjectOutput, error) {
 	c.mu.Lock()
 	c.lastRange = aws.ToString(p.Range)
 	c.mu.Unlock()
@@ -190,4 +180,20 @@ func TestStore_ReadRange_Headers(t *testing.T) {
 			t.Fatalf("one past bound: got %v, want ErrInvalidPath", err)
 		}
 	})
+}
+
+func (c *codeClient) injectedError(code *string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if *code == "" {
+		return nil
+	}
+	return apiErr(*code)
+}
+
+func callUnlessInjected[I, O any](ctx context.Context, err error, call func(context.Context, *I, ...mockOption) (*O, error), in *I, opts []mockOption) (*O, error) {
+	if err != nil {
+		return nil, err
+	}
+	return call(ctx, in, opts...)
 }

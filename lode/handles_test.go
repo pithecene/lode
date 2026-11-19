@@ -156,31 +156,25 @@ func TestHandles_RejectNilComponents(t *testing.T) {
 	var compressor *renamedCompressor
 	var checksum *renamedChecksum
 	var hiveLayout *HiveLayout
+	openRecords := func(opt DatasetOption) func() error {
+		return func() error {
+			_, err := Open(Memory()).Records(t.Context(), "events", JSONL[D](), opt)
+			return err
+		}
+	}
 	cases := map[string]func() error{
 		"typed-nil codec": func() error {
 			_, err := Open(Use(NewMemory())).Records(t.Context(), "events", Codec[D](codec))
 			return err
 		},
-		"typed-nil compressor": func() error {
-			_, err := Open(Use(NewMemory())).Records(t.Context(), "events", JSONL[D](), WithCompressor(compressor))
-			return err
-		},
+		"typed-nil compressor": openRecords(WithCompressor(compressor)),
 		"typed-nil view compressor": func() error {
 			_, err := OpenReadOnly(Use(NewMemory())).Records(t.Context(), "events", JSONL[D](), WithCompressor(compressor))
 			return err
 		},
-		"typed-nil checksum": func() error {
-			_, err := Open(Use(NewMemory())).Records(t.Context(), "events", JSONL[D](), WithChecksum(checksum))
-			return err
-		},
-		"nil Hive layout": func() error {
-			_, err := Open(Use(NewMemory())).Records(t.Context(), "events", JSONL[D](), WithLayout(hiveLayout))
-			return err
-		},
-		"zero Hive layout": func() error {
-			_, err := Open(Use(NewMemory())).Records(t.Context(), "events", JSONL[D](), WithLayout(&HiveLayout{}))
-			return err
-		},
+		"typed-nil checksum": openRecords(WithChecksum(checksum)),
+		"nil Hive layout":    openRecords(WithLayout(hiveLayout)),
+		"zero Hive layout":   openRecords(WithLayout(&HiveLayout{})),
 		"nil By function": func() error {
 			_, err := Open(Use(NewMemory())).Records(t.Context(), "events", JSONL[event](), WithLayout(Hive("day").By[event](nil)))
 			return err

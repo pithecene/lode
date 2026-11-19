@@ -109,17 +109,6 @@ func TestStore_Get(t *testing.T) {
 			}
 		})
 	})
-
-	t.Run("invalid path", func(t *testing.T) {
-		forEachStore(t, func(t *testing.T, store RangeStore) {
-			ctx := t.Context()
-
-			_, err := store.Get(ctx, "../escape")
-			if !errors.Is(err, ErrInvalidPath) {
-				t.Errorf("expected ErrInvalidPath, got: %v", err)
-			}
-		})
-	})
 }
 
 func TestStore_Exists(t *testing.T) {
@@ -152,17 +141,6 @@ func TestStore_Exists(t *testing.T) {
 			}
 			if exists {
 				t.Error("expected file to not exist")
-			}
-		})
-	})
-
-	t.Run("invalid path", func(t *testing.T) {
-		forEachStore(t, func(t *testing.T, store RangeStore) {
-			ctx := t.Context()
-
-			_, err := store.Exists(ctx, "../escape")
-			if !errors.Is(err, ErrInvalidPath) {
-				t.Errorf("expected ErrInvalidPath, got: %v", err)
 			}
 		})
 	})
@@ -587,3 +565,19 @@ func readOrAbsent(t *testing.T, store Store, path string) string {
 // The fsStore ConditionalWriter assertion is in store_cas_test.go: fsStore
 // implements ConditionalWriter on Unix and Windows.
 var _ ConditionalWriter = (*memoryStore)(nil)
+
+func assertInvalidStorePath(t *testing.T, err error) {
+	t.Helper()
+	if !errors.Is(err, ErrInvalidPath) {
+		t.Errorf("got %v, want ErrInvalidPath", err)
+	}
+}
+
+func TestStore_InvalidReadPath(t *testing.T) {
+	forEachStore(t, func(t *testing.T, store RangeStore) {
+		_, err := store.Get(t.Context(), "../escape")
+		assertInvalidStorePath(t, err)
+		_, err = store.Exists(t.Context(), "../escape")
+		assertInvalidStorePath(t, err)
+	})
+}

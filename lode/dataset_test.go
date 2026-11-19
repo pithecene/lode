@@ -369,35 +369,22 @@ func TestBlobs_StreamWrite_Metadata(t *testing.T) {
 }
 
 func TestRecords_StreamWrite_Metadata(t *testing.T) {
-	t.Run("empty metadata valid and persisted", func(t *testing.T) {
-		ds, err := Open(Memory()).Records(t.Context(), "test-ds", JSONL[D]())
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		iter := seqOf(D{"id": "1"})
-		snap, err := ds.StreamWrite(t.Context(), iter, nil)
-		if err != nil {
-			t.Fatalf("expected empty metadata to be valid, got error: %v", err)
-		}
-
-		// Verify metadata is persisted as empty object
-		assertEmptyMetadata(t, snap.Metadata)
-	})
-
-	t.Run("nil metadata coalesces to empty", func(t *testing.T) {
-		ds, err := Open(Memory()).Records(t.Context(), "test-ds", JSONL[D]())
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		iter := seqOf(D{"id": "1"})
-		snap, err := ds.StreamWrite(t.Context(), iter, nil)
-		if err != nil {
-			t.Fatalf("expected nil metadata to succeed, got: %v", err)
-		}
-		assertEmptyMetadata(t, snap.Metadata)
-	})
+	for _, tc := range []struct {
+		name     string
+		metadata any
+	}{
+		{"empty metadata valid and persisted", D{}},
+		{"nil metadata coalesces to empty", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ds := recordsOn(t, NewMemory(), "test-ds")
+			snap, err := ds.StreamWrite(t.Context(), seqOf(D{"id": "1"}), tc.metadata)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertEmptyMetadata(t, snap.Metadata)
+		})
+	}
 
 	t.Run("non timestamped records omits min max", func(t *testing.T) {
 		ds, err := Open(Memory()).Records(t.Context(), "test-ds", JSONL[D]())
@@ -416,12 +403,7 @@ func TestRecords_StreamWrite_Metadata(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		if snap.MinTimestamp != nil {
-			t.Errorf("expected MinTimestamp to be nil, got %v", snap.MinTimestamp)
-		}
-		if snap.MaxTimestamp != nil {
-			t.Errorf("expected MaxTimestamp to be nil, got %v", snap.MaxTimestamp)
-		}
+		assertNoTimestamps(t, snap)
 	})
 
 	t.Run("timestamped records computes min max", func(t *testing.T) {
@@ -430,15 +412,7 @@ func TestRecords_StreamWrite_Metadata(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		ts1 := time.Date(2024, 1, 1, 10, 0, 0, 0, time.UTC)
-		ts2 := time.Date(2024, 1, 15, 12, 0, 0, 0, time.UTC)
-		ts3 := time.Date(2024, 1, 10, 8, 0, 0, 0, time.UTC)
-
-		records := []*timestampedRecord{
-			{ID: "a", Time: ts1},
-			{ID: "b", Time: ts2},
-			{ID: "c", Time: ts3},
-		}
+		records, ts1, ts2 := timestampedFixture()
 		iter := seqOf(records...)
 
 		snap, err := ds.StreamWrite(t.Context(), iter, nil)
@@ -446,18 +420,7 @@ func TestRecords_StreamWrite_Metadata(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		if snap.MinTimestamp == nil {
-			t.Fatal("expected MinTimestamp to be set")
-		}
-		if snap.MaxTimestamp == nil {
-			t.Fatal("expected MaxTimestamp to be set")
-		}
-		if !snap.MinTimestamp.Equal(ts1) {
-			t.Errorf("expected MinTimestamp %v, got %v", ts1, *snap.MinTimestamp)
-		}
-		if !snap.MaxTimestamp.Equal(ts2) {
-			t.Errorf("expected MaxTimestamp %v, got %v", ts2, *snap.MaxTimestamp)
-		}
+		assertTimeRange(t, snap, ts1, ts2)
 	})
 
 	t.Run("stats nil", func(t *testing.T) {
@@ -1467,12 +1430,7 @@ func TestDataset_Write_Timestamps(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		if snap.MinTimestamp != nil {
-			t.Errorf("expected MinTimestamp to be nil, got %v", snap.MinTimestamp)
-		}
-		if snap.MaxTimestamp != nil {
-			t.Errorf("expected MaxTimestamp to be nil, got %v", snap.MaxTimestamp)
-		}
+		assertNoTimestamps(t, snap)
 	})
 
 	t.Run("timestamped records computes min max", func(t *testing.T) {
@@ -1481,34 +1439,14 @@ func TestDataset_Write_Timestamps(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		ts1 := time.Date(2024, 1, 1, 10, 0, 0, 0, time.UTC)
-		ts2 := time.Date(2024, 1, 15, 12, 0, 0, 0, time.UTC)
-		ts3 := time.Date(2024, 1, 10, 8, 0, 0, 0, time.UTC)
-
-		records := []*timestampedRecord{
-			{ID: "a", Time: ts1},
-			{ID: "b", Time: ts2},
-			{ID: "c", Time: ts3},
-		}
+		records, ts1, ts2 := timestampedFixture()
 
 		snap, err := ds.Write(t.Context(), records, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 
-		if snap.MinTimestamp == nil {
-			t.Fatal("expected MinTimestamp to be set")
-		}
-		if snap.MaxTimestamp == nil {
-			t.Fatal("expected MaxTimestamp to be set")
-		}
-
-		if !snap.MinTimestamp.Equal(ts1) {
-			t.Errorf("expected MinTimestamp %v, got %v", ts1, *snap.MinTimestamp)
-		}
-		if !snap.MaxTimestamp.Equal(ts2) {
-			t.Errorf("expected MaxTimestamp %v, got %v", ts2, *snap.MaxTimestamp)
-		}
+		assertTimeRange(t, snap, ts1, ts2)
 	})
 
 	t.Run("single timestamped record same min max", func(t *testing.T) {
@@ -1825,14 +1763,7 @@ func TestDataset_Write_Pointer(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		// Corrupt the pointer to reference a nonexistent snapshot.
-		pointerPath := "datasets/test-ds/latest"
-		if err := mem.Delete(t.Context(), pointerPath); err != nil {
-			t.Fatal(err)
-		}
-		if err := mem.Put(t.Context(), pointerPath, bytes.NewReader([]byte("nonexistent-snap-id"))); err != nil {
-			t.Fatal(err)
-		}
+		corruptDatasetPointer(t, mem)
 
 		// With CAS, the write detects external pointer modification as a conflict.
 		// The in-memory cache knows what it last wrote; the external change is detected.
@@ -1957,11 +1888,7 @@ func TestDataset_LatestPointer_PendingCommit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	manifestPath := "datasets/test-ds/snapshots/" + string(pending.ID) + "/manifest.json"
-	moveObject(t, store, manifestPath, "pending/manifest.json")
-	if err := store.Delete(t.Context(), manifestPath); err != nil {
-		t.Fatal(err)
-	}
+	manifestPath := hidePendingManifest(t, store, pending.ID)
 
 	latest, err := reader.Latest(t.Context())
 	if err != nil {
@@ -2011,11 +1938,7 @@ func TestDataset_Write_ParentsOnPendingCommit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	manifestPath := "datasets/test-ds/snapshots/" + string(pending.ID) + "/manifest.json"
-	moveObject(t, store, manifestPath, "pending/manifest.json")
-	if err := store.Delete(t.Context(), manifestPath); err != nil {
-		t.Fatal(err)
-	}
+	hidePendingManifest(t, store, pending.ID)
 
 	next, err := open().Write(t.Context(), R(D{"c": 3}), nil)
 	if err != nil {
@@ -2102,25 +2025,13 @@ func TestDataset_LatestPointer(t *testing.T) {
 
 		// Verify pointer file exists in store.
 		pointerPath := "datasets/test-ds/latest"
-		rc, err := store.Get(t.Context(), pointerPath)
-		if err != nil {
-			t.Fatalf("expected pointer file at %s, got error: %v", pointerPath, err)
-		}
-		data, _ := io.ReadAll(rc)
-		_ = rc.Close()
-		if string(data) != string(snap.ID) {
-			t.Errorf("pointer file content: expected %q, got %q", snap.ID, string(data))
+		if got := readObject(t, store, pointerPath); got != string(snap.ID) {
+			t.Errorf("pointer = %q, want %q", got, snap.ID)
 		}
 
 		// Reset call tracking to verify Latest() uses pointer, not List.
 		fs.Reset()
-		latest, err := ds.Latest(t.Context())
-		if err != nil {
-			t.Fatalf("Latest() failed: %v", err)
-		}
-		if latest.ID != snap.ID {
-			t.Errorf("Latest() returned %s, expected %s", latest.ID, snap.ID)
-		}
+		assertLatestIs(t, ds.dataset, snap.ID)
 		if len(fs.ListCalls()) != 0 {
 			t.Errorf("Latest() should not call List when pointer exists, got %d List calls",
 				len(fs.ListCalls()))
@@ -2143,14 +2054,8 @@ func TestDataset_LatestPointer(t *testing.T) {
 				t.Fatalf("write %d failed: %v", i, err)
 			}
 
-			rc, err := store.Get(t.Context(), pointerPath)
-			if err != nil {
-				t.Fatalf("write %d: pointer file missing: %v", i, err)
-			}
-			data, _ := io.ReadAll(rc)
-			_ = rc.Close()
-			if string(data) != string(snap.ID) {
-				t.Errorf("write %d: pointer %q, expected %q", i, string(data), snap.ID)
+			if got := readObject(t, store, pointerPath); got != string(snap.ID) {
+				t.Errorf("pointer = %q, want %q", got, snap.ID)
 			}
 		}
 	})
@@ -2269,23 +2174,7 @@ func TestDataset_HiveLayout(t *testing.T) {
 	// with HiveLayout does NOT require a List call. The canonical manifest is always
 	// written alongside partition manifests, so a single Get resolves the snapshot.
 	t.Run("snapshot by ID no list call", func(t *testing.T) {
-		fs := testutil.NewFaultStore(NewMemory())
-		factory := Use(fs)
-
-		ds, err := Open(factory).Records(t.Context(), "test-ds", JSONL[D](), hive("day"))
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		records := R(
-			D{"id": 1, "day": "2024-01-15"},
-			D{"id": 2, "day": "2024-01-16"},
-		)
-
-		snap, err := ds.Write(t.Context(), records, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
+		fs, ds, snap := twoDayHive(t)
 
 		// Reset counters after the write.
 		fs.Reset()
@@ -2308,23 +2197,7 @@ func TestDataset_HiveLayout(t *testing.T) {
 	// TestDataset_HiveLayout_CanonicalManifestWritten verifies that writeManifests
 	// writes the canonical manifest alongside partition manifests for HiveLayout.
 	t.Run("canonical manifest written", func(t *testing.T) {
-		fs := testutil.NewFaultStore(NewMemory())
-		factory := Use(fs)
-
-		ds, err := Open(factory).Records(t.Context(), "test-ds", JSONL[D](), hive("day"))
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		records := R(
-			D{"id": 1, "day": "2024-01-15"},
-			D{"id": 2, "day": "2024-01-16"},
-		)
-
-		snap, err := ds.Write(t.Context(), records, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
+		fs, _, snap := twoDayHive(t)
 
 		// Canonical path must exist.
 		canonicalPath := "datasets/test-ds/segments/" + string(snap.ID) + "/manifest.json"
@@ -2413,14 +2286,7 @@ func TestDataset_Write_ColdStart(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		// Corrupt the pointer to reference a nonexistent snapshot.
-		pointerPath := "datasets/test-ds/latest"
-		if err := mem.Delete(t.Context(), pointerPath); err != nil {
-			t.Fatal(err)
-		}
-		if err := mem.Put(t.Context(), pointerPath, bytes.NewReader([]byte("nonexistent-snap-id"))); err != nil {
-			t.Fatal(err)
-		}
+		corruptDatasetPointer(t, mem)
 
 		// Process B: cold start with corrupt pointer.
 		dsB, err := Open(Use(mem)).Records(t.Context(), "test-ds", JSONL[D]())
@@ -2605,46 +2471,27 @@ func TestDataset_Write_Conflict(t *testing.T) {
 	// retries are exhausted, ErrSnapshotConflict is returned.
 	t.Run("with retry count exhausts retries", func(t *testing.T) {
 		mem := NewMemory()
-		factory := Use(mem)
 
-		ds1, err := Open(factory).Records(t.Context(), "shared", JSONL[D](), WithRetry(1), // only 1 retry
+		ds1 := recordsOn(t, mem, "shared", WithRetry(1), // only 1 retry
 			WithRetryJitter(0.0), WithRetryBaseDelay(time.Millisecond))
-		if err != nil {
-			t.Fatalf("NewDataset ds1: %v", err)
-		}
-		ds2, err := Open(factory).Records(t.Context(), "shared", JSONL[D]())
-		if err != nil {
-			t.Fatalf("NewDataset ds2: %v", err)
-		}
-		ds3, err := Open(factory).Records(t.Context(), "shared", JSONL[D]())
-		if err != nil {
-			t.Fatalf("NewDataset ds3: %v", err)
-		}
+		ds2 := recordsOn(t, mem, "shared")
+		ds3 := recordsOn(t, mem, "shared")
 
 		// ds1 writes first.
-		_, err = ds1.Write(t.Context(), R(D{"seq": 1}), nil)
-		if err != nil {
-			t.Fatalf("ds1 first write: %v", err)
-		}
+		writeSharedSequence(t, ds1, 1)
 
 		// ds2 writes, advancing pointer.
-		_, err = ds2.Write(t.Context(), R(D{"seq": 2}), nil)
-		if err != nil {
-			t.Fatalf("ds2 write: %v", err)
-		}
+		writeSharedSequence(t, ds2, 2)
 
 		// ds3 writes, advancing pointer again.
-		_, err = ds3.Write(t.Context(), R(D{"seq": 3}), nil)
-		if err != nil {
-			t.Fatalf("ds3 write: %v", err)
-		}
+		writeSharedSequence(t, ds3, 3)
 
 		// ds1 now has a stale cache pointing at snap1. The retry will refresh
 		// to snap3 and succeed on the first retry. But we need persistent
 		// contention to exhaust retries. Since we can't inject contention
 		// between retry attempts with the memory store, we verify the basic
 		// mechanics: a single retry is enough to resolve a one-hop conflict.
-		_, err = ds1.Write(t.Context(), R(D{"seq": 4}), nil)
+		_, err := ds1.Write(t.Context(), R(D{"seq": 4}), nil)
 		if err != nil {
 			t.Fatalf("expected success with 1 retry (conflict resolved after refresh), got: %v", err)
 		}
@@ -2654,31 +2501,18 @@ func TestDataset_Write_Conflict(t *testing.T) {
 	// WithRetry(0) preserves the default behavior (no retry).
 	t.Run("with retry count zero current behavior", func(t *testing.T) {
 		mem := NewMemory()
-		factory := Use(mem)
 
-		ds1, err := Open(factory).Records(t.Context(), "shared", JSONL[D](), WithRetry(0))
-		if err != nil {
-			t.Fatalf("NewDataset ds1: %v", err)
-		}
-		ds2, err := Open(factory).Records(t.Context(), "shared", JSONL[D]())
-		if err != nil {
-			t.Fatalf("NewDataset ds2: %v", err)
-		}
+		ds1 := recordsOn(t, mem, "shared", WithRetry(0))
+		ds2 := recordsOn(t, mem, "shared")
 
 		// ds1 writes first.
-		_, err = ds1.Write(t.Context(), R(D{"seq": 1}), nil)
-		if err != nil {
-			t.Fatalf("ds1 first write: %v", err)
-		}
+		writeSharedSequence(t, ds1, 1)
 
 		// ds2 writes, advancing pointer.
-		_, err = ds2.Write(t.Context(), R(D{"seq": 2}), nil)
-		if err != nil {
-			t.Fatalf("ds2 write: %v", err)
-		}
+		writeSharedSequence(t, ds2, 2)
 
 		// ds1 should fail immediately without retry.
-		_, err = ds1.Write(t.Context(), R(D{"seq": 3}), nil)
+		_, err := ds1.Write(t.Context(), R(D{"seq": 3}), nil)
 		if !errors.Is(err, ErrSnapshotConflict) {
 			t.Fatalf("expected ErrSnapshotConflict with retries=0, got: %v", err)
 		}
@@ -3096,5 +2930,94 @@ func assertNoNewListsAndParent(t *testing.T, fs *testutil.FaultStore, before int
 	}
 	if snap.ParentSnapshotID != wantParent {
 		t.Errorf("ParentSnapshotID = %s, want %s", snap.ParentSnapshotID, wantParent)
+	}
+}
+
+func timestampedFixture() ([]*timestampedRecord, time.Time, time.Time) {
+	ts1 := time.Date(2024, 1, 1, 10, 0, 0, 0, time.UTC)
+	ts2 := time.Date(2024, 1, 15, 12, 0, 0, 0, time.UTC)
+	ts3 := time.Date(2024, 1, 10, 8, 0, 0, 0, time.UTC)
+
+	records := []*timestampedRecord{
+		{ID: "a", Time: ts1},
+		{ID: "b", Time: ts2},
+		{ID: "c", Time: ts3},
+	}
+	return records, ts1, ts2
+}
+
+func assertTimeRange(t *testing.T, snap *Snapshot, ts1, ts2 time.Time) {
+	t.Helper()
+	if snap.MinTimestamp == nil {
+		t.Fatal("expected MinTimestamp to be set")
+	}
+	if snap.MaxTimestamp == nil {
+		t.Fatal("expected MaxTimestamp to be set")
+	}
+	if !snap.MinTimestamp.Equal(ts1) {
+		t.Errorf("expected MinTimestamp %v, got %v", ts1, *snap.MinTimestamp)
+	}
+	if !snap.MaxTimestamp.Equal(ts2) {
+		t.Errorf("expected MaxTimestamp %v, got %v", ts2, *snap.MaxTimestamp)
+	}
+}
+
+func corruptDatasetPointer(t *testing.T, mem Store) {
+	t.Helper()
+	pointerPath := "datasets/test-ds/latest"
+	if err := mem.Delete(t.Context(), pointerPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := mem.Put(t.Context(), pointerPath, bytes.NewReader([]byte("nonexistent-snap-id"))); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func hidePendingManifest(t *testing.T, store Store, id SnapshotID) string {
+	t.Helper()
+	manifestPath := "datasets/test-ds/snapshots/" + string(id) + "/manifest.json"
+	moveObject(t, store, manifestPath, "pending/manifest.json")
+	if err := store.Delete(t.Context(), manifestPath); err != nil {
+		t.Fatal(err)
+	}
+	return manifestPath
+}
+
+func twoDayHive(t *testing.T) (*testutil.FaultStore, *Records[D], *Snapshot) {
+	t.Helper()
+	fs := testutil.NewFaultStore(NewMemory())
+	factory := Use(fs)
+
+	ds, err := Open(factory).Records(t.Context(), "test-ds", JSONL[D](), hive("day"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	records := R(
+		D{"id": 1, "day": "2024-01-15"},
+		D{"id": 2, "day": "2024-01-16"},
+	)
+
+	snap, err := ds.Write(t.Context(), records, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return fs, ds, snap
+}
+
+func writeSharedSequence(t *testing.T, ds *Records[D], seq int) {
+	t.Helper()
+	if _, err := ds.Write(t.Context(), R(D{"seq": seq}), nil); err != nil {
+		t.Fatalf("write sequence %d: %v", seq, err)
+	}
+}
+
+func assertNoTimestamps(t *testing.T, snap *Snapshot) {
+	t.Helper()
+	if snap.MinTimestamp != nil {
+		t.Errorf("expected MinTimestamp to be nil, got %v", snap.MinTimestamp)
+	}
+	if snap.MaxTimestamp != nil {
+		t.Errorf("expected MaxTimestamp to be nil, got %v", snap.MaxTimestamp)
 	}
 }

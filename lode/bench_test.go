@@ -121,22 +121,7 @@ func BenchmarkDataset_StreamWrite(b *testing.B) {
 // -----------------------------------------------------------------------------
 
 func BenchmarkParquetCodec_Encode(b *testing.B) {
-	schema := ParquetSchema{
-		Fields: []ParquetField{
-			{Name: "id", Type: ParquetInt64},
-			{Name: "name", Type: ParquetString},
-			{Name: "score", Type: ParquetFloat64},
-		},
-	}
-	codec, err := newParquet(schema)
-	if err != nil {
-		b.Fatal(err)
-	}
-
-	records := make([]D, 100)
-	for i := range records {
-		records[i] = D{"id": int64(i), "name": "user", "score": 99.5}
-	}
+	codec, records := parquetBenchmarkFixture(b)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -152,6 +137,25 @@ func BenchmarkParquetCodec_Encode(b *testing.B) {
 // -----------------------------------------------------------------------------
 
 func BenchmarkParquetCodec_Decode(b *testing.B) {
+	codec, records := parquetBenchmarkFixture(b)
+
+	var encoded bytes.Buffer
+	if err := codec.Encode(&encoded, records); err != nil {
+		b.Fatal(err)
+	}
+	data := encoded.Bytes()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := codec.Decode(bytes.NewReader(data))
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func parquetBenchmarkFixture(b *testing.B) (Codec[D], []D) {
+	b.Helper()
 	schema := ParquetSchema{
 		Fields: []ParquetField{
 			{Name: "id", Type: ParquetInt64},
@@ -168,18 +172,5 @@ func BenchmarkParquetCodec_Decode(b *testing.B) {
 	for i := range records {
 		records[i] = D{"id": int64(i), "name": "user", "score": 99.5}
 	}
-
-	var encoded bytes.Buffer
-	if err := codec.Encode(&encoded, records); err != nil {
-		b.Fatal(err)
-	}
-	data := encoded.Bytes()
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_, err := codec.Decode(bytes.NewReader(data))
-		if err != nil {
-			b.Fatal(err)
-		}
-	}
+	return codec, records
 }

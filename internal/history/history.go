@@ -191,7 +191,7 @@ func (h *History[ID, M]) CompletePending(ctx context.Context, id ID) error {
 	// A removal fences the pointer before it lists and deletes, so a pointer
 	// read after the write either precedes the fence, and the removal's
 	// listing deletes the manifest, or finds the marker.
-	if removed := h.removedSince(ctx); removed != nil {
+	if removed := h.checkRemoval(ctx, "after completing a commit"); removed != nil {
 		if wrote && errors.Is(removed, h.errs.Removed) {
 			_ = h.store.Delete(ctx, canonical) // best-effort: the next removal deletes it too
 		}
@@ -230,11 +230,11 @@ func (h *History[ID, M]) persistPending(ctx context.Context, id ID, staged, cano
 	return wrote, nil
 }
 
-// removedSince is errs.Removed when the pointer now holds the removal
+// checkRemoval is errs.Removed when the pointer now holds the removal
 // marker, nil when it holds anything else or is absent, and the read's
 // error when the pointer cannot be read: the removal may then be the
 // reason (CONTRACT_CORE §Head Pointer).
-func (h *History[ID, M]) removedSince(ctx context.Context) error {
+func (h *History[ID, M]) checkRemoval(ctx context.Context, phase string) error {
 	if h.errs.Removed == nil {
 		return nil
 	}
@@ -246,7 +246,7 @@ func (h *History[ID, M]) removedSince(ctx context.Context) error {
 		h.Forget()
 		return err
 	default:
-		return fmt.Errorf("failed to resolve head after completing a commit: %w", err)
+		return fmt.Errorf("failed to resolve head %s: %w", phase, err)
 	}
 }
 
@@ -989,34 +989,10 @@ func (h *History[ID, M]) CommitLoop(ctx context.Context, cfg *retry.Config, atte
 		if !errors.Is(err, h.errs.SnapshotConflict) {
 			return err
 		}
-		if err := h.removed(ctx); err != nil {
+		if err := h.checkRemoval(ctx, "after a conflict"); err != nil {
 			return err
 		}
 		lastErr = err
 	}
 	return lastErr
-}
-
-// removed reports the removal of a removable history whose commit just
-// conflicted. A writer that remembers its head commits without reading the
-// pointer, so its swap is where it meets the marker: one read on the
-// conflict path tells a removal from a concurrent commit, and the writer
-// then returns errs.Removed whatever its retries. Nil for a history that
-// cannot be removed, or whose pointer holds anything else. A read that
-// fails otherwise is returned, as every read of the pointer is
-// (CONTRACT_CORE §Head Pointer): the conflict may be the removal's.
-func (h *History[ID, M]) removed(ctx context.Context) error {
-	if h.errs.Removed == nil {
-		return nil
-	}
-	_, err := h.ReadPointer(ctx)
-	switch {
-	case err == nil, errors.Is(err, h.errs.NotFound):
-		return nil
-	case errors.Is(err, h.errs.Removed):
-		h.Forget()
-		return err
-	default:
-		return fmt.Errorf("failed to resolve head after a conflict: %w", err)
-	}
 }
