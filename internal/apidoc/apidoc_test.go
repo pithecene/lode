@@ -187,7 +187,6 @@ var (
 	contractFilePattern = regexp.MustCompile(`\bCONTRACT_[A-Z0-9_]+\.md\b`)
 	goFencePattern      = regexp.MustCompile("(?s)```go\n(.*?)```")
 	contractTypeDecl    = regexp.MustCompile(`(?m)^type\s+([A-Z][A-Za-z0-9_]*)\b`)
-	matrixTestRef       = regexp.MustCompile("`((?:Test|Benchmark|Fuzz)[A-Za-z0-9_]+)(?:/[^`]*)?`")
 )
 
 func TestEveryContractIsIndexedAndTypesExist(t *testing.T) {
@@ -234,51 +233,6 @@ func TestEveryContractIsIndexedAndTypesExist(t *testing.T) {
 			t.Errorf("docs/ARCH_INDEX.md lists %s, which does not exist in docs/contracts/", name)
 		}
 	}
-}
-
-func TestMatrixNamesExistingTests(t *testing.T) {
-	t.Parallel()
-	matrixData, err := os.ReadFile(filepath.Join(root, "ai", "TEST_MATRIX.md"))
-	if err != nil {
-		t.Fatalf("read ai/TEST_MATRIX.md: %v", err)
-	}
-	declaredTests := collectTestFuncs(t)
-	for _, m := range matrixTestRef.FindAllStringSubmatch(string(matrixData), -1) {
-		if !declaredTests[m[1]] {
-			t.Errorf("ai/TEST_MATRIX.md references %s, which does not exist in *_test.go", m[1])
-		}
-	}
-}
-
-func collectTestFuncs(t *testing.T) map[string]bool {
-	t.Helper()
-	found := map[string]bool{}
-	fset := token.NewFileSet()
-	for _, base := range []string{"lode", "internal"} {
-		err := filepath.WalkDir(filepath.Join(root, base), func(path string, d fs.DirEntry, walkErr error) error {
-			if walkErr != nil {
-				return walkErr
-			}
-			if d.IsDir() || !strings.HasSuffix(d.Name(), "_test.go") {
-				return nil
-			}
-			file, err := parser.ParseFile(fset, path, nil, 0)
-			if err != nil {
-				t.Fatalf("parse %s: %v", path, err)
-			}
-			for _, decl := range file.Decls {
-				fn, ok := decl.(*ast.FuncDecl)
-				if ok && fn.Recv == nil && fn.Name.IsExported() {
-					found[fn.Name.Name] = true
-				}
-			}
-			return nil
-		})
-		if err != nil {
-			t.Fatalf("walk %s: %v", base, err)
-		}
-	}
-	return found
 }
 
 func declaredContractTypes(t *testing.T, path string) []string {

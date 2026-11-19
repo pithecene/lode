@@ -116,15 +116,6 @@ Build and maintenance scripts.
 
 ---
 
-## ai/
-
-AI governance: repo-local skill definitions and agent bookkeeping.
-
-- `skills/repo-convention-enforcer/v1/` — structural convention validator (SKILL.md format)
-- `TEST_MATRIX.md` — contract-to-test traceability that agents maintain with each contract or test change
-
----
-
 ## .github/
 
 CI/CD workflows (GitHub Actions).
