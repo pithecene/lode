@@ -34,7 +34,7 @@ jobs:
         password: ${{ secrets.BOSUN_REGISTRY_TOKEN }}
     steps:
       - name: 📥 Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        uses: actions/checkout@v6
         with:
           persist-credentials: false
 
@@ -59,7 +59,7 @@ jobs:
     if: ${{ needs.tag_check.outputs.semver_match != '' }}
     steps:
       - name: 📥 Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: 📦 Package
         run: |
@@ -92,7 +92,7 @@ jobs:
       contents: write
     steps:
       - name: 📥 Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        uses: actions/checkout@v6
         with:
           persist-credentials: false
 
