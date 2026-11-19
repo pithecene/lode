@@ -72,7 +72,7 @@ depth of a dataset's or volume's snapshot history.
 | `Root.Records`, `Root.Blobs` (empty dataset) | 1 `Get` (pointer) + scan fallback + 1 `List` (foreign-layout check) |
 | `ReadRoot.Records`, `ReadRoot.Blobs` (warm, without `WithLayout`) | 1 `Get` (pointer) + at most 2 `Get` calls (probing `snapshots/` then `segments/`) |
 | `ReadRoot.Records`, `ReadRoot.Blobs` with `WithLayout(l)` | 1 `Get` (pointer) + 1 `Get` (manifest in `l`'s directory; +1 `Exists` on miss) |
-| `ReadRoot.Records`, `ReadRoot.Blobs` with `WithAnchor(id)` | At most 2 `Get` calls for `id`'s canonical manifest (1 `Get` when combined with `WithLayout`), **0** pointer `Get` calls, and retains the loaded `*Snapshot` |
+| `ReadRoot.Records`, `ReadRoot.Blobs` with `WithAnchor(id)` | At most 2 `Get` calls for `id`'s canonical manifest (1 `Get` when combined with `WithLayout`), 1 pointer `Get` to check the removal fence, and retains a private manifest copy |
 
 Opening a handle or view writes nothing to storage.
 
@@ -102,10 +102,10 @@ One-time cold/first-commit additions:
 |-----------|------|-------------|--------|-----|
 | `Latest` (warm) | Hot | 2 `Get` calls (pointer + manifest) | O(manifest) | O(1) |
 | `Latest` (degraded scan) | Degraded | 1 `List` + 1 `Get` + tombstone checks per scanned candidate | O(N) | O(N) |
-| `Snapshot(id)` | Hot | 1 `Get` (**0 `Get` calls** when `id` matches `WithAnchor(id)`) | O(manifest) | O(1) |
-| `Snapshot(id)` fallback | Degraded | 1 `Get` + 1 tombstone `Get` + 1 `List` + 1 `Get` | O(N) | O(N) |
-| `Read(id)` | Hot | `1 + F` `Get` calls (**`F` `Get` calls** when `id` matches `WithAnchor(id)`) | O(R_total) | O(R_total) |
-| `Snapshots()` | Cold | 1 `List` + `S` `Get` calls | O(S × manifest) | O(S log S) |
+| `Snapshot(id)` | Hot | 2 `Get` calls (1 pointer `Get` and 1 `Exists` for a live canonical anchor) | O(manifest) | O(1) |
+| `Snapshot(id)` fallback | Degraded | 2 `Get` calls + 1 tombstone `Get` + 1 `List` + 1 `Get` | O(N) | O(N) |
+| `Read(id)` | Hot | snapshot lookup + `F` object reads | O(R_total) | O(R_total) |
+| `Snapshots()` | Cold | 1 `List` + `1 + S` `Get` calls | O(S × manifest) | O(S log S) |
 | `OpenObject` | Hot | 1 `Get` | O(1) stream | O(1) |
 | `ReaderAt` | Hot | 1 to open + 1 per `ReadAt` | O(L) per read | O(1) |
 
@@ -117,9 +117,9 @@ One-time cold/first-commit additions:
 |-----------|------|-------------|--------|
 | `ListDatasets` (with `PrefixLister`) | Cold | 1 `ListPrefixes` + `D` pointer `Get` calls + at most `2D` `Exists` calls (per-dataset `List` only when pointerless or pending) | O(D) |
 | `ListDatasets` (without `PrefixLister`) | Cold | 1 `List` + `D` pointer `Get` calls | O(N) |
-| `ListPartitions` (Hive, fully indexed) | Cold | 1 `List` + **0 `Get` calls** | O(N) |
-| `ListPartitions` (Hive, `C` canonical-only) | Cold | 1 `List` + `C` `Get` calls | O(N + manifest) |
-| `Manifests` (`M` yielded) | Cold | 1 `List` + `M` `Get` calls | O(N + manifest) |
+| `ListPartitions` (Hive, fully indexed) | Cold | 1 `List` + 1 pointer `Get` | O(N) |
+| `ListPartitions` (Hive, `C` canonical-only) | Cold | 1 `List` + `1 + C` `Get` calls | O(N + manifest) |
+| `Manifests` (`M` yielded) | Cold | 1 `List` + `1 + M` `Get` calls | O(N + manifest) |
 | `Root.RemoveDataset` | Cold | 1 `Get` + 1 `CompareAndSwap` + at most 2 `Exists` + 1 `List` + `N` `Delete` calls | O(N) |
 
 - `ListPartitions` derives partition paths directly from listed
@@ -152,7 +152,7 @@ One-time cold/first-commit additions:
 | `SnapshotReaderAt.ReadAt` | Hot | `R` `ReadRange` | O(L) | O(log B + R) |
 | `Latest` (warm) | Hot | 2 `Get` calls | O(B) | O(1) |
 | `Snapshot(id)` | Hot | 1 `Get` | O(B) | O(B) |
-| `Snapshots()` | Cold | 1 `List` + `S` `Get` calls | O(S × B_avg) | O(S × B_avg + S log S) |
+| `Snapshots()` | Cold | 1 `List` + `1 + S` `Get` calls | O(S × B_avg) | O(S × B_avg + S log S) |
 | `Head` | Hot | 1 `Get` (+1 `List` only when pointer absent) | O(1) | O(1) |
 | `Remove` | Cold | 1 `Get` + 1 `CompareAndSwap` + at most 1 `Exists` + 1 `List` + `N` `Delete` calls | O(N) | O(N) |
 

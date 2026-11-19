@@ -2665,7 +2665,7 @@ func TestBlobs_Read_CustomChecksumIsPassedToTheView(t *testing.T) {
 
 func TestRoot_RemoveDataset(t *testing.T) {
 	t.Run("removes objects, writes tombstone, and blocks writers and views", func(t *testing.T) {
-		store := NewMemory()
+		store := &hookStore{Store: NewMemory()}
 		root := Open(Use(store))
 		ds, err := root.Records(t.Context(), "events", JSONL[D](), hive("day"))
 		if err != nil {
@@ -2680,18 +2680,10 @@ func TestRoot_RemoveDataset(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		if err := root.RemoveDataset(t.Context(), "events"); err != nil {
-			t.Fatalf("RemoveDataset: %v", err)
-		}
-		// Second call is idempotent.
-		if err := root.RemoveDataset(t.Context(), "events"); err != nil {
-			t.Fatalf("second RemoveDataset: %v", err)
-		}
-
-		// Only the latest tombstone object remains under datasets/events/.
-		keys := storeKeys(t, store)
-		if !slices.Equal(keys, []string{"datasets/events/latest"}) {
-			t.Fatalf("remaining keys = %v, want [datasets/events/latest]", keys)
+		stopCleanup := errors.New("interrupted cleanup")
+		store.onDelete = func(string) error { return stopCleanup }
+		if err := root.RemoveDataset(t.Context(), "events"); !errors.Is(err, stopCleanup) {
+			t.Fatalf("RemoveDataset returned %v, want injected deletion failure", err)
 		}
 
 		// Existing writer and view handles return ErrRemoved on every operation.
@@ -2739,6 +2731,20 @@ func TestRoot_RemoveDataset(t *testing.T) {
 			if err := fn(); !errors.Is(err, ErrRemoved) {
 				t.Errorf("%s: got %v, want ErrRemoved", name, err)
 			}
+		}
+		store.onDelete = nil
+		if err := root.RemoveDataset(t.Context(), "events"); err != nil {
+			t.Fatalf("RemoveDataset: %v", err)
+		}
+		// Second call is idempotent.
+		if err := root.RemoveDataset(t.Context(), "events"); err != nil {
+			t.Fatalf("second RemoveDataset: %v", err)
+		}
+
+		// Only the latest tombstone object remains under datasets/events/.
+		keys := storeKeys(t, store)
+		if !slices.Equal(keys, []string{"datasets/events/latest"}) {
+			t.Fatalf("remaining keys = %v, want [datasets/events/latest]", keys)
 		}
 	})
 

@@ -26,6 +26,7 @@ import (
 	"io"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/pithecene/lode/internal/retry"
 )
@@ -230,6 +231,19 @@ func (h *History[ID, M]) persistPending(ctx context.Context, id ID, staged, cano
 	return wrote, nil
 }
 
+// CheckLive reads the removal fence. A history without a pointer can still
+// contain committed snapshots from before pointers existed.
+func (h *History[ID, M]) CheckLive(ctx context.Context) error {
+	if h.errs.Removed == nil {
+		return nil
+	}
+	_, err := h.ReadPointer(ctx)
+	if errors.Is(err, h.errs.NotFound) {
+		return nil
+	}
+	return err
+}
+
 // checkRemoval is errs.Removed when the pointer now holds the removal
 // marker, nil when it holds anything else or is absent, and the read's
 // error when the pointer cannot be read: the removal may then be the
@@ -343,6 +357,9 @@ func (h *History[ID, M]) loadEntry(ctx context.Context, e manifestEntry[ID]) (*S
 // Snapshots loads every snapshot, ordered by ID so that callers sorting on
 // a manifest field get a deterministic tie-break.
 func (h *History[ID, M]) Snapshots(ctx context.Context) ([]*Snapshot[ID, M], error) {
+	if err := h.CheckLive(ctx); err != nil {
+		return nil, err
+	}
 	entries, err := h.manifests(ctx)
 	if err != nil {
 		return nil, err
@@ -361,6 +378,21 @@ func (h *History[ID, M]) Snapshots(ctx context.Context) ([]*Snapshot[ID, M], err
 		}
 		out = append(out, s)
 	}
+	return out, nil
+}
+
+// ListByCreation returns the container's public snapshots in creation order.
+// Snapshots supplies snapshot-ID order as the tie breaker.
+func ListByCreation[ID ~string, M, S any](ctx context.Context, h *History[ID, M], convert func(*Snapshot[ID, M]) *S, created func(*S) time.Time) ([]*S, error) {
+	all, err := h.Snapshots(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*S, len(all))
+	for i, snap := range all {
+		out[i] = convert(snap)
+	}
+	slices.SortStableFunc(out, func(a, b *S) int { return created(a).Compare(created(b)) })
 	return out, nil
 }
 

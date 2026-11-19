@@ -2,6 +2,7 @@ package lode
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -295,7 +296,11 @@ func (r *ReadRoot) openView(ctx context.Context, id DatasetID, opts []ViewOption
 	d.components = cfg.components
 	d.codec = codec
 	if _, anchored := cfg.anchor.(snapshotAnchor); anchored {
-		d.anchor = opened
+		d.anchorID = opened.ID
+		d.anchorManifest, err = json.Marshal(opened.Manifest)
+		if err != nil {
+			return nil, err
+		}
 	}
 	return d, nil
 }
@@ -388,6 +393,9 @@ type snapshotAnchor struct {
 
 func (a snapshotAnchor) resolve(ctx context.Context, cores viewCores) (*Snapshot, error) {
 	id := cores.search[0].id
+	if err := cores.search[0].history.CheckLive(ctx); err != nil {
+		return nil, err
+	}
 	s, err := findSnapshot(ctx, cores.search, a.id)
 	if err == nil {
 		return s, nil
@@ -396,9 +404,6 @@ func (a snapshotAnchor) resolve(ctx context.Context, cores viewCores) (*Snapshot
 		return nil, err
 	}
 	if isAbsence(err) {
-		if _, ptrErr := cores.search[0].history.ReadPointer(ctx); errors.Is(ptrErr, ErrRemoved) {
-			return nil, ptrErr
-		}
 		return nil, fmt.Errorf("lode: snapshot %s of %s: %w", a.id, id, ErrNotFound)
 	}
 	return nil, fmt.Errorf("failed to resolve snapshot %s of %s: %w", a.id, id, err)

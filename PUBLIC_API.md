@@ -153,9 +153,8 @@ Two view options refine how a view opens:
   a probe on Hive datasets) and returns `ErrSettingsMismatch` if the opened
   manifest records another layout.
 - `WithAnchor(id)` opens the view at snapshot `id` instead of the head,
-  reading `id`'s canonical manifest once and retaining that immutable
-  `*Snapshot` so a subsequent `Snapshot(ctx, id)` or `Read(ctx, id)` issues
-  zero additional manifest `Get` calls.
+  retaining a private copy of its validated manifest. Subsequent reads check
+  the removal fence and canonical object existence before reusing that copy.
 
 ### Volume (Experimental, Package `lode/volume`)
 

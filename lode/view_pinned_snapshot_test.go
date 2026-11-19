@@ -50,7 +50,7 @@ func (f anchorFixture) open(t *testing.T, opts ...ViewOption) (*RecordView[D], [
 }
 
 // A view opened with WithAnchor reads that snapshot's canonical manifest once,
-// touches neither the pointer nor the head, takes the layout from it, and
+// checks the removal fence, skips the head manifest, takes the layout from it, and
 // retains the immutable anchor manifest so Snapshot(id) and Read(id) issue
 // zero additional manifest Gets. Other reads behave as on a view of the head.
 func TestWithAnchor_OpensAtTheNamedSnapshot(t *testing.T) {
@@ -68,7 +68,7 @@ func TestWithAnchor_OpensAtTheNamedSnapshot(t *testing.T) {
 				t.Fatal(err)
 			}
 			for _, k := range keys {
-				if strings.HasSuffix(k, "/latest") || strings.Contains(k, string(f.latest.ID)) {
+				if strings.Contains(k, string(f.latest.ID)) {
 					t.Errorf("opening at %s reached %s", f.older.ID, k)
 				}
 			}
@@ -77,16 +77,21 @@ func TestWithAnchor_OpensAtTheNamedSnapshot(t *testing.T) {
 			if err != nil || snap.ID != f.older.ID {
 				t.Fatalf("Snapshot(%s) = %v, %v", f.older.ID, snap, err)
 			}
-			if len(reads) != 0 {
-				t.Errorf("Snapshot of the anchored snapshot reached %v, want 0 store calls", reads)
+			if len(reads) != 2 || !strings.HasSuffix(reads[0], "/latest") || !strings.HasSuffix(reads[1], "/manifest.json") {
+				t.Errorf("Snapshot of the anchored snapshot reached %v, want the fence and a canonical existence check", reads)
+			}
+			snap.Objects[0].SizeBytes = -1
+			again, err := view.Snapshot(t.Context(), f.older.ID)
+			if err != nil || again.Objects[0].SizeBytes < 0 {
+				t.Fatalf("caller mutation affected cached snapshot: %v, %v", again, err)
 			}
 			var recs []D
 			dataReads := f.store.Recorded(func() { recs, err = view.Read(t.Context(), f.older.ID) })
 			if err != nil || len(recs) != 1 || recs[0]["n"] != float64(1) {
 				t.Fatalf("Read(%s) = %v, %v", f.older.ID, recs, err)
 			}
-			if len(dataReads) != 1 || strings.HasSuffix(dataReads[0], "/manifest.json") {
-				t.Errorf("Read of the anchored snapshot reached %v, want only its data object (0 manifest Gets)", dataReads)
+			if len(dataReads) != 3 || !slices.Equal(dataReads[:2], reads) || dataReads[2] != snap.Objects[0].Path {
+				t.Errorf("Read of the anchored snapshot reached %v, want lifecycle checks followed by the data object", dataReads)
 			}
 			head, err := view.Latest(t.Context())
 			if err != nil || head.ID != f.latest.ID {
@@ -99,9 +104,9 @@ func TestWithAnchor_OpensAtTheNamedSnapshot(t *testing.T) {
 	}
 }
 
-// Opening at a snapshot and reading it costs fewer requests than opening
+// Opening at a snapshot and reading it fits within the request budget of opening
 // at the head and then reading the snapshot.
-func TestWithAnchor_CostsFewerRequestsThanTheHead(t *testing.T) {
+func TestWithAnchor_HiveLookupRequestBudget(t *testing.T) {
 	t.Parallel()
 	f := newAnchorFixture(t, WithLayout(Hive("k")))
 	cost := func(opts ...ViewOption) int {
@@ -116,8 +121,8 @@ func TestWithAnchor_CostsFewerRequestsThanTheHead(t *testing.T) {
 		return len(keys) + len(reads)
 	}
 	head, at := cost(), cost(WithAnchor(f.older.ID))
-	if at >= head {
-		t.Errorf("open at the snapshot and read it: %d requests; open at the head and read it: %d; want fewer", at, head)
+	if at > head {
+		t.Errorf("open at the snapshot and read it: %d requests; open at the head and read it: %d; want at most the head lookup cost", at, head)
 	}
 	t.Logf("requests: at the snapshot %d, at the head %d", at, head)
 }
@@ -138,11 +143,18 @@ func TestWithAnchor_ReportsAnAbsentOrExpiredSnapshot(t *testing.T) {
 	t.Run("expired", func(t *testing.T) {
 		t.Parallel()
 		f := newAnchorFixture(t, WithLayout(Hive("k")))
+		view, _, err := f.open(t, WithAnchor(f.older.ID))
+		if err != nil {
+			t.Fatal(err)
+		}
 		residual := f.partitionManifests(t, f.older.ID)
 		if _, err := f.writer.Expire(t.Context(), ExpireRequest{IDs: []SnapshotID{f.older.ID}}); err != nil {
 			t.Fatal(err)
 		}
 		f.restore(t, residual)
+		if _, err := view.Snapshot(t.Context(), f.older.ID); !errors.Is(err, ErrSnapshotExpired) {
+			t.Fatalf("previously opened view returned %v, want ErrSnapshotExpired", err)
+		}
 		if _, _, err := f.open(t, WithAnchor(f.older.ID)); !errors.Is(err, ErrSnapshotExpired) {
 			t.Fatalf("open at an expired snapshot: %v, want ErrSnapshotExpired", err)
 		}

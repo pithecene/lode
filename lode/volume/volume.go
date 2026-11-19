@@ -679,18 +679,7 @@ func (v *volume) Latest(ctx context.Context) (*Snapshot, error) {
 }
 
 func (v *volume) Snapshots(ctx context.Context) ([]*Snapshot, error) {
-	all, err := v.history.Snapshots(ctx)
-	if err != nil {
-		return nil, err
-	}
-	snapshots := make([]*Snapshot, len(all))
-	for i, s := range all {
-		snapshots[i] = toVolumeSnapshot(s)
-	}
-	sort.Slice(snapshots, func(i, j int) bool {
-		return snapshots[i].Manifest.CreatedAt.Before(snapshots[j].Manifest.CreatedAt)
-	})
-	return snapshots, nil
+	return history.ListByCreation(ctx, &v.history, toVolumeSnapshot, func(s *Snapshot) time.Time { return s.Manifest.CreatedAt })
 }
 
 func (v *volume) Snapshot(ctx context.Context, id SnapshotID) (*Snapshot, error) {
