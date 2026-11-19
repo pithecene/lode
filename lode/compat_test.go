@@ -1,6 +1,7 @@
 package lode
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -179,5 +180,21 @@ func TestCompat_v0_11_0_Blob(t *testing.T) {
 	}
 	if string(data) != "model weights v1" {
 		t.Errorf("blob = %q, want the bytes v0.11.0 wrote", data)
+	}
+}
+
+func TestManifestLegacyFieldsAreVersionScoped(t *testing.T) {
+	for _, version := range []string{"1.0.0", "1.1.0", "1.2.0"} {
+		t.Run(version, func(t *testing.T) {
+			var m Manifest
+			data := []byte(`{"format_version":"` + version + `","files":[],"paths":{"flat":true}}`)
+			if err := json.Unmarshal(data, &m); err != nil {
+				t.Fatal(err)
+			}
+			legacyFields := version != "1.2.0"
+			if (m.Objects != nil) != legacyFields || m.Flat != legacyFields {
+				t.Errorf("objects = %v, flat = %t, legacy fields accepted = %t", m.Objects, m.Flat, legacyFields)
+			}
+		})
 	}
 }

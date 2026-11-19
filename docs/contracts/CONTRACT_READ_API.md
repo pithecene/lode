@@ -134,6 +134,8 @@ ReaderAt(ctx context.Context, obj ObjectRef) (io.ReaderAt, error)
   `StreamEncoder` wrote, without imposing tighter size limits on decode than
   on encode.
 
+- `OpenDecompressed` MUST resolve the supplied object's path in the manifest inventory and verify the digest from that entry when the manifest records a checksum algorithm. An unlisted object returns `ErrInvalidArgument`.
+
 ### Opening a View
 
 - Opening a view MUST never write to storage. Every write method on a

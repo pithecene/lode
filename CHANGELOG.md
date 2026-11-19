@@ -33,6 +33,8 @@ and Lode adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Snapshot inventory checks**: Decompressed reads use the checksum recorded in the snapshot and reject paths absent from its inventory. Format 1.2.0 ignores the obsolete manifest fields for files and paths.
+
 - **Stream cleanup and filesystem cancellation**: `Records.StreamWrite` and `Blobs.StreamWrite` now delete uncommitted data objects with a detached bounded context when commit cancellation occurs, and the filesystem store checks `ctx.Err()` before and during directory listings.
 - **Aborted Volume staging no longer blocks retries on the same range**: `StageWriteAt` adds a random nonce to each block path. An uncommitted block no longer causes a later write at the same offset and length to return `ErrPathExists`.
 - **Parquet preserves column order, validates decode schemas, and omits non-finite stats**: `Parquet` rejects empty schemas, writes columns in declared order, and validates physical columns by name in `Decode`. Column stats normalize Go types and omit `NaN`, `+Inf`, and `-Inf` so commits always marshal cleanly.
