@@ -5,6 +5,7 @@ import (
 	"errors"
 	"math"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,7 +15,7 @@ import (
 // newParquet returns the Parquet codec and the schema error it records,
 // as the v0 constructor returned them.
 func newParquet(schema ParquetSchema, opts ...ParquetOption) (Codec[D], error) {
-	c := Parquet(schema, opts...)
+	c := Parquet[D](schema, opts...)
 	return c, checkCodec(c)
 }
 
@@ -903,7 +904,7 @@ func TestParquetCodec_Decode_InvalidFormat(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------------
-// FileStats tests
+// ObjectStats tests
 // -----------------------------------------------------------------------------
 
 func TestParquetCodec_FileStats(t *testing.T) {
@@ -926,19 +927,18 @@ func TestParquetCodec_FileStats(t *testing.T) {
 			map[string]any{"id": int64(5), "name": "carol", "score": 99.0},
 		}
 
+		sc, ok := codec.(StatisticalCodec[D])
+		if !ok {
+			t.Fatal("parquet codec does not implement StatisticalCodec[D]")
+		}
+
 		var buf bytes.Buffer
-		if err := codec.Encode(&buf, records); err != nil {
+		stats, err := sc.EncodeWithStats(&buf, records)
+		if err != nil {
 			t.Fatal(err)
 		}
-
-		sc, ok := codec.(StatisticalCodec)
-		if !ok {
-			t.Fatal("parquet codec does not implement StatisticalCodec")
-		}
-
-		stats := sc.FileStats()
 		if stats == nil {
-			t.Fatal("FileStats() returned nil")
+			t.Fatal("EncodeWithStats() returned nil")
 		}
 		if stats.RowCount != 3 {
 			t.Errorf("RowCount = %d, want 3", stats.RowCount)
@@ -997,11 +997,11 @@ func TestParquetCodec_FileStats(t *testing.T) {
 		}
 
 		var buf bytes.Buffer
-		if err := codec.Encode(&buf, records); err != nil {
+		stats, err := codec.(StatisticalCodec[D]).EncodeWithStats(&buf, records)
+		if err != nil {
 			t.Fatal(err)
 		}
 
-		stats := codec.(StatisticalCodec).FileStats()
 		col := stats.Columns[0]
 		if col.Min != 42.0 {
 			t.Errorf("Min = %v, want 42.0", col.Min)
@@ -1026,13 +1026,12 @@ func TestParquetCodec_FileStats(t *testing.T) {
 		}
 
 		var buf bytes.Buffer
-		if err := codec.Encode(&buf, []D{}); err != nil {
+		stats, err := codec.(StatisticalCodec[D]).EncodeWithStats(&buf, []D{})
+		if err != nil {
 			t.Fatal(err)
 		}
-
-		stats := codec.(StatisticalCodec).FileStats()
 		if stats == nil {
-			t.Fatal("FileStats() returned nil for empty records")
+			t.Fatal("EncodeWithStats() returned nil for empty records")
 		}
 		if stats.RowCount != 0 {
 			t.Errorf("RowCount = %d, want 0", stats.RowCount)
@@ -1066,11 +1065,11 @@ func TestParquetCodec_FileStats_Nulls(t *testing.T) {
 		}
 
 		var buf bytes.Buffer
-		if err := codec.Encode(&buf, records); err != nil {
+		stats, err := codec.(StatisticalCodec[D]).EncodeWithStats(&buf, records)
+		if err != nil {
 			t.Fatal(err)
 		}
 
-		stats := codec.(StatisticalCodec).FileStats()
 		tagCol := stats.Columns[1]
 		if tagCol.NullCount != 1 {
 			t.Errorf("tag.NullCount = %d, want 1", tagCol.NullCount)
@@ -1100,11 +1099,11 @@ func TestParquetCodec_FileStats_Nulls(t *testing.T) {
 		}
 
 		var buf bytes.Buffer
-		if err := codec.Encode(&buf, records); err != nil {
+		stats, err := codec.(StatisticalCodec[D]).EncodeWithStats(&buf, records)
+		if err != nil {
 			t.Fatal(err)
 		}
 
-		stats := codec.(StatisticalCodec).FileStats()
 		col := stats.Columns[0]
 		if col.NullCount != 2 {
 			t.Errorf("NullCount = %d, want 2", col.NullCount)
@@ -1135,11 +1134,10 @@ func TestParquetCodec_FileStats_Nulls(t *testing.T) {
 		}
 
 		var buf bytes.Buffer
-		if err := codec.Encode(&buf, records); err != nil {
+		stats, err := codec.(StatisticalCodec[D]).EncodeWithStats(&buf, records)
+		if err != nil {
 			t.Fatal(err)
 		}
-
-		stats := codec.(StatisticalCodec).FileStats()
 
 		flagCol := stats.Columns[0]
 		if flagCol.Min != nil {
@@ -1184,11 +1182,11 @@ func TestParquetCodec_FileStats_Timestamps(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	if err := codec.Encode(&buf, records); err != nil {
+	stats, err := codec.(StatisticalCodec[D]).EncodeWithStats(&buf, records)
+	if err != nil {
 		t.Fatal(err)
 	}
 
-	stats := codec.(StatisticalCodec).FileStats()
 	col := stats.Columns[0]
 
 	minTs, ok := col.Min.(time.Time)
@@ -1306,7 +1304,7 @@ func TestParquetCodec_NonFiniteFloatsAndNormalizedStats(t *testing.T) {
 			{Name: "ts", Type: ParquetTimestamp},
 		},
 	}
-	ds, err := Open(Memory()).Records(ctx, "metrics", Parquet(schema), WithCompressor(NewNoOpCompressor()))
+	ds, err := Open(Memory()).Records(ctx, "metrics", Parquet[D](schema), WithCompressor(Uncompressed()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1321,7 +1319,7 @@ func TestParquetCodec_NonFiniteFloatsAndNormalizedStats(t *testing.T) {
 		t.Fatalf("Write with NaN/±Inf failed: %v", err)
 	}
 
-	stats := snap.Files[0].Stats
+	stats := snap.Objects[0].Stats
 	if stats == nil || len(stats.Columns) != 4 {
 		t.Fatalf("stats = %+v, want 4 columns", stats)
 	}
@@ -1344,5 +1342,380 @@ func TestParquetCodec_NonFiniteFloatsAndNormalizedStats(t *testing.T) {
 	}
 	if len(got) != 4 || !math.IsNaN(got[0]["val64"].(float64)) || !math.IsInf(got[2]["val64"].(float64), -1) {
 		t.Errorf("decoded rows did not preserve NaN/-Inf: %v", got)
+	}
+}
+
+// parquetTaggedRecord exercises parquet tag precedence over json tag, json tag
+// mapping, bare Go field name mapping, ignored fields, all scalar types, and
+// nullable *T / []byte fields.
+type parquetTaggedRecord struct {
+	ID       int64      `parquet:"event_id" json:"ignored_json_name"`
+	Source   string     `json:"source,omitempty"`
+	Rank     int32      // matched by exported Go field name
+	Weight   float32    `parquet:"weight"`
+	Score    *float64   `parquet:"score"`
+	Note     *string    `json:"note"`
+	Flag     bool       `parquet:"flag"`
+	Payload  []byte     `parquet:"payload"`
+	Occurred time.Time  `parquet:"occurred"`
+	Reviewed *time.Time `parquet:"reviewed"`
+	SkipPQ   string     `parquet:"-"`
+	SkipJSON string     `json:"-"`
+}
+
+var parquetTaggedSchema = ParquetSchema{
+	Fields: []ParquetField{
+		{Name: "event_id", Type: ParquetInt64},
+		{Name: "source", Type: ParquetString},
+		{Name: "Rank", Type: ParquetInt32},
+		{Name: "weight", Type: ParquetFloat32},
+		{Name: "score", Type: ParquetFloat64, Nullable: true},
+		{Name: "note", Type: ParquetString, Nullable: true},
+		{Name: "flag", Type: ParquetBool},
+		{Name: "payload", Type: ParquetBytes, Nullable: true},
+		{Name: "occurred", Type: ParquetTimestamp},
+		{Name: "reviewed", Type: ParquetTimestamp, Nullable: true},
+	},
+}
+
+func TestParquetCodec_StructRoundTrip(t *testing.T) {
+	codec := Parquet[parquetTaggedRecord](parquetTaggedSchema)
+	sc, ok := codec.(StatisticalCodec[parquetTaggedRecord])
+	if !ok {
+		t.Fatal("struct Parquet codec must implement StatisticalCodec[T]")
+	}
+
+	score := 98.5
+	note := "verified"
+	t1 := time.Date(2026, 2, 1, 10, 0, 0, 0, time.UTC)
+	t2 := time.Date(2026, 2, 2, 12, 30, 0, 0, time.UTC)
+	input := []parquetTaggedRecord{
+		{
+			ID: 10, Source: "api", Rank: 1, Weight: 1.5,
+			Score: &score, Note: &note, Flag: true,
+			Payload: []byte("abc"), Occurred: t1, Reviewed: &t2,
+			SkipPQ: "transient-pq", SkipJSON: "transient-json",
+		},
+		{
+			ID: 20, Source: "batch", Rank: 2, Weight: 2.5,
+			Score: nil, Note: nil, Flag: false,
+			Payload: nil, Occurred: t2, Reviewed: nil,
+		},
+	}
+	if input[0].SkipPQ == "" || input[0].SkipJSON == "" {
+		t.Fatal("ignored fields must be populated before encode")
+	}
+
+	var buf bytes.Buffer
+	stats, err := sc.EncodeWithStats(&buf, input)
+	if err != nil {
+		t.Fatalf("EncodeWithStats: %v", err)
+	}
+	if stats.RowCount != 2 || stats.Columns[4].NullCount != 1 || stats.Columns[5].NullCount != 1 || stats.Columns[9].NullCount != 1 {
+		t.Fatalf("stats = %+v, want 2 rows and 1 null on nullable columns", stats)
+	}
+
+	got, err := codec.Decode(&buf)
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("decoded %d records, want 2", len(got))
+	}
+	assertTaggedRecord0(t, got[0], score, note, t1, t2)
+	assertTaggedRecord1(t, got[1], t2)
+}
+
+func assertTaggedRecord0(t *testing.T, r parquetTaggedRecord, score float64, note string, occurred, reviewed time.Time) {
+	t.Helper()
+	if r.ID != 10 || r.Source != "api" || r.Rank != 1 || r.Weight != 1.5 || !r.Flag {
+		t.Errorf("row 0 scalars = %+v", r)
+	}
+	if r.Score == nil || *r.Score != score || r.Note == nil || *r.Note != note {
+		t.Errorf("row 0 pointers = score:%v note:%v", r.Score, r.Note)
+	}
+	if !bytes.Equal(r.Payload, []byte("abc")) || !r.Occurred.Equal(occurred) || r.Reviewed == nil || !r.Reviewed.Equal(reviewed) {
+		t.Errorf("row 0 payload/timestamps = %+v", r)
+	}
+	if r.SkipPQ != "" || r.SkipJSON != "" {
+		t.Errorf("ignored fields must decode as zero values, got %q / %q", r.SkipPQ, r.SkipJSON)
+	}
+}
+
+func assertTaggedRecord1(t *testing.T, r parquetTaggedRecord, occurred time.Time) {
+	t.Helper()
+	if r.ID != 20 || r.Source != "batch" || r.Rank != 2 || r.Weight != 2.5 || r.Flag {
+		t.Errorf("row 1 scalars = %+v", r)
+	}
+	if r.Score != nil || r.Note != nil || r.Payload != nil || r.Reviewed != nil || !r.Occurred.Equal(occurred) {
+		t.Errorf("row 1 nulls = %+v", r)
+	}
+}
+
+func TestParquetCodec_StructSchemaMismatch(t *testing.T) {
+	baseSchema := ParquetSchema{Fields: []ParquetField{
+		{Name: "id", Type: ParquetInt64},
+		{Name: "note", Type: ParquetString, Nullable: true},
+	}}
+
+	type missingField struct {
+		ID int64 `parquet:"id"`
+	}
+	type duplicateMapping struct {
+		A int64  `parquet:"id"`
+		B int64  `json:"id"`
+		N string `parquet:"note"`
+	}
+	type nullableWithoutPtr struct {
+		ID   int64  `parquet:"id"`
+		Note string `parquet:"note"`
+	}
+	type requiredWithPtr struct {
+		ID   *int64  `parquet:"id"`
+		Note *string `parquet:"note"`
+	}
+	type wrongScalarType struct {
+		ID   string  `parquet:"id"`
+		Note *string `parquet:"note"`
+	}
+
+	cases := map[string]func() error{
+		"primitive record type": func() error {
+			_, err := Open(Memory()).Records(t.Context(), "d", Parquet[int](baseSchema))
+			return err
+		},
+		"pointer record type": func() error {
+			_, err := Open(Memory()).Records(t.Context(), "d", Parquet[*missingField](baseSchema))
+			return err
+		},
+		"missing schema field": func() error {
+			_, err := Open(Memory()).Records(t.Context(), "d", Parquet[missingField](baseSchema))
+			return err
+		},
+		"duplicate column mapping": func() error {
+			_, err := OpenReadOnly(Memory()).Records(t.Context(), "d", Parquet[duplicateMapping](baseSchema))
+			return err
+		},
+		"nullable field without pointer": func() error {
+			return Parquet[nullableWithoutPtr](baseSchema).Encode(&bytes.Buffer{}, nil)
+		},
+		"non-nullable field with pointer": func() error {
+			_, err := Parquet[requiredWithPtr](baseSchema).Decode(bytes.NewReader(nil))
+			return err
+		},
+		"incompatible scalar type": func() error {
+			_, err := Parquet[wrongScalarType](baseSchema).(StatisticalCodec[wrongScalarType]).EncodeWithStats(&bytes.Buffer{}, nil)
+			return err
+		},
+	}
+	for name, call := range cases {
+		t.Run(name, func(t *testing.T) {
+			if err := call(); !errors.Is(err, ErrSchemaViolation) {
+				t.Fatalf("got %v, want ErrSchemaViolation", err)
+			}
+		})
+	}
+}
+
+type parquetInteropEvent struct {
+	ID   int64   `parquet:"id"`
+	Tag  string  `parquet:"tag"`
+	Note *string `parquet:"note"`
+}
+
+func TestParquetCodec_StructAndMapInterop(t *testing.T) {
+	ctx := t.Context()
+	store := NewMemory()
+	schema := ParquetSchema{Fields: []ParquetField{
+		{Name: "id", Type: ParquetInt64},
+		{Name: "tag", Type: ParquetString},
+		{Name: "note", Type: ParquetString, Nullable: true},
+	}}
+	structCodec := Parquet[parquetInteropEvent](schema)
+	mapCodec := Parquet[D](schema)
+	if structCodec.Describe() != mapCodec.Describe() {
+		t.Fatalf("Describe mismatch: struct=%q vs map=%q", structCodec.Describe(), mapCodec.Describe())
+	}
+
+	writer, err := Open(Use(store)).Records(ctx, "events", structCodec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	note := "hello"
+	snap1, err := writer.Write(ctx, []parquetInteropEvent{
+		{ID: 1, Tag: "a", Note: &note},
+		{ID: 2, Tag: "b", Note: nil},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Read struct-written snapshot as Parquet[D] through ReadRoot and Root.
+	mapView, err := OpenReadOnly(Use(store)).Records(ctx, "events", mapCodec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	asMaps, err := mapView.Read(ctx, snap1.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(asMaps) != 2 || asMaps[0]["id"] != int64(1) || asMaps[0]["note"] != "hello" || asMaps[1]["note"] != nil {
+		t.Fatalf("Read as Parquet[D] = %v", asMaps)
+	}
+
+	// Append a map-written snapshot and read back as Parquet[parquetInteropEvent].
+	mapWriter, err := Open(Use(store)).Records(ctx, "events", mapCodec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap2, err := mapWriter.Write(ctx, []D{{"id": int64(3), "tag": "c", "note": "from-map"}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	asStructs, err := writer.Read(ctx, snap2.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(asStructs) != 1 || asStructs[0].ID != 3 || asStructs[0].Tag != "c" || asStructs[0].Note == nil || *asStructs[0].Note != "from-map" {
+		t.Fatalf("Read as struct = %+v", asStructs)
+	}
+}
+
+func TestParquetCodec_ConcurrentSharedCodec(t *testing.T) {
+	schema := ParquetSchema{Fields: []ParquetField{
+		{Name: "id", Type: ParquetInt64},
+		{Name: "tag", Type: ParquetString},
+		{Name: "note", Type: ParquetString, Nullable: true},
+	}}
+	codec := Parquet[parquetInteropEvent](schema)
+	sc := codec.(StatisticalCodec[parquetInteropEvent])
+
+	var wg sync.WaitGroup
+	for g := range 16 {
+		wg.Add(1)
+		go func(worker int) {
+			defer wg.Done()
+			base := int64(worker * 100)
+			note := "worker"
+			in := []parquetInteropEvent{
+				{ID: base + 1, Tag: "x", Note: &note},
+				{ID: base + 2, Tag: "y", Note: nil},
+			}
+			var buf bytes.Buffer
+			stats, err := sc.EncodeWithStats(&buf, in)
+			if err != nil {
+				t.Errorf("worker %d EncodeWithStats: %v", worker, err)
+				return
+			}
+			if stats.RowCount != 2 || stats.Columns[0].Min != base+1 || stats.Columns[0].Max != base+2 || stats.Columns[2].NullCount != 1 {
+				t.Errorf("worker %d stats = %+v", worker, stats)
+				return
+			}
+			out, err := codec.Decode(&buf)
+			if err != nil {
+				t.Errorf("worker %d Decode: %v", worker, err)
+				return
+			}
+			if len(out) != 2 || out[0].ID != base+1 || out[1].ID != base+2 || out[1].Note != nil {
+				t.Errorf("worker %d decoded = %+v", worker, out)
+			}
+		}(g)
+	}
+	wg.Wait()
+}
+
+func TestParquetCodec_EmbeddedPointerAndDefinedScalars(t *testing.T) {
+	type (
+		definedID      string
+		definedCount   int64
+		definedSmall   int32
+		definedScore   float64
+		definedActive  bool
+		definedPayload []byte
+		EmbeddedMeta   struct {
+			Tag  definedID `parquet:"tag"`
+			Note *string   `parquet:"note"`
+		}
+		record struct {
+			*EmbeddedMeta
+			Count   definedCount   `parquet:"count"`
+			Small   definedSmall   `parquet:"small"`
+			Score   definedScore   `parquet:"score"`
+			Active  definedActive  `parquet:"active"`
+			Payload definedPayload `parquet:"payload"`
+		}
+	)
+
+	schema := ParquetSchema{Fields: []ParquetField{
+		{Name: "tag", Type: ParquetString},
+		{Name: "note", Type: ParquetString, Nullable: true},
+		{Name: "count", Type: ParquetInt64},
+		{Name: "small", Type: ParquetInt32},
+		{Name: "score", Type: ParquetFloat64},
+		{Name: "active", Type: ParquetBool},
+		{Name: "payload", Type: ParquetBytes},
+	}}
+	codec := Parquet[record](schema)
+
+	note := "promoted"
+	in := []record{{
+		EmbeddedMeta: &EmbeddedMeta{Tag: "ev-1", Note: &note},
+		Count:        42,
+		Small:        7,
+		Score:        3.5,
+		Active:       true,
+		Payload:      definedPayload("raw"),
+	}}
+
+	var buf bytes.Buffer
+	if err := codec.Encode(&buf, in); err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	got, err := codec.Decode(&buf)
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if len(got) != 1 || got[0].EmbeddedMeta == nil || got[0].Tag != "ev-1" || got[0].Note == nil || *got[0].Note != "promoted" ||
+		got[0].Count != 42 || got[0].Small != 7 || got[0].Score != 3.5 || !got[0].Active || string(got[0].Payload) != "raw" {
+		t.Fatalf("Decode round-trip = %+v", got)
+	}
+
+	// Nil embedded pointer when a promoted field is required returns ErrSchemaViolation instead of panicking.
+	var bad bytes.Buffer
+	if err := codec.Encode(&bad, []record{{Count: 1}}); !errors.Is(err, ErrSchemaViolation) {
+		t.Fatalf("nil embedded pointer on required field = %v, want ErrSchemaViolation", err)
+	}
+
+	// Nullable-only exported embedded pointer round-trips nil without panicking.
+	type OptBase struct {
+		Opt *definedID `parquet:"opt"`
+	}
+	type optRecord struct {
+		*OptBase
+		Count definedCount `parquet:"count"`
+	}
+	optCodec := Parquet[optRecord](ParquetSchema{Fields: []ParquetField{
+		{Name: "opt", Type: ParquetString, Nullable: true},
+		{Name: "count", Type: ParquetInt64},
+	}})
+	var optBuf bytes.Buffer
+	if err := optCodec.Encode(&optBuf, []optRecord{{Count: 9}}); err != nil {
+		t.Fatalf("optCodec.Encode(nil embedded): %v", err)
+	}
+	optGot, err := optCodec.Decode(&optBuf)
+	if err != nil || len(optGot) != 1 || optGot[0].OptBase != nil || optGot[0].Count != 9 {
+		t.Fatalf("optCodec.Decode = %+v, %v", optGot, err)
+	}
+
+	// Unexported embedded struct pointer is rejected cleanly at construction with ErrSchemaViolation.
+	type unexportedBase struct {
+		Tag string `parquet:"tag"`
+	}
+	type badEmbedded struct {
+		*unexportedBase
+	}
+	badCodec := Parquet[badEmbedded](ParquetSchema{Fields: []ParquetField{{Name: "tag", Type: ParquetString}}})
+	if err := checkCodec(badCodec); !errors.Is(err, ErrSchemaViolation) {
+		t.Fatalf("unexported embedded pointer err = %v, want ErrSchemaViolation", err)
 	}
 }

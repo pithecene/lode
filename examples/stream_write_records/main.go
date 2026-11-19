@@ -94,9 +94,9 @@ func run() error {
 	fmt.Printf("Created snapshot: %s\n", snapshot.ID)
 	fmt.Printf("Row count: %d\n", snapshot.RowCount)
 	fmt.Printf("Codec: %s\n", snapshot.Codec)
-	fmt.Printf("Files:\n")
-	for _, f := range snapshot.Files {
-		fmt.Printf("  - %s (%d bytes)\n", f.Path, f.SizeBytes)
+	fmt.Printf("Objects:\n")
+	for _, obj := range snapshot.Objects {
+		fmt.Printf("  - %s (%d bytes)\n", obj.Path, obj.SizeBytes)
 	}
 	fmt.Println()
 

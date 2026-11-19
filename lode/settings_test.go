@@ -21,7 +21,7 @@ var jsonl = JSONL[D]()
 
 // openOn opens dataset "events" over store with codec and opts, failing the
 // test on error.
-func openOn(t *testing.T, store Store, codec Codec[D], opts ...DatasetOption) Records[D] {
+func openOn(t *testing.T, store Store, codec Codec[D], opts ...DatasetOption) *Records[D] {
 	t.Helper()
 	return recordsWith(t, store, "events", codec, opts...)
 }
@@ -29,7 +29,7 @@ func openOn(t *testing.T, store Store, codec Codec[D], opts ...DatasetOption) Re
 // tryWrite opens dataset "events" over store and writes records, returning
 // the first error: a writer whose settings conflict fails when it opens, or
 // at its commit when the conflict arises after it opened.
-func tryWrite(t *testing.T, store Store, codec Codec[D], records []D, opts ...DatasetOption) (*DatasetSnapshot, error) {
+func tryWrite(t *testing.T, store Store, codec Codec[D], records []D, opts ...DatasetOption) (*Snapshot, error) {
 	t.Helper()
 	ds, err := Open(Use(store)).Records(t.Context(), "events", codec, opts...)
 	if err != nil {
@@ -40,13 +40,13 @@ func tryWrite(t *testing.T, store Store, codec Codec[D], records []D, opts ...Da
 
 // parquetOf is a Parquet codec of one string field.
 func parquetOf(field string, nullable bool) Codec[D] {
-	return Parquet(ParquetSchema{Fields: []ParquetField{{Name: field, Type: ParquetString, Nullable: nullable}}})
+	return Parquet[D](ParquetSchema{Fields: []ParquetField{{Name: field, Type: ParquetString, Nullable: nullable}}})
 }
 
 // pendFirst turns the committed first snapshot id into a pending one: its
 // canonical manifest moves to the staged path, where an interrupted first
 // commit leaves it.
-func pendFirst(t *testing.T, store Store, id DatasetSnapshotID) {
+func pendFirst(t *testing.T, store Store, id SnapshotID) {
 	t.Helper()
 	canonical := "datasets/events/snapshots/" + string(id) + "/manifest.json"
 	moveObject(t, store, canonical, "datasets/events/staged/"+string(id)+".json")
@@ -94,6 +94,9 @@ func TestRoot_DatasetID(t *testing.T) {
 		if _, err := root.Blobs(t.Context(), id); !errors.Is(err, ErrInvalidArgument) {
 			t.Errorf("Blobs(%q) = %v, want ErrInvalidArgument", id, err)
 		}
+		if err := root.RemoveDataset(t.Context(), id); !errors.Is(err, ErrInvalidArgument) {
+			t.Errorf("RemoveDataset(%q) = %v, want ErrInvalidArgument", id, err)
+		}
 	}
 	for _, id := range []DatasetID{"events", "tenant=acme", "a.b"} {
 		if _, err := root.Records(t.Context(), id, jsonl); err != nil {
@@ -111,15 +114,8 @@ func TestWrite_ManifestRecordsSettings(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := readManifest(t, store, "datasets/events/segments/"+string(snap.ID)+"/manifest.json")
-	if m.FormatVersion != "1.1.0" || m.CodecDescription != codec.Describe() || !slices.Equal(m.PartitionKeys, []string{"day"}) {
-		t.Errorf("manifest = %+v, want format 1.1.0 with the codec description and keys", m)
-	}
-	want := ManifestPaths{
-		Datasets: "datasets", Snapshots: "snapshots", Partitions: "partitions", Segments: "segments",
-		Manifest: "manifest.json", Data: "data", Expired: "expired", Staged: "staged",
-	}
-	if m.Paths != want {
-		t.Errorf("paths = %+v, want %+v", m.Paths, want)
+	if m.FormatVersion != "1.2.0" || m.CodecDescription != codec.Describe() || !slices.Equal(m.PartitionKeys, []string{"day"}) || m.Flat {
+		t.Errorf("manifest = %+v, want format 1.2.0, flat=false, codec description and keys", m)
 	}
 
 	flatStore := NewMemory()
@@ -131,9 +127,9 @@ func TestWrite_ManifestRecordsSettings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	flat := readManifest(t, flatStore, "events/"+string(blob.ID)+"/manifest.json").Paths
-	if !flat.Flat || flat.Datasets != "" || flat.Snapshots != "" || flat.Manifest != "manifest.json" {
-		t.Errorf("flat paths = %+v, want no datasets or snapshots directory", flat)
+	flat := readManifest(t, flatStore, "events/"+string(blob.ID)+"/manifest.json")
+	if !flat.Flat {
+		t.Errorf("flat manifest = %+v, want Flat=true", flat)
 	}
 }
 
@@ -172,13 +168,11 @@ func TestWrite_SettingsMismatch(t *testing.T) {
 	}{
 		{"codec", writer{jsonl, nil}, writer{parquetOf("a", true), nil}},
 		{"codec description", writer{parquetOf("a", true), nil}, writer{parquetOf("b", true), nil}},
-		{"compressor", writer{jsonl, nil}, writer{jsonl, []DatasetOption{WithCompressor(NewGzipCompressor())}}},
-		{"checksum", writer{jsonl, nil}, writer{jsonl, []DatasetOption{WithChecksum(NewMD5Checksum())}}},
+		{"compressor", writer{jsonl, nil}, writer{jsonl, []DatasetOption{WithCompressor(Gzip())}}},
+		{"checksum", writer{jsonl, nil}, writer{jsonl, []DatasetOption{WithChecksum(MD5())}}},
 		{"partition keys", writer{jsonl, []DatasetOption{hive("a")}}, writer{jsonl, []DatasetOption{hive("a", "b")}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			// The second writer opens before the first commits, so its
-			// commit, not its opening, meets the first writer's settings.
 			store := NewMemory()
 			first := openOn(t, store, tc.first.codec, tc.first.opts...)
 			second := openOn(t, store, tc.second.codec, tc.second.opts...)
@@ -189,7 +183,6 @@ func TestWrite_SettingsMismatch(t *testing.T) {
 			if !errors.Is(err, ErrSettingsMismatch) || !strings.Contains(err.Error(), tc.name+" mismatch") {
 				t.Fatalf("at commit: got %v, want a %s ErrSettingsMismatch", err, tc.name)
 			}
-			// A writer that opens afterward is rejected when it opens.
 			_, err = Open(Use(store)).Records(t.Context(), "events", tc.second.codec, tc.second.opts...)
 			if !errors.Is(err, ErrSettingsMismatch) {
 				t.Fatalf("at open: got %v, want ErrSettingsMismatch", err)
@@ -198,7 +191,7 @@ func TestWrite_SettingsMismatch(t *testing.T) {
 	}
 	t.Run("matching settings commit", func(t *testing.T) {
 		store := NewMemory()
-		gzip := WithCompressor(NewGzipCompressor())
+		gzip := WithCompressor(Gzip())
 		if _, err := tryWrite(t, store, jsonl, R(D{"a": 1}), gzip); err != nil {
 			t.Fatal(err)
 		}
@@ -209,9 +202,7 @@ func TestWrite_SettingsMismatch(t *testing.T) {
 	t.Run("the losing first commit is rejected, not retried", func(t *testing.T) {
 		store := NewMemory()
 		loser := openOn(t, store, jsonl, WithRetry(3))
-		// The loser resolved an empty dataset when it opened; the winner
-		// commits before the loser's first commit.
-		if _, err := tryWrite(t, store, jsonl, R(D{"a": 1}), WithCompressor(NewGzipCompressor())); err != nil {
+		if _, err := tryWrite(t, store, jsonl, R(D{"a": 1}), WithCompressor(Gzip())); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := loser.Write(t.Context(), R(D{"a": 2}), nil); !errors.Is(err, ErrSettingsMismatch) {
@@ -221,7 +212,7 @@ func TestWrite_SettingsMismatch(t *testing.T) {
 }
 
 func TestWrite_SettingsOfAPendingFirstCommit(t *testing.T) {
-	setup := func(t *testing.T) (Store, *DatasetSnapshot) {
+	setup := func(t *testing.T) (Store, *Snapshot) {
 		t.Helper()
 		store := NewMemory()
 		first, err := tryWrite(t, store, jsonl, R(D{"a": 1}))
@@ -230,14 +221,14 @@ func TestWrite_SettingsOfAPendingFirstCommit(t *testing.T) {
 		}
 		return store, first
 	}
-	canonical := func(id DatasetSnapshotID) string {
+	canonical := func(id SnapshotID) string {
 		return "datasets/events/snapshots/" + string(id) + "/manifest.json"
 	}
 
 	t.Run("its staged copy records the settings", func(t *testing.T) {
 		store, first := setup(t)
 		pendFirst(t, store, first.ID)
-		_, err := tryWrite(t, store, jsonl, R(D{"a": 2}), WithCompressor(NewGzipCompressor()))
+		_, err := tryWrite(t, store, jsonl, R(D{"a": 2}), WithCompressor(Gzip()))
 		if !errors.Is(err, ErrSettingsMismatch) {
 			t.Fatalf("got %v, want the staged copy's settings enforced", err)
 		}
@@ -270,13 +261,10 @@ func TestWrite_SettingsOfAPendingFirstCommit(t *testing.T) {
 		if err != nil || next.ParentSnapshotID != second.ID {
 			t.Fatalf("got %+v/%v, want a commit adopting the abandoned %s", next, err, second.ID)
 		}
-		if _, err := tryWrite(t, store, jsonl, R(D{"a": 4}), WithCompressor(NewGzipCompressor())); !errors.Is(err, ErrSettingsMismatch) {
+		if _, err := tryWrite(t, store, jsonl, R(D{"a": 4}), WithCompressor(Gzip())); !errors.Is(err, ErrSettingsMismatch) {
 			t.Fatalf("got %v, want the newest manifest's settings enforced", err)
 		}
 	})
-	// A commit on a pending first commit stages its manifest too: when it is
-	// abandoned in turn, the dataset holds no canonical manifest, and its
-	// staged copy is the only record of the settings.
 	t.Run("an abandoned commit on a pending first commit is staged", func(t *testing.T) {
 		store := NewMemory()
 		first, err := tryWrite(t, store, jsonl, R(D{"a": 1}))
@@ -302,8 +290,6 @@ func TestWrite_SettingsOfAPendingFirstCommit(t *testing.T) {
 		if exists(t, store, "datasets/events/staged/"+string(next.ParentSnapshotID)+".json") {
 			t.Error("the adopted commit's staged manifest remains after its child committed")
 		}
-		// The child persisted a canonical manifest, so the handle's next
-		// commit stages nothing.
 		keys := recorder.Recorded(func() { _, err = ds.Write(t.Context(), R(D{"a": 4}), nil) })
 		if err != nil {
 			t.Fatal(err)
@@ -312,9 +298,6 @@ func TestWrite_SettingsOfAPendingFirstCommit(t *testing.T) {
 			t.Errorf("a commit after a completed one reached %s, want no staged copy", keys[i])
 		}
 	})
-	// A writer that adopted a pending first commit when it opened may commit
-	// on a later pending commit, which it never loaded; its commit removes
-	// the staged copies of both.
 	t.Run("a commit removes the staged copies of its pending ancestors", func(t *testing.T) {
 		store := NewMemory()
 		first, err := tryWrite(t, store, jsonl, R(D{"a": 1}))
@@ -332,16 +315,12 @@ func TestWrite_SettingsOfAPendingFirstCommit(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, id := range []DatasetSnapshotID{first.ID, snap.ParentSnapshotID} {
+		for _, id := range []SnapshotID{first.ID, snap.ParentSnapshotID} {
 			if exists(t, store, "datasets/events/staged/"+string(id)+".json") {
 				t.Errorf("the staged copy of %s remains after its descendant committed", id)
 			}
 		}
 	})
-	// A commit retried under its snapshot ID stages again; the copy of an
-	// earlier attempt, which remains when the pointer could not be read, is
-	// kept rather than failing the commit, and removed once the commit
-	// persists its canonical manifest.
 	t.Run("a staged copy of an earlier attempt is kept", func(t *testing.T) {
 		store := NewMemory()
 		first, err := tryWrite(t, store, jsonl, R(D{"a": 1}))
@@ -387,10 +366,6 @@ func (s *commitRace) Get(ctx context.Context, p string) (io.ReadCloser, error) {
 
 func (*commitRace) List(context.Context, string) ([]string, error) { return nil, nil }
 
-// A writer whose settings check races a first commit misses both the
-// canonical manifest and the staged copy; the commit removes the copy only
-// after it persists the manifest, so the writer finds the manifest on a
-// second read instead of reporting a conflict.
 func TestWrite_SettingsCheckRacingAFirstCommit(t *testing.T) {
 	store := NewMemory()
 	first, err := tryWrite(t, store, jsonl, R(D{"a": 1}))
@@ -408,15 +383,15 @@ func TestWrite_SettingsCheckRacingAFirstCommit(t *testing.T) {
 }
 
 // legacyHive rewrites every manifest copy of snap as format 1.0.0, without
-// the fields 1.1.0 added.
-func legacyHive(t *testing.T, store Store, snap *DatasetSnapshot) {
+// the fields added in 1.1.0+.
+func legacyHive(t *testing.T, store Store, snap *Snapshot) {
 	t.Helper()
 	for _, k := range storeKeys(t, store) {
 		if !strings.HasSuffix(k, string(snap.ID)+"/manifest.json") {
 			continue
 		}
 		m := readManifest(t, store, k)
-		m.FormatVersion, m.PartitionKeys, m.Paths, m.CodecDescription = "1.0.0", nil, ManifestPaths{}, ""
+		m.FormatVersion, m.PartitionKeys, m.Flat, m.CodecDescription = "1.0.0", nil, false, ""
 		writeManifestAt(t, store, k, m)
 	}
 }
@@ -483,12 +458,21 @@ func TestCodec_Describe(t *testing.T) {
 	if d := jsonl.Describe(); d != "" {
 		t.Errorf("JSONL describes %q, want none", d)
 	}
+	type row struct {
+		A *int64 `parquet:"a"`
+		B string `parquet:"b"`
+	}
+	r := row{B: "ok"}
+	if r.A != nil || r.B != "ok" {
+		t.Fatal("unexpected zero value")
+	}
 	schema := ParquetSchema{Fields: []ParquetField{{Name: "a", Type: ParquetInt64, Nullable: true}, {Name: "b", Type: ParquetString}}}
-	c1 := Parquet(schema)
-	c2 := Parquet(schema, WithParquetCompression(ParquetCompressionGzip))
+	c1 := Parquet[D](schema)
+	c2 := Parquet[D](schema, WithParquetCompression(ParquetCompressionGzip))
+	c3 := Parquet[row](schema)
 	want := `{"fields":[{"name":"a","type":"int64","nullable":true},{"name":"b","type":"string","nullable":false}]}`
-	if c1.Describe() != want || c2.Describe() != want {
-		t.Errorf("descriptions %q and %q, want %q for either compression", c1.Describe(), c2.Describe(), want)
+	if c1.Describe() != want || c2.Describe() != want || c3.Describe() != want {
+		t.Errorf("descriptions %q, %q, %q; want %q", c1.Describe(), c2.Describe(), c3.Describe(), want)
 	}
 }
 
@@ -564,7 +548,7 @@ func TestWrite_LegacyCheckIsRepeatedAfterAConflict(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	legacyHive(t, store, old) // records no description
+	legacyHive(t, store, old)
 	racer := &beforePointerCAS{Store: store}
 	loser := openOn(t, racer, parquetOf("b", true), WithRetry(2))
 	racer.hook = func() {
@@ -643,8 +627,6 @@ func TestWrite_ForeignManifestsAreAHistoryAndDataIsNot(t *testing.T) {
 			t.Errorf("%s: got %v, want a manifest no layout of this writer persists treated as a foreign history", key, err)
 		}
 	}
-	// Another writer's uncommitted data, a tombstone, and its lock file are
-	// not a history.
 	store := NewMemory()
 	for _, key := range []string{
 		"datasets/events/partitions/a=x/segments/" + id + "/data/data",
@@ -663,8 +645,6 @@ func TestWrite_ConcurrentFirstWritersWithDifferentLayouts(t *testing.T) {
 	partitioned := openOn(t, store, jsonl, hive("a"))
 	racer := &beforePointerCAS{Store: store}
 	plain := openOn(t, racer, jsonl)
-	// The Hive writer persists its data and commits while the other writer
-	// is between staging its data and its pointer write.
 	racer.hook = func() {
 		if _, err := partitioned.Write(t.Context(), R(D{"a": "x"}), nil); err != nil {
 			t.Errorf("first writer: %v", err)
@@ -678,9 +658,9 @@ func TestWrite_ConcurrentFirstWritersWithDifferentLayouts(t *testing.T) {
 func TestWrite_LostFirstCommitIsAMismatchWithoutRetries(t *testing.T) {
 	store := NewMemory()
 	racer := &beforePointerCAS{Store: store}
-	loser := openOn(t, racer, jsonl) // no retries
+	loser := openOn(t, racer, jsonl)
 	racer.hook = func() {
-		if _, err := tryWrite(t, store, jsonl, R(D{"a": 1}), WithCompressor(NewGzipCompressor())); err != nil {
+		if _, err := tryWrite(t, store, jsonl, R(D{"a": 1}), WithCompressor(Gzip())); err != nil {
 			t.Errorf("winner: %v", err)
 		}
 	}
@@ -709,7 +689,7 @@ func TestModernManifestWithoutPathsIsInvalid(t *testing.T) {
 	}
 	p := "datasets/events/snapshots/" + string(snap.ID) + "/manifest.json"
 	m := readManifest(t, store, p)
-	m.Paths = ManifestPaths{}
+	m.FormatVersion = "1.1.0" // format 1.1.0 requires a paths object
 	writeManifestAt(t, store, p, m)
 
 	if _, err := tryWrite(t, store, jsonl, R(D{"a": 2})); !errors.Is(err, ErrManifestInvalid) {
@@ -740,7 +720,7 @@ func TestConfiguration_IsCopiedAtConstruction(t *testing.T) {
 	}
 
 	fields := []ParquetField{{Name: "a", Type: ParquetString}}
-	codec := Parquet(ParquetSchema{Fields: fields})
+	codec := Parquet[D](ParquetSchema{Fields: fields})
 	before := codec.Describe()
 	fields[0] = ParquetField{Name: "b", Type: parquetTypeMax}
 	if codec.Describe() != before {
@@ -760,11 +740,10 @@ func TestWrite_LegacyParentCycleIsUnverifiable(t *testing.T) {
 		t.Fatal(err)
 	}
 	legacyHive(t, store, b)
-	// a names b as its parent, closing a cycle without files.
 	p := "datasets/events/segments/" + string(a.ID) + "/manifest.json"
 	m := readManifest(t, store, p)
 	m.ParentSnapshotID = b.ID
-	m.FormatVersion, m.PartitionKeys, m.Paths = "1.0.0", nil, ManifestPaths{}
+	m.FormatVersion, m.PartitionKeys, m.Flat = "1.0.0", nil, false
 	writeManifestAt(t, store, p, m)
 
 	_, err = tryWrite(t, store, jsonl, R(D{"day": "d"}), hive("day"))
@@ -780,32 +759,24 @@ func TestSettings_LegacyManifestsUseTheDefaultPathNames(t *testing.T) {
 		t.Fatal(err)
 	}
 	legacyHive(t, store, snap) // rewrites the manifest as format 1.0.0
-	if _, err := Open(Use(store), WithDataDir("d")).Records(t.Context(), "events", jsonl); !errors.Is(err, ErrSettingsMismatch) {
-		t.Errorf("writer: got %v, want a root with other names rejected", err)
-	}
-	if _, err := OpenReadOnly(Use(store), WithDataDir("d")).Records(t.Context(), "events", jsonl); !errors.Is(err, ErrSettingsMismatch) {
-		t.Errorf("view: got %v, want a root with other names rejected", err)
+	if _, err := OpenReadOnly(Use(store)).Records(t.Context(), "events", jsonl); err != nil {
+		t.Errorf("view: got %v, want a root with the default names accepted", err)
 	}
 	if _, err := tryWrite(t, store, jsonl, R(D{"a": 2})); err != nil {
-		t.Errorf("got %v, want a root with the default names accepted", err)
+		t.Errorf("writer: got %v, want a root with the default names accepted", err)
 	}
 }
 
 func TestWrite_DefaultNamedManifestsWithoutAPointer(t *testing.T) {
 	store := NewMemory()
-	if _, err := tryWrite(t, store, jsonl, R(D{"a": 1})); err != nil {
-		t.Fatal(err)
+	id := string(idAt(time.Now()))
+	// A manifest at a foreign custom directory without a pointer is rejected by
+	// both writers and views rather than mistaken for an empty dataset.
+	putObject(t, store, "datasets/events/snaps/"+id+"/manifest.json")
+	if _, err := Open(Use(store)).Records(t.Context(), "events", jsonl); !errors.Is(err, ErrSettingsMismatch) {
+		t.Errorf("writer: got %v, want foreign manifest history rejected", err)
 	}
-	// A history whose pointer is absent, as one persisted before the
-	// pointer existed, bears the default manifest name.
-	if err := store.Delete(t.Context(), "datasets/events/latest"); err != nil {
-		t.Fatal(err)
-	}
-	custom := WithManifestFile("_m.json")
-	if _, err := Open(Use(store), custom).Records(t.Context(), "events", jsonl); !errors.Is(err, ErrSettingsMismatch) {
-		t.Errorf("writer: got %v, want the default-named history found", err)
-	}
-	if _, err := OpenReadOnly(Use(store), custom).Records(t.Context(), "events", jsonl); !errors.Is(err, ErrSettingsMismatch) {
-		t.Errorf("view: got %v, want the default-named history found", err)
+	if _, err := OpenReadOnly(Use(store)).Records(t.Context(), "events", jsonl); !errors.Is(err, ErrSettingsMismatch) {
+		t.Errorf("view: got %v, want foreign manifest history rejected", err)
 	}
 }

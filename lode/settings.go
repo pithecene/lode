@@ -13,32 +13,25 @@ import (
 )
 
 // settings are what every writer of a dataset must share: the components
-// and names its manifests record (CONTRACT_WRITE_API §Settings). A writer
-// has settings, and each manifest records them; the format difference
-// between manifests is resolved once, when a manifest's settings are read
-// (recordedSettings), so no consumer of settings tests the format.
+// and topology its manifests record (CONTRACT_WRITE_API §Settings).
 type settings struct {
 	codec            string
 	codecDescription string
 	compressor       string
 	checksum         string
 	partitioning     partitionScheme
-	paths            ManifestPaths
-
-	// legacy marks settings a manifest of format 1.0.0 recorded: it records
-	// no codec description or partition keys, so those are unknown, not
-	// empty, and its paths are the default names.
-	legacy bool
+	flat             bool
+	customV11Paths   *legacyManifestPaths // non-nil only if a 1.1.0 manifest recorded custom directory names
+	legacy           bool                 // format 1.0.0
 }
 
-// settings are this writer's settings, as its manifests record them.
 func (d *writer) settings() settings {
 	s := settings{
 		codec:            d.codec.name,
 		codecDescription: d.codec.description,
 		compressor:       d.components.compressor.Name(),
 		partitioning:     d.layout.partitioning(),
-		paths:            d.layout.convention(),
+		flat:             d.layout.isFlat(),
 	}
 	if d.components.checksum != nil {
 		s.checksum = d.components.checksum.Name()
@@ -46,24 +39,15 @@ func (d *writer) settings() settings {
 	return s
 }
 
-// record writes s into m, the only place a manifest's settings are set.
-// The partition keys are copied: a returned manifest must not alias the
-// layout.
 func (s settings) record(m *Manifest) {
 	m.Codec, m.CodecDescription = s.codec, s.codecDescription
 	m.Compressor, m.ChecksumAlgorithm = s.compressor, s.checksum
 	m.Partitioner, m.PartitionKeys = string(s.partitioning.name), slices.Clone(s.partitioning.keys)
-	m.Paths = s.paths
+	m.Flat = s.flat
 }
 
-// recordedSettings returns the settings m records, the only place the
-// manifest format is told apart. A legacy manifest records no path names:
-// it was persisted under the default names, flat or not according to where
-// it lies, which is where a layout whose paths are flat exactly when flat
-// found it (V1_API_DECISIONS D11, Paths). A manifest of format 1.1.0 must
-// record its path names.
 func recordedSettings(m *Manifest, flat bool) (settings, error) {
-	if err := missingPaths(m); err != nil {
+	if err := checkLegacyPaths(m); err != nil {
 		return settings{}, fmt.Errorf("manifest of snapshot %s: %w", m.SnapshotID, err)
 	}
 	s := settings{
@@ -72,57 +56,55 @@ func recordedSettings(m *Manifest, flat bool) (settings, error) {
 		compressor:       m.Compressor,
 		checksum:         m.ChecksumAlgorithm,
 		partitioning:     partitionScheme{name: partitioner(m.Partitioner), keys: m.PartitionKeys},
-		paths:            m.Paths,
+		flat:             m.Flat,
 		legacy:           legacy(m),
 	}
 	if s.legacy {
-		s.codecDescription, s.partitioning.keys, s.paths = "", nil, defaultPaths(flat)
+		s.codecDescription, s.partitioning.keys, s.flat = "", nil, flat
+	}
+	if m.legacyPaths != nil && *m.legacyPaths != defaultLegacyPaths(m.legacyPaths.Flat) {
+		s.customV11Paths = m.legacyPaths
 	}
 	return s, nil
 }
 
-// settingComparison is one setting a manifest must share with the writer.
 type settingComparison struct {
 	name       string
 	want, have string
 }
 
-// legacy reports whether m was written before manifests recorded the codec
-// description, partition keys, and path names (format version 1.0.0).
+const (
+	legacyFormatVersion = "1.0.0"
+	v11FormatVersion    = "1.1.0"
+)
+
 func legacy(m *Manifest) bool { return m.FormatVersion == legacyFormatVersion }
 
-// legacyFormatVersion is the manifest format before the settings fields.
-const legacyFormatVersion = "1.0.0"
-
-// missingPaths is the validation error of a manifest of format 1.1.0 or
-// later without the path names it must record.
-func missingPaths(m *Manifest) error {
-	if legacy(m) || m.Paths == defaultPaths(false) || m.Paths == defaultPaths(true) {
+// checkLegacyPaths validates the "paths" object when reading a format 1.1.0
+// manifest, preserving backward compatibility with v0.12–v0.17 data.
+func checkLegacyPaths(m *Manifest) error {
+	if m.FormatVersion != v11FormatVersion {
 		return nil
 	}
-	if m.Paths == (ManifestPaths{}) {
-		return &validate.ManifestError{Field: "paths", Message: "is required from format version 1.1.0"}
+	if m.legacyPaths == nil || *m.legacyPaths == (legacyManifestPaths{}) {
+		return &validate.ManifestError{Field: "paths", Message: "is required in format version 1.1.0"}
 	}
-	if problem := m.Paths.problem(func(f pathField) string { return f.field }); problem != "" {
-		return &validate.ManifestError{Field: "paths", Message: problem}
+	if m.legacyPaths.Flat && (m.legacyPaths.Datasets != "" || m.legacyPaths.Snapshots != "") {
+		return &validate.ManifestError{Field: "paths", Message: "of flat paths must not name the datasets or snapshots directory"}
 	}
 	return nil
 }
 
-// mismatch returns the first setting of have, the settings a manifest
-// records, that differs from s, or nil. A setting have does not know (a
-// legacy manifest's codec description and partition keys) is not
-// compared; legacy partition keys are verified separately
-// (verifyLegacyKeys).
 func (s settings) mismatch(have settings) error {
-	// %q and %#v quote every string, so distinct key lists and path names
-	// never format alike ("a,b" against "a", "b").
+	if have.customV11Paths != nil {
+		return fmt.Errorf("lode: path names mismatch: dataset records custom 1.1.0 paths %#v, which v1.0 roots do not configure (use lode.Prefixed): %w", *have.customV11Paths, ErrSettingsMismatch)
+	}
 	comparisons := []settingComparison{
 		{"codec", s.codec, have.codec},
 		{"compressor", s.compressor, have.compressor},
 		{"checksum", s.checksum, have.checksum},
 		{"partitioner", string(s.partitioning.name), string(have.partitioning.name)},
-		{"path names", fmt.Sprintf("%#v", s.paths), fmt.Sprintf("%#v", have.paths)},
+		{"flat paths", fmt.Sprintf("%t", s.flat), fmt.Sprintf("%t", have.flat)},
 	}
 	if !have.legacy {
 		comparisons = append(comparisons,
@@ -133,10 +115,6 @@ func (s settings) mismatch(have settings) error {
 	return firstMismatch("writer", comparisons)
 }
 
-// layoutMismatch returns the first difference between want, the layout a
-// view expects, and the partitioning that have, a manifest's settings,
-// records, or nil. As in mismatch, a legacy manifest's partition keys are
-// verified separately (verifyLegacyKeys).
 func layoutMismatch(want partitionScheme, have settings) error {
 	comparisons := []settingComparison{{"partitioner", string(want.name), string(have.partitioning.name)}}
 	if !have.legacy {
@@ -145,11 +123,6 @@ func layoutMismatch(want partitionScheme, have settings) error {
 	return firstMismatch("view", comparisons)
 }
 
-// checkExpectedLayout verifies expected, the layout a view expects (nil when
-// it expects none), against m, the manifest of the snapshot at which the
-// view opens, whose settings recorded holds. Against a legacy manifest it
-// verifies Hive keys as a writer does (verifyLegacyKeys), with d, whose
-// layout is the expected one.
 func (d *dataset) checkExpectedLayout(ctx context.Context, expected *partitionScheme, m *Manifest, recorded settings) error {
 	if expected == nil {
 		return nil
@@ -163,8 +136,6 @@ func (d *dataset) checkExpectedLayout(ctx context.Context, expected *partitionSc
 	return nil
 }
 
-// firstMismatch returns ErrSettingsMismatch for the first comparison whose
-// values differ, or nil; holder names the handle whose setting differs.
 func firstMismatch(holder string, comparisons []settingComparison) error {
 	for _, c := range comparisons {
 		if c.want != c.have {
@@ -174,15 +145,7 @@ func firstMismatch(holder string, comparisons []settingComparison) error {
 	return nil
 }
 
-// checkSettings verifies this writer's settings against the manifest of
-// parent, the head a commit resolved. Every writer is checked, so every
-// later snapshot records the same settings, and a writer checks until a
-// check against a 1.1.0 manifest, or its own commit, settles it. A check
-// against a legacy manifest compares fewer settings, so a concurrent
-// commit may record a description that differs; the writer checks again
-// after a conflict. With no parent the dataset is empty, unless its
-// directory holds objects persisted under another layout.
-func (d *writer) checkSettings(ctx context.Context, parent DatasetSnapshotID) error {
+func (d *writer) checkSettings(ctx context.Context, parent SnapshotID) error {
 	if d.settled {
 		return nil
 	}
@@ -194,7 +157,7 @@ func (d *writer) checkSettings(ctx context.Context, parent DatasetSnapshotID) er
 		return err
 	}
 	mine := d.settings()
-	recorded, err := recordedSettings(head, mine.paths.Flat)
+	recorded, err := recordedSettings(head, mine.flat)
 	if err != nil {
 		return err
 	}
@@ -210,35 +173,20 @@ func (d *writer) checkSettings(ctx context.Context, parent DatasetSnapshotID) er
 	return nil
 }
 
-// rejectForeignHistory returns ErrSettingsMismatch when the dataset's
-// directory holds a manifest this layout does not persist: a history
-// written under another layout, whose manifests the configured layout
-// cannot find. A writer that took the dataset for empty would otherwise
-// begin a second history beside it.
 func (d *writer) rejectForeignHistory(ctx context.Context) error {
 	return rejectForeignManifest(ctx, d.store, d.id, d.layout)
 }
 
-// rejectForeignManifest returns ErrSettingsMismatch when the directory of
-// dataset id holds a manifest that none of layouts persists. Only manifests
-// count: data objects that another writer persisted before its first
-// commit are not a history, and counting them would make two first writers
-// with different layouts reject each other before either commits. A
-// manifest is recognized by its file name, from the listing alone: the
-// layouts' manifest name, or the default name, which every manifest
-// persisted before the names became root options bears.
 func rejectForeignManifest(ctx context.Context, store Store, id DatasetID, layouts ...*pathLayout) error {
 	keys, err := store.List(ctx, layouts[0].datasetPrefix(id))
 	if err != nil {
 		return fmt.Errorf("failed to list the dataset: %w", err)
 	}
-	names := []string{layouts[0].manifestName(), defaultPaths(false).Manifest}
 	for _, k := range keys {
-		// A key no store accepts in this form was not persisted by a layout.
 		if key, ok := storepath.Key(k); !ok || key != k {
 			continue
 		}
-		if !slices.Contains(names, path.Base(k)) {
+		if path.Base(k) != manifestFile {
 			continue
 		}
 		if slices.ContainsFunc(layouts, func(l *pathLayout) bool { return l.ownsObject(id, k) }) {
@@ -249,25 +197,13 @@ func rejectForeignManifest(ctx context.Context, store Store, id DatasetID, layou
 	return nil
 }
 
-// settingsManifest is the manifest a writer's settings are checked
-// against: the canonical manifest of parent, the snapshot the pointer
-// names; its staged copy while a first commit is pending; otherwise the
-// newest manifest, as Latest selects it, by scan. The first two are single
-// Gets, so a pending first commit is checked without a listing. A commit
-// removes its staged copy only after it persists the canonical manifest,
-// so when both Gets miss, the commit may have completed between them, and
-// the canonical manifest is read once more before the scan, which a
-// lagging listing can defeat. A pointer that names a snapshot with no manifest in a dataset
-// with no other manifest belongs to a pending first commit whose settings
-// are unknown, or to one abandoned before staging existed: the writer
-// conflicts rather than commit unchecked settings.
-func (d *writer) settingsManifest(ctx context.Context, parent DatasetSnapshotID) (*Manifest, error) {
-	canonical := func() (*DatasetSnapshot, error) { return fromHistory(d.history.Snapshot(ctx, parent)) }
-	loaders := []func() (*DatasetSnapshot, error){
+func (d *writer) settingsManifest(ctx context.Context, parent SnapshotID) (*Manifest, error) {
+	canonical := func() (*Snapshot, error) { return fromHistory(d.history.Snapshot(ctx, parent)) }
+	loaders := []func() (*Snapshot, error){
 		canonical,
-		func() (*DatasetSnapshot, error) { return fromHistory(d.history.LoadStaged(ctx, parent)) },
+		func() (*Snapshot, error) { return fromHistory(d.history.LoadStaged(ctx, parent)) },
 		canonical,
-		func() (*DatasetSnapshot, error) { return fromHistory(d.history.Newest(ctx)) },
+		func() (*Snapshot, error) { return fromHistory(d.history.Newest(ctx)) },
 	}
 	for _, load := range loaders {
 		s, err := load()
@@ -284,24 +220,16 @@ func (d *writer) settingsManifest(ctx context.Context, parent DatasetSnapshotID)
 	return nil, fmt.Errorf("lode: latest pointer names %s, and no manifest records the dataset's settings: %w", parent, ErrSnapshotConflict)
 }
 
-// verifyLegacyKeys verifies the partition keys of d's layout, a writer's or
-// the one a view expects, against a dataset whose manifests predate
-// recorded keys: by name and in order, against the partition path of the
-// first snapshot with files, following parents from head. A chain without
-// files contains no partition path, so any keys are consistent with it; a
-// chain that ends at a missing or expired parent, or repeats a snapshot,
-// before a snapshot with files cannot be verified. holder names the handle
-// in errors.
 func (d *dataset) verifyLegacyKeys(ctx context.Context, head *Manifest, holder string) error {
 	want := d.layout.partitioning().keys
-	visited := map[DatasetSnapshotID]bool{}
+	visited := map[SnapshotID]bool{}
 	for m := head; ; {
 		if visited[m.SnapshotID] {
 			return fmt.Errorf("lode: cannot verify partition keys: the parent chain repeats snapshot %s: %w", m.SnapshotID, ErrSettingsMismatch)
 		}
 		visited[m.SnapshotID] = true
-		if len(m.Files) > 0 {
-			have := partitionKeyNames(d.layout.extractPartitionPath(m.Files[0].Path))
+		if len(m.Objects) > 0 {
+			have := partitionKeyNames(d.layout.extractPartitionPath(m.Objects[0].Path))
 			if !slices.Equal(want, have) {
 				return fmt.Errorf("lode: partition keys mismatch: dataset has %q, %s has %q: %w", have, holder, want, ErrSettingsMismatch)
 			}
@@ -321,8 +249,6 @@ func (d *dataset) verifyLegacyKeys(ctx context.Context, head *Manifest, holder s
 	}
 }
 
-// partitionKeyNames returns the key of each segment of a Hive partition
-// path ("day=1/region=eu" yields day, region).
 func partitionKeyNames(partition string) []string {
 	if partition == "" {
 		return nil

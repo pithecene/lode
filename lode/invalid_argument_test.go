@@ -21,6 +21,10 @@ func TestErrInvalidArgument_Classification(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	blobs, err := Open(factory).Blobs(ctx, "blobs")
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	cases := []struct {
 		name string
@@ -32,17 +36,12 @@ func TestErrInvalidArgument_Classification(t *testing.T) {
 		{"OpenReadOnly nil factory", func() error { _, err := OpenReadOnly[Store](nil).Blobs(ctx, "d"); return err }, "store factory"},
 		{"OpenReadOnly nil store", func() error { _, err := OpenReadOnly(nilStore).Blobs(ctx, "d"); return err }, "nil store"},
 		{"root option nil", func() error { _, err := Open(factory, nil).Blobs(ctx, "d"); return err }, "root option"},
-		{"path name invalid", func() error { _, err := Open(factory, WithDataDir("a/b")).Blobs(ctx, "d"); return err }, "WithDataDir"},
-		{"path name duplicate", func() error {
-			_, err := Open(factory, WithDataDir("x"), WithStagedDir("x")).Blobs(ctx, "d")
-			return err
-		}, "WithDataDir"},
-		{"flat paths with a datasets directory", func() error {
-			_, err := Open(factory, WithFlatPaths(), WithDatasetsDir("t")).Blobs(ctx, "d")
-			return err
-		}, "WithFlatPaths"},
+		{"FS option nil", func() error { _, err := Open(FS(t.TempDir(), nil)).Blobs(ctx, "d"); return err }, "fs option"},
 		{"dataset ID", func() error { _, err := Open(factory).Blobs(ctx, "a/b"); return err }, "dataset ID"},
 		{"view dataset ID", func() error { _, err := OpenReadOnly(factory).Blobs(ctx, "a/b"); return err }, "dataset ID"},
+		{"RemoveDataset dataset ID", func() error { return Open(factory).RemoveDataset(ctx, "a/b") }, "dataset ID"},
+		{"RemoveDataset nil option", func() error { return Open(factory).RemoveDataset(ctx, "d", nil) }, "option"},
+		{"WithAnchor snapshot ID", func() error { _, err := OpenReadOnly(factory).Blobs(ctx, "d", WithAnchor("a/b")); return err }, "WithAnchor"},
 		{"nil codec", func() error { _, err := Open(factory).Records(ctx, "d", Codec[D](nil)); return err }, "codec"},
 		{"nil option", func() error { _, err := Open(factory).Blobs(ctx, "d", nil); return err }, "option"},
 		{"nil view option", func() error { _, err := OpenReadOnly(factory).Blobs(ctx, "d", nil); return err }, "option"},
@@ -60,6 +59,8 @@ func TestErrInvalidArgument_Classification(t *testing.T) {
 		{"WithRetryMaxDelay zero", func() error { _, err := Open(factory).Blobs(ctx, "d", WithRetryMaxDelay(0)); return err }, "WithRetryMaxDelay"},
 		{"WithRetryJitter out of range", func() error { _, err := Open(factory).Blobs(ctx, "d", WithRetryJitter(2)); return err }, "WithRetryJitter"},
 		{"WithRetryObserver nil", func() error { _, err := Open(factory).Blobs(ctx, "d", WithRetryObserver(nil)); return err }, "WithRetryObserver"},
+		{"Records.StreamWrite nil iterator", func() error { _, err := records.StreamWrite(ctx, nil, nil); return err }, "records iterator"},
+		{"Blobs.StreamWrite nil reader", func() error { _, err := blobs.StreamWrite(ctx, nil, nil); return err }, "blob reader"},
 		{"metadata that is not an object", func() error { _, err := records.Write(ctx, R(D{"a": 1}), []int{1}); return err }, "metadata"},
 		{"metadata that does not encode", func() error { _, err := records.Write(ctx, R(D{"a": 1}), make(chan int)); return err }, "metadata"},
 	}
@@ -79,8 +80,7 @@ func TestErrInvalidArgument_Classification(t *testing.T) {
 	}
 }
 
-// The sentinels that moved into api.go keep their identity under errors.Is
-// and their messages.
+// The sentinels in api.go keep their identity under errors.Is and their messages.
 func TestSentinels_Messages(t *testing.T) {
 	cases := []struct {
 		err  error
@@ -90,8 +90,11 @@ func TestSentinels_Messages(t *testing.T) {
 		{ErrInvalidPath, "invalid path"},
 		{ErrManifestInvalid, "invalid manifest"},
 		{ErrSnapshotExpired, "snapshot expired"},
+		{ErrRemoved, "removed"},
 		{ErrHeadUncommitted, "head snapshot is not committed yet"},
 		{ErrSettingsMismatch, "settings mismatch"},
+		{ErrChecksumMismatch, "checksum mismatch"},
+		{ErrNotPartitioned, "operation requires a partitioned layout"},
 		{ErrReadOnly, "read-only store"},
 	}
 	for _, c := range cases {
@@ -108,7 +111,7 @@ func TestErrInvalidArgument_BeforeStoreWork(t *testing.T) {
 	t.Run("root options before the factory", func(t *testing.T) {
 		calls := 0
 		failing := Factory[Store](func() (Store, error) { calls++; return nil, errors.New("factory down") })
-		if _, err := Open(failing, WithDataDir("")).Blobs(t.Context(), "d"); !errors.Is(err, ErrInvalidArgument) {
+		if _, err := Open(failing, nil).Blobs(t.Context(), "d"); !errors.Is(err, ErrInvalidArgument) {
 			t.Fatalf("got %v, want ErrInvalidArgument", err)
 		}
 		if calls != 0 {
@@ -122,6 +125,7 @@ func TestErrInvalidArgument_BeforeStoreWork(t *testing.T) {
 			"option":     func() error { _, err := Open(Use(fs)).Blobs(t.Context(), "d", WithRetry(-1)); return err },
 			"dataset ID": func() error { _, err := Open(Use(fs)).Records(t.Context(), "a/../b", JSONL[D]()); return err },
 			"view":       func() error { _, err := OpenReadOnly(Use(fs)).Blobs(t.Context(), "", nil); return err },
+			"remove":     func() error { return Open(Use(fs)).RemoveDataset(t.Context(), "../b") },
 		}
 		for name, call := range cases {
 			fs.Reset()
@@ -150,16 +154,17 @@ func TestErrInvalidArgument_BeforeStoreWork(t *testing.T) {
 	})
 }
 
-// The sentinels that moved from errors.New values keep the static type
+// The sentinels declared with explicit `error` type keep the static type
 // `error`, so downstream code such as `err := lode.ErrInvalidPath` followed by
-// another assignment keeps compiling. ErrInvalidArgument is declared the same
-// way for consistency.
+// another assignment keeps compiling.
 func TestMovedSentinels_StaticTypeIsError(t *testing.T) {
 	for name, ptr := range map[string]any{
 		"ErrInvalidArgument":  &ErrInvalidArgument,
 		"ErrInvalidPath":      &ErrInvalidPath,
 		"ErrManifestInvalid":  &ErrManifestInvalid,
 		"ErrSettingsMismatch": &ErrSettingsMismatch,
+		"ErrChecksumMismatch": &ErrChecksumMismatch,
+		"ErrRemoved":          &ErrRemoved,
 		"ErrReadOnly":         &ErrReadOnly,
 	} {
 		if _, ok := ptr.(*error); !ok {

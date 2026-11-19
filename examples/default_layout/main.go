@@ -4,7 +4,7 @@
 //
 //	datasets/<dataset>/snapshots/<snapshot>/
 //	  manifest.json
-//	  data/filename
+//	  data/data
 //
 // Run with: go run ./examples/default_layout
 package main
@@ -28,7 +28,6 @@ func main() {
 func run() error {
 	ctx := context.Background()
 
-	// Create a temporary directory for storage
 	tmpDir, err := os.MkdirTemp("", "lode-example-*")
 	if err != nil {
 		return fmt.Errorf("failed to create temp dir: %w", err)
@@ -37,8 +36,6 @@ func run() error {
 
 	fmt.Printf("Storage root: %s\n\n", tmpDir)
 
-	// Open a root over the filesystem store. Opening performs no I/O until a
-	// dataset is opened, and a store error is returned there.
 	root := lode.Open(lode.FS(tmpDir))
 
 	// -------------------------------------------------------------------------
@@ -46,16 +43,14 @@ func run() error {
 	// -------------------------------------------------------------------------
 	fmt.Println("=== WRITE ===")
 
-	// Open the dataset for map records encoded as JSON Lines. The record
-	// type, lode.D, comes from the codec. Defaults:
+	// Open the dataset for map records encoded as JSON Lines. Defaults:
 	//   - Layout: lode.Unpartitioned()
-	//   - Compressor: lode.NewNoOpCompressor()
+	//   - Compressor: lode.Uncompressed()
 	ds, err := root.Records(ctx, "events", lode.JSONL[lode.D]())
 	if err != nil {
 		return fmt.Errorf("failed to create dataset: %w", err)
 	}
 
-	// Write some records
 	records := lode.R(
 		lode.D{"id": 1, "event": "login", "user": "alice"},
 		lode.D{"id": 2, "event": "click", "user": "bob"},
@@ -68,13 +63,12 @@ func run() error {
 	}
 
 	fmt.Printf("Created snapshot: %s\n", snapshot.ID)
-	fmt.Printf("Files in manifest:\n")
-	for _, f := range snapshot.Files {
-		fmt.Printf("  - %s (%d bytes)\n", f.Path, f.SizeBytes)
+	fmt.Printf("Objects in manifest:\n")
+	for _, obj := range snapshot.Objects {
+		fmt.Printf("  - %s (%d bytes)\n", obj.Path, obj.SizeBytes)
 	}
 	fmt.Println()
 
-	// Show the actual file structure
 	fmt.Println("File structure:")
 	err = filepath.Walk(tmpDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -100,49 +94,43 @@ func run() error {
 	// -------------------------------------------------------------------------
 	fmt.Println("=== LIST ===")
 
-	// A read-only root never writes, so its store needs no CompareAndSwap.
 	readRoot := lode.OpenReadOnly(lode.FS(tmpDir))
 
-	// List all datasets
 	datasets, err := readRoot.ListDatasets(ctx, lode.DatasetListOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to list datasets: %w", err)
 	}
 	fmt.Printf("Datasets found: %v\n", datasets)
 
-	// A view takes the dataset's layout and compressor from its manifests.
 	view, err := readRoot.Records(ctx, "events", lode.JSONL[lode.D]())
 	if err != nil {
 		return fmt.Errorf("failed to open view: %w", err)
 	}
 
-	// List manifests in the dataset
-	manifests, err := view.ListManifests(ctx, lode.PartitionPath{}, lode.ManifestListOptions{})
-	if err != nil {
-		return fmt.Errorf("failed to list manifests: %w", err)
+	var manifests []lode.LoadedManifest
+	for m, err := range view.Manifests(ctx, lode.PartitionPath{}, lode.ManifestListOptions{}) {
+		if err != nil {
+			return fmt.Errorf("failed to iterate manifests: %w", err)
+		}
+		manifests = append(manifests, m)
 	}
 	fmt.Printf("Manifests in 'events': %d manifest(s)\n", len(manifests))
-	for _, ref := range manifests {
-		fmt.Printf("  - %s\n", ref.ID)
+	for _, m := range manifests {
+		fmt.Printf("  - %s\n", m.Ref.ID)
 	}
 	fmt.Println()
 
 	// -------------------------------------------------------------------------
-	// READ: Load manifest and read data back
+	// READ: Inspect manifest and read data back
 	// -------------------------------------------------------------------------
 	fmt.Println("=== READ ===")
 
-	// Get manifest for the first snapshot
-	manifest, err := view.GetManifest(ctx, manifests[0])
-	if err != nil {
-		return fmt.Errorf("failed to get manifest: %w", err)
-	}
+	manifest := manifests[0].Manifest
 	fmt.Printf("Manifest schema: %s v%s\n", manifest.SchemaName, manifest.FormatVersion)
 	fmt.Printf("Row count: %d\n", manifest.RowCount)
 	fmt.Printf("Codec: %s, Compressor: %s\n", manifest.Codec, manifest.Compressor)
 
-	// Read data through the view: the records are []lode.D
-	readRecords, err := view.Read(ctx, manifests[0].ID)
+	readRecords, err := view.Read(ctx, manifests[0].Ref.ID)
 	if err != nil {
 		return fmt.Errorf("failed to read: %w", err)
 	}

@@ -2,14 +2,11 @@ package lode
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"io"
 	"math"
-
-	jsoniter "github.com/json-iterator/go"
 )
-
-var jsonCodec = jsoniter.ConfigCompatibleWithStandardLibrary
 
 // -----------------------------------------------------------------------------
 // JSONL Codec
@@ -34,7 +31,7 @@ func (jsonlCodec[T]) Name() string { return "jsonl" }
 func (jsonlCodec[T]) Describe() string { return "" }
 
 func (jsonlCodec[T]) Encode(w io.Writer, records []T) error {
-	enc := jsonCodec.NewEncoder(w)
+	enc := json.NewEncoder(w)
 	for i := range records {
 		if err := enc.Encode(records[i]); err != nil {
 			return err
@@ -52,11 +49,6 @@ func (jsonlCodec[T]) Decode(r io.Reader) ([]T, error) {
 	// Encode bounds a line only by the record it was given, and Decode
 	// holds the whole file's records in memory anyway, so a ceiling on one
 	// line would refuse files that Encode wrote without bounding memory.
-	// The file itself is the bound, for a well-formed and for a corrupt
-	// object alike: a line is at most the file, the scanner holds at most
-	// twice the longest line while it grows, and the decoded records of
-	// the whole file follow. A per-line ceiling changes that by a constant
-	// factor, not an order, while refusing valid files.
 	scanner.Buffer(nil, math.MaxInt)
 	for scanner.Scan() {
 		line := scanner.Bytes()
@@ -76,11 +68,8 @@ func (jsonlCodec[T]) Decode(r io.Reader) ([]T, error) {
 }
 
 // decodeRecord decodes one line as a record of type T. A map record (D) is
-// decoded through an interface value: jsoniter's decoder for map[string]any
-// allocates three more objects per record than its decoder for any, which
-// yields the same map for a JSON object. The two paths are separate
-// functions, so that the map path does not allocate the record variable the
-// other path passes by address.
+// decoded through an interface value so a non-object JSON value (array, scalar)
+// is rejected explicitly while null decodes as a nil map.
 func decodeRecord[T any](line []byte) (T, error) {
 	var zero T
 	if _, isMap := any(zero).(map[string]any); isMap {
@@ -91,14 +80,14 @@ func decodeRecord[T any](line []byte) (T, error) {
 
 func decodeValue[T any](line []byte) (T, error) {
 	var record T
-	err := jsonCodec.Unmarshal(line, &record)
+	err := json.Unmarshal(line, &record)
 	return record, err
 }
 
 func decodeMap[T any](line []byte) (T, error) {
 	var zero T
 	var v any
-	if err := jsonCodec.Unmarshal(line, &v); err != nil {
+	if err := json.Unmarshal(line, &v); err != nil {
 		return zero, err
 	}
 	if v == nil { // JSON null decodes as a nil map
@@ -113,12 +102,12 @@ func decodeMap[T any](line []byte) (T, error) {
 
 // NewStreamEncoder makes the JSONL codec a StreamingCodec.
 func (jsonlCodec[T]) NewStreamEncoder(w io.Writer) (StreamEncoder[T], error) {
-	return &jsonlStreamEncoder[T]{enc: jsonCodec.NewEncoder(w)}, nil
+	return &jsonlStreamEncoder[T]{enc: json.NewEncoder(w)}, nil
 }
 
 // jsonlStreamEncoder implements StreamEncoder for JSONL.
 type jsonlStreamEncoder[T any] struct {
-	enc *jsoniter.Encoder
+	enc *json.Encoder
 }
 
 func (e *jsonlStreamEncoder[T]) WriteRecord(record T) error {
@@ -126,6 +115,5 @@ func (e *jsonlStreamEncoder[T]) WriteRecord(record T) error {
 }
 
 func (e *jsonlStreamEncoder[T]) Close() error {
-	// JSONL has no footer/finalization needed
 	return nil
 }

@@ -10,7 +10,7 @@ import (
 // -----------------------------------------------------------------------------
 
 // flatBlobs opens a blob dataset under a root with flat paths.
-func flatBlobs(t *testing.T, id DatasetID) Blobs {
+func flatBlobs(t *testing.T, id DatasetID) *Blobs {
 	t.Helper()
 	ds, err := Open(Memory(), WithFlatPaths()).Blobs(t.Context(), id)
 	if err != nil {
@@ -21,7 +21,7 @@ func flatBlobs(t *testing.T, id DatasetID) Blobs {
 
 // flatLayout is the unpartitioned layout under flat names.
 func flatLayout() *pathLayout {
-	return newPathLayout(defaultPaths(true), noopScheme)
+	return newPathLayout(true, noopScheme)
 }
 
 func TestFlatLayout(t *testing.T) {
@@ -98,7 +98,7 @@ func TestFlatLayout(t *testing.T) {
 		fl := flatLayout()
 
 		dataset := DatasetID("myds")
-		segment := DatasetSnapshotID("snap-abc")
+		segment := SnapshotID("snap-abc")
 
 		tests := []struct {
 			name string

@@ -16,44 +16,38 @@ Stability is proven by **usage and time**, not design review.
 
 ---
 
-## Current Assessment (2026-10-23)
+## Current Assessment (2026-11-18)
 
 Based on the full-history audit of the production dataset
-([`dogfood_audit_2026-10.md`](dogfood_audit_2026-10.md)):
+([`dogfood_audit_2026-10.md`](dogfood_audit_2026-10.md)) and the v1.0.0 API
+unification pass ([`V1_API_DECISIONS.md`](V1_API_DECISIONS.md) D12):
 
 - **Holds:** no corruption detected and zero manifest decode failures across 96,478
-  snapshots over 8 months on R2; `Manifest` format stable from 2026-02-06
-  until format 1.1.0 (D11, released in v0.12.0), which adds three fields and
-  reads every 1.0.0 manifest.
+  snapshots over 8 months on R2; manifest format `1.2.0` (`objects` and
+  `flat`) reads every `1.0.0` and `1.1.0` manifest seamlessly.
 - **Blocker, addressed in v0.11.0 and awaiting verification:** one history
   fork under CAS + retry (2026-08-25, §10). The cause is identified: a failed
   read of a valid head was treated as a stale pointer, and the scan fallback
   then selected the head's parent, because snapshot ID order is not commit
   order. v0.11.0 removes every path to that outcome
   ([#208](https://github.com/pithecene/lode/issues/208)); the criterion
-  remains unmet until v0.11.0 is observed in production.
-- **Not yet met, time-gated:** the sentinel and manifest format
-  freeze windows restart with v0.12.0 (2026-10-23), which ships every
-  decision of `V1_API_DECISIONS.md`: the construction and record surface
-  of D11, manifest format 1.1.0, typed partition paths (D4), range reads
-  as an optional capability (D5), the error-message rule (D6), the removal
-  of the S3 test double (D7), and the partition index (D10b). The earliest
-  pass of each of these windows is 2026-11-20 (§1, §2). The API freeze
-  and option freeze windows restart with v0.17.0 (2026-11-06), which makes
-  `WithLayout` an option of views as well as writers. The earliest pass of
-  both windows is 2026-12-04 (§1). No decision is open.
+  remains unmet until v0.11.0+ is observed in production.
+- **Not yet met, time-gated:** the API surface, sentinel, option, and
+  manifest format (`1.2.0`) freeze windows restart with the v1.0.0 API
+  unification pass (D12, 2026-11-18; §1, §2). No API decision remains open.
 - **Not yet met, evidence missing:** native AWS S3 (§6), steady-state snapshot
-  reads (§3), checksum-backed corruption checks (no production file carries a
-  checksum, §10).
+  reads (§3), checksum-backed corruption checks in production (§10; read-time
+  checksum verification returning `ErrChecksumMismatch` is now implemented via
+  D12).
 - **Renegotiated (D9):** Volume is experimental for v1.0. Volume dogfooding
-  (§4) and `VolumeManifest` stability (§2) gate Volume leaving experimental,
+  (§4) and `volume.Manifest` stability (§2) gate Volume leaving experimental,
   not the v1.0 tag. The boundary has shipped: package `lode/volume`, marked
   experimental in `PUBLIC_API.md` (D9).
-- **Accepted limitations (GC and performance are out of scope):** 2.07 GB of
-  unreferenced data objects, which `Dataset.Sweep` (v0.11.0, lode#174) can now
-  reclaim; `ListManifests` and
-  `ListPartitions` take hours at this size. As a result the consumer reads the
-  on-disk paths directly, which makes D8 a real dependency.
+- **Addressed performance and GC items:** `Sweep` reclaims unreferenced data
+  objects; `ListDatasets` now uses `PrefixLister` (`O(D)`), and
+  `ListPartitions` derives Hive partitions directly from listed keys with zero
+  manifest `Get` calls (D12). D8 continues to guarantee on-disk path-grammar
+  compatibility.
 
 ---
 
@@ -163,6 +157,8 @@ partitions, one dataset on R2.
 > Date: 2026-11-05 | Observer: @pithecene | Project: lode, quarry
 > **Evidence:** Window restarted by v0.17.0 (2026-11-06), which changes the result type of `WithLayout` from `DatasetOption` to `ComponentOption`. Every call that passed `WithLayout` to a writer still compiles. No other signature changes, and Lode has no open pull request or issue that changes the v1.0-promised surface. Earliest pass: 2026-12-04.
 > Date: 2026-11-06 | Observer: @pithecene | Project: lode, quarry
+> **Evidence:** Unreleased (2026-11-18): D12 (`feat/v1-api-unification`) unifies the v1.0.0 surface—concrete `*Records[T]`, `*Blobs`, `*RecordView[T]`, `*BlobView` handles; `Snapshot`, `SnapshotID`, `ObjectRef`, `ObjectStats`; single-call `Blobs.StreamWrite`; generic `Parquet[T]`; `PrefixLister` and 0-`Get` `ListPartitions`; `Uncompressed`/`Gzip`/`Zstd` and `SHA256`/`CRC32C`/`MD5`; `Root.RemoveDataset`; `s3.Bucket`/`s3.New`; and removal of `ListManifests`, `GetManifest`, `PartitionRef`, `StreamWriter`, and `With*Dir` options. The 4-week window restarts when released.
+> Date: 2026-11-18 | Observer: @pithecene | Project: lode
 > Summary: Not met; window restarts on every API change.
 > Issue: lode#175
 
@@ -179,6 +175,9 @@ partitions, one dataset on R2.
 >
 > **Evidence:** Window restarted by v0.12.0 (2026-10-23), which adds `ErrSettingsMismatch` and `ErrReadOnly` and removes `ErrCodecConfigured`, `ErrOptionNotValidForDataset`, and `ErrOptionNotValidForDatasetReader` (D11). Earliest pass: 2026-11-20.
 > Date: 2026-10-23 | Observer: @pithecene | Project: lode
+>
+> **Evidence:** Unreleased (2026-11-18): D12 adds `ErrChecksumMismatch`, `ErrNotPartitioned`, and `ErrRemoved` (shared with `volume.ErrRemoved`), and removes `ErrNoManifests`, `ErrNilIterator`, and `ErrPartitionPrefixNotSupported`. The window restarts when released.
+> Date: 2026-11-18 | Observer: @pithecene | Project: lode
 > Summary: Not met.
 > Issue: —
 
@@ -204,13 +203,16 @@ partitions, one dataset on R2.
 >
 > **Evidence:** v0.12.0 (2026-10-23) ships every accepted decision: D1–D3, D8, and D11 (the surface and format 1.1.0), D4, D5, D6, D7, and D10b in code, and D10a, D10c, and D10f as contract text. D9 and D10d shipped earlier, and D10e is superseded. None is open or unreleased.
 > Date: 2026-10-23 | Observer: @pithecene | Project: lode
-> Summary: Met with v0.12.0.
+>
+> **Evidence:** D12 accepted and implemented (2026-11-18, `feat/v1-api-unification`): unifies the v1.0.0 surface and format `1.2.0` across `lode`, `lode/s3`, and `lode/volume`. None is open.
+> Date: 2026-11-18 | Observer: @pithecene | Project: lode
+> Summary: Met.
 > Issue: —
 
 - [x] `PUBLIC_API.md` matches exported symbols in `lode/api.go` with zero discrepancies
 
-> **Evidence:** The comparison covers every exported top-level identifier of `lode`, `lode/s3`, and `lode/volume`, not only those in `lode/api.go`. Thirty-two were absent from the document's code, or appeared there only without the package that exports them, among them `DatasetSnapshot`, `SnapshotReader`, the reference and listing-option types, `SweepReport`, `ViewOption`, the Parquet option types, `s3.Store`, and the Volume types and retry options; each is now named where a caller meets it. No identifier that the document qualifies with a package is missing from that package. The tests in `internal/apidoc` fail when either direction drifts. Fields and methods remain documented in the Go doc comments.
-> Date: 2026-10-24 | Observer: @pithecene | Project: lode
+> **Evidence:** `PUBLIC_API.md` documents every exported top-level identifier of `lode`, `lode/s3`, and `lode/volume`, and names zero removed identifiers; `internal/apidoc` enforces bidirectional parity (`TestEveryExportIsDocumented`, `TestEveryQualifiedNameExists`, and `TestEveryContractIsIndexedAndTypesExist`). Updated in lockstep with D12 (2026-11-18).
+> Date: 2026-11-18 | Observer: @pithecene | Project: lode
 > Summary: Met; `internal/apidoc` enforces it.
 > Issue: —
 
@@ -232,6 +234,9 @@ partitions, one dataset on R2.
 >
 > **Evidence:** Window restarted by v0.17.0 (2026-11-06), which makes `WithLayout` an option of views as well as writers. A caller now states a view's layout as it states a writer's. When a caller opens a view with `WithPinnedSnapshot` and `WithLayout`, the view reads only the manifest directory of the layout that `WithLayout` names. The maintainers plan no further option changes before v1.0. Earliest pass: 2026-12-04.
 > Date: 2026-11-06 | Observer: @pithecene | Project: lode, quarry
+>
+> **Evidence:** Unreleased (2026-11-18): D12 removes the eight `With*Dir` and `WithManifestFile` root options (leaving `WithFlatPaths()`), renames `WithPinnedSnapshot` to `WithAnchor`, adds `FSOption` (`WithSync()`), adds `s3.Option`, and renames `volume.WithRetryCount` to `volume.WithRetry`. The window restarts when released.
+> Date: 2026-11-18 | Observer: @pithecene | Project: lode
 > Summary: Not met.
 
 ### 2. Manifest Format Freeze
@@ -248,6 +253,9 @@ partitions, one dataset on R2.
 >
 > **Evidence:** Window restarted by v0.12.0 (2026-10-23), which releases format 1.1.0. Every 1.0.0 manifest remains readable: data that v0.11.0 wrote reads back in every dataset and the volume, accepts new commits in the record datasets and the volume, and lists, expires, and sweeps in the Hive dataset (`TestCompat_v0_11_0_*`). Earliest pass: 2026-11-20.
 > Date: 2026-10-23 | Observer: @pithecene | Project: lode
+>
+> **Evidence:** Unreleased (2026-11-18): manifest format `1.2.0` (D12) replaces `files` (`[]FileRef`) with `objects` (`[]ObjectRef`) and `paths` (`ManifestPaths`) with `flat` (`bool`), while decoding `1.0.0` and `1.1.0` manifests (`files`, `paths`) and pre-`1.2.0` tombstones (`files`) seamlessly. The window restarts when released.
+> Date: 2026-11-18 | Observer: @pithecene | Project: lode
 > Summary: Not met.
 > Issue: —
 
@@ -427,18 +435,18 @@ nearest candidate is pithecene/quarry#255.
 > Summary: —
 > Issue: #___
 
-- [x] All fourteen contract files reviewed — no "planned"/"draft"/"future" language for shipped features
+- [x] All twelve contract files reviewed — no "planned"/"draft"/"future" language for shipped features
 
-> **Evidence:** All fourteen files in `docs/contracts/` were reviewed. The criterion named thirteen before CONTRACT_RETENTION was added. Only CONTRACT_PARQUET described shipped behavior in provisional terms: it called the codec "the initial implementation" and `DistinctCount` "reserved for future use". It now states the codec's scope in the present tense, and `PUBLIC_API.md` states that the bundled Parquet codec reports a distinct count of zero. The contracts held further passages about features that have not shipped, and status that belongs outside a contract: `Status:` headers, resolved violations and questions, deferred work, plans, and coverage gaps. Those passages are removed, so each contract states invariants only.
-> Date: 2026-10-24 | Observer: @pithecene | Project: lode
+> **Evidence:** All twelve active contract files in `docs/contracts/` (`CONTRACT_COMPLEXITY`, `CONTRACT_COMPOSITION`, `CONTRACT_CORE`, `CONTRACT_ERRORS`, `CONTRACT_EXAMPLES`, `CONTRACT_LAYOUT`, `CONTRACT_PARQUET`, `CONTRACT_READ_API`, `CONTRACT_RETENTION`, `CONTRACT_STORAGE`, `CONTRACT_VOLUME`, and `CONTRACT_WRITE_API`) state invariants only and reflect the unified D12 v1.0.0 surface and format `1.2.0`; `internal/apidoc` (`TestEveryContractIsIndexedAndTypesExist`) enforces that every contract is indexed in `docs/ARCH_INDEX.md` and declares only live exported types.
+> Date: 2026-11-18 | Observer: @pithecene | Project: lode
 > Summary: Met.
 > Issue: —
 
 - [x] All examples pass (`task examples`)
 
-> **Evidence:** `task examples` passes all 10 examples (default_layout, hive_layout, blob_upload, manifest_driven, stream_write_records, parquet, volume_sparse, vector_artifacts, optimistic_concurrency, s3). Verified during v0.8.0 release and audit sweep PR.
-> Date: 2026-02-25 | Observer: @pithecene | Project: lode
-> Summary: All examples compile and run successfully. `internal/testutil` dependency removed in audit sweep (#157).
+> **Evidence:** `task examples` passes all 11 examples (`default_layout`, `hive_layout`, `blob_upload`, `manifest_driven`, `stream_write_records`, `parquet`, `volume_sparse`, `vector_artifacts`, `optimistic_concurrency`, `retention`, and `s3`), updated to the unified D12 v1.0.0 surface.
+> Date: 2026-11-18 | Observer: @pithecene | Project: lode
+> Summary: All examples compile and run against the public API.
 
 - [ ] CHANGELOG includes v1.0 entry summarizing stability commitment
 

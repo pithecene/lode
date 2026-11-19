@@ -21,7 +21,7 @@ var allocGates = []testutil.AllocGate{
 	{Name: "Read of three records", Allocs: 61, Bytes: 10368, Setup: gateRead},
 	{Name: "Blob StreamWrite of one kibibyte", Allocs: 31, Bytes: 7232, Setup: gateStreamWrite},
 	{Name: "Record StreamWrite of three records", Allocs: 63, Bytes: 7296, Setup: gateStreamWriteRecords},
-	{Name: "JSONL Decode of three records", Allocs: 33, Bytes: 5504, Setup: gateDecode},
+	{Name: "JSONL Decode of three records", Allocs: 33, Bytes: 5568, Setup: gateDecode},
 }
 
 // TestAllocationGates holds each dataset hot path to its allocation ceiling.
@@ -36,7 +36,7 @@ func gateRecords() []D {
 	)
 }
 
-func gateDataset(t *testing.T) Records[D] {
+func gateDataset(t *testing.T) *Records[D] {
 	t.Helper()
 	return recordsOn(t, NewMemory(), "gate")
 }
@@ -67,14 +67,7 @@ func gateStreamWrite(t *testing.T) func() {
 	ds := blobsOn(t, NewMemory(), "gate")
 	payload := bytes.Repeat([]byte("x"), 1024)
 	return func() {
-		sw, err := ds.StreamWrite(t.Context(), nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := sw.Write(payload); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := sw.Commit(t.Context()); err != nil {
+		if _, err := ds.StreamWrite(t.Context(), bytes.NewReader(payload), nil); err != nil {
 			t.Fatal(err)
 		}
 	}

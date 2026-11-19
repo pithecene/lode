@@ -54,7 +54,7 @@ func setupBenchBucket(b *testing.B, newClient func(context.Context) (*s3.Client,
 		_, _ = client.DeleteBucket(cleanupCtx, &s3.DeleteBucketInput{Bucket: aws.String(bucket)})
 	})
 
-	store, err := New(client, Config{Bucket: bucket})
+	store, err := New(client, bucket)
 	if err != nil {
 		b.Fatalf("failed to create store: %v", err)
 	}
@@ -133,7 +133,7 @@ func BenchmarkS3_SteadyWrite(b *testing.B) {
 	}
 }
 
-func writeAndRead(b *testing.B, ds lode.Records[lode.D], i int) {
+func writeAndRead(b *testing.B, ds *lode.Records[lode.D], i int) {
 	b.Helper()
 	snap, err := ds.Write(b.Context(), benchRecords, lode.D{"iter": fmt.Sprintf("%d", i)})
 	if err != nil {
@@ -153,7 +153,7 @@ func countedRoot(b *testing.B, newClient func(context.Context) (*s3.Client, erro
 	b.Helper()
 	base := setupBenchBucket(b, newClient)
 	requests := &requestCounter{API: base.client, calls: map[string]int{}}
-	store, err := New(requests, Config{Bucket: base.bucket})
+	store, err := New(requests, base.bucket)
 	if err != nil {
 		b.Fatal(err)
 	}

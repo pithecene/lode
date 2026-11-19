@@ -9,11 +9,34 @@ and Lode adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Bundled checksums verify object bytes on read**: `lode.SHA256`, `lode.CRC32C`, and `lode.MD5` compute stored-byte digests. When a manifest records a checksum algorithm, `Read` verifies each object and returns `ErrChecksumMismatch` on any mismatch.
+- **`Root.RemoveDataset` removes a dataset behind a pointer fence**: the method writes `lode:removed` to `latest` with `CompareAndSwap` and deletes the dataset's objects. Subsequent opens, reads, listings, and commits return `lode.ErrRemoved`.
+- **`PrefixLister` lists child prefixes without scanning objects**: `FS`, `Memory`, and `s3.Store` implement `ListPrefixes`, and `Prefixed`, `SingleProcess`, and read-only roots preserve it. `ListDatasets` now discovers committed datasets in `O(D)` calls.
+- **`WithSync` flushes filesystem writes before publish**: `lode.FS` and `lode.NewFS` accept `FSOption` values. With `lode.WithSync`, the adapter syncs temporary files and parent directories for power-loss durability.
+- **`NewMetadata` and `StatisticalStreamEncoder` expose metadata and stream stats**: `lode.NewMetadata` validates and encodes caller metadata values directly. `StatisticalStreamEncoder` lets streaming record encoders report `*ObjectStats` after `Close`.
+
+### Changed
+
+- **Handles use concrete pointers and format version `1.2.0`**: `Root` and `ReadRoot` return `*Records[T]`, `*Blobs`, `*RecordView[T]`, and `*BlobView`. Snapshots and manifests use `Snapshot`, `SnapshotID`, `ObjectRef`, `Manifest.Objects`, and `ObjectStats`, while reading `1.0.0` and `1.1.0` data unchanged.
+- **`Blobs.StreamWrite` streams from an `io.Reader` in one call**: the method reads until `io.EOF` and commits the snapshot. Uncompressed writes pass the reader directly to `Store.Put` without an `io.Pipe`.
+- **`Parquet[T]` encodes Go structs and maps without shared state**: the generic constructor validates flat structs and `lode.D` maps against an explicit `ParquetSchema`. `StatisticalCodec[T].EncodeWithStats` returns `*ObjectStats` per call, so concurrent writers can share one codec.
+- **`ListPartitions` and `WithAnchor` avoid redundant manifest reads**: `ListPartitions` returns `[]PartitionPath` from listed Hive manifest keys with zero `Get` calls when indexed. `WithAnchor` retains its loaded manifest so reading that snapshot costs zero extra manifest `Get` calls.
+- **Store and compressor constructors use concise names**: compressors use `Uncompressed`, `Gzip`, and `Zstd`, and the S3 adapter uses `s3.New` and `s3.Bucket` with `lode.Prefixed`. `ListDatasets` returns an empty slice when no dataset exists, and `ErrNotPartitioned` replaces `ErrPartitionPrefixNotSupported`.
+- **`Volume` aligns metadata, retry options, and block paths**: `Commit` accepts `any` JSON-object metadata as `lode.Metadata`, and `WithRetry` replaces `WithRetryCount`. `StageWriteAt` writes nonced `<offset>-<length>-<nonce>.bin` paths while reading legacy `<offset>-<length>.bin` blocks.
+
+### Removed
+
+- **Pre-v1 interfaces, two-step manifest listings, and path-segment options**: Lode removes `SnapshotReader`, `Retention`, `StreamWriter`, `ListManifests`, `GetManifest`, `PartitionRef`, `ManifestPaths`, and the eight per-directory `RootOption` functions. It also removes `WithPinnedSnapshot`, `ErrNoManifests`, `ErrNilIterator`, `s3.Config`, `s3.Factory`, `volume.Metadata`, and the `New*Compressor` and `NewMD5Checksum` names.
+
 ### Fixed
 
-- **Parquet preserves column order, validates decode schemas, and omits non-finite stats**: `lode.NewParquetCodec` rejects empty schemas, writes columns in declared order, and validates physical columns by name in `Decode`. Column stats normalize Go types and omit `NaN`, `+Inf`, and `-Inf` so commits always marshal cleanly.
+- **Stream cleanup and filesystem cancellation**: `Records.StreamWrite` and `Blobs.StreamWrite` now delete uncommitted data objects with a detached bounded context when commit cancellation occurs, and the filesystem store checks `ctx.Err()` before and during directory listings.
+- **Aborted Volume staging no longer blocks retries on the same range**: `StageWriteAt` adds a random nonce to each block path. An uncommitted block no longer causes a later write at the same offset and length to return `ErrPathExists`.
+- **Parquet preserves column order, validates decode schemas, and omits non-finite stats**: `Parquet` rejects empty schemas, writes columns in declared order, and validates physical columns by name in `Decode`. Column stats normalize Go types and omit `NaN`, `+Inf`, and `-Inf` so commits always marshal cleanly.
 - **Hot-path reads validate manifests and enforce object path scope**: `Latest`, `Snapshot`, `Snapshots`, and `Read` validate every manifest and check `DatasetID` and `SnapshotID`. `Blobs.Read`, `Records.Read`, and `volume` manifest loads reject object paths outside their snapshot or container.
-- **S3 atomic `Put` maps `409` conflicts, and `volume` options reject `nil`**: `s3.Store.Put` maps `409 ConditionalRequestConflict` to `lode.ErrPathExists`. `volume.New` and `volume.Remove` reject `nil` options and typed-nil stores, and `Metadata` encoding coalesces typed-nil maps and struct pointers to `{}`.
+- **S3 atomic `Put` maps `409` conflicts, and `volume` options reject `nil`**: `s3.Store.Put` maps `409 ConditionalRequestConflict` to `lode.ErrPathExists`. `volume.New` and `volume.Remove` reject `nil` options and typed-nil stores, and `NewMetadata` coalesces typed-nil maps and struct pointers to `{}`.
 
 ---
 
@@ -199,7 +222,7 @@ and Lode adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- **Snapshot expiry**: `Dataset.Expire` removes the snapshots selected by ID, by partition (on Hive layouts), or by age, and `DryRun` previews the result. `Expire` never expires the head, and it retains a snapshot with files outside the selected partition and reports that snapshot in `ExpireReport.Mixed`. Reading an expired snapshot returns the new `ErrSnapshotExpired`, which also matches `ErrNotFound`. The new `ErrHeadUncommitted` reports that expiry cannot proceed for one of two reasons: an uncommitted head, or a dataset with snapshots but no `latest` pointer. Any commit creates the pointer. ([#174](https://github.com/pithecene/lode/issues/174))
+- **Snapshot expiry**: `Dataset.Expire` removes the snapshots selected by ID, by partition (on Hive layouts), or by age, and `DryRun` previews the result. `Expire` never expires the head, and it retains a snapshot with files outside the selected partition and reports that snapshot in `ExpireReport.Mixed`. Reading an expired snapshot returns the new `ErrSnapshotExpired`, which also matches `ErrNotFound`. The new `ErrHeadUncommitted` reports that expiry cannot proceed because the head is uncommitted or because the dataset holds snapshots without a `latest` pointer. Any commit creates the pointer. ([#174](https://github.com/pithecene/lode/issues/174))
 - **Sweep of unreferenced objects**: `Dataset.Sweep` completes interrupted expiries and, once an uncommitted snapshot is older than a grace period, reclaims its data. ([#174](https://github.com/pithecene/lode/issues/174))
 - **`lode.SingleProcess`**: this wrapper adds `CompareAndSwap` to a store without a conditional write by serializing its calls under an in-process lock. The wrapper serializes writers only if they use the same returned store, and it does not coordinate writers in other processes.
 - **Concurrent writers on Windows**: the filesystem store implements `CompareAndSwap` on Windows, so several processes may write to one dataset or volume.
@@ -252,7 +275,7 @@ and Lode adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixed
 
 - **Backslashes in keys**: every store rejects a key or prefix that contains `\` with `ErrInvalidPath` on every platform, and `s3.New` applies the rule to `Config.Prefix`.
-- **Filesystem listing by prefix**: the filesystem store treated a prefix as a directory, so a partial final segment such as `day=2024-01` listed nothing. It now matches a string prefix, as the other stores do.
+- **Filesystem listing by prefix**: the filesystem store treated a prefix as a directory, so a partial final segment such as `day=2024-01` listed nothing. It now matches a string prefix, matching the other stores.
 - **A failed `Put` leaves no partial object**: the filesystem store left a partial object when the reader failed during the copy. It now removes the object.
 - **Stream writes no longer hang on a failed `Put`**: when a store's `Put` failed before it read the whole stream, `StreamWrite` and `StreamWriteRecords` blocked indefinitely. They now return the error.
 - **Filesystem `ReadRange` allocation**: a range that extends far beyond the end of a file no longer allocates the full requested length.
@@ -287,7 +310,7 @@ and Lode adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Breaking Changes
 
 - **The removal of `VolumeOption`**: `NewVolume` takes the `Option` type that `NewDataset` and `NewDatasetReader` take, and an option that does not apply to a Volume returns the new `ErrOptionNotValidForVolume`. ([#164](https://github.com/pithecene/lode/pull/164))
-- **The removal of `WithVolumeChecksum`**: a Volume takes `WithChecksum`, as a Dataset does.
+- **The removal of `WithVolumeChecksum`**: a Volume takes `WithChecksum`, matching a Dataset.
 
 ### Added
 
@@ -532,6 +555,8 @@ and Lode adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Requirements**: Go 1.25.6 or later. The filesystem root and an S3 bucket must exist before use. Lode creates directories beneath the root but neither the root nor the bucket.
 
 ---
+
+<!-- jscpd:ignore-start -->
 
 [Unreleased]: https://github.com/pithecene/lode/compare/v0.17.1...HEAD
 [0.17.1]: https://github.com/pithecene/lode/compare/v0.17.0...v0.17.1

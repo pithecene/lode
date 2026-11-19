@@ -111,8 +111,8 @@ func moveObject(t *testing.T, store Store, from, to string) {
 
 // idAt is the snapshot ID a write beginning at t would get, with a zero
 // nonce.
-func idAt(t time.Time) DatasetSnapshotID {
-	return DatasetSnapshotID(history.FormatID(t, [history.NonceBytes]byte{}))
+func idAt(t time.Time) SnapshotID {
+	return SnapshotID(history.FormatID(t, [history.NonceBytes]byte{}))
 }
 
 // emptyMetadata is the metadata of a write that supplied none, {}.
@@ -130,7 +130,7 @@ func validTestManifest() *Manifest {
 		SnapshotID:    "snap-1",
 		CreatedAt:     time.Now().UTC(),
 		Metadata:      emptyMetadata(),
-		Files:         []FileRef{{Path: "data/f", SizeBytes: 1}},
+		Objects:       []ObjectRef{{Path: "data/f", SizeBytes: 1}},
 		RowCount:      1,
 		Compressor:    "noop",
 		Partitioner:   "noop",

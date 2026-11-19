@@ -113,12 +113,12 @@ func TestParquetCodec_FileStats_Int32AndFloat32(t *testing.T) {
 		map[string]any{"n": int32(9), "f": float32(7.25)},
 	}
 	var buf bytes.Buffer
-	if err := codec.Encode(&buf, records); err != nil {
+	stats, err := codec.(StatisticalCodec[D]).EncodeWithStats(&buf, records)
+	if err != nil {
 		t.Fatal(err)
 	}
-	stats := codec.(StatisticalCodec).FileStats()
 	if stats == nil || len(stats.Columns) != 2 {
-		t.Fatalf("FileStats() = %+v, want 2 columns", stats)
+		t.Fatalf("EncodeWithStats() = %+v, want 2 columns", stats)
 	}
 	n, f := stats.Columns[0], stats.Columns[1]
 	if n.Min != int32(-3) || n.Max != int32(9) {
