@@ -1623,3 +1623,99 @@ func TestParquetCodec_ConcurrentSharedCodec(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestParquetCodec_EmbeddedPointerAndDefinedScalars(t *testing.T) {
+	type (
+		definedID      string
+		definedCount   int64
+		definedSmall   int32
+		definedScore   float64
+		definedActive  bool
+		definedPayload []byte
+		EmbeddedMeta   struct {
+			Tag  definedID `parquet:"tag"`
+			Note *string   `parquet:"note"`
+		}
+		record struct {
+			*EmbeddedMeta
+			Count   definedCount   `parquet:"count"`
+			Small   definedSmall   `parquet:"small"`
+			Score   definedScore   `parquet:"score"`
+			Active  definedActive  `parquet:"active"`
+			Payload definedPayload `parquet:"payload"`
+		}
+	)
+
+	schema := ParquetSchema{Fields: []ParquetField{
+		{Name: "tag", Type: ParquetString},
+		{Name: "note", Type: ParquetString, Nullable: true},
+		{Name: "count", Type: ParquetInt64},
+		{Name: "small", Type: ParquetInt32},
+		{Name: "score", Type: ParquetFloat64},
+		{Name: "active", Type: ParquetBool},
+		{Name: "payload", Type: ParquetBytes},
+	}}
+	codec := Parquet[record](schema)
+
+	note := "promoted"
+	in := []record{{
+		EmbeddedMeta: &EmbeddedMeta{Tag: "ev-1", Note: &note},
+		Count:        42,
+		Small:        7,
+		Score:        3.5,
+		Active:       true,
+		Payload:      definedPayload("raw"),
+	}}
+
+	var buf bytes.Buffer
+	if err := codec.Encode(&buf, in); err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	got, err := codec.Decode(&buf)
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if len(got) != 1 || got[0].EmbeddedMeta == nil || got[0].Tag != "ev-1" || got[0].Note == nil || *got[0].Note != "promoted" ||
+		got[0].Count != 42 || got[0].Small != 7 || got[0].Score != 3.5 || !got[0].Active || string(got[0].Payload) != "raw" {
+		t.Fatalf("Decode round-trip = %+v", got)
+	}
+
+	// Nil embedded pointer when a promoted field is required returns ErrSchemaViolation instead of panicking.
+	var bad bytes.Buffer
+	if err := codec.Encode(&bad, []record{{Count: 1}}); !errors.Is(err, ErrSchemaViolation) {
+		t.Fatalf("nil embedded pointer on required field = %v, want ErrSchemaViolation", err)
+	}
+
+	// Nullable-only exported embedded pointer round-trips nil without panicking.
+	type OptBase struct {
+		Opt *definedID `parquet:"opt"`
+	}
+	type optRecord struct {
+		*OptBase
+		Count definedCount `parquet:"count"`
+	}
+	optCodec := Parquet[optRecord](ParquetSchema{Fields: []ParquetField{
+		{Name: "opt", Type: ParquetString, Nullable: true},
+		{Name: "count", Type: ParquetInt64},
+	}})
+	var optBuf bytes.Buffer
+	if err := optCodec.Encode(&optBuf, []optRecord{{Count: 9}}); err != nil {
+		t.Fatalf("optCodec.Encode(nil embedded): %v", err)
+	}
+	optGot, err := optCodec.Decode(&optBuf)
+	if err != nil || len(optGot) != 1 || optGot[0].OptBase != nil || optGot[0].Count != 9 {
+		t.Fatalf("optCodec.Decode = %+v, %v", optGot, err)
+	}
+
+	// Unexported embedded struct pointer is rejected cleanly at construction with ErrSchemaViolation.
+	type unexportedBase struct {
+		Tag string `parquet:"tag"`
+	}
+	type badEmbedded struct {
+		*unexportedBase
+	}
+	badCodec := Parquet[badEmbedded](ParquetSchema{Fields: []ParquetField{{Name: "tag", Type: ParquetString}}})
+	if err := checkCodec(badCodec); !errors.Is(err, ErrSchemaViolation) {
+		t.Fatalf("unexported embedded pointer err = %v, want ErrSchemaViolation", err)
+	}
+}

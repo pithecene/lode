@@ -161,6 +161,38 @@ func specNames(spec ast.Spec) []string {
 	return nil
 }
 
+func exportedTypes(t *testing.T, dir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Join(root, dir))
+	if err != nil {
+		t.Fatalf("read %s: %v", dir, err)
+	}
+	fset := token.NewFileSet()
+	var names []string
+	for _, entry := range entries {
+		if !isSource(entry) {
+			continue
+		}
+		file, err := parser.ParseFile(fset, filepath.Join(root, dir, entry.Name()), nil, 0)
+		if err != nil {
+			t.Fatalf("parse %s: %v", entry.Name(), err)
+		}
+		for _, decl := range file.Decls {
+			gen, ok := decl.(*ast.GenDecl)
+			if !ok {
+				continue
+			}
+			for _, spec := range gen.Specs {
+				if ts, ok := spec.(*ast.TypeSpec); ok && ts.Name.IsExported() {
+					names = append(names, ts.Name.Name)
+				}
+			}
+		}
+	}
+	slices.Sort(names)
+	return slices.Compact(names)
+}
+
 var (
 	contractFilePattern = regexp.MustCompile(`\bCONTRACT_[A-Z0-9_]+\.md\b`)
 	goFencePattern      = regexp.MustCompile("(?s)```go\n(.*?)```")
@@ -181,8 +213,8 @@ func TestEveryContractIsIndexedAndTypesExist(t *testing.T) {
 
 	allTypes := map[string]bool{}
 	for _, dir := range packages {
-		for _, exp := range exports(t, dir) {
-			allTypes[exp] = true
+		for _, typ := range exportedTypes(t, dir) {
+			allTypes[typ] = true
 		}
 	}
 

@@ -330,13 +330,16 @@ func TestFS_WithSync(t *testing.T) {
 		t.Fatalf("FS(WithSync): %v", err)
 	}
 	ctx := t.Context()
-	if err := store.Put(ctx, "a/b.txt", bytes.NewReader([]byte("durable"))); err != nil {
-		t.Fatalf("Put: %v", err)
+	if err := store.Put(ctx, "a/b/c/d.txt", bytes.NewReader([]byte("durable"))); err != nil {
+		t.Fatalf("Put nested: %v", err)
 	}
-	if got := readOrAbsent(t, store, "a/b.txt"); got != "durable" {
+	if err := store.Put(ctx, "a/b/c/e.txt", bytes.NewReader([]byte("warm"))); err != nil {
+		t.Fatalf("Put warm: %v", err)
+	}
+	if got := readOrAbsent(t, store, "a/b/c/d.txt"); got != "durable" {
 		t.Fatalf("Get = %q, want durable", got)
 	}
-	if err := store.(ConditionalWriter).CompareAndSwap(ctx, "ptr/latest", "", "s1"); err != nil && !errors.Is(err, errors.ErrUnsupported) {
+	if err := store.(ConditionalWriter).CompareAndSwap(ctx, "ptr/nested/latest", "", "s1"); err != nil && !errors.Is(err, errors.ErrUnsupported) {
 		t.Fatalf("CompareAndSwap: %v", err)
 	}
 }

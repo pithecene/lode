@@ -469,14 +469,13 @@ type structFieldAccessor struct {
 }
 
 type structBinder[T any] struct {
-	structType reflect.Type
-	accessors  []structFieldAccessor // indexed by schemaIdx
+	accessors []structFieldAccessor // indexed by schemaIdx
 }
 
 func buildStructBinder[T any](rt reflect.Type, schema ParquetSchema) (recordBinder[T], error) {
 	byColName := make(map[string]reflect.StructField, rt.NumField())
 	for _, sf := range reflect.VisibleFields(rt) {
-		if !sf.IsExported() || (sf.Anonymous && sf.Type.Kind() == reflect.Struct) {
+		if !sf.IsExported() || isEmbeddedStructContainer(sf) {
 			continue
 		}
 		colName, skip := structColumnName(sf)
@@ -495,13 +494,41 @@ func buildStructBinder[T any](rt reflect.Type, schema ParquetSchema) (recordBind
 		if !ok {
 			return nil, fmt.Errorf("parquet: %w: struct %s is missing schema field %q", ErrSchemaViolation, rt, field.Name)
 		}
+		if unexp, bad := unexportedEmbeddedPointer(rt, sf.Index); bad {
+			return nil, fmt.Errorf("parquet: %w: field %q on %s is promoted through unexported embedded pointer %q", ErrSchemaViolation, field.Name, rt, unexp)
+		}
 		acc, err := validateStructField(rt, sf, field)
 		if err != nil {
 			return nil, err
 		}
 		accessors[i] = acc
 	}
-	return structBinder[T]{structType: rt, accessors: accessors}, nil
+	return structBinder[T]{accessors: accessors}, nil
+}
+
+func unexportedEmbeddedPointer(rt reflect.Type, index []int) (string, bool) {
+	cur := rt
+	for _, fieldIdx := range index[:len(index)-1] {
+		if cur.Kind() == reflect.Pointer {
+			cur = cur.Elem()
+		}
+		sf := cur.Field(fieldIdx)
+		if sf.Type.Kind() == reflect.Pointer && !sf.IsExported() {
+			return sf.Name, true
+		}
+		cur = sf.Type
+	}
+	return "", false
+}
+
+func isEmbeddedStructContainer(sf reflect.StructField) bool {
+	if !sf.Anonymous {
+		return false
+	}
+	if sf.Type.Kind() == reflect.Struct && sf.Type != timeType {
+		return true
+	}
+	return sf.Type.Kind() == reflect.Pointer && sf.Type.Elem().Kind() == reflect.Struct && sf.Type.Elem() != timeType
 }
 
 func structColumnName(sf reflect.StructField) (name string, skip bool) {
@@ -526,11 +553,14 @@ func structColumnName(sf reflect.StructField) (name string, skip bool) {
 	return sf.Name, false
 }
 
-var timeType = reflect.TypeFor[time.Time]()
+var (
+	timeType = reflect.TypeFor[time.Time]()
+	byteType = reflect.TypeFor[byte]()
+)
 
 func validateStructField(structType reflect.Type, sf reflect.StructField, field ParquetField) (structFieldAccessor, error) {
 	ft := sf.Type
-	isBytes := ft.Kind() == reflect.Slice && ft.Elem().Kind() == reflect.Uint8
+	isBytes := ft.Kind() == reflect.Slice && ft.Elem() == byteType
 
 	if field.Nullable {
 		if field.Type == ParquetBytes && isBytes {
@@ -569,7 +599,7 @@ func compatibleScalarType(t reflect.Type, ptype ParquetType) bool {
 	case ParquetBool:
 		return t.Kind() == reflect.Bool
 	case ParquetBytes:
-		return t.Kind() == reflect.Slice && t.Elem().Kind() == reflect.Uint8
+		return t.Kind() == reflect.Slice && t.Elem() == byteType
 	case ParquetTimestamp:
 		return t == timeType
 	default:
@@ -579,7 +609,10 @@ func compatibleScalarType(t reflect.Type, ptype ParquetType) bool {
 
 func (b structBinder[T]) extractField(record T, schemaIdx int) (any, bool) {
 	acc := b.accessors[schemaIdx]
-	fv := reflect.ValueOf(record).FieldByIndex(acc.index)
+	fv, ok := fieldByIndexRead(reflect.ValueOf(record), acc.index)
+	if !ok {
+		return nil, false
+	}
 	if acc.isPtr {
 		if fv.IsNil() {
 			return nil, false
@@ -588,7 +621,57 @@ func (b structBinder[T]) extractField(record T, schemaIdx int) (any, bool) {
 	} else if acc.isBytes && fv.IsNil() {
 		return nil, false
 	}
-	return fv.Interface(), true
+	return normalizeReflectedScalar(fv), true
+}
+
+func fieldByIndexRead(v reflect.Value, index []int) (reflect.Value, bool) {
+	for i, fieldIdx := range index {
+		if i > 0 && v.Kind() == reflect.Pointer {
+			if v.IsNil() {
+				return reflect.Value{}, false
+			}
+			v = v.Elem()
+		}
+		v = v.Field(fieldIdx)
+	}
+	return v, true
+}
+
+func fieldByIndexAlloc(v reflect.Value, index []int) reflect.Value {
+	for i, fieldIdx := range index {
+		if i > 0 && v.Kind() == reflect.Pointer {
+			if v.IsNil() {
+				v.Set(reflect.New(v.Type().Elem()))
+			}
+			v = v.Elem()
+		}
+		v = v.Field(fieldIdx)
+	}
+	return v
+}
+
+func normalizeReflectedScalar(fv reflect.Value) any {
+	if fv.Type() == timeType {
+		return fv.Interface()
+	}
+	switch fv.Kind() {
+	case reflect.Int32:
+		return int32(fv.Int())
+	case reflect.Int, reflect.Int64:
+		return fv.Int()
+	case reflect.Float32:
+		return float32(fv.Float())
+	case reflect.Float64:
+		return fv.Float()
+	case reflect.String:
+		return fv.String()
+	case reflect.Bool:
+		return fv.Bool()
+	case reflect.Slice:
+		return fv.Bytes()
+	default:
+		return fv.Interface()
+	}
 }
 
 func (b structBinder[T]) decodeRow(row parquet.Row, plan decodePlan) (T, error) {
@@ -607,7 +690,7 @@ func (b structBinder[T]) decodeRow(row parquet.Row, plan decodePlan) (T, error) 
 			continue
 		}
 		acc := b.accessors[col.schemaIdx]
-		fv := rv.FieldByIndex(acc.index)
+		fv := fieldByIndexAlloc(rv, acc.index)
 		if acc.isPtr {
 			ptr := reflect.New(acc.elemType)
 			if err := setScalarValue(ptr.Elem(), val, col.field); err != nil {

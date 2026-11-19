@@ -20,8 +20,9 @@ func (f *fsStore) CompareAndSwap(_ context.Context, path, expected, replacement 
 	}
 
 	dir := filepath.Dir(fullPath)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("fs: cas mkdir: %w", err)
+	existing, err := f.prepareDir(dir)
+	if err != nil {
+		return err
 	}
 
 	// Acquire advisory lock on companion .lock file.
@@ -86,9 +87,5 @@ func (f *fsStore) CompareAndSwap(_ context.Context, path, expected, replacement 
 		_ = os.Remove(tmpName)
 		return fmt.Errorf("fs: cas rename: %w", err)
 	}
-	if f.sync {
-		syncDir(dir)
-	}
-
-	return nil
+	return f.syncPublishedDir(existing, dir)
 }

@@ -125,8 +125,9 @@ func (f *fsStore) Put(_ context.Context, path string, r io.Reader) error {
 	}
 
 	dir := filepath.Dir(fullPath)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("fs: put: %w", err)
+	existing, err := f.prepareDir(dir)
+	if err != nil {
+		return err
 	}
 
 	tmp, err := createTemp(dir)
@@ -143,10 +144,47 @@ func (f *fsStore) Put(_ context.Context, path string, r io.Reader) error {
 		return discardTemp(tmp.Name(), fmt.Errorf("fs: put: %w", err))
 	}
 	_ = os.Remove(tmp.Name())
+	return f.syncPublishedDir(existing, dir)
+}
+
+func (f *fsStore) prepareDir(dir string) (string, error) {
+	cleanDir := filepath.Clean(dir)
+	var existing string
 	if f.sync {
-		syncDir(dir)
+		cleanRoot := filepath.Clean(f.root)
+		for cur := cleanDir; ; cur = filepath.Dir(cur) {
+			_, err := os.Stat(cur)
+			if err == nil {
+				existing = cur
+				break
+			}
+			if !os.IsNotExist(err) {
+				return "", fmt.Errorf("fs: stat dir: %w", err)
+			}
+			if cur == cleanRoot || filepath.Dir(cur) == cur {
+				existing = cur
+				break
+			}
+		}
 	}
-	return nil
+	if err := os.MkdirAll(cleanDir, 0o755); err != nil {
+		return "", fmt.Errorf("fs: mkdir: %w", err)
+	}
+	return existing, nil
+}
+
+func (f *fsStore) syncPublishedDir(existing, dir string) error {
+	if !f.sync {
+		return nil
+	}
+	for cur := filepath.Clean(dir); ; cur = filepath.Dir(cur) {
+		if err := syncDir(cur); err != nil {
+			return err
+		}
+		if cur == existing || filepath.Dir(cur) == cur {
+			return nil
+		}
+	}
 }
 
 func createTemp(dir string) (*os.File, error) {
@@ -165,15 +203,6 @@ func writeTemp(tmp *os.File, r io.Reader, doSync bool) error {
 		return fmt.Errorf("fs: put: %w", err)
 	}
 	return nil
-}
-
-func syncDir(dir string) {
-	d, err := os.Open(dir) //nolint:gosec // dir is resolved inside f.root
-	if err != nil {
-		return
-	}
-	_ = d.Sync()
-	_ = d.Close()
 }
 
 func discardTemp(name string, cause error) error {

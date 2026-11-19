@@ -180,7 +180,7 @@ func (d *dataset) ListPartitions(ctx context.Context, opts PartitionListOptions)
 		id   SnapshotID
 		part string
 	}
-	indexedPairs := make(map[snapPart]bool)
+	indexedParts := make(map[SnapshotID]map[string]bool)
 	var dataPairs []snapPart
 	var canonical []listedManifest
 	partitions := []PartitionPath{}
@@ -208,7 +208,10 @@ func (d *dataset) ListPartitions(ctx context.Context, opts PartitionListOptions)
 			continue
 		}
 		indexedSnapshots[sp.snapshot] = true
-		indexedPairs[snapPart{id: sp.snapshot, part: sp.partition}] = true
+		if indexedParts[sp.snapshot] == nil {
+			indexedParts[sp.snapshot] = make(map[string]bool)
+		}
+		indexedParts[sp.snapshot][sp.partition] = true
 		if !seenPartitions[sp.partition] && strings.HasPrefix(sp.partition, opts.Prefix) {
 			partPath, err := listedPartitionPath(sp.partition, p)
 			if err != nil {
@@ -234,7 +237,7 @@ func (d *dataset) ListPartitions(ctx context.Context, opts PartitionListOptions)
 
 	partialSnapshots := make(map[SnapshotID]bool)
 	for _, dp := range dataPairs {
-		if !indexedPairs[dp] {
+		if !indexedParts[dp.id][dp.part] {
 			partialSnapshots[dp.id] = true
 		}
 	}
