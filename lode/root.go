@@ -162,6 +162,20 @@ func pendingDatasetCommit(ctx context.Context, store Store, id DatasetID, head S
 			return nil
 		}
 	}
+	for _, l := range layouts {
+		if !l.supportsPartitions() {
+			continue
+		}
+		keys, err := store.List(ctx, l.partitionsPrefix(id, ""))
+		if err != nil {
+			return fmt.Errorf("failed to resolve head: %w", err)
+		}
+		for _, k := range keys {
+			if sp, ok := l.manifest(k); ok && sp.dataset == id && sp.snapshot == head {
+				return nil
+			}
+		}
+	}
 	return fmt.Errorf("lode: latest pointer named %s, whose manifest has not been persisted: %w", head, ErrHeadUncommitted)
 }
 

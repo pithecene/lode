@@ -122,9 +122,13 @@ func (d *dataset) manifestPaths(snapshotID SnapshotID, partitionKeys []string) [
 	return paths
 }
 
+const streamCleanupTimeout = 10 * time.Second
+
 func (d *writer) discard(ctx context.Context, path string) {
 	if path != "" {
-		_ = d.store.Delete(ctx, path)
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), streamCleanupTimeout)
+		defer cancel()
+		_ = d.store.Delete(cleanupCtx, path)
 	}
 }
 
