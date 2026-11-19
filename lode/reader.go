@@ -486,12 +486,36 @@ func cursorWindow[T any](items []T, after func(T) bool, limit int) []T {
 }
 
 // OpenObject returns a reader for the raw stored bytes of a data object in this
-// dataset. The caller closes the returned reader.
+// dataset without decompressing or verifying checksums. The caller closes the
+// returned reader.
 func (d *dataset) OpenObject(ctx context.Context, obj ObjectRef) (io.ReadCloser, error) {
 	if err := d.checkObject(obj); err != nil {
 		return nil, err
 	}
 	return d.store.Get(ctx, obj.Path)
+}
+
+// OpenDecompressed returns a streaming reader for the decompressed payload of
+// obj using m's recorded compressor and checksum settings. When m records a
+// checksum algorithm, reading to io.EOF verifies the stored digest and returns
+// ErrChecksumMismatch on corruption. The caller closes the returned reader.
+func (d *dataset) OpenDecompressed(ctx context.Context, m *Manifest, obj ObjectRef) (io.ReadCloser, error) {
+	if err := validateManifest(m); err != nil {
+		return nil, err
+	}
+	if m.DatasetID != d.id {
+		return nil, &validate.ManifestError{
+			Field:   "dataset_id",
+			Message: fmt.Sprintf("got %q, want %q", m.DatasetID, d.id),
+		}
+	}
+	if err := d.checkObject(obj); err != nil {
+		return nil, err
+	}
+	if !d.layout.isObjectOf(d.id, m.SnapshotID, dataLeaf, obj.Path) {
+		return nil, validate.Argument("object %q does not belong to snapshot %s of dataset %s", obj.Path, m.SnapshotID, d.id)
+	}
+	return d.openObjectStream(ctx, m, obj)
 }
 
 // ReaderAt returns an io.ReaderAt for random access to the raw stored bytes of
