@@ -24,7 +24,8 @@ unification pass ([`V1_API_DECISIONS.md`](V1_API_DECISIONS.md) D12):
 
 - **Holds:** no corruption detected and zero manifest decode failures across 96,478
   snapshots over 8 months on R2; manifest format `1.2.0` (`objects` and
-  `flat`) reads every `1.0.0` and `1.1.0` manifest seamlessly.
+  `flat`) reads `1.0.0` and `1.1.0` datasets with standard internal names.
+  Datasets with custom names require the migration in `PUBLIC_API.md`.
 - **Blocker, addressed in v0.11.0 and awaiting verification:** one history
   fork under CAS + retry (2026-08-25, §10). The cause is identified: a failed
   read of a valid head was treated as a stale pointer, and the scan fallback
@@ -44,10 +45,9 @@ unification pass ([`V1_API_DECISIONS.md`](V1_API_DECISIONS.md) D12):
   not the v1.0 tag. The boundary has shipped: package `lode/volume`, marked
   experimental in `PUBLIC_API.md` (D9).
 - **Addressed performance and GC items:** `Sweep` reclaims unreferenced data
-  objects; `ListDatasets` now uses `PrefixLister` (`O(D)`), and
+  objects; `ListDatasets` now uses delimiter listing on S3, and
   `ListPartitions` derives Hive partitions directly from listed keys with zero
-  manifest `Get` calls (D12). D8 continues to guarantee on-disk path-grammar
-  compatibility.
+  manifest `Get` calls (D12). The standard and flat path grammars retain read compatibility.
 
 ---
 

@@ -20,8 +20,33 @@ The package `lode/volume` is **experimental**, and the commitment omits that
 package until the package passes its own stability gate
 ([`docs/plans/V1_API_DECISIONS.md`](docs/plans/V1_API_DECISIONS.md) D9 and
 [`docs/plans/V1_READINESS.md`](docs/plans/V1_READINESS.md) §4). The
-commitment covers persisted data in every package: no release renders
-unreadable the data that an earlier release wrote (D8).
+persisted-format commitment covers standard and flat layouts. Readers open
+format 1.0.0 and 1.1.0 datasets with the standard internal names in place.
+A pre-v1 dataset with custom internal names requires migration.
+
+### Upgrading a dataset with custom internal names
+
+Use the release that wrote the dataset and its original root options. This
+includes a dataset that customized only the expiry directory through
+`WithExpiredDir("tombstones")`. A store prefix selects the whole root.
+Internal names describe paths within that root.
+
+1. Pause writers and retention on the source. Keep a copy of the complete
+   original root, including its pointer and tombstones.
+2. With the old release, open the source using its original options. Open
+   an empty destination under a separate root using standard names and the
+   intended codec, compression, checksum, and partition settings.
+3. Enumerate surviving snapshots and follow parent links to replay ancestors
+   before their children. For each snapshot, read its records or blob and
+   write the payload and original metadata to the destination. Record the
+   old and new snapshot IDs in a durable mapping.
+4. Open the destination with the new release. Compare the snapshot inventory,
+   mapped parent links, metadata, and decoded records or blob contents before
+   switching clients. Update external snapshot references using the mapping.
+
+Replay creates new IDs, creation times, and object paths. Retain the original
+root and reader for expired history, gaps in lineage, and references that
+must preserve their historical identity.
 
 ---
 
@@ -332,7 +357,10 @@ of every read object automatically and return `ErrChecksumMismatch` if an
 object's digest is missing or does not match. `OpenObject` and `ReaderAt`
 return raw stored bytes without decompression or checksum verification, while
 `OpenDecompressed(ctx, manifest, obj)` streams the decompressed payload and
-verifies the checksum from the matching manifest entry at `io.EOF`. A path absent from the manifest returns `ErrInvalidArgument`.
+verifies the checksum from the matching manifest entry at successful `io.EOF`.
+Closing after reading a prefix leaves the remaining bytes unverified. Consumers
+with a decoded-size limit must enforce their own budget and treat exceeding it
+as an incomplete read. An absent inventory path returns `ErrInvalidArgument`.
 
 **Record helpers and metadata:**
 - `D`: alias for `map[string]any`

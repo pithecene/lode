@@ -206,7 +206,7 @@ ReaderAt(ctx context.Context, obj ObjectRef) (io.ReaderAt, error)
 - `ListPartitions` returns `[]PartitionPath` sorted lexicographically by
   `PartitionPath.String()` before applying `StartAfter` and `Limit`.
 - On Hive layouts, `ListPartitions` MUST extract partition paths directly
-  from listed partition-manifest keys (`0` `Get` calls when every committed
+  from listed partition-manifest keys (`0` manifest `Get` calls when every committed
   snapshot has its partition manifests). Only canonical-only snapshots (whose
   canonical manifest is listed without any partition manifest for that
   snapshot ID) load their canonical manifest to extract partitions from
@@ -240,6 +240,10 @@ ReaderAt(ctx context.Context, obj ObjectRef) (io.ReaderAt, error)
 - When the dataset holds no manifests in an unfiltered listing, `Manifests`
   yields `ErrRemoved` if fenced with `lode:removed`, or `ErrNotFound`
   otherwise, and stops.
+
+A partition-filtered listing can omit a committed snapshot whose partition
+index is incomplete. Consumers that need a complete inventory must reconcile
+against unfiltered snapshots.
 
 ### Cursors vs Commit Order
 

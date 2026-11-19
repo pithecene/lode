@@ -171,8 +171,8 @@ Optional and conditional fields:
   `false`)
 
 Backward-compatible manifest decoding:
-- Manifests written in format versions `"1.0.0"` and `"1.1.0"` MUST remain
-  readable.
+- Readers MUST support formats `"1.0.0"` and `"1.1.0"` in standard and flat
+  layouts that use the fixed internal names.
 - When decoding pre-`1.2.0` manifests, `"files"` populates `Manifest.Objects`,
   and `"paths"` populates `Manifest.Flat` from `paths.flat`.
 - Format `"1.1.0"` manifests MUST contain a non-empty `paths` object (without
