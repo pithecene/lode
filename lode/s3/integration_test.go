@@ -113,7 +113,7 @@ func setupTestBucket(t *testing.T, backend s3Backend) *Store {
 		_, _ = client.DeleteBucket(cleanupCtx, &s3.DeleteBucketInput{Bucket: aws.String(bucket)})
 	})
 
-	store, err := New(client, Config{Bucket: bucket})
+	store, err := New(client, bucket)
 	if err != nil {
 		t.Fatalf("failed to create store: %v", err)
 	}
@@ -261,6 +261,42 @@ func TestIntegration_Reads(t *testing.T) {
 			})
 		}
 	})
+
+	t.Run("list prefixes and prefixed bucket", testIntegrationListPrefixes)
+}
+
+func testIntegrationListPrefixes(t *testing.T) {
+	t.Helper()
+	for _, backend := range s3Backends {
+		t.Run(backend.name, func(t *testing.T) {
+			store := setupTestBucket(t, backend)
+			ctx := t.Context()
+
+			prefixed, err := lode.Prefixed(Bucket(store.client, store.bucket), "tenant-a")()
+			if err != nil {
+				t.Fatalf("Prefixed factory failed: %v", err)
+			}
+
+			for _, k := range []string{"datasets/alpha/latest", "datasets/beta/latest", "datasets/root.txt"} {
+				if err := prefixed.Put(ctx, k, bytes.NewReader([]byte("x"))); err != nil {
+					t.Fatalf("Put(%q) failed: %v", k, err)
+				}
+			}
+
+			lister, ok := prefixed.(lode.PrefixLister)
+			if !ok {
+				t.Fatal("expected Prefixed S3 store to implement PrefixLister")
+			}
+			got, err := lister.ListPrefixes(ctx, "datasets/")
+			if err != nil {
+				t.Fatalf("ListPrefixes failed: %v", err)
+			}
+			want := []string{"datasets/alpha/", "datasets/beta/"}
+			if !slices.Equal(got, want) {
+				t.Errorf("ListPrefixes = %v, want %v", got, want)
+			}
+		})
+	}
 }
 
 func TestIntegration_Writes(t *testing.T) {
@@ -311,7 +347,7 @@ func TestIntegration_Writes(t *testing.T) {
 				}
 
 				// Write manifest (commit signal)
-				manifestJSON := `{"schema_name":"lode-manifest","format_version":"1.0","dataset_id":"test-ds","snapshot_id":"snap1","created_at":"2024-01-01T00:00:00Z","metadata":{},"files":[{"path":"data/file.jsonl","size_bytes":10}],"row_count":1,"compressor":"noop","partitioner":"noop"}`
+				manifestJSON := `{"schema_name":"lode-manifest","format_version":"1.2.0","dataset_id":"test-ds","snapshot_id":"snap1","created_at":"2024-01-01T00:00:00Z","metadata":{},"objects":[{"path":"datasets/test-ds/snapshots/snap1/data/file.jsonl","size_bytes":10}],"row_count":1,"compressor":"noop","partitioner":"noop"}`
 				err = store.Put(ctx, manifestKey, bytes.NewReader([]byte(manifestJSON)))
 				if err != nil {
 					t.Fatalf("Put manifest failed: %v", err)
@@ -340,26 +376,18 @@ func TestIntegration_Writes(t *testing.T) {
 				store := setupTestBucket(t, backend)
 				ctx := t.Context()
 
-				ds, err := lode.Open(lode.Use(store)).Blobs(ctx, "cancel-test")
+				ds, err := lode.Open(lode.Prefixed(lode.Use(store), "cancel-subtest")).Blobs(ctx, "cancel-test")
 				if err != nil {
 					t.Fatal(err)
 				}
 
 				cancelCtx, cancel := context.WithCancel(ctx)
-
-				sw, err := ds.StreamWrite(cancelCtx, lode.D{"test": "cancel"})
-				if err != nil {
-					t.Fatal(err)
+				r := &cancelingReader{
+					prefix: bytes.NewReader([]byte("data that will be canceled")),
+					cancel: cancel,
 				}
 
-				_, err = sw.Write([]byte("data that will be canceled"))
-				if err != nil {
-					t.Fatalf("Write failed: %v", err)
-				}
-
-				cancel()
-
-				_, err = sw.Commit(cancelCtx)
+				_, err = ds.StreamWrite(cancelCtx, r, lode.D{"test": "cancel"})
 				if err == nil {
 					t.Log("Note: commit completed before cancel took effect (timing-dependent)")
 				} else if !errors.Is(err, context.Canceled) {
@@ -428,4 +456,18 @@ func TestIntegration_Writes(t *testing.T) {
 			})
 		}
 	})
+}
+
+// cancelingReader yields prefix bytes and then cancels cancelCtx on the next Read.
+type cancelingReader struct {
+	prefix *bytes.Reader
+	cancel context.CancelFunc
+}
+
+func (r *cancelingReader) Read(p []byte) (int, error) {
+	if r.prefix.Len() > 0 {
+		return r.prefix.Read(p)
+	}
+	r.cancel()
+	return 0, context.Canceled
 }

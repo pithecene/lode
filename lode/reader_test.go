@@ -5,8 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -14,11 +14,10 @@ import (
 	"github.com/pithecene/lode/internal/testutil"
 )
 
-// testReader reads a root's datasets as v0's DatasetReader did, by dataset
-// ID: each call opens a view of the dataset, whose layout comes from its
-// head manifest. The listing methods do not depend on a codec, so the view
-// is opened without one; ReadRoot.Records and ReadRoot.Blobs open views the
-// same way and check the codec besides.
+// testReader reads a root's datasets by dataset ID: each call opens a view of
+// the dataset, whose layout comes from its head manifest. The listing methods
+// do not depend on a codec, so the view is opened without one; ReadRoot.Records
+// and ReadRoot.Blobs open views the same way and check the codec besides.
 type testReader struct {
 	root *ReadRoot
 }
@@ -35,21 +34,21 @@ func (r *testReader) view(ctx context.Context, id DatasetID) (*dataset, error) {
 	if err := validateDatasetID(id); err != nil {
 		return nil, err
 	}
-	head, err := resolveAnchor(ctx, r.root.store, id, viewCandidates(r.root.store, r.root.names, id, nil), headAnchor{})
+	head, err := resolveAnchor(ctx, r.root.store, id, viewCandidates(r.root.store, r.root.flat, id, nil), headAnchor{})
 	if err != nil {
 		return nil, err
 	}
 	if err := validateManifest(head.Manifest); err != nil {
 		return nil, err
 	}
-	return newDataset(id, r.root.store, newPathLayout(r.root.names, head.partitioning())), nil
+	return newDataset(id, r.root.store, newPathLayout(r.root.flat, head.partitioning())), nil
 }
 
 func (r *testReader) ListDatasets(ctx context.Context, opts DatasetListOptions) ([]DatasetID, error) {
 	return r.root.ListDatasets(ctx, opts)
 }
 
-func (r *testReader) ListPartitions(ctx context.Context, id DatasetID, opts PartitionListOptions) ([]PartitionRef, error) {
+func (r *testReader) ListPartitions(ctx context.Context, id DatasetID, opts PartitionListOptions) ([]PartitionPath, error) {
 	v, err := r.view(ctx, id)
 	if err != nil {
 		return nil, err
@@ -66,46 +65,27 @@ func (r *testReader) ListManifests(ctx context.Context, id DatasetID, partition 
 	if err != nil {
 		return nil, err
 	}
-	return v.ListManifests(ctx, path, opts)
-}
-
-func (r *testReader) GetManifest(ctx context.Context, id DatasetID, ref ManifestRef) (*Manifest, error) {
-	v, err := r.view(ctx, id)
-	if err != nil {
-		return nil, err
+	var refs []ManifestRef
+	for loaded, err := range v.Manifests(ctx, path, opts) {
+		if err != nil {
+			return nil, err
+		}
+		refs = append(refs, loaded.Ref)
 	}
-	return v.GetManifest(ctx, ref)
-}
-
-func (r *testReader) OpenObject(ctx context.Context, obj ObjectRef) (io.ReadCloser, error) {
-	if r.root.err != nil {
-		return nil, r.root.err
-	}
-	return r.root.store.Get(ctx, obj.Path)
-}
-
-func (r *testReader) ReaderAt(ctx context.Context, obj ObjectRef) (io.ReaderAt, error) {
-	if r.root.err != nil {
-		return nil, r.root.err
-	}
-	ranges, ok := r.root.store.(RangeReader)
-	if !ok {
-		return nil, ErrRangeReadNotSupported
-	}
-	return ranges.ReaderAt(ctx, obj.Path)
+	return refs, nil
 }
 
 // manifestErr opens a view of dataset test-ds over store and loads ref's
-// manifest, returning the first error: a view validates its head's manifest
-// when it opens, and GetManifest validates every manifest it loads. The
-// manifests these tests write record no codec, so the view reads blobs.
+// snapshot, returning the first error: a view validates its head's manifest
+// when it opens, and Snapshot validates every manifest it loads. The manifests
+// these tests write record no codec, so the view reads blobs.
 func manifestErr(t *testing.T, store Store, ref ManifestRef) error {
 	t.Helper()
 	view, err := OpenReadOnly(Use(store)).Blobs(t.Context(), "test-ds")
 	if err != nil {
 		return err
 	}
-	_, err = view.GetManifest(t.Context(), ref)
+	_, err = view.Snapshot(t.Context(), ref.ID)
 	return err
 }
 
@@ -119,13 +99,12 @@ func TestView_GetManifest_InvalidManifest(t *testing.T) {
 		store := NewMemory()
 
 		manifest := &Manifest{
-			// SchemaName missing
 			FormatVersion: "1.0.0",
 			DatasetID:     "test-ds",
 			SnapshotID:    "snap-1",
 			CreatedAt:     time.Now().UTC(),
 			Metadata:      emptyMetadata(),
-			Files:         []FileRef{},
+			Objects:       []ObjectRef{},
 			RowCount:      0,
 			Compressor:    "noop",
 			Partitioner:   "noop",
@@ -143,13 +122,12 @@ func TestView_GetManifest_InvalidManifest(t *testing.T) {
 		store := NewMemory()
 
 		manifest := &Manifest{
-			SchemaName: "lode-manifest",
-			// FormatVersion missing
+			SchemaName:  "lode-manifest",
 			DatasetID:   "test-ds",
 			SnapshotID:  "snap-1",
 			CreatedAt:   time.Now().UTC(),
 			Metadata:    emptyMetadata(),
-			Files:       []FileRef{},
+			Objects:     []ObjectRef{},
 			RowCount:    0,
 			Compressor:  "noop",
 			Partitioner: "noop",
@@ -173,13 +151,11 @@ func TestView_GetManifest_InvalidManifest(t *testing.T) {
 			SnapshotID:    "snap-1",
 			CreatedAt:     time.Now().UTC(),
 			Metadata:      emptyMetadata(),
-			Files:         []FileRef{},
+			Objects:       []ObjectRef{},
 			RowCount:      0,
 			Compressor:    "noop",
 			Partitioner:   "noop",
 		}
-		// Metadata always encodes as an object, so the absent field is
-		// written by hand: a manifest whose metadata is null is invalid.
 		data, err := json.Marshal(manifest)
 		if err != nil {
 			t.Fatal(err)
@@ -202,16 +178,14 @@ func TestView_GetManifest_InvalidManifest(t *testing.T) {
 		manifest := &Manifest{
 			SchemaName:    "lode-manifest",
 			FormatVersion: "1.0.0",
-			// DatasetID missing
-			SnapshotID:  "snap-1",
-			CreatedAt:   time.Now().UTC(),
-			Metadata:    emptyMetadata(),
-			Files:       []FileRef{},
-			RowCount:    0,
-			Compressor:  "noop",
-			Partitioner: "noop",
+			SnapshotID:    "snap-1",
+			CreatedAt:     time.Now().UTC(),
+			Metadata:      emptyMetadata(),
+			Objects:       []ObjectRef{},
+			RowCount:      0,
+			Compressor:    "noop",
+			Partitioner:   "noop",
 		}
-		// Manually write with a path that includes dataset ID
 		data, _ := json.Marshal(manifest)
 		_ = store.Put(ctx, "datasets/test-ds/snapshots/snap-1/manifest.json", bytes.NewReader(data))
 
@@ -229,18 +203,14 @@ func TestView_GetManifest_InvalidManifest(t *testing.T) {
 			SchemaName:    "lode-manifest",
 			FormatVersion: "1.0.0",
 			DatasetID:     "test-ds",
-			// SnapshotID missing
-			CreatedAt:   time.Now().UTC(),
-			Metadata:    emptyMetadata(),
-			Files:       []FileRef{},
-			RowCount:    0,
-			Compressor:  "noop",
-			Partitioner: "noop",
+			CreatedAt:     time.Now().UTC(),
+			Metadata:      emptyMetadata(),
+			Objects:       []ObjectRef{},
+			RowCount:      0,
+			Compressor:    "noop",
+			Partitioner:   "noop",
 		}
-		// The manifest without an ID lies at a snapshot's path, where a
-		// reference to that snapshot reaches it.
 		writeManifestAt(t, store, "datasets/test-ds/snapshots/snap-1/manifest.json", manifest)
-		// A valid sibling is the head, so the view opens.
 		valid := validTestManifest()
 		valid.SnapshotID = "snap-0"
 		writeManifest(ctx, t, store, valid)
@@ -260,12 +230,11 @@ func TestView_GetManifest_InvalidManifest(t *testing.T) {
 			FormatVersion: "1.0.0",
 			DatasetID:     "test-ds",
 			SnapshotID:    "snap-1",
-			// CreatedAt zero value (not set)
-			Metadata:    emptyMetadata(),
-			Files:       []FileRef{},
-			RowCount:    0,
-			Compressor:  "noop",
-			Partitioner: "noop",
+			Metadata:      emptyMetadata(),
+			Objects:       []ObjectRef{},
+			RowCount:      0,
+			Compressor:    "noop",
+			Partitioner:   "noop",
 		}
 		writeManifest(ctx, t, store, manifest)
 
@@ -275,7 +244,7 @@ func TestView_GetManifest_InvalidManifest(t *testing.T) {
 		}
 	})
 
-	t.Run("nil files", func(t *testing.T) {
+	t.Run("nil objects", func(t *testing.T) {
 		ctx := t.Context()
 		store := NewMemory()
 
@@ -286,7 +255,7 @@ func TestView_GetManifest_InvalidManifest(t *testing.T) {
 			SnapshotID:    "snap-1",
 			CreatedAt:     time.Now().UTC(),
 			Metadata:      emptyMetadata(),
-			Files:         nil, // nil not allowed (use empty slice)
+			Objects:       nil,
 			RowCount:      0,
 			Compressor:    "noop",
 			Partitioner:   "noop",
@@ -310,8 +279,8 @@ func TestView_GetManifest_InvalidManifest(t *testing.T) {
 			SnapshotID:    "snap-1",
 			CreatedAt:     time.Now().UTC(),
 			Metadata:      emptyMetadata(),
-			Files:         []FileRef{},
-			RowCount:      -1, // negative not allowed
+			Objects:       []ObjectRef{},
+			RowCount:      -1,
 			Compressor:    "noop",
 			Partitioner:   "noop",
 		}
@@ -334,10 +303,9 @@ func TestView_GetManifest_InvalidManifest(t *testing.T) {
 			SnapshotID:    "snap-1",
 			CreatedAt:     time.Now().UTC(),
 			Metadata:      emptyMetadata(),
-			Files:         []FileRef{},
+			Objects:       []ObjectRef{},
 			RowCount:      0,
-			// Compressor missing
-			Partitioner: "noop",
+			Partitioner:   "noop",
 		}
 		writeManifest(ctx, t, store, manifest)
 
@@ -358,10 +326,9 @@ func TestView_GetManifest_InvalidManifest(t *testing.T) {
 			SnapshotID:    "snap-1",
 			CreatedAt:     time.Now().UTC(),
 			Metadata:      emptyMetadata(),
-			Files:         []FileRef{},
+			Objects:       []ObjectRef{},
 			RowCount:      0,
 			Compressor:    "noop",
-			// Partitioner missing
 		}
 		writeManifest(ctx, t, store, manifest)
 
@@ -371,7 +338,7 @@ func TestView_GetManifest_InvalidManifest(t *testing.T) {
 		}
 	})
 
-	t.Run("empty file path", func(t *testing.T) {
+	t.Run("empty object path", func(t *testing.T) {
 		ctx := t.Context()
 		store := NewMemory()
 
@@ -382,8 +349,8 @@ func TestView_GetManifest_InvalidManifest(t *testing.T) {
 			SnapshotID:    "snap-1",
 			CreatedAt:     time.Now().UTC(),
 			Metadata:      emptyMetadata(),
-			Files: []FileRef{
-				{Path: "", SizeBytes: 100}, // empty path not allowed
+			Objects: []ObjectRef{
+				{Path: "", SizeBytes: 100},
 			},
 			RowCount:    1,
 			Compressor:  "noop",
@@ -397,7 +364,7 @@ func TestView_GetManifest_InvalidManifest(t *testing.T) {
 		}
 	})
 
-	t.Run("negative file size", func(t *testing.T) {
+	t.Run("negative object size", func(t *testing.T) {
 		ctx := t.Context()
 		store := NewMemory()
 
@@ -408,8 +375,8 @@ func TestView_GetManifest_InvalidManifest(t *testing.T) {
 			SnapshotID:    "snap-1",
 			CreatedAt:     time.Now().UTC(),
 			Metadata:      emptyMetadata(),
-			Files: []FileRef{
-				{Path: "data/file.bin", SizeBytes: -100}, // negative size not allowed
+			Objects: []ObjectRef{
+				{Path: "data/file.bin", SizeBytes: -100},
 			},
 			RowCount:    1,
 			Compressor:  "noop",
@@ -429,9 +396,7 @@ func TestView_ListManifests(t *testing.T) {
 		ctx := t.Context()
 		store := NewMemory()
 
-		// Write an invalid manifest (missing required fields)
 		manifest := &Manifest{
-			// SchemaName missing - invalid
 			DatasetID:  "test-ds",
 			SnapshotID: "snap-1",
 		}
@@ -452,9 +417,7 @@ func TestView_ListManifests(t *testing.T) {
 		ctx := t.Context()
 		store := NewMemory()
 
-		// Write an invalid manifest (missing required fields)
 		manifest := &Manifest{
-			// SchemaName missing - invalid
 			DatasetID:  "test-ds",
 			SnapshotID: "snap-1",
 		}
@@ -465,20 +428,12 @@ func TestView_ListManifests(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		// Per CONTRACT_READ_API.md, invalid manifests must return an error
-		// even when no partition filter is specified
 		_, err = reader.ListManifests(ctx, "test-ds", "", ManifestListOptions{})
 		if !errors.Is(err, ErrManifestInvalid) {
 			t.Errorf("expected ErrManifestInvalid, got: %v", err)
 		}
 	})
 
-	// TestView_ListManifests_HiveLayout_SkipsCanonicalManifest verifies
-	// that ListManifests reports a snapshot through its partition manifests,
-	// not through the canonical manifest written for O(1) Snapshot lookups,
-	// whenever a partition manifest exists. Without this, ManifestRef.Partition
-	// would be nondeterministic (empty vs populated) depending on store
-	// listing order.
 	t.Run("hive layout skips canonical manifest", func(t *testing.T) {
 		store := NewMemory()
 
@@ -505,7 +460,6 @@ func TestView_ListManifests(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		// Every ref must have a non-empty Partition (canonical manifest excluded).
 		for _, ref := range refs {
 			if ref.Partition == (PartitionPath{}) {
 				t.Errorf("ManifestRef %s has empty Partition; canonical manifest should be excluded from listing", ref.ID)
@@ -515,17 +469,15 @@ func TestView_ListManifests(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------------
-// G3: ErrNoManifests test
+// G3: ListDatasets discovery tests
 // -----------------------------------------------------------------------------
 
 func TestView_ListDatasets(t *testing.T) {
-	t.Run("err no manifests", func(t *testing.T) {
+	t.Run("uncommitted data without manifests returns empty list", func(t *testing.T) {
 		ctx := t.Context()
 		store := NewMemory()
 
-		// Write data files but no manifest
-		err := store.Put(ctx, "datasets/test-ds/snapshots/snap-1/data/file.txt", bytes.NewReader([]byte("data")))
-		if err != nil {
+		if err := store.Put(ctx, "datasets/test-ds/snapshots/snap-1/data/file.txt", bytes.NewReader([]byte("data"))); err != nil {
 			t.Fatal(err)
 		}
 
@@ -534,9 +486,12 @@ func TestView_ListDatasets(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		_, err = reader.ListDatasets(ctx, DatasetListOptions{})
-		if !errors.Is(err, ErrNoManifests) {
-			t.Errorf("expected ErrNoManifests, got: %v", err)
+		datasets, err := reader.ListDatasets(ctx, DatasetListOptions{})
+		if err != nil {
+			t.Fatalf("expected nil error when no committed datasets exist, got: %v", err)
+		}
+		if datasets == nil || len(datasets) != 0 {
+			t.Errorf("expected non-nil empty slice, got: %#v", datasets)
 		}
 	})
 
@@ -553,8 +508,8 @@ func TestView_ListDatasets(t *testing.T) {
 		if err != nil {
 			t.Fatalf("expected no error for empty storage, got: %v", err)
 		}
-		if len(datasets) != 0 {
-			t.Errorf("expected empty list, got: %v", datasets)
+		if datasets == nil || len(datasets) != 0 {
+			t.Errorf("expected non-nil empty list, got: %#v", datasets)
 		}
 	})
 
@@ -564,12 +519,12 @@ func TestView_ListDatasets(t *testing.T) {
 
 		manifest := &Manifest{
 			SchemaName:    "lode-manifest",
-			FormatVersion: "1.0.0",
+			FormatVersion: "1.2.0",
 			DatasetID:     "test-ds",
 			SnapshotID:    "snap-1",
 			CreatedAt:     time.Now().UTC(),
 			Metadata:      emptyMetadata(),
-			Files:         []FileRef{},
+			Objects:       []ObjectRef{},
 			RowCount:      0,
 			Compressor:    "noop",
 			Partitioner:   "noop",
@@ -623,111 +578,214 @@ func TestView_ListDatasets(t *testing.T) {
 		if err != nil {
 			t.Fatalf("expected no error for empty FS storage, got: %v", err)
 		}
-		if len(datasets) != 0 {
-			t.Errorf("expected empty list, got: %v", datasets)
+		if datasets == nil || len(datasets) != 0 {
+			t.Errorf("expected non-nil empty list, got: %#v", datasets)
 		}
 	})
 }
 
-// -----------------------------------------------------------------------------
-// G4: Layout-specific tests
-// -----------------------------------------------------------------------------
+// prefixRangeObjectStore exposes ObjectStore, RangeReader, and PrefixLister
+// without ConditionalWriter, so SingleProcess returns singleProcessFullStore.
+type prefixRangeObjectStore struct {
+	ObjectStore
+	RangeReader
+	PrefixLister
+}
+
+// prefixOnlyObjectStore exposes ObjectStore and PrefixLister without
+// RangeReader or ConditionalWriter, so SingleProcess returns
+// singleProcessPrefixStore and OpenReadOnly returns readOnlyPrefixStore.
+type prefixOnlyObjectStore struct {
+	ObjectStore
+	PrefixLister
+}
+
+func assertDatasetList(t *testing.T, root *Root, ro *ReadRoot, opts DatasetListOptions, want []DatasetID) {
+	t.Helper()
+	gotW, err := root.ListDatasets(t.Context(), opts)
+	if err != nil {
+		t.Fatalf("Root.ListDatasets: %v", err)
+	}
+	gotR, err := ro.ListDatasets(t.Context(), opts)
+	if err != nil {
+		t.Fatalf("ReadRoot.ListDatasets: %v", err)
+	}
+	if gotW == nil || gotR == nil {
+		t.Fatalf("ListDatasets returned nil slice: write=%#v read=%#v", gotW, gotR)
+	}
+	if !slices.Equal(gotW, want) || !slices.Equal(gotR, want) {
+		t.Fatalf("ListDatasets = write:%v read:%v, want %v", gotW, gotR, want)
+	}
+}
+
+func verifyListDatasetsStore(t *testing.T, store Store) {
+	t.Helper()
+	ctx := t.Context()
+	root := Open(Use(store))
+	ro := OpenReadOnly(Use(store))
+
+	assertDatasetList(t, root, ro, DatasetListOptions{}, []DatasetID{})
+
+	if err := store.Put(ctx, "datasets/uncommitted/snapshots/s1/data/data", bytes.NewReader([]byte("x"))); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Put(ctx, "datasets/orphan/latest", strings.NewReader("1-0123456789abcdef")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := recordsOn(t, store, "ds-alpha").Write(ctx, R(D{"n": 1}), nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := recordsOn(t, store, "ds-beta", hive("day")).Write(ctx, R(D{"day": "2024-01-01"}), nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := recordsOn(t, store, "ds-legacy").Write(ctx, R(D{"n": 2}), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Delete(ctx, "datasets/ds-legacy/latest"); err != nil {
+		t.Fatal(err)
+	}
+
+	assertDatasetList(t, root, ro, DatasetListOptions{}, []DatasetID{"ds-alpha", "ds-beta", "ds-legacy"})
+
+	if err := root.RemoveDataset(ctx, "ds-beta"); err != nil {
+		t.Fatalf("RemoveDataset: %v", err)
+	}
+	assertDatasetList(t, root, ro, DatasetListOptions{}, []DatasetID{"ds-alpha", "ds-legacy"})
+	assertDatasetList(t, root, ro, DatasetListOptions{StartAfter: "ds-alpha", Limit: 1}, []DatasetID{"ds-legacy"})
+}
+
+func TestListDatasets_PrefixListerAndFallback(t *testing.T) {
+	t.Run("memory", func(t *testing.T) {
+		verifyListDatasetsStore(t, NewMemory())
+	})
+	t.Run("fs", func(t *testing.T) {
+		fs, err := NewFS(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		verifyListDatasetsStore(t, fs)
+	})
+	t.Run("prefixed memory", func(t *testing.T) {
+		s, err := Prefixed(Memory(), "env/prod")()
+		if err != nil {
+			t.Fatal(err)
+		}
+		verifyListDatasetsStore(t, s)
+	})
+	t.Run("prefixed fs", func(t *testing.T) {
+		s, err := Prefixed(FS(t.TempDir()), "env/prod")()
+		if err != nil {
+			t.Fatal(err)
+		}
+		verifyListDatasetsStore(t, s)
+	})
+	t.Run("single-process full", func(t *testing.T) {
+		mem := NewMemory()
+		verifyListDatasetsStore(t, SingleProcess(prefixRangeObjectStore{mem, mem, mem.(PrefixLister)}))
+	})
+	t.Run("single-process prefix-only", func(t *testing.T) {
+		mem := NewMemory()
+		raw := prefixOnlyObjectStore{mem, mem.(PrefixLister)}
+		verifyListDatasetsStore(t, SingleProcess(raw))
+		got, err := OpenReadOnly(Use[ObjectStore](raw)).ListDatasets(t.Context(), DatasetListOptions{})
+		if err != nil || !slices.Equal(got, []DatasetID{"ds-alpha", "ds-legacy"}) {
+			t.Fatalf("ReadRoot over prefix-only ObjectStore = %v, %v; want [ds-alpha ds-legacy]", got, err)
+		}
+	})
+	t.Run("fallback without PrefixLister", func(t *testing.T) {
+		verifyListDatasetsStore(t, testutil.NewFaultStore(NewMemory()))
+	})
+}
 
 // -----------------------------------------------------------------------------
 // G5: Complexity verification tests
 // -----------------------------------------------------------------------------
 
 // TestView_ListPartitions_SingleManifestLoad verifies that ListPartitions
-// loads each manifest exactly once (M Gets), not twice (2M Gets via ListManifests + GetManifest).
+// derives Hive partition paths directly from listed partition-manifest keys
+// (0 Gets when indexed), and loads canonical manifests only for unindexed
+// snapshots (1 Get per unindexed snapshot).
 func TestView_ListPartitions_SingleManifestLoad(t *testing.T) {
 	inner := NewMemory()
 	fs := testutil.NewFaultStore(inner)
 	factory := Use(fs)
 
-	// Write two snapshots with hive-partitioned data.
 	ds, err := Open(factory).Records(t.Context(), "test-ds", JSONL[D](), hive("day"))
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	records1 := R(D{"id": 1, "day": "2024-01-15"})
-	if _, err := ds.Write(t.Context(), records1, nil); err != nil {
+	if _, err := ds.Write(t.Context(), R(D{"id": 1, "day": "2024-01-15"}), nil); err != nil {
+		t.Fatal(err)
+	}
+	snap2, err := ds.Write(t.Context(), R(D{"id": 2, "day": "2024-01-16"}), nil)
+	if err != nil {
 		t.Fatal(err)
 	}
 
-	records2 := R(D{"id": 2, "day": "2024-01-16"})
-	if _, err := ds.Write(t.Context(), records2, nil); err != nil {
-		t.Fatal(err)
-	}
-
-	// Opening the view reads the head's manifest; the count covers the
-	// listing alone.
 	view, err := OpenReadOnly(factory).Records(t.Context(), "test-ds", JSONL[D]())
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// Reset call tracking before the operation under test.
 	fs.Reset()
-
 	partitions, err := view.ListPartitions(t.Context(), PartitionListOptions{})
 	if err != nil {
 		t.Fatalf("ListPartitions failed: %v", err)
 	}
-	if len(partitions) == 0 {
-		t.Fatal("expected at least one partition")
+	want := []string{"day=2024-01-15", "day=2024-01-16"}
+	if !slices.Equal(refPaths(partitions), want) {
+		t.Fatalf("ListPartitions = %v, want %v", refPaths(partitions), want)
+	}
+	if gets := len(fs.GetCalls()); gets != 0 {
+		t.Errorf("indexed ListPartitions issued %d Gets, want 0", gets)
 	}
 
-	// Count manifest Get calls (paths ending in manifest.json).
-	getCalls := fs.GetCalls()
-	manifestGets := 0
-	for _, p := range getCalls {
-		if strings.HasSuffix(p, "manifest.json") {
-			manifestGets++
-		}
+	// Delete the second snapshot's partition index copy; ListPartitions falls
+	// back to loading only that one snapshot's canonical manifest.
+	if err := inner.Delete(t.Context(), "datasets/test-ds/partitions/day=2024-01-16/segments/"+string(snap2.ID)+"/manifest.json"); err != nil {
+		t.Fatal(err)
 	}
-
-	// With single-pass, we expect exactly 2 Gets (one per snapshot manifest),
-	// not 4 (which the old ListManifests + GetManifest path would produce).
-	// There are 2 snapshots × 2 partition manifests each = 4 partition manifests,
-	// but deduplicated by snapshot ID = 2 manifests loaded.
-	if manifestGets != 2 {
-		t.Errorf("expected exactly 2 manifest Gets (single-pass), got %d", manifestGets)
+	fs.Reset()
+	partitions, err = view.ListPartitions(t.Context(), PartitionListOptions{})
+	if err != nil {
+		t.Fatalf("fallback ListPartitions failed: %v", err)
+	}
+	if !slices.Equal(refPaths(partitions), want) {
+		t.Fatalf("fallback ListPartitions = %v, want %v", refPaths(partitions), want)
+	}
+	if got := manifestGets(fs); got != 1 {
+		t.Errorf("fallback ListPartitions issued %d manifest Gets, want 1", got)
 	}
 }
 
 // -----------------------------------------------------------------------------
-// Test helpers
+// Path & Foreign-Object Validation
 // -----------------------------------------------------------------------------
 
 func TestValidateManifest_PathsNameEveryDirectory(t *testing.T) {
-	complete := defaultPaths(false)
-	flat := defaultPaths(true)
-	incomplete := complete
-	incomplete.Staged = ""
+	complete := defaultLegacyPaths(false)
+	flat := defaultLegacyPaths(true)
+	flatWithDatasets := flat
+	flatWithDatasets.Datasets = "datasets"
 	flatWithSnapshots := flat
 	flatWithSnapshots.Snapshots = "snapshots"
-	withEquals := complete
-	withEquals.Data = "k=v"
-	duplicate := complete
-	duplicate.Data = complete.Expired
-	pointerName := complete
-	pointerName.Staged = "latest"
+
 	cases := map[string]struct {
-		paths ManifestPaths
-		valid bool
+		manifest *Manifest
+		valid    bool
 	}{
-		"default names":                   {complete, true},
-		"flat names":                      {flat, true},
-		"a missing name":                  {incomplete, false},
-		"flat with a snapshots directory": {flatWithSnapshots, false},
-		"only a manifest name":            {ManifestPaths{Manifest: "manifest.json"}, false},
-		"a name with =":                   {withEquals, false},
-		"a repeated name":                 {duplicate, false},
-		"the pointer's name":              {pointerName, false},
+		"1.2.0 default":                 {&Manifest{FormatVersion: "1.2.0"}, true},
+		"1.2.0 flat":                    {&Manifest{FormatVersion: "1.2.0", Flat: true}, true},
+		"1.1.0 default paths":           {&Manifest{FormatVersion: "1.1.0", legacyPaths: &complete}, true},
+		"1.1.0 flat paths":              {&Manifest{FormatVersion: "1.1.0", legacyPaths: &flat, Flat: true}, true},
+		"1.1.0 missing paths":           {&Manifest{FormatVersion: "1.1.0"}, false},
+		"1.1.0 empty paths":             {&Manifest{FormatVersion: "1.1.0", legacyPaths: &legacyManifestPaths{}}, false},
+		"1.1.0 flat with datasets dir":  {&Manifest{FormatVersion: "1.1.0", legacyPaths: &flatWithDatasets, Flat: true}, false},
+		"1.1.0 flat with snapshots dir": {&Manifest{FormatVersion: "1.1.0", legacyPaths: &flatWithSnapshots, Flat: true}, false},
 	}
 	for name, c := range cases {
-		err := missingPaths(&Manifest{FormatVersion: manifestFormatVersion, Paths: c.paths})
+		err := checkLegacyPaths(c.manifest)
 		if c.valid != (err == nil) {
 			t.Errorf("%s: got %v, want valid=%v", name, err, c.valid)
 		}
@@ -760,9 +818,9 @@ func TestRead_RejectsMisplacedManifestAndForeignDataPaths(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Tamper olderA's manifest to point its file at secret-b's object.
+	// Tamper olderA's manifest to point its object at secret-b's object.
 	tampered := *olderA.Manifest
-	tampered.Files = []FileRef{{Path: snapB.Files[0].Path, SizeBytes: snapB.Files[0].SizeBytes}}
+	tampered.Objects = []ObjectRef{{Path: snapB.Objects[0].Path, SizeBytes: snapB.Objects[0].SizeBytes}}
 	writeManifestAt(t, store, "datasets/public-a/snapshots/"+string(olderA.ID)+"/manifest.json", &tampered)
 
 	if _, err := dsA.Read(ctx, olderA.ID); !errors.Is(err, ErrManifestInvalid) {

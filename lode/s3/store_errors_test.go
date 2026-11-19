@@ -83,7 +83,7 @@ func TestStore_MapsPreconditionCodes(t *testing.T) {
 		ctx := t.Context()
 		for _, code := range append(conditionalCodes, "SlowDown") {
 			client := &codeClient{MockS3Client: NewMockS3Client(), putCode: code}
-			store, _ := New(client, Config{Bucket: "test"})
+			store, _ := New(client, "test")
 			err := store.Put(ctx, "k", bytes.NewReader([]byte("x")))
 			wantExists := code != "SlowDown"
 			if errors.Is(err, lode.ErrPathExists) != wantExists || err == nil {
@@ -97,7 +97,7 @@ func TestStore_MapsPreconditionCodes(t *testing.T) {
 		data := make([]byte, 6*1024*1024) // two parts
 		for _, code := range append(conditionalCodes, "SlowDown") {
 			client := &codeClient{MockS3Client: NewMockS3Client(), completeCode: code}
-			store, _ := New(client, Config{Bucket: "test"})
+			store, _ := New(client, "test")
 			tmp, err := os.CreateTemp(t.TempDir(), "mp-*")
 			if err != nil {
 				t.Fatal(err)
@@ -119,7 +119,7 @@ func TestStore_MapsPreconditionCodes(t *testing.T) {
 
 			// Create path (object absent, If-None-Match).
 			client := &codeClient{MockS3Client: NewMockS3Client(), putCode: code}
-			store, _ := New(client, Config{Bucket: "test"})
+			store, _ := New(client, "test")
 			err := store.CompareAndSwap(ctx, "ptr/latest", "", "snap-1")
 			if errors.Is(err, lode.ErrSnapshotConflict) != wantConflict || err == nil {
 				t.Errorf("create, code %s: got %v, want conflict=%v", code, err, wantConflict)
@@ -127,7 +127,7 @@ func TestStore_MapsPreconditionCodes(t *testing.T) {
 
 			// Update path (object present, If-Match).
 			client = &codeClient{MockS3Client: NewMockS3Client()}
-			store, _ = New(client, Config{Bucket: "test"})
+			store, _ = New(client, "test")
 			if err := store.CompareAndSwap(ctx, "ptr/latest", "", "snap-1"); err != nil {
 				t.Fatal(err)
 			}
@@ -144,7 +144,7 @@ func TestStore_ReadRange_Headers(t *testing.T) {
 	t.Run("exact range header", func(t *testing.T) {
 		ctx := t.Context()
 		client := &codeClient{MockS3Client: NewMockS3Client()}
-		store, _ := New(client, Config{Bucket: "test"})
+		store, _ := New(client, "test")
 		if err := store.Put(ctx, "k", bytes.NewReader([]byte("hello"))); err != nil {
 			t.Fatal(err)
 		}
@@ -173,7 +173,7 @@ func TestStore_ReadRange_Headers(t *testing.T) {
 
 	t.Run("exact overflow bound", func(t *testing.T) {
 		ctx := t.Context()
-		store, _ := New(NewMockS3Client(), Config{Bucket: "test"})
+		store, _ := New(NewMockS3Client(), "test")
 		if err := store.Put(ctx, "k", bytes.NewReader([]byte("hello"))); err != nil {
 			t.Fatal(err)
 		}

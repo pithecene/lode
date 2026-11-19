@@ -64,7 +64,7 @@ func (d *dataset) validateExpire(req ExpireRequest) error {
 			return fmt.Errorf("lode: Expire partition %q: %w", req.Partition, ErrInvalidPath)
 		}},
 		{req.Partition != "" && !d.layout.supportsPartitions(), func() error {
-			return fmt.Errorf("lode: Expire partition %q: %w", req.Partition, ErrPartitionPrefixNotSupported)
+			return fmt.Errorf("lode: Expire partition %q: %w", req.Partition, ErrNotPartitioned)
 		}},
 	}
 	for _, c := range checks {
@@ -84,10 +84,10 @@ func (d *dataset) validateExpire(req ExpireRequest) error {
 // from their tombstone alone.
 type selection struct {
 	partition string // without a trailing "/"; "" when unset
-	matches   []func(DatasetSnapshotID) bool
+	matches   []func(SnapshotID) bool
 	// byTombstone are the requested IDs a tombstone alone can select:
 	// Partition and Before select from manifests only.
-	byTombstone []DatasetSnapshotID
+	byTombstone []SnapshotID
 }
 
 func newSelection(req ExpireRequest) selection {
@@ -96,21 +96,21 @@ func newSelection(req ExpireRequest) selection {
 		sel.byTombstone = slices.Compact(slices.Sorted(slices.Values(req.IDs))) // each once
 	}
 	if len(req.IDs) > 0 {
-		ids := make(map[DatasetSnapshotID]bool, len(req.IDs))
+		ids := make(map[SnapshotID]bool, len(req.IDs))
 		for _, id := range req.IDs {
 			ids[id] = true
 		}
-		sel.matches = append(sel.matches, func(id DatasetSnapshotID) bool { return ids[id] })
+		sel.matches = append(sel.matches, func(id SnapshotID) bool { return ids[id] })
 	}
 	if !req.Before.IsZero() {
-		sel.matches = append(sel.matches, func(id DatasetSnapshotID) bool { return startedBefore(id, req.Before) })
+		sel.matches = append(sel.matches, func(id SnapshotID) bool { return startedBefore(id, req.Before) })
 	}
 	return sel
 }
 
 // selects reports whether every set selector matches id. Partition is not
 // among them: the listing prefix applies it.
-func (s selection) selects(id DatasetSnapshotID) bool {
+func (s selection) selects(id SnapshotID) bool {
 	for _, match := range s.matches {
 		if !match(id) {
 			return false
@@ -129,26 +129,26 @@ func (s selection) listPrefix(l *pathLayout, dataset DatasetID) string {
 }
 
 // spansOutside reports whether a snapshot selected by partition also has
-// data files outside it (CONTRACT_RETENTION §Mixed Snapshots). Callers pass
-// only the snapshot's own data files: a foreign path is never deleted, so
+// data objects outside it (CONTRACT_RETENTION §Mixed Snapshots). Callers pass
+// only the snapshot's own data objects: a foreign path is never deleted, so
 // it never decides.
-func (s selection) spansOutside(l *pathLayout, owned []FileRef) bool {
+func (s selection) spansOutside(l *pathLayout, owned []ObjectRef) bool {
 	if s.partition == "" {
 		return false
 	}
-	return slices.ContainsFunc(owned, func(f FileRef) bool {
-		return !withinPartition(l.extractPartitionPath(f.Path), s.partition)
+	return slices.ContainsFunc(owned, func(obj ObjectRef) bool {
+		return !withinPartition(l.extractPartitionPath(obj.Path), s.partition)
 	})
 }
 
-func startedBefore(id DatasetSnapshotID, cutoff time.Time) bool {
+func startedBefore(id SnapshotID, cutoff time.Time) bool {
 	t, ok := history.Instant(id)
 	return ok && t.Before(cutoff)
 }
 
 // snapshotKeys is one snapshot's keys of one kind from a listing, sorted.
 type snapshotKeys struct {
-	id    DatasetSnapshotID
+	id    SnapshotID
 	paths []string
 }
 
@@ -175,7 +175,7 @@ func (d *dataset) expiryListing(ctx context.Context, sel selection) (expiryListi
 	for _, k := range keys {
 		listing.listed[k] = true
 	}
-	withManifest := make(map[DatasetSnapshotID]bool)
+	withManifest := make(map[SnapshotID]bool)
 	for _, g := range groupBySnapshot(keys, d.objectsOfKind(manifestLeaf, sel.selects)) {
 		withManifest[g.id] = true
 		listing.candidates = append(listing.candidates, expiryCandidate{snapshotKeys: g})
@@ -191,7 +191,7 @@ func (d *dataset) expiryListing(ctx context.Context, sel selection) (expiryListi
 
 // tombstoneCandidates are the requested IDs with no manifest left whose
 // expiry a tombstone records: the request completes them from it.
-func (d *dataset) tombstoneCandidates(ctx context.Context, sel selection, withManifest map[DatasetSnapshotID]bool) ([]expiryCandidate, error) {
+func (d *dataset) tombstoneCandidates(ctx context.Context, sel selection, withManifest map[SnapshotID]bool) ([]expiryCandidate, error) {
 	var out []expiryCandidate
 	for _, id := range sel.byTombstone {
 		if withManifest[id] {
@@ -213,16 +213,16 @@ func (d *dataset) tombstoneCandidates(ctx context.Context, sel selection, withMa
 // objects of the given kind and belong to a snapshot keep accepts. A
 // listing may return a raw key that a store would clean into another path;
 // such a key is outside retention's scope.
-func (d *dataset) objectsOfKind(kind pathKind, keep func(DatasetSnapshotID) bool) func(string) (DatasetSnapshotID, bool) {
-	return func(p string) (DatasetSnapshotID, bool) {
+func (d *dataset) objectsOfKind(kind pathKind, keep func(SnapshotID) bool) func(string) (SnapshotID, bool) {
+	return func(p string) (SnapshotID, bool) {
 		sp, ok := d.layout.parse(p)
 		return sp.snapshot, ok && d.layout.isObjectOf(d.id, sp.snapshot, kind, p) && keep(sp.snapshot)
 	}
 }
 
 // groupBySnapshot groups the keys owner accepts by snapshot, oldest first.
-func groupBySnapshot(keys []string, owner func(string) (DatasetSnapshotID, bool)) []snapshotKeys {
-	byID := make(map[DatasetSnapshotID][]string)
+func groupBySnapshot(keys []string, owner func(string) (SnapshotID, bool)) []snapshotKeys {
+	byID := make(map[SnapshotID][]string)
 	for _, k := range keys {
 		if id, ok := owner(k); ok {
 			byID[id] = append(byID[id], k)
@@ -246,9 +246,9 @@ func groupBySnapshot(keys []string, owner func(string) (DatasetSnapshotID, bool)
 // protection). A head stays protected after a newer commit supersedes it:
 // the run's report promises the head it saw was kept.
 type headGuard struct {
-	history   *history.History[DatasetSnapshotID, Manifest]
-	current   DatasetSnapshotID
-	protected map[DatasetSnapshotID]bool
+	history   *history.History[SnapshotID, Manifest]
+	current   SnapshotID
+	protected map[SnapshotID]bool
 }
 
 // refuseHeadless is for a dataset with neither a pointer nor a manifest: a
@@ -262,8 +262,8 @@ func (d *dataset) refuseHeadless(ctx context.Context) error {
 	return fmt.Errorf("lode: latest pointer is absent beside tombstones: %w", ErrHeadUncommitted)
 }
 
-func newHeadGuard(ctx context.Context, h *history.History[DatasetSnapshotID, Manifest]) (*headGuard, error) {
-	g := &headGuard{history: h, protected: make(map[DatasetSnapshotID]bool)}
+func newHeadGuard(ctx context.Context, h *history.History[SnapshotID, Manifest]) (*headGuard, error) {
+	g := &headGuard{history: h, protected: make(map[SnapshotID]bool)}
 	return g, g.refresh(ctx)
 }
 
@@ -277,7 +277,7 @@ func (g *headGuard) refresh(ctx context.Context) error {
 	return nil
 }
 
-func (g *headGuard) is(id DatasetSnapshotID) bool { return g.protected[id] }
+func (g *headGuard) is(id SnapshotID) bool { return g.protected[id] }
 
 // -----------------------------------------------------------------------------
 // Expiring one snapshot
@@ -289,23 +289,23 @@ type expiryVerdict int
 const (
 	verdictVanished expiryVerdict = iota // neither manifest nor tombstone left
 	verdictRetained                      // the head
-	verdictMixed                         // files outside the selected partition
+	verdictMixed                         // objects outside the selected partition
 	verdictExpired                       // expired, or would be on a dry run
 )
 
-// expiryOutcome is one candidate's verdict and the files it touched.
+// expiryOutcome is one candidate's verdict and the objects it touched.
 type expiryOutcome struct {
-	id      DatasetSnapshotID
+	id      SnapshotID
 	verdict expiryVerdict
-	deleted []FileRef // data objects deleted, or that would be on a dry run
-	skipped []string  // manifest paths that are not this snapshot's objects
+	deleted []ObjectRef // data objects deleted, or that would be on a dry run
+	skipped []string    // manifest paths that are not this snapshot's objects
 }
 
 // recordVerdict says where each verdict lands in the report.
-var recordVerdict = map[expiryVerdict]func(*ExpireReport, DatasetSnapshotID){
-	verdictRetained: func(r *ExpireReport, id DatasetSnapshotID) { r.RetainedHead = id },
-	verdictMixed:    func(r *ExpireReport, id DatasetSnapshotID) { r.Mixed = append(r.Mixed, id) },
-	verdictExpired:  func(r *ExpireReport, id DatasetSnapshotID) { r.Expired = append(r.Expired, id) },
+var recordVerdict = map[expiryVerdict]func(*ExpireReport, SnapshotID){
+	verdictRetained: func(r *ExpireReport, id SnapshotID) { r.RetainedHead = id },
+	verdictMixed:    func(r *ExpireReport, id SnapshotID) { r.Mixed = append(r.Mixed, id) },
+	verdictExpired:  func(r *ExpireReport, id SnapshotID) { r.Expired = append(r.Expired, id) },
 }
 
 func (r *ExpireReport) record(o expiryOutcome) {
@@ -330,8 +330,7 @@ type expiryRun struct {
 // one already recorded or the one this run would record from the manifest.
 type expiryPlan struct {
 	tomb     tombstone
-	recorded bool      // an earlier or concurrent run recorded it
-	manifest *Manifest // nil when no manifest is left
+	recorded bool // an earlier or concurrent run recorded it
 }
 
 // expire decides one candidate and, unless this is a dry run, carries the
@@ -348,7 +347,7 @@ func (r expiryRun) expire(ctx context.Context, c expiryCandidate) (expiryOutcome
 	if err != nil {
 		return out, err
 	}
-	split := r.ds.splitFiles(c.id, plan.tomb.Files)
+	split := r.ds.splitObjects(c.id, plan.tomb.Objects)
 	// A tombstone's inventory is the whole snapshot, so a resumed expiry is
 	// checked against the partition too.
 	if r.sel.spansOutside(r.ds.layout, split.owned) {
@@ -373,7 +372,7 @@ func (r expiryRun) expire(ctx context.Context, c expiryCandidate) (expiryOutcome
 }
 
 // retain keeps a snapshot the head guard protects. The pointer is still
-// rechecked, as before any snapshot's step 1: a commit in flight stops the
+// rechecked, as before any snapshot's step 1: a pending commit stops the
 // run with ErrHeadUncommitted here too.
 func (r expiryRun) retain(ctx context.Context, out expiryOutcome) (expiryOutcome, error) {
 	if err := r.head.refresh(ctx); err != nil {
@@ -403,7 +402,7 @@ func (r expiryRun) plan(ctx context.Context, c expiryCandidate) (expiryPlan, err
 	// A copy the tombstone does not describe (malformed, or of an earlier
 	// snapshot with the same ID) must never be deleted under it; every path
 	// this expiry would delete is checked, listed or not.
-	matches, err := r.ds.describesEveryCopy(ctx, plan.tomb, r.ds.allManifestPaths(c.id, c.paths, plan.tomb.Files))
+	matches, err := r.ds.describesEveryCopy(ctx, plan.tomb, r.ds.allManifestPaths(c.id, c.paths, plan.tomb.Objects))
 	if err != nil {
 		return expiryPlan{}, err
 	}
@@ -429,11 +428,11 @@ func (r expiryRun) tombstonePlan(ctx context.Context, c expiryCandidate) (expiry
 		return expiryPlan{}, errSnapshotGone
 	case (errors.Is(err, ErrNotFound) || errors.Is(err, errEmptyTombstone)) && hasManifest:
 		// None recorded yet; an empty placeholder is replaced by the write.
-		return expiryPlan{tomb: newTombstone(c.id, m), manifest: m}, nil
+		return expiryPlan{tomb: newTombstone(c.id, m)}, nil
 	case err != nil:
 		return expiryPlan{}, err
 	}
-	return expiryPlan{tomb: t, recorded: true, manifest: m}, nil
+	return expiryPlan{tomb: t, recorded: true}, nil
 }
 
 // tombstoneFor is the candidate's recorded tombstone: the one selection
@@ -445,10 +444,10 @@ func (r expiryRun) tombstoneFor(ctx context.Context, c expiryCandidate) (tombsto
 	return r.ds.tombstones().lookup(ctx, c.id)
 }
 
-// present meters files: those the run's listing showed, so an object an
+// present meters objects: those the run's listing showed, so an object an
 // earlier interrupted run already deleted is not counted twice.
-func (r expiryRun) present(files []FileRef) []FileRef {
-	return slices.DeleteFunc(slices.Clone(files), func(f FileRef) bool { return !r.listed[f.Path] })
+func (r expiryRun) present(objects []ObjectRef) []ObjectRef {
+	return slices.DeleteFunc(slices.Clone(objects), func(obj ObjectRef) bool { return !r.listed[obj.Path] })
 }
 
 // remove runs steps 1–4 from the plan: tombstone (unless recorded already),
@@ -462,7 +461,7 @@ func (r expiryRun) remove(ctx context.Context, c expiryCandidate, plan expiryPla
 			return out, err
 		}
 	}
-	manifests := d.allManifestPaths(c.id, c.paths, plan.tomb.Files)
+	manifests := d.allManifestPaths(c.id, c.paths, plan.tomb.Objects)
 	if err := deleteObject(ctx, d.store, manifests[0]); err != nil {
 		return out, err
 	}
@@ -470,12 +469,12 @@ func (r expiryRun) remove(ctx context.Context, c expiryCandidate, plan expiryPla
 	if err := deleteObjects(ctx, d.store, manifests[1:]); err != nil {
 		return out, err
 	}
-	for _, f := range split.owned {
-		if err := deleteObject(ctx, d.store, f.Path); err != nil {
+	for _, obj := range split.owned {
+		if err := deleteObject(ctx, d.store, obj.Path); err != nil {
 			return out, err
 		}
-		if r.listed[f.Path] {
-			out.deleted = append(out.deleted, f)
+		if r.listed[obj.Path] {
+			out.deleted = append(out.deleted, obj)
 		}
 	}
 	return out, nil
@@ -510,7 +509,7 @@ func (d *dataset) describesEveryCopy(ctx context.Context, t tombstone, paths []s
 
 // loadCopies loads every manifest copy of snapshot id that is present at
 // paths or the canonical path, whether or not a listing showed it.
-func (d *dataset) loadCopies(ctx context.Context, id DatasetSnapshotID, paths []string) ([]*Manifest, error) {
+func (d *dataset) loadCopies(ctx context.Context, id SnapshotID, paths []string) ([]*Manifest, error) {
 	var copies []*Manifest
 	for _, p := range d.manifestCopies(id, paths) {
 		m, err := d.loadManifestAt(ctx, id, p)
@@ -528,7 +527,7 @@ func (d *dataset) loadCopies(ctx context.Context, id DatasetSnapshotID, paths []
 // loadManifestAt loads and validates the manifest copy at p. ErrNotFound
 // means it is absent. An invalid or misplaced manifest is an error: nothing
 // is expired or recorded from it.
-func (d *dataset) loadManifestAt(ctx context.Context, id DatasetSnapshotID, p string) (*Manifest, error) {
+func (d *dataset) loadManifestAt(ctx context.Context, id SnapshotID, p string) (*Manifest, error) {
 	s, err := d.history.LoadAt(ctx, id, p)
 	if errors.Is(err, ErrNotFound) {
 		return nil, err
@@ -541,7 +540,7 @@ func (d *dataset) loadManifestAt(ctx context.Context, id DatasetSnapshotID, p st
 
 // manifestCopies is where snapshot id's manifest may be: the canonical path
 // first, then every other copy the listing found.
-func (d *dataset) manifestCopies(id DatasetSnapshotID, listed []string) []string {
+func (d *dataset) manifestCopies(id SnapshotID, listed []string) []string {
 	canonical := d.layout.manifestPath(d.id, id)
 	others := slices.DeleteFunc(slices.Clone(listed), func(p string) bool { return p == canonical })
 	return append([]string{canonical}, others...)
@@ -550,23 +549,23 @@ func (d *dataset) manifestCopies(id DatasetSnapshotID, listed []string) []string
 // inventorySplit is an inventory divided into the data objects Expire may
 // delete and every other path, which is reported and left in place.
 type inventorySplit struct {
-	owned   []FileRef
+	owned   []ObjectRef
 	skipped []string
 }
 
-func (d *dataset) splitFiles(id DatasetSnapshotID, files []FileRef) inventorySplit {
+func (d *dataset) splitObjects(id SnapshotID, objects []ObjectRef) inventorySplit {
 	var split inventorySplit
-	seen := make(map[string]bool, len(files))
-	for _, f := range files {
-		if seen[f.Path] {
+	seen := make(map[string]bool, len(objects))
+	for _, obj := range objects {
+		if seen[obj.Path] {
 			continue // one object, counted once however often it is listed
 		}
-		seen[f.Path] = true
-		if d.layout.isObjectOf(d.id, id, dataLeaf, f.Path) {
-			split.owned = append(split.owned, f)
+		seen[obj.Path] = true
+		if d.layout.isObjectOf(d.id, id, dataLeaf, obj.Path) {
+			split.owned = append(split.owned, obj)
 			continue
 		}
-		split.skipped = append(split.skipped, f.Path)
+		split.skipped = append(split.skipped, obj.Path)
 	}
 	return split
 }
@@ -580,12 +579,12 @@ func (out expiryOutcome) expired(split inventorySplit) expiryOutcome {
 
 // allManifestPaths is every manifest path of the snapshot, canonical first:
 // the ones commit wrote for its inventory's partitions and any a listing
-// found. A path derived from a malformed FileRef is dropped unless it is a
+// found. A path derived from a malformed ObjectRef is dropped unless it is a
 // canonical manifest path of this snapshot.
-func (d *dataset) allManifestPaths(id DatasetSnapshotID, listed []string, files []FileRef) []string {
-	partitions := make([]string, 0, len(files))
-	for _, f := range files {
-		partitions = append(partitions, d.layout.extractPartitionPath(f.Path))
+func (d *dataset) allManifestPaths(id SnapshotID, listed []string, objects []ObjectRef) []string {
+	partitions := make([]string, 0, len(objects))
+	for _, obj := range objects {
+		partitions = append(partitions, d.layout.extractPartitionPath(obj.Path))
 	}
 	paths := slices.DeleteFunc(d.manifestPaths(id, partitions), func(p string) bool {
 		return !d.layout.isObjectOf(d.id, id, manifestLeaf, p)
@@ -620,10 +619,10 @@ func deleteObjects(ctx context.Context, store Store, paths []string) error {
 	return nil
 }
 
-func totalBytes(files []FileRef) int64 {
+func totalBytes(objects []ObjectRef) int64 {
 	var n int64
-	for _, f := range files {
-		n += f.SizeBytes
+	for _, obj := range objects {
+		n += obj.SizeBytes
 	}
 	return n
 }

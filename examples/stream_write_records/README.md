@@ -1,66 +1,67 @@
 # Records.StreamWrite — Streaming Record Writes
 
-This example demonstrates `Records.StreamWrite`, which streams large sets
-of records without loading all of the data into memory.
+This example demonstrates `Records.StreamWrite`, which streams large sets of
+records without loading the entire dataset into memory.
 
 ## What This Demonstrates
 
-1. **Iterator-driven streaming**: records come from an
-   `iter.Seq2[T, error]`, one at a time.
-2. **Memory efficiency**: only one record is in memory at a time (the
-   iterator determines the pace).
-3. **Atomic completion**: either all records are written and the manifest
-   is created, or nothing is committed.
+1. **Iterator-driven streaming**: records come from an `iter.Seq2[T, error]`,
+   one at a time.
+2. **Memory efficiency**: only one record is held in memory at a time, at the
+   pace of the iterator.
+3. **Atomic completion**: either all records are encoded and the manifest is
+   persisted, or no snapshot is committed.
 4. **Explicit metadata**: `nil` metadata persists as `{}`.
 
-Note: commit visibility (a snapshot is invisible until its manifest exists)
-is documented behavior but is not demonstrated here. See the
-`manifest_driven` example for visibility semantics.
+Note: commit visibility (a snapshot is invisible until its canonical manifest
+exists) is demonstrated separately in the `manifest_driven` example.
 
 ## When to Use Records.StreamWrite
 
 Use `Records.StreamWrite` when:
-- You have large streams of records that should not be buffered in memory
-- Records come from a database cursor, a file reader, or a channel
-- You are using a codec that streams (for example, JSONL)
+- You have large streams of records that should not be buffered in memory.
+- Records arrive from a database cursor, a file reader, or a channel.
+- You configure a codec that implements `StreamingCodec[T]` (such as
+  `JSONL[T]()`).
 
 Do not use `Records.StreamWrite` when:
-- You need partitioning (single-pass streaming cannot partition records)
-- Your codec does not stream
-- The data is already in memory (use `Write` instead)
+- You require Hive partitioning (single-pass streaming cannot group records
+  across partition objects).
+- Your codec does not stream (such as `Parquet[T]`, which requires a file
+  footer).
+- Your records are already in memory (use `Records.Write` instead).
 
 ## Failure Modes
 
-`Records.StreamWrite` validates its configuration and input before
-streaming begins.
+`Records.StreamWrite` validates its configuration and input before streaming
+begins.
 
-**Sentinel errors** (use `errors.Is()` to check):
+**Sentinel errors** (check with `errors.Is()`):
 
 | Error | Cause | Remedy |
-|-------|-------|-----|
-| `ErrNilIterator` | `nil` was passed as the iterator | Supply an iterator |
-| `ErrCodecNotStreamable` | The codec is not a `StreamingCodec` | Use a streaming codec (for example, JSONL) or use `Write` |
-| `ErrPartitioningNotSupported` | The dataset's layout is partitioned | Use `Write` for partitioned data |
+|-------|-------|--------|
+| `ErrInvalidArgument` | `nil` iterator or metadata that does not encode as a JSON object | Supply a non-nil iterator and object-shaped metadata (or `nil`) |
+| `ErrCodecNotStreamable` | The codec does not implement `StreamingCodec[T]` | Use a streaming codec (`JSONL[T]()`) or call `Records.Write` |
+| `ErrPartitioningNotSupported` | The dataset's layout is partitioned | Use `Records.Write` for partitioned data |
 
-### Iterator Errors
+### Iterator Errors and Abort Semantics
 
 If the iterator yields a non-nil error during streaming:
 - Streaming stops immediately.
-- No manifest is written, so no snapshot is created.
-- Partial data may remain in storage (its removal is best-effort, and
-  `Sweep` reclaims it later).
+- Lode writes no manifest, so no snapshot is created.
+- Partial data may remain in storage (best-effort cleanup runs when `Store.Put`
+  succeeded before manifest persistence, and `Records.Sweep` reclaims any
+  residual objects after its grace period).
 
-### Abort Semantics
-
-`Records.StreamWrite` is atomic: either all records are written and the
-manifest is created, or nothing is committed. There is no explicit
-`Abort()`; an error from the iterator aborts the write.
+`Records.StreamWrite` has no separate `Abort` handle: yielding an error from
+the iterator or canceling `ctx` aborts the write before any manifest is
+committed.
 
 *Contract references: [`CONTRACT_ERRORS.md`](../../docs/contracts/CONTRACT_ERRORS.md), [`CONTRACT_WRITE_API.md`](../../docs/contracts/CONTRACT_WRITE_API.md)*
 
 ## The Iterator
 
-`Records.StreamWrite` takes a range-over-func iterator:
+`Records.StreamWrite` accepts a standard Go range-over-func iterator:
 
 ```go
 func each(records []lode.D) iter.Seq2[lode.D, error] {
@@ -74,8 +75,8 @@ func each(records []lode.D) iter.Seq2[lode.D, error] {
 }
 ```
 
-Yield a non-nil error to stop the write; stop yielding when `yield`
-returns false.
+Yield a non-nil error to abort the write, and return immediately whenever
+`yield` returns `false`.
 
 ## Run
 
@@ -96,8 +97,8 @@ Streaming 5 records...
 Created snapshot: <id>
 Row count: 5
 Codec: jsonl
-Files:
-  - datasets/events/snapshots/<id>/data/data (...)
+Objects:
+  - datasets/events/snapshots/<id>/data/data (... bytes)
 
 === VERIFY ===
 Read back 5 records:
@@ -118,6 +119,6 @@ StreamWrite demonstration complete!
 
 ## Related
 
-- [`blob_upload`](../blob_upload) — Blob streaming with `Blobs.StreamWrite`
-- [`default_layout`](../default_layout) — In-memory `Write` with a codec
-- [PUBLIC_API.md](../../PUBLIC_API.md) — Streaming API constraints
+- [`blob_upload`](../blob_upload): single-call blob streaming with `Blobs.StreamWrite`
+- [`default_layout`](../default_layout): in-memory `Records.Write` with a codec
+- [`PUBLIC_API.md`](../../PUBLIC_API.md): streaming API constraints

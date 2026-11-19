@@ -30,9 +30,9 @@ func (f failingStore) Get(context.Context, string) (io.ReadCloser, error) { retu
 func (f failingStore) List(context.Context, string) ([]string, error)     { return nil, f.err }
 
 // defaultLayout is the unpartitioned layout under the default names.
-func defaultLayout() *pathLayout { return newPathLayout(defaultPaths(false), noopScheme) }
+func defaultLayout() *pathLayout { return newPathLayout(false, noopScheme) }
 
-func datasetHistory(store Store) history.History[DatasetSnapshotID, Manifest] {
+func datasetHistory(store Store) history.History[SnapshotID, Manifest] {
 	return history.New(store, newDatasetKind("ds", defaultLayout(), store), defaultLayout().latestPointerPath("ds"), "manifest", historyErrors)
 }
 

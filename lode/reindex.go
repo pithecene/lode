@@ -46,7 +46,7 @@ func (r sweepRun) reindex(ctx context.Context, report *SweepReport) error {
 // its listed data implies. Within the grace period its writer may still be
 // persisting the index, which a copy persisted here would make fail with
 // ErrPathExists (CONTRACT_RETENTION §Grace Period).
-func (r sweepRun) mayReindex(id DatasetSnapshotID) bool {
+func (r sweepRun) mayReindex(id SnapshotID) bool {
 	_, settled := r.settled[id]
 	if settled || r.held[id] {
 		return false
@@ -61,7 +61,7 @@ func (r sweepRun) mayReindex(id DatasetSnapshotID) bool {
 // indexGap reports whether a listed data object of snapshot id lies in a
 // partition without a listed manifest of the snapshot. It decides from the
 // listing alone, so a complete index costs no store call.
-func (r sweepRun) indexGap(id DatasetSnapshotID) bool {
+func (r sweepRun) indexGap(id SnapshotID) bool {
 	indexed := make(map[string]bool, len(r.inv.manifests[id]))
 	for _, p := range r.inv.manifests[id] {
 		indexed[r.ds.layout.extractPartitionPath(p)] = true
@@ -73,12 +73,12 @@ func (r sweepRun) indexGap(id DatasetSnapshotID) bool {
 }
 
 // reindexOne copies the canonical manifest of snapshot id, unchanged, to
-// every partition path its files derive that the listing does not show. The
+// every partition path its objects derive that the listing does not show. The
 // canonical manifest, not the listing, decides the partitions. A copy
 // persisted while an expiry recorded the snapshot is removed again, so the
 // repair never restores a manifest that the expiry deleted. It reports
 // whether copies created by this run remain, including when it fails.
-func (r sweepRun) reindexOne(ctx context.Context, id DatasetSnapshotID) (bool, error) {
+func (r sweepRun) reindexOne(ctx context.Context, id SnapshotID) (bool, error) {
 	canonical := r.ds.layout.manifestPath(r.ds.id, id)
 	data, m, err := r.ds.readCanonical(ctx, id, canonical)
 	if errors.Is(err, ErrNotFound) {
@@ -89,9 +89,9 @@ func (r sweepRun) reindexOne(ctx context.Context, id DatasetSnapshotID) (bool, e
 	}
 	// The tombstone check runs even after a failed write: a copy created
 	// before the failure must not outlive an expiry either.
-	// Only the snapshot's own data objects name its partitions: a FileRef
+	// Only the snapshot's own data objects name its partitions: an ObjectRef
 	// outside them (§Mixed Snapshots) never places a copy in this dataset.
-	owned := r.ds.splitFiles(id, m.Files).owned
+	owned := r.ds.splitObjects(id, m.Objects).owned
 	persisted, putErr := r.persistMissing(ctx, id, r.ds.allManifestPaths(id, nil, owned), data)
 	if len(persisted) == 0 || r.dryRun {
 		return len(persisted) > 0, putErr
@@ -103,7 +103,7 @@ func (r sweepRun) reindexOne(ctx context.Context, id DatasetSnapshotID) (bool, e
 // persistMissing creates a copy of data at each partition path of snapshot
 // id that the listing does not show, and returns the paths it created,
 // those created before a failure included.
-func (r sweepRun) persistMissing(ctx context.Context, id DatasetSnapshotID, paths []string, data []byte) ([]string, error) {
+func (r sweepRun) persistMissing(ctx context.Context, id SnapshotID, paths []string, data []byte) ([]string, error) {
 	canonical := r.ds.layout.manifestPath(r.ds.id, id)
 	var persisted []string
 	for _, p := range paths {
@@ -148,7 +148,7 @@ func (r sweepRun) persistCopy(ctx context.Context, p string, data []byte) (bool,
 // copy persisted after the expiry deleted the partition manifests is seen
 // here and deleted. It reports whether copies may remain: when the check
 // or a deletion fails, they are reported with the error.
-func (r sweepRun) keepUnlessExpired(ctx context.Context, id DatasetSnapshotID, persisted []string) (bool, error) {
+func (r sweepRun) keepUnlessExpired(ctx context.Context, id SnapshotID, persisted []string) (bool, error) {
 	absent, err := r.ds.tombstones().absent(ctx, id)
 	if err != nil || absent {
 		return true, err
@@ -162,7 +162,7 @@ func (r sweepRun) keepUnlessExpired(ctx context.Context, id DatasetSnapshotID, p
 // readCanonical reads the canonical manifest of snapshot id at p and
 // returns its bytes, to copy unchanged, with the validated manifest they
 // encode.
-func (d *dataset) readCanonical(ctx context.Context, id DatasetSnapshotID, p string) ([]byte, *Manifest, error) {
+func (d *dataset) readCanonical(ctx context.Context, id SnapshotID, p string) ([]byte, *Manifest, error) {
 	rc, err := d.store.Get(ctx, p)
 	if err != nil {
 		return nil, nil, err

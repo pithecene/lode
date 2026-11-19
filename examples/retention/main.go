@@ -99,8 +99,8 @@ func run() error {
 
 // writeRun commits one snapshot per event type of a run, as a crawler
 // flushing its batches would.
-func writeRun(ctx context.Context, ds lode.Records[lode.D], run string) ([]*lode.DatasetSnapshot, error) {
-	var snaps []*lode.DatasetSnapshot
+func writeRun(ctx context.Context, ds *lode.Records[lode.D], run string) ([]*lode.Snapshot, error) {
+	var snaps []*lode.Snapshot
 	for _, eventType := range []string{"page", "item"} {
 		snap, err := ds.Write(ctx, lode.R(
 			lode.D{"run_id": run, "event_type": eventType, "url": "https://example.com/" + run},

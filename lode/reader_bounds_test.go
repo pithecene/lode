@@ -23,10 +23,11 @@ func TestValidateManifest_ZeroIsValid_NegativeRejected(t *testing.T) {
 		wantField string // "" means valid
 	}{
 		{"zero row count", func(m *Manifest) { m.RowCount = 0 }, ""},
-		{"zero size file", func(m *Manifest) { m.Files[0].SizeBytes = 0 }, ""},
+		{"zero size object", func(m *Manifest) { m.Objects[0].SizeBytes = 0 }, ""},
+		{"nil objects", func(m *Manifest) { m.Objects = nil }, "objects"},
 		{"negative row count", func(m *Manifest) { m.RowCount = -1 }, "row_count"},
-		{"negative size file", func(m *Manifest) { m.Files[0].SizeBytes = -1 }, "files[0].size_bytes"},
-		{"empty file path", func(m *Manifest) { m.Files[0].Path = "" }, "files[0].path"},
+		{"negative size object", func(m *Manifest) { m.Objects[0].SizeBytes = -1 }, "objects[0].size_bytes"},
+		{"empty object path", func(m *Manifest) { m.Objects[0].Path = "" }, "objects[0].path"},
 	}
 	for _, c := range cases {
 		m := validTestManifest()

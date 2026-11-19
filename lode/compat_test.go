@@ -38,7 +38,7 @@ func fieldsOf(records []D, field string) []string {
 }
 
 // readAll reads every snapshot of a record dataset, oldest first.
-func readAll(t *testing.T, ds Records[D]) []D {
+func readAll(t *testing.T, ds *Records[D]) []D {
 	t.Helper()
 	snaps, err := ds.Snapshots(t.Context())
 	if err != nil {
@@ -75,9 +75,9 @@ func TestCompat_v0_11_0_HiveRecords(t *testing.T) {
 		if got, want := refPaths(parts), []string{"day=2024-01-15", "day=2024-01-16", "day=2024-01-17"}; !slices.Equal(got, want) {
 			t.Errorf("partitions = %v, want %v", got, want)
 		}
-		refs, err := ds.ListManifests(t.Context(), PartitionPath{}, ManifestListOptions{})
-		if err != nil || len(refs) != 2 {
-			t.Errorf("ListManifests = %v, %v; want both snapshots", refs, err)
+		loaded := collect(t, ds, PartitionPath{}, ManifestListOptions{})
+		if len(loaded) != 2 {
+			t.Errorf("Manifests = %v; want both snapshots", loaded)
 		}
 	})
 
@@ -104,8 +104,8 @@ func TestCompat_v0_11_0_HiveRecords(t *testing.T) {
 			t.Fatal(err)
 		}
 		oldest := snaps[0].ID
-		report, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{oldest}})
-		if err != nil || !slices.Equal(report.Expired, []DatasetSnapshotID{oldest}) {
+		report, err := ds.Expire(t.Context(), ExpireRequest{IDs: []SnapshotID{oldest}})
+		if err != nil || !slices.Equal(report.Expired, []SnapshotID{oldest}) {
 			t.Fatalf("Expire = %+v, %v; want %s expired", report, err, oldest)
 		}
 		if _, err := ds.Snapshot(t.Context(), oldest); !errors.Is(err, ErrSnapshotExpired) {
@@ -143,7 +143,7 @@ func TestCompat_v0_11_0_CompressedRecords(t *testing.T) {
 	})
 
 	t.Run("a writer with the recorded compressor appends", func(t *testing.T) {
-		ds, err := Open(FS(dir)).Records(t.Context(), "logs", JSONL[D](), WithCompressor(NewGzipCompressor()))
+		ds, err := Open(FS(dir)).Records(t.Context(), "logs", JSONL[D](), WithCompressor(Gzip()))
 		if err != nil {
 			t.Fatal(err)
 		}

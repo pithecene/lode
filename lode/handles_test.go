@@ -15,9 +15,9 @@ import (
 // a store the test holds, through lode.Use, so that a test can inspect or
 // seed the store directly.
 
-// recordsOn opens dataset id over store as Records[D], encoded as JSONL
+// recordsOn opens dataset id over store as *Records[D], encoded as JSONL
 // unless opts' codec says otherwise. It fails the test on error.
-func recordsOn(t testing.TB, store Store, id DatasetID, opts ...DatasetOption) Records[D] {
+func recordsOn(t testing.TB, store Store, id DatasetID, opts ...DatasetOption) *Records[D] {
 	t.Helper()
 	r, err := Open(Use(store)).Records(t.Context(), id, JSONL[D](), opts...)
 	if err != nil {
@@ -26,8 +26,8 @@ func recordsOn(t testing.TB, store Store, id DatasetID, opts ...DatasetOption) R
 	return r
 }
 
-// recordsWith opens dataset id over store as Records[D] with codec.
-func recordsWith(t testing.TB, store Store, id DatasetID, codec Codec[D], opts ...DatasetOption) Records[D] {
+// recordsWith opens dataset id over store as *Records[D] with codec.
+func recordsWith(t testing.TB, store Store, id DatasetID, codec Codec[D], opts ...DatasetOption) *Records[D] {
 	t.Helper()
 	r, err := Open(Use(store)).Records(t.Context(), id, codec, opts...)
 	if err != nil {
@@ -36,8 +36,8 @@ func recordsWith(t testing.TB, store Store, id DatasetID, codec Codec[D], opts .
 	return r
 }
 
-// blobsOn opens dataset id over store as Blobs.
-func blobsOn(t testing.TB, store Store, id DatasetID, opts ...DatasetOption) Blobs {
+// blobsOn opens dataset id over store as *Blobs.
+func blobsOn(t testing.TB, store Store, id DatasetID, opts ...DatasetOption) *Blobs {
 	t.Helper()
 	b, err := Open(Use(store)).Blobs(t.Context(), id, opts...)
 	if err != nil {
@@ -47,7 +47,7 @@ func blobsOn(t testing.TB, store Store, id DatasetID, opts ...DatasetOption) Blo
 }
 
 // viewOn opens a view of dataset id's D records over store.
-func viewOn(t testing.TB, store Store, id DatasetID) RecordView[D] {
+func viewOn(t testing.TB, store Store, id DatasetID) *RecordView[D] {
 	t.Helper()
 	v, err := OpenReadOnly(Use(store)).Records(t.Context(), id, JSONL[D]())
 	if err != nil {
@@ -134,12 +134,14 @@ func TestViews_CannotWriteThroughRetention(t *testing.T) {
 	// reclaim it.
 	putObject(t, store, "datasets/events/snapshots/"+string(idAt(time.Now().Add(-time.Hour)))+"/data/orphan")
 	before := storeKeys(t, store)
-	retention, ok := viewOn(t, store, "events").(Retention)
-	if !ok {
-		return // a view without the methods cannot write through them
+	view := viewOn(t, store, "events")
+	if _, ok := any(view).(interface {
+		Sweep(context.Context, SweepRequest) (*SweepReport, error)
+	}); ok {
+		t.Error("RecordView exposes Sweep")
 	}
-	if _, err := retention.Sweep(t.Context(), SweepRequest{Grace: time.Minute}); !errors.Is(err, ErrReadOnly) {
-		t.Errorf("Sweep: got %v, want ErrReadOnly", err)
+	if _, err := (&writer{dataset: view.dataset}).Sweep(t.Context(), SweepRequest{Grace: time.Minute}); !errors.Is(err, ErrReadOnly) {
+		t.Errorf("Sweep over a view's read-only store: got %v, want ErrReadOnly", err)
 	}
 	if after := storeKeys(t, store); !slices.Equal(before, after) {
 		t.Errorf("objects changed through a view: %v -> %v", before, after)
@@ -254,14 +256,21 @@ func TestViews_HaveNoWriterMethods(t *testing.T) {
 	}
 	views := map[string]any{"record view": viewOn(t, store, "logs"), "blob view": blobView}
 	for name, view := range views {
-		if _, ok := view.(Retention); ok {
-			t.Errorf("%s implements Retention", name)
+		if _, ok := view.(interface {
+			Expire(context.Context, ExpireRequest) (*ExpireReport, error)
+		}); ok {
+			t.Errorf("%s implements Expire", name)
 		}
-		if _, ok := view.(Records[D]); ok {
-			t.Errorf("%s implements Records", name)
+		if _, ok := view.(interface {
+			Sweep(context.Context, SweepRequest) (*SweepReport, error)
+		}); ok {
+			t.Errorf("%s implements Sweep", name)
 		}
-		if _, ok := view.(Blobs); ok {
-			t.Errorf("%s implements Blobs", name)
+		if _, ok := view.(*Records[D]); ok {
+			t.Errorf("%s is *Records", name)
+		}
+		if _, ok := view.(*Blobs); ok {
+			t.Errorf("%s is *Blobs", name)
 		}
 	}
 }

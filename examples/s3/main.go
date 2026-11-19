@@ -73,12 +73,9 @@ func run() error {
 		return nil //nolint:nilerr // intentional: skip example gracefully when S3 is unreachable
 	}
 
-	// Open a root over the S3 store. s3.Factory performs no I/O; a
-	// configuration error is returned when the dataset opens.
-	root := lode.Open(s3.Factory(client, s3.Config{
-		Bucket: bucket,
-		Prefix: prefix,
-	}))
+	// Open a root over the S3 store scoped under prefix via lode.Prefixed.
+	// Neither s3.Bucket nor lode.Prefixed performs I/O until a dataset opens.
+	root := lode.Open(lode.Prefixed(s3.Bucket(client, bucket), prefix))
 
 	ds, err := root.Records(ctx, "events", lode.JSONL[lode.D]())
 	if err != nil {
@@ -97,7 +94,7 @@ func run() error {
 
 	fmt.Printf("Created snapshot: %s\n", snapshot.ID)
 	fmt.Printf("S3 prefix: %s\n", prefix)
-	fmt.Printf("Files in manifest: %d\n", len(snapshot.Files))
+	fmt.Printf("Objects in manifest: %d\n", len(snapshot.Objects))
 
 	datasets, err := root.ListDatasets(ctx, lode.DatasetListOptions{})
 	if err != nil {
