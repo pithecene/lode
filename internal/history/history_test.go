@@ -972,7 +972,7 @@ func TestAdvance_Staged(t *testing.T) {
 	// A store may report a failure for a CAS it applied (a retry after a lost
 	// response); the staged copy is then the only manifest of a committed
 	// snapshot.
-	t.Run("pointer failure the store applied retains the staged copy", func(t *testing.T) {
+	t.Run("pointer failure the store applied publishes the original manifest", func(t *testing.T) {
 		s := newMemStore()
 		s.fail = func(op, _ string) error {
 			if op == "cas" {
@@ -982,11 +982,11 @@ func TestAdvance_Staged(t *testing.T) {
 			return nil
 		}
 		h := newStagingHistory(s)
-		if err := h.Advance(t.Context(), "", "5", &manifest{}, paths); !errors.Is(err, errBoom) {
-			t.Fatalf("got %v, want boom", err)
+		if err := h.Advance(t.Context(), "", "5", &manifest{}, paths); err != nil {
+			t.Fatal(err)
 		}
-		if _, ok := s.objects[staged]; !ok {
-			t.Fatal("staged copy of the snapshot the pointer names was removed")
+		if _, ok := s.objects[paths[0]]; !ok {
+			t.Fatal("missing canonical manifest after confirmed pointer advance")
 		}
 	})
 }

@@ -68,7 +68,7 @@ func (d *writer) commit(ctx context.Context, p *pendingSnapshot) (*Snapshot, err
 }
 
 func (d *writer) classifyConflict(ctx context.Context, err error) error {
-	if d.settled || !errors.Is(err, ErrSnapshotConflict) {
+	if d.settled || errors.Is(err, history.ErrManifestUncertain) || !errors.Is(err, ErrSnapshotConflict) {
 		return err
 	}
 	if d.history.Refresh(ctx) != nil {

@@ -40,7 +40,7 @@ and Lode adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Aborted Volume staging no longer blocks retries on the same range**: `StageWriteAt` adds a random nonce to each block path. An uncommitted block no longer causes a later write at the same offset and length to return `ErrPathExists`.
 - **Parquet preserves column order, validates decode schemas, and omits non-finite stats**: `Parquet` rejects empty schemas, writes columns in declared order, and validates physical columns by name in `Decode`. Column stats normalize Go types and omit `NaN`, `+Inf`, and `-Inf` so commits always marshal cleanly.
 - **Hot-path reads validate manifests and enforce object path scope**: `Latest`, `Snapshot`, `Snapshots`, and `Read` validate every manifest and check `DatasetID` and `SnapshotID`. `Blobs.Read`, `Records.Read`, and `volume` manifest loads reject object paths outside their snapshot or container.
-- **S3 atomic `Put` maps `409` conflicts, and `volume` options reject `nil`**: `s3.Store.Put` maps `409 ConditionalRequestConflict` to `lode.ErrPathExists`. `volume.New` and `volume.Remove` reject `nil` options and typed-nil stores, and `NewMetadata` coalesces typed-nil maps and struct pointers to `{}`.
+- **S3 conditional writes and Volume options**: S3 preserves unconfirmed upload conflicts. Commits publish their original manifest when the pointer confirms an applied conditional write. `volume.New` and `volume.Remove` reject `nil` options and typed-nil stores, and `NewMetadata` coalesces typed-nil maps and struct pointers to `{}`.
 
 ---
 

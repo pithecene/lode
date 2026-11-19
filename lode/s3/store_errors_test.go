@@ -6,6 +6,7 @@ import (
 	"errors"
 	"math"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 
@@ -75,7 +76,7 @@ func TestStore_MapsPreconditionCodes(t *testing.T) {
 			client := &codeClient{MockS3Client: NewMockS3Client(), putCode: code}
 			store, _ := New(client, "test")
 			err := store.Put(ctx, "k", bytes.NewReader([]byte("x")))
-			wantExists := code != "SlowDown"
+			wantExists := code == "PreconditionFailed" || code == "412"
 			if errors.Is(err, lode.ErrPathExists) != wantExists || err == nil {
 				t.Errorf("code %s: got %v, want ErrPathExists=%v", code, err, wantExists)
 			}
@@ -95,7 +96,7 @@ func TestStore_MapsPreconditionCodes(t *testing.T) {
 			_, _ = tmp.Write(data)
 			err = store.putMultipartFromFile(ctx, "large.bin", tmp, int64(len(data)))
 			_ = tmp.Close()
-			wantExists := code != "SlowDown"
+			wantExists := code == "PreconditionFailed" || code == "412"
 			if errors.Is(err, lode.ErrPathExists) != wantExists || err == nil {
 				t.Errorf("code %s: got %v, want ErrPathExists=%v", code, err, wantExists)
 			}
@@ -196,4 +197,31 @@ func callUnlessInjected[I, O any](ctx context.Context, err error, call func(cont
 		return nil, err
 	}
 	return call(ctx, in, opts...)
+}
+
+type conflictingStageClient struct{ *MockS3Client }
+
+func (c conflictingStageClient) PutObject(ctx context.Context, p *s3api.PutObjectInput, opts ...mockOption) (*s3api.PutObjectOutput, error) {
+	if strings.Contains(aws.ToString(p.Key), "/staged/") {
+		return nil, apiErr("ConditionalRequestConflict")
+	}
+	return c.MockS3Client.PutObject(ctx, p, opts...)
+}
+
+func TestStageConflictDoesNotAdvanceDatasetHead(t *testing.T) {
+	ctx := t.Context()
+	store, err := New(conflictingStageClient{NewMockS3Client()}, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ds, err := lode.Open(lode.Use(store)).Records(ctx, "ds", lode.JSONL[lode.D]())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ds.Write(ctx, lode.R(lode.D{"n": 1}), nil); !hasErrorCode(err, "ConditionalRequestConflict") {
+		t.Fatalf("Write returned %v, want the unconfirmed staging conflict", err)
+	}
+	if _, err := ds.Latest(ctx); !errors.Is(err, lode.ErrNoSnapshots) {
+		t.Fatalf("Latest after failed staging returned %v, want ErrNoSnapshots", err)
+	}
 }

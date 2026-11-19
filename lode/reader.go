@@ -576,6 +576,9 @@ func validateManifest(m *Manifest) error {
 	if m.SnapshotID == "" {
 		return &validate.ManifestError{Field: "snapshot_id", Message: "is required"}
 	}
+	if m.ParentSnapshotID == m.SnapshotID {
+		return &validate.ManifestError{Field: "parent_snapshot_id", Message: "must differ from snapshot_id"}
+	}
 	if m.CreatedAt.IsZero() {
 		return &validate.ManifestError{Field: "created_at", Message: "is required"}
 	}
