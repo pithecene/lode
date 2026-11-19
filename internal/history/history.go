@@ -26,6 +26,7 @@ import (
 	"io"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/pithecene/lode/internal/retry"
 )
@@ -377,6 +378,21 @@ func (h *History[ID, M]) Snapshots(ctx context.Context) ([]*Snapshot[ID, M], err
 		}
 		out = append(out, s)
 	}
+	return out, nil
+}
+
+// ListByCreation returns the container's public snapshots in creation order.
+// Snapshots supplies snapshot-ID order as the tie breaker.
+func ListByCreation[ID ~string, M, S any](ctx context.Context, h *History[ID, M], convert func(*Snapshot[ID, M]) *S, created func(*S) time.Time) ([]*S, error) {
+	all, err := h.Snapshots(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*S, len(all))
+	for i, snap := range all {
+		out[i] = convert(snap)
+	}
+	slices.SortStableFunc(out, func(a, b *S) int { return created(a).Compare(created(b)) })
 	return out, nil
 }
 

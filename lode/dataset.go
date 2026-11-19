@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"sort"
 	"time"
 
 	"github.com/pithecene/lode/internal/history"
@@ -409,18 +408,7 @@ func (s *Snapshot) partitioning() partitionScheme {
 
 // Snapshots lists every committed snapshot, oldest first.
 func (d *dataset) Snapshots(ctx context.Context) ([]*Snapshot, error) {
-	all, err := d.history.Snapshots(ctx)
-	if err != nil {
-		return nil, err
-	}
-	snapshots := make([]*Snapshot, len(all))
-	for i, s := range all {
-		snapshots[i] = toSnapshot(s)
-	}
-	sort.Slice(snapshots, func(i, j int) bool {
-		return snapshots[i].CreatedAt.Before(snapshots[j].CreatedAt)
-	})
-	return snapshots, nil
+	return history.ListByCreation(ctx, &d.history, toSnapshot, func(s *Snapshot) time.Time { return s.CreatedAt })
 }
 
 // Latest returns the head snapshot without creating a missing pointer.
