@@ -74,12 +74,14 @@ tasks:
     cmds:
       - go run ./examples/default_layout
       - go run ./examples/hive_layout
+      - go run ./examples/vessel_positions
       - go run ./examples/blob_upload
       - go run ./examples/manifest_driven
       - go run ./examples/stream_write_records
       - go run ./examples/parquet
       - go run ./examples/optimistic_concurrency
       - go run ./examples/volume_sparse
+      - go run ./examples/depth_grid
       - go run ./examples/vector_artifacts
       - go run ./examples/retention
 

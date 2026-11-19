@@ -90,7 +90,7 @@ If no annotation is present, the snippet is assumed **illustrative** by default.
 
 | File | Default | Notes |
 |------|---------|-------|
-| `README.md` | Illustrative | Quick Start snippets are illustrative patterns |
+| `README.md` | Illustrative | `Install` is runnable (`<!-- runnable -->`); Go Quick Start blocks use `<!-- illustrative -->` (`Writing and Reading a Blob` is a complete program verified in `examples/blob_upload/main.go`, while `Writing Structured Records` is a partial fragment) |
 | `PUBLIC_API.md` | Illustrative | API examples are patterns, not runnable programs |
 | `examples/*/README.md` | Illustrative | Prose guidance; runnable code is in `main.go` |
 | `examples/*/main.go` | Runnable | Full programs; verified by `task examples` |
@@ -103,15 +103,9 @@ If no annotation is present, the snippet is assumed **illustrative** by default.
 
 | Lines | Language | Category | Description |
 |-------|----------|----------|-------------|
-| 56-58 | bash | Runnable | `go get` install command |
-| 63-86 | go | Illustrative | Write and read blob pattern |
-| 91-103 | go | Illustrative | Write structured records pattern |
-| 108-115 | go | Illustrative | StreamWrite pattern |
-| 230-233 | bash | Illustrative | mkdir for filesystem setup |
-| 236-239 | go | Illustrative | Filesystem dataset construction |
-| 243-246 | bash | Illustrative | S3 bucket creation |
-| 249-253 | go | Illustrative | S3 dataset construction |
-| 260-268 | go | Illustrative | Bootstrap helper pattern |
+| 29-31 | bash | Runnable | `go get` install command |
+| 38-80 | go | Illustrative | Complete first-run blob write and read program |
+| 87-117 | go | Illustrative | Typed structured records and Hive layout fragment |
 
 ### PUBLIC_API.md
 
