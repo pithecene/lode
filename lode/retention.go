@@ -533,26 +533,10 @@ func (d *dataset) loadManifestAt(ctx context.Context, id DatasetSnapshotID, p st
 	if errors.Is(err, ErrNotFound) {
 		return nil, err
 	}
-	if err == nil {
-		err = d.validateCopy(s.Manifest, id)
-	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to load manifest %s: %w", p, err)
 	}
 	return s.Manifest, nil
-}
-
-// validateCopy requires a manifest found at a path of snapshot id to be
-// valid and to name that snapshot of this dataset: a misplaced manifest is
-// corruption, never something to expire.
-func (d *dataset) validateCopy(m *Manifest, id DatasetSnapshotID) error {
-	if err := validateManifest(m); err != nil {
-		return err
-	}
-	if m.DatasetID != d.id || m.SnapshotID != id {
-		return fmt.Errorf("lode: manifest names snapshot %s of dataset %s, not %s of %s", m.SnapshotID, m.DatasetID, id, d.id)
-	}
-	return nil
 }
 
 // manifestCopies is where snapshot id's manifest may be: the canonical path

@@ -77,8 +77,8 @@ type Kind[ID ~string, M any] interface {
 	// ParseManifest returns the snapshot ID a manifest path names, or false
 	// for any other path.
 	ParseManifest(path string) (ID, bool)
-	// Decode reads and validates a manifest.
-	Decode(r io.Reader) (*M, error)
+	// Decode reads and validates a manifest for snapshot id.
+	Decode(id ID, r io.Reader) (*M, error)
 	// NotExpired reports whether a pointer-less scan may take snapshot id as
 	// the head: false only for one retention has expired.
 	NotExpired(ctx context.Context, id ID) (bool, error)
@@ -160,7 +160,7 @@ func (h *History[ID, M]) LoadAt(ctx context.Context, id ID, path string) (*Snaps
 		return nil, err
 	}
 	defer func() { _ = rc.Close() }() // read-only stream
-	m, err := h.kind.Decode(rc)
+	m, err := h.kind.Decode(id, rc)
 	if err != nil {
 		return nil, err
 	}

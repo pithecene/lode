@@ -1350,6 +1350,51 @@ func TestVolume_Snapshot_InvalidManifest(t *testing.T) {
 			t.Fatal("expected manifest validation error for block that would overflow, got nil")
 		}
 	})
+
+	t.Run("snapshot ID mismatch returns ErrManifestInvalid", func(t *testing.T) {
+		store := lode.NewMemory()
+		m := validVolumeManifest("test-vol", 100)
+		m.SnapshotID = "other-snap"
+		data, err := json.Marshal(m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Put(t.Context(), volumeManifestPath("test-vol", "snap-1"), bytes.NewReader(data)); err != nil {
+			t.Fatal(err)
+		}
+		vol := newTestVolume(t, "test-vol", memoryFactoryFrom(store), 100)
+		if _, err := vol.Snapshot(t.Context(), "snap-1"); !errors.Is(err, lode.ErrManifestInvalid) {
+			t.Errorf("got %v, want lode.ErrManifestInvalid", err)
+		}
+	})
+
+	t.Run("foreign block path returns ErrManifestInvalid", func(t *testing.T) {
+		store := lode.NewMemory()
+		m := validVolumeManifest("test-vol", 100)
+		m.Blocks = []BlockRef{{Offset: 0, Length: 10, Path: "volumes/other-vol/data/0-10.bin"}}
+		writeVolumeManifest(t.Context(), t, store, m)
+		vol := newTestVolume(t, "test-vol", memoryFactoryFrom(store), 100)
+		if _, err := vol.Snapshot(t.Context(), m.SnapshotID); !errors.Is(err, lode.ErrManifestInvalid) {
+			t.Errorf("got %v, want lode.ErrManifestInvalid", err)
+		}
+	})
+
+	t.Run("nil option and typed-nil store or checksum return ErrInvalidArgument", func(t *testing.T) {
+		if _, err := New("test-vol", lode.Memory(), 100, nil); !errors.Is(err, lode.ErrInvalidArgument) {
+			t.Errorf("New(nil option) = %v, want ErrInvalidArgument", err)
+		}
+		if err := Remove(t.Context(), "test-vol", lode.Memory(), nil); !errors.Is(err, lode.ErrInvalidArgument) {
+			t.Errorf("Remove(nil option) = %v, want ErrInvalidArgument", err)
+		}
+		var nilChecksum lode.Checksum
+		if _, err := New("test-vol", lode.Memory(), 100, WithChecksum(nilChecksum)); !errors.Is(err, lode.ErrInvalidArgument) {
+			t.Errorf("New(nil checksum) = %v, want ErrInvalidArgument", err)
+		}
+		var typedNilStore *struct{ lode.RangeStore }
+		if _, err := New("test-vol", func() (lode.RangeStore, error) { return typedNilStore, nil }, 100); !errors.Is(err, lode.ErrInvalidArgument) {
+			t.Errorf("New(typed-nil store) = %v, want ErrInvalidArgument", err)
+		}
+	})
 }
 
 // =============================================================================

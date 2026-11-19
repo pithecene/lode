@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"reflect"
 
 	"github.com/pithecene/lode/internal/validate"
 )
@@ -20,9 +21,10 @@ type Metadata struct {
 var emptyObject = json.RawMessage("{}")
 
 // newMetadata encodes a caller's metadata value, which must encode as a JSON
-// object: a struct, a map, or nil, which persists as {}.
+// object: a struct, a map, or nil (including typed-nil string maps and struct
+// pointers), which persists as {}.
 func newMetadata(v any) (Metadata, error) {
-	if v == nil {
+	if isNilMetadata(v) {
 		return Metadata{raw: emptyObject}, nil
 	}
 	// A Metadata decoded from JSON holds whatever value it was given, so it
@@ -41,6 +43,28 @@ func newMetadata(v any) (Metadata, error) {
 		return Metadata{}, validate.Argument("metadata of type %T must encode as a JSON object, got %s", v, data)
 	}
 	return Metadata{raw: data}, nil
+}
+
+// isNilMetadata reports whether v is untyped nil, a nil string-keyed map, or a
+// nil pointer to a struct or Metadata — the object-shaped nil values that
+// coalesce to {}.
+func isNilMetadata(v any) bool {
+	if v == nil {
+		return true
+	}
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.Map:
+		return rv.IsNil() && rv.Type().Key().Kind() == reflect.String
+	case reflect.Pointer:
+		if !rv.IsNil() {
+			return false
+		}
+		elem := rv.Type().Elem()
+		return elem.Kind() == reflect.Struct || elem == reflect.TypeFor[Metadata]()
+	default:
+		return false
+	}
 }
 
 // isObject reports whether data, valid JSON, is an object.

@@ -2,7 +2,6 @@ package lode
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -406,7 +405,11 @@ func (d *dataset) GetManifest(ctx context.Context, ref ManifestRef) (*Manifest, 
 	if err := validateSnapshotID(ref.ID); err != nil {
 		return nil, err
 	}
-	return d.loadManifest(ctx, d.layout.manifestPathInPartition(d.id, ref.ID, ref.Partition.path))
+	s, err := d.history.LoadAt(ctx, ref.ID, d.layout.manifestPathInPartition(d.id, ref.ID, ref.Partition.path))
+	if err != nil {
+		return nil, err
+	}
+	return s.Manifest, nil
 }
 
 // OpenObject returns a reader for a data object of this dataset.
@@ -449,30 +452,11 @@ func (d *dataset) checkObject(obj ObjectRef) error {
 // means it was deleted after the listing: an expiry removed it, which
 // enumeration skips rather than reports (CONTRACT_RETENTION §Lineage).
 func (d *dataset) loadListed(ctx context.Context, m listedManifest) (*Manifest, error) {
-	manifest, err := d.loadManifest(ctx, m.path)
+	s, err := d.history.LoadAt(ctx, m.id, m.path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load manifest %s: %w", m.path, err)
 	}
-	return manifest, nil
-}
-
-func (d *dataset) loadManifest(ctx context.Context, manifestPath string) (*Manifest, error) {
-	rc, err := d.store.Get(ctx, manifestPath)
-	if err != nil {
-		return nil, err
-	}
-	defer closer(rc)()
-
-	var manifest Manifest
-	if err := json.NewDecoder(rc).Decode(&manifest); err != nil {
-		return nil, fmt.Errorf("lode: failed to decode manifest: %w", err)
-	}
-
-	if err := validateManifest(&manifest); err != nil {
-		return nil, err
-	}
-
-	return &manifest, nil
+	return s.Manifest, nil
 }
 
 // -----------------------------------------------------------------------------
@@ -480,26 +464,42 @@ func (d *dataset) loadManifest(ctx context.Context, manifestPath string) (*Manif
 // -----------------------------------------------------------------------------
 
 // validateManifest checks that a manifest contains all required fields
-// per CONTRACT_CORE.md and CONTRACT_READ_API.md.
+// per CONTRACT_CORE.md and CONTRACT_READ_API.md, without allocating on valid
+// manifests.
 func validateManifest(m *Manifest) error {
 	if m == nil {
 		return &validate.ManifestError{Field: "manifest", Message: "is nil"}
 	}
-
 	// Codec is optional: empty is valid for raw blob storage.
-	if err := validate.FirstInvalid([]validate.Check{
-		{Invalid: m.SchemaName == "", Field: "schema_name", Message: "is required"},
-		{Invalid: m.FormatVersion == "", Field: "format_version", Message: "is required"},
-		{Invalid: m.DatasetID == "", Field: "dataset_id", Message: "is required"},
-		{Invalid: m.SnapshotID == "", Field: "snapshot_id", Message: "is required"},
-		{Invalid: m.CreatedAt.IsZero(), Field: "created_at", Message: "is required"},
-		{Invalid: !m.Metadata.valid(), Field: "metadata", Message: "must be a JSON object (use {} for no metadata)"},
-		{Invalid: m.Files == nil, Field: "files", Message: "must not be nil (use empty slice for no files)"},
-		{Invalid: m.RowCount < 0, Field: "row_count", Message: "must be non-negative"},
-		{Invalid: m.Compressor == "", Field: "compressor", Message: "is required"},
-		{Invalid: m.Partitioner == "", Field: "partitioner", Message: "is required"},
-	}); err != nil {
-		return err
+	if m.SchemaName == "" {
+		return &validate.ManifestError{Field: "schema_name", Message: "is required"}
+	}
+	if m.FormatVersion == "" {
+		return &validate.ManifestError{Field: "format_version", Message: "is required"}
+	}
+	if m.DatasetID == "" {
+		return &validate.ManifestError{Field: "dataset_id", Message: "is required"}
+	}
+	if m.SnapshotID == "" {
+		return &validate.ManifestError{Field: "snapshot_id", Message: "is required"}
+	}
+	if m.CreatedAt.IsZero() {
+		return &validate.ManifestError{Field: "created_at", Message: "is required"}
+	}
+	if !m.Metadata.valid() {
+		return &validate.ManifestError{Field: "metadata", Message: "must be a JSON object (use {} for no metadata)"}
+	}
+	if m.Files == nil {
+		return &validate.ManifestError{Field: "files", Message: "must not be nil (use empty slice for no files)"}
+	}
+	if m.RowCount < 0 {
+		return &validate.ManifestError{Field: "row_count", Message: "must be non-negative"}
+	}
+	if m.Compressor == "" {
+		return &validate.ManifestError{Field: "compressor", Message: "is required"}
+	}
+	if m.Partitioner == "" {
+		return &validate.ManifestError{Field: "partitioner", Message: "is required"}
 	}
 	if err := missingPaths(m); err != nil {
 		return err
@@ -509,13 +509,15 @@ func validateManifest(m *Manifest) error {
 
 // validateFiles checks every FileRef of an inventory: a manifest's, or the
 // copy a retention tombstone records (CONTRACT_ERRORS §File Validation).
+// Plain conditions rather than table entries avoid formatting field indices on
+// every valid hot-path read.
 func validateFiles(files []FileRef) error {
 	for i, f := range files {
-		if err := validate.FirstInvalid([]validate.Check{
-			{Invalid: f.Path == "", Field: fmt.Sprintf("files[%d].path", i), Message: "is required"},
-			{Invalid: f.SizeBytes < 0, Field: fmt.Sprintf("files[%d].size_bytes", i), Message: "must be non-negative"},
-		}); err != nil {
-			return err
+		if f.Path == "" {
+			return &validate.ManifestError{Field: fmt.Sprintf("files[%d].path", i), Message: "is required"}
+		}
+		if f.SizeBytes < 0 {
+			return &validate.ManifestError{Field: fmt.Sprintf("files[%d].size_bytes", i), Message: "must be non-negative"}
 		}
 	}
 	return nil

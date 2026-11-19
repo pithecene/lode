@@ -362,12 +362,25 @@ func (k datasetKind) NotExpired(ctx context.Context, id DatasetSnapshotID) (bool
 	return present, nil
 }
 
-func (k datasetKind) Decode(r io.Reader) (*Manifest, error) {
+func (k datasetKind) Decode(id DatasetSnapshotID, r io.Reader) (*Manifest, error) {
 	var m Manifest
 	if err := json.NewDecoder(r).Decode(&m); err != nil {
 		return nil, fmt.Errorf("lode: failed to decode manifest: %w", err)
 	}
+	if err := validateManifest(&m); err != nil {
+		return nil, err
+	}
+	if m.DatasetID != k.id || m.SnapshotID != id {
+		return nil, manifestIdentityErr(&m, k.id, id)
+	}
 	return &m, nil
+}
+
+func manifestIdentityErr(m *Manifest, wantDataset DatasetID, wantSnap DatasetSnapshotID) error {
+	if m.DatasetID != wantDataset {
+		return &validate.ManifestError{Field: "dataset_id", Message: fmt.Sprintf("got %q, want %q", m.DatasetID, wantDataset)}
+	}
+	return &validate.ManifestError{Field: "snapshot_id", Message: fmt.Sprintf("got %q, want %q", m.SnapshotID, wantSnap)}
 }
 
 // datasetKind is a history.Kind and Stager; stated so the methods are
@@ -537,6 +550,12 @@ func (d *dataset) readBlob(ctx context.Context, id DatasetSnapshotID) ([]byte, e
 		return nil, fmt.Errorf("lode: blob snapshot must have exactly one file, got %d", len(snapshot.Files))
 	}
 	path := snapshot.Files[0].Path
+	if !d.layout.isObjectOf(d.id, snapshot.ID, dataLeaf, path) {
+		return nil, &validate.ManifestError{
+			Field:   "files[0].path",
+			Message: fmt.Sprintf("path %q is outside snapshot %s of dataset %s", path, snapshot.ID, d.id),
+		}
+	}
 	var buf bytes.Buffer
 	err = d.readFile(ctx, snapshot.Manifest, path, func(r io.Reader) error {
 		_, err := buf.ReadFrom(r)
@@ -559,7 +578,13 @@ func readRecords[T any](ctx context.Context, d *dataset, codec Codec[T], id Data
 		return nil, err
 	}
 	var all []T
-	for _, f := range snapshot.Files {
+	for i, f := range snapshot.Files {
+		if !d.layout.isObjectOf(d.id, snapshot.ID, dataLeaf, f.Path) {
+			return nil, &validate.ManifestError{
+				Field:   fmt.Sprintf("files[%d].path", i),
+				Message: fmt.Sprintf("path %q is outside snapshot %s of dataset %s", f.Path, snapshot.ID, d.id),
+			}
+		}
 		err := d.readFile(ctx, snapshot.Manifest, f.Path, func(r io.Reader) error {
 			records, err := codec.Decode(r)
 			all = append(all, records...)

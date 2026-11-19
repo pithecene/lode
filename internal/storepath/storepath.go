@@ -85,7 +85,29 @@ func RangeValid(offset, length int64) bool {
 }
 
 func clean(p string) string {
+	if isAlreadyClean(p) {
+		return p
+	}
 	return strings.TrimPrefix(path.Clean(p), "/")
+}
+
+// isAlreadyClean reports whether p is already in canonical slash-separated
+// relative form, avoiding path.Clean's buffer allocation on the hot path.
+func isAlreadyClean(p string) bool {
+	if p == "" || p[0] == '/' || p[len(p)-1] == '/' {
+		return false
+	}
+	rem := p
+	for {
+		seg, tail, found := strings.Cut(rem, "/")
+		if seg == "" || seg == "." || seg == ".." {
+			return false
+		}
+		if !found {
+			return true
+		}
+		rem = tail
+	}
 }
 
 func escapes(cleaned string) bool {

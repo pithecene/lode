@@ -97,7 +97,7 @@ const legacyFormatVersion = "1.0.0"
 // missingPaths is the validation error of a manifest of format 1.1.0 or
 // later without the path names it must record.
 func missingPaths(m *Manifest) error {
-	if legacy(m) {
+	if legacy(m) || m.Paths == defaultPaths(false) || m.Paths == defaultPaths(true) {
 		return nil
 	}
 	if m.Paths == (ManifestPaths{}) {

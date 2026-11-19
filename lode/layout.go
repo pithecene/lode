@@ -2,7 +2,6 @@ package lode
 
 import (
 	"path"
-	"slices"
 	"strings"
 
 	"github.com/pithecene/lode/internal/history"
@@ -184,16 +183,16 @@ func (g pathGrammar) objectPath(dataset DatasetID, partition string, snapshot Da
 	return join(g.root, string(dataset), partDir, part, g.snapshotDir, string(snapshot), dir, file)
 }
 
-// parse reads a path against the grammar. ok is false for any path that is
-// not a manifest or data object of this layout.
+// parse reads a path against the grammar without allocating. ok is false for
+// any path that is not a manifest or data object of this layout.
 func (g pathGrammar) parse(p string) (sp snapshotPath, ok bool) {
-	parts := strings.Split(p, "/")
+	rem, hasMore := p, true
 	next := func() (string, bool) {
-		if len(parts) == 0 {
+		if !hasMore {
 			return "", false
 		}
-		head := parts[0]
-		parts = parts[1:]
+		head, tail, found := strings.Cut(rem, "/")
+		rem, hasMore = tail, found
 		return head, true
 	}
 	expect := func(want string) bool {
@@ -210,14 +209,32 @@ func (g pathGrammar) parse(p string) (sp snapshotPath, ok bool) {
 	}
 	sp.dataset = DatasetID(ds)
 
-	if g.partitioned && len(parts) > 0 && parts[0] == g.names.Partitions {
-		parts = parts[1:]
-		end := slices.Index(parts, g.snapshotDir)
-		if end <= 0 {
-			return sp, false // no partition segments, or no snapshot dir after them
+	if g.partitioned && hasMore {
+		if first, tail, found := strings.Cut(rem, "/"); first == g.names.Partitions {
+			if !found {
+				return sp, false
+			}
+			partRem, partMore := tail, true
+			partLen := 0
+			matchedSnapshotDir := false
+			for partMore {
+				seg, nextTail, nextFound := strings.Cut(partRem, "/")
+				if seg == g.snapshotDir {
+					if partLen == 0 {
+						return sp, false // no partition segments before snapshot dir
+					}
+					sp.partition = tail[:partLen-1]
+					rem, hasMore = partRem, true
+					matchedSnapshotDir = true
+					break
+				}
+				partLen += len(seg) + 1
+				partRem, partMore = nextTail, nextFound
+			}
+			if !matchedSnapshotDir {
+				return sp, false
+			}
 		}
-		sp.partition = strings.Join(parts[:end], "/")
-		parts = parts[end:]
 	}
 	if g.snapshotDir != "" && !expect(g.snapshotDir) {
 		return sp, false
@@ -228,15 +245,22 @@ func (g pathGrammar) parse(p string) (sp snapshotPath, ok bool) {
 	}
 	sp.snapshot = DatasetSnapshotID(id)
 
+	leaf, ok := next()
+	if !ok {
+		return sp, false
+	}
 	// The leaf decides the kind. If-chain rather than a tagless switch so
 	// the mutation gate measures these guards (go-gremlins/gremlins#298).
-	if len(parts) == 1 && parts[0] == g.names.Manifest {
+	if !hasMore && leaf == g.names.Manifest {
 		sp.kind = manifestLeaf
 		return sp, true
 	}
-	if len(parts) == 2 && parts[0] == g.names.Data && parts[1] != "" {
-		sp.kind = dataLeaf
-		return sp, true
+	if hasMore && leaf == g.names.Data {
+		file, ok := next()
+		if ok && !hasMore && file != "" {
+			sp.kind = dataLeaf
+			return sp, true
+		}
 	}
 	return sp, false
 }
@@ -375,18 +399,10 @@ func (l *pathLayout) parse(p string) (snapshotPath, bool) {
 	return l.grammar.parse(p)
 }
 
-// leafDir is the directory under a snapshot that holds each kind of leaf.
-func (g pathGrammar) leafDir(kind pathKind) string {
-	if kind == dataLeaf {
-		return g.names.Data
-	}
-	return ""
-}
-
 // isObjectOf requires p to be a key every store accepts, already in clean
-// form, and to survive a parse-and-rebuild round trip unchanged: no "..",
-// backslash, empty or foreign segment can make a delete land outside the
-// snapshot or fail in the store.
+// form, and to match this layout's exact path grammar for snapshot of dataset:
+// no "..", backslash, empty or foreign segment can make a read or delete land
+// outside the snapshot or fail in the store.
 func (l *pathLayout) isObjectOf(dataset DatasetID, snapshot DatasetSnapshotID, kind pathKind, p string) bool {
 	if key, ok := storepath.Key(p); !ok || key != p {
 		return false
@@ -395,7 +411,7 @@ func (l *pathLayout) isObjectOf(dataset DatasetID, snapshot DatasetSnapshotID, k
 	if !ok || sp.kind != kind || sp.dataset != dataset || sp.snapshot != snapshot {
 		return false
 	}
-	return l.grammar.objectPath(dataset, sp.partition, snapshot, l.grammar.leafDir(kind), path.Base(p)) == p
+	return validPartitionPath(sp.partition)
 }
 
 // withinPartition reports whether partition p is partition or lies beneath
