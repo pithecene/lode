@@ -330,8 +330,7 @@ type expiryRun struct {
 // one already recorded or the one this run would record from the manifest.
 type expiryPlan struct {
 	tomb     tombstone
-	recorded bool      // an earlier or concurrent run recorded it
-	manifest *Manifest // nil when no manifest is left
+	recorded bool // an earlier or concurrent run recorded it
 }
 
 // expire decides one candidate and, unless this is a dry run, carries the
@@ -429,11 +428,11 @@ func (r expiryRun) tombstonePlan(ctx context.Context, c expiryCandidate) (expiry
 		return expiryPlan{}, errSnapshotGone
 	case (errors.Is(err, ErrNotFound) || errors.Is(err, errEmptyTombstone)) && hasManifest:
 		// None recorded yet; an empty placeholder is replaced by the write.
-		return expiryPlan{tomb: newTombstone(c.id, m), manifest: m}, nil
+		return expiryPlan{tomb: newTombstone(c.id, m)}, nil
 	case err != nil:
 		return expiryPlan{}, err
 	}
-	return expiryPlan{tomb: t, recorded: true, manifest: m}, nil
+	return expiryPlan{tomb: t, recorded: true}, nil
 }
 
 // tombstoneFor is the candidate's recorded tombstone: the one selection

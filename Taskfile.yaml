@@ -11,7 +11,12 @@ tasks:
     desc: Run linters (no fixes)
     cmds:
       - golangci-lint run ./...
-      - "! deadcode -test ./... | grep ."
+      - |
+        out="$(deadcode -test ./...)"
+        if [ -n "$out" ]; then
+          printf '%s\n' "$out"
+          exit 1
+        fi
       - yamllint -s .
 
   test:

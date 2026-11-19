@@ -31,6 +31,9 @@ linters:
     - gocritic
     - misspell
     - unused
+  settings:
+    unused:
+      field-writes-are-uses: false
 
 formatters:
   enable:
@@ -58,10 +61,6 @@ linters-settings:
       - name: package-comments
       - name: error-strings
       - name: error-return
-
-  unused:
-    field-writes-are-uses: false
-    exported-fields-are-used: false
 
 issues:
   max-issues-per-linter: 0
