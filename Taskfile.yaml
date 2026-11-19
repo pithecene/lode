@@ -44,7 +44,7 @@ tasks:
     desc: Run the chaos harness (BACKENDS, LAYOUTS, FAULTS, RETENTION, VOLUME, DURATION, WRITERS, SEED, MEMPROFILE)
     vars:
       BACKENDS: '{{.BACKENDS | default "memory,fs"}}'
-      LAYOUTS: '{{.LAYOUTS | default "default,hive"}}'
+      LAYOUTS: '{{.LAYOUTS | default "default,hive,parquet,parquet-hive,blobs"}}'
       FAULTS: '{{.FAULTS | default "none,mild"}}'
       RETENTION: '{{.RETENTION | default "false"}}'
       VOLUME: '{{.VOLUME | default "false"}}'
