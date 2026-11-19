@@ -381,7 +381,7 @@ func buildRecordBinder[T any](schema ParquetSchema) (recordBinder[T], error) {
 	if rt == reflect.TypeFor[D]() {
 		return fastMapBinder[T]{fields: schema.Fields}, nil
 	}
-	if rt.Kind() == reflect.Map && rt.Key().Kind() == reflect.String && rt.Elem().Kind() == reflect.Interface && rt.Elem().NumMethod() == 0 {
+	if rt.Kind() == reflect.Map && rt.Key() == reflect.TypeFor[string]() && rt.Elem() == reflect.TypeFor[any]() {
 		return reflectMapBinder[T]{mapType: rt, fields: schema.Fields}, nil
 	}
 	if rt.Kind() == reflect.Struct {
