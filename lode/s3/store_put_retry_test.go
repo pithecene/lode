@@ -113,7 +113,7 @@ func TestStore_Put_MultipartETagNeverMatches(t *testing.T) {
 }
 
 // AWS S3 returns 409 ConditionalRequestConflict when concurrent conditional
-// writes race on the same key; Put maps it just like 412 PreconditionFailed.
+// writes race on the same key. Only matching stored bytes confirm success.
 func TestStore_Put_ConditionalRequestConflictMapped(t *testing.T) {
 	ctx := t.Context()
 	for _, code := range []string{"ConditionalRequestConflict", "409"} {
@@ -126,8 +126,8 @@ func TestStore_Put_ConditionalRequestConflictMapped(t *testing.T) {
 
 			other := &lostResponseClient{MockS3Client: NewMockS3Client(), code: code, headErr: errors.New("other writer in flight")}
 			otherStore, _ := New(other, "test")
-			if err := otherStore.Put(ctx, "other", bytes.NewReader([]byte("theirs"))); !errors.Is(err, lode.ErrPathExists) {
-				t.Fatalf("other writer %s: got %v, want ErrPathExists", code, err)
+			if err := otherStore.Put(ctx, "other", bytes.NewReader([]byte("theirs"))); !hasErrorCode(err, code) || errors.Is(err, lode.ErrPathExists) {
+				t.Fatalf("other writer %s: got %v, want the original conflict", code, err)
 			}
 		})
 	}

@@ -846,9 +846,8 @@ func (h *History[ID, M]) Advance(ctx context.Context, expected string, id ID, ma
 	if err := h.stage(ctx, staged, data); err != nil {
 		return fmt.Errorf("failed to stage %s: %w", h.noun, err)
 	}
-	if err := h.writePointer(ctx, expected, id); err != nil {
-		h.discardStaged(ctx, id, staged)
-		return fmt.Errorf("failed to update latest pointer: %w", err)
+	if err := h.advancePointer(ctx, expected, id, staged); err != nil {
+		return err
 	}
 	for _, p := range paths {
 		if err := h.store.Put(ctx, p, bytes.NewReader(data)); err != nil {
@@ -916,7 +915,7 @@ func (h *History[ID, M]) Newest(ctx context.Context) (*Snapshot[ID, M], error) {
 // stage persists the staged copy at staged, when the kind stages. A copy
 // that exists already belongs to an earlier attempt of the same commit: a
 // dataset retries a conflicted commit under its snapshot ID, and the
-// attempt's copy remains when discardStaged could not read the pointer.
+// attempt's copy can remain after a failed best-effort deletion.
 // That copy is kept. It differs from this attempt's only in the parent and
 // the creation time, and a dataset reads a staged copy only for the
 // settings, which every attempt records alike. Replacing it would open a
@@ -942,19 +941,25 @@ func (h *History[ID, M]) unstage(ctx context.Context, staged string) {
 	}
 }
 
-// discardStaged removes the staged copy (at staged) of a commit whose pointer update
-// failed, but only when the pointer names another snapshot. A failed update
-// may still have been applied (a store that retried a CAS whose response was
-// lost reports a conflict), and the staged copy is then the only manifest of
-// a committed snapshot. Once the pointer names another snapshot, every
-// commit that adopted id as parent has loaded the copy already. Best-effort:
-// a copy that remains is never listed.
-func (h *History[ID, M]) discardStaged(ctx context.Context, id ID, staged string) {
-	if staged == "" {
-		return
+// advancePointer reconciles a lost response before retrying or releasing staged
+// bytes. Observing our unique ID lets Advance publish the original manifest.
+func (h *History[ID, M]) advancePointer(ctx context.Context, expected string, id ID, staged string) error {
+	err := h.writePointer(ctx, expected, id)
+	if err == nil {
+		return nil
 	}
-	if pointed, err := h.ReadPointer(ctx); err == nil && pointed != id {
-		_ = h.store.Delete(ctx, staged)
+	h.Forget()
+	pointed, readErr := h.ReadPointer(ctx)
+	switch {
+	case readErr == nil && pointed == id:
+		return nil
+	case h.errs.Removed != nil && errors.Is(readErr, h.errs.Removed):
+		return readErr
+	case readErr != nil && !errors.Is(readErr, h.errs.NotFound):
+		return manifestUncertain{fmt.Errorf("failed to update latest pointer: %w", errors.Join(err, readErr))}
+	default:
+		h.unstage(ctx, staged)
+		return fmt.Errorf("failed to update latest pointer: %w", err)
 	}
 }
 
@@ -986,7 +991,7 @@ func (h *History[ID, M]) CommitLoop(ctx context.Context, cfg *retry.Config, atte
 		if err == nil {
 			return nil
 		}
-		if !errors.Is(err, h.errs.SnapshotConflict) {
+		if errors.Is(err, ErrManifestUncertain) || !errors.Is(err, h.errs.SnapshotConflict) {
 			return err
 		}
 		if err := h.checkRemoval(ctx, "after a conflict"); err != nil {

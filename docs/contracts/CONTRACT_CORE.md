@@ -119,6 +119,9 @@ an abandoned one, Lode applies uniform rules:
   the first commit is pending ([`CONTRACT_WRITE_API.md`](CONTRACT_WRITE_API.md)
   §Settings). A writer that adopts a pending first commit MUST continue
   staging its own commits until one of them persists a canonical manifest.
+- If a conditional write reports an error and the pointer names the attempted
+  snapshot, the writer publishes its original manifest with its original parent.
+  A snapshot MUST never name itself as its parent.
 - The pointer content `lode:removed` is reserved as the permanent removal
   fence written by `Root.RemoveDataset`
   ([`CONTRACT_WRITE_API.md`](CONTRACT_WRITE_API.md) §Dataset Removal) and

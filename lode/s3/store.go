@@ -226,10 +226,10 @@ func (s *Store) putAtomicFromFile(ctx context.Context, fullKey string, file io.R
 		IfNoneMatch:   aws.String("*"),
 	})
 	if err != nil {
-		if hasErrorCode(err, slices.Concat(preconditionCodes, conflictCodes)...) {
-			if s.ownUpload(ctx, fullKey, size, md5Hex) {
-				return nil
-			}
+		if hasErrorCode(err, slices.Concat(preconditionCodes, conflictCodes)...) && s.ownUpload(ctx, fullKey, size, md5Hex) {
+			return nil
+		}
+		if hasErrorCode(err, preconditionCodes...) {
 			return lode.ErrPathExists
 		}
 		return fmt.Errorf("s3: put object: %w", err)
@@ -329,7 +329,7 @@ func (s *Store) putMultipartFromFile(ctx context.Context, fullKey string, file i
 	})
 	if err != nil {
 		abortUpload()
-		if hasErrorCode(err, slices.Concat(preconditionCodes, conflictCodes)...) {
+		if hasErrorCode(err, preconditionCodes...) {
 			return lode.ErrPathExists
 		}
 		return fmt.Errorf("s3: complete multipart upload: %w", err)

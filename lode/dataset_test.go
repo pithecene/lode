@@ -3021,3 +3021,41 @@ func assertNoTimestamps(t *testing.T, snap *Snapshot) {
 		t.Errorf("expected MaxTimestamp to be nil, got %v", snap.MaxTimestamp)
 	}
 }
+
+type lostPointerResponse struct {
+	Store
+	loseNext bool
+}
+
+func (s *lostPointerResponse) CompareAndSwap(ctx context.Context, path, expected, replacement string) error {
+	if err := s.Store.CompareAndSwap(ctx, path, expected, replacement); err != nil {
+		return err
+	}
+	if s.loseNext {
+		s.loseNext = false
+		return ErrSnapshotConflict
+	}
+	return nil
+}
+
+func TestWriteReconcilesAppliedCAS(t *testing.T) {
+	ctx := t.Context()
+	store := &lostPointerResponse{Store: NewMemory()}
+	ds := recordsOn(t, store, "shared", WithRetry(1))
+	var previous SnapshotID
+	for range 2 {
+		store.loseNext = true
+		snap, err := ds.Write(ctx, R(D{"key": "value"}), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		loaded, err := ds.Snapshot(ctx, snap.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if loaded.ParentSnapshotID != previous {
+			t.Fatalf("snapshot %s has parent %s, want %s", snap.ID, loaded.ParentSnapshotID, previous)
+		}
+		previous = snap.ID
+	}
+}

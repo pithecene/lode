@@ -779,6 +779,7 @@ func validateVolumeManifest(m *Manifest) error {
 		{Invalid: m.FormatVersion == "", Field: "format_version", Message: "is required"},
 		{Invalid: m.VolumeID == "", Field: "volume_id", Message: "is required"},
 		{Invalid: m.SnapshotID == "", Field: "snapshot_id", Message: "is required"},
+		{Invalid: m.ParentSnapshotID == m.SnapshotID, Field: "parent_snapshot_id", Message: "must differ from snapshot_id"},
 		{Invalid: m.CreatedAt.IsZero(), Field: "created_at", Message: "is required"},
 		{Invalid: !m.Metadata.Valid(), Field: "metadata", Message: "must be a JSON object (use {} for no metadata)"},
 		{Invalid: m.Blocks == nil, Field: "blocks", Message: "must not be nil (use empty slice for no blocks)"},
