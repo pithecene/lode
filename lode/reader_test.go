@@ -455,8 +455,8 @@ func TestView_ListPartitions_SingleManifestLoad(t *testing.T) {
 	if !slices.Equal(refPaths(partitions), want) {
 		t.Fatalf("ListPartitions = %v, want %v", refPaths(partitions), want)
 	}
-	if gets := len(fs.GetCalls()); gets != 0 {
-		t.Errorf("indexed ListPartitions issued %d Gets, want 0", gets)
+	if gets := manifestGets(fs); gets != 0 {
+		t.Errorf("indexed ListPartitions issued %d manifest Gets, want 0", gets)
 	}
 
 	// Delete the second snapshot's partition index copy; ListPartitions falls

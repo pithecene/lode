@@ -153,7 +153,7 @@ func isPointerRemoved(ctx context.Context, store ObjectStore, pointer string) (b
 
 // ListPartitions returns the canonical partition paths present in the dataset's
 // committed snapshots, sorted lexicographically. On Hive layouts, partition
-// paths are derived directly from listed partition-manifest keys (0 Gets when
+// paths are derived directly from listed partition-manifest keys (0 manifest Gets when
 // all snapshots are indexed); canonical-only snapshots whose partition index
 // was not yet persisted are loaded individually.
 func (d *dataset) ListPartitions(ctx context.Context, opts PartitionListOptions) ([]PartitionPath, error) {
@@ -164,6 +164,9 @@ func (d *dataset) ListPartitions(ctx context.Context, opts PartitionListOptions)
 		return nil, ErrNotPartitioned
 	}
 
+	if err := d.history.CheckLive(ctx); err != nil {
+		return nil, err
+	}
 	prefix := d.layout.snapshotsPrefixForPartition(d.id, "")
 	if opts.Prefix != "" {
 		prefix = d.layout.partitionsPrefix(d.id, opts.Prefix)
@@ -223,9 +226,6 @@ func (d *dataset) ListPartitions(ctx context.Context, opts PartitionListOptions)
 	}
 
 	if !anyManifest {
-		if _, err := d.history.ReadPointer(ctx); errors.Is(err, ErrRemoved) {
-			return nil, err
-		}
 		if opts.Prefix == "" {
 			return nil, ErrNotFound
 		}
@@ -294,16 +294,16 @@ func (d *dataset) collectUnindexedPartitions(
 // demand. Yields ErrNotFound if the dataset holds no manifests.
 func (d *dataset) Manifests(ctx context.Context, partition PartitionPath, opts ManifestListOptions) iter.Seq2[LoadedManifest, error] {
 	return func(yield func(LoadedManifest, error) bool) {
+		if err := d.history.CheckLive(ctx); err != nil {
+			yield(LoadedManifest{}, err)
+			return
+		}
 		listing, err := d.listManifests(ctx, d.layout.snapshotsPrefixForPartition(d.id, partition.path))
 		if err != nil {
 			yield(LoadedManifest{}, err)
 			return
 		}
 		if !listing.any {
-			if _, ptrErr := d.history.ReadPointer(ctx); errors.Is(ptrErr, ErrRemoved) {
-				yield(LoadedManifest{}, ptrErr)
-				return
-			}
 			yield(LoadedManifest{}, ErrNotFound)
 			return
 		}

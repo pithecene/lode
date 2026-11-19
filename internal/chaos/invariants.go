@@ -277,7 +277,7 @@ func (s tamperChecksumStore) Get(ctx context.Context, path string) (io.ReadClose
 }
 
 // anchoredViewsRead opens up to 16 surviving acknowledged commits via ReadRoot
-// with WithAnchor(id), verifying payload equality, zero head-pointer reads,
+// with WithAnchor(id), verifying payload equality, one removal fence check per operation,
 // and single manifest Get across Open + Snapshot(id) + Read(id).
 func (v *verifier) anchoredViewsRead(ctx context.Context) []string {
 	var commits []Commit
@@ -293,8 +293,8 @@ func (v *verifier) anchoredViewsRead(ctx context.Context) []string {
 		switch {
 		case err != nil || !ok:
 			bad = append(bad, fmt.Sprintf("%s: WithAnchor read failed or mismatched (%v)", c.ID, err))
-		case probe.pointerReads != 0:
-			bad = append(bad, fmt.Sprintf("%s: WithAnchor touched latest pointer %d times", c.ID, probe.pointerReads))
+		case probe.pointerReads != 3:
+			bad = append(bad, fmt.Sprintf("%s: WithAnchor checked the removal fence %d times across Open+Snapshot+Read, want 3", c.ID, probe.pointerReads))
 		case probe.manifestHits != 1:
 			bad = append(bad, fmt.Sprintf("%s: WithAnchor loaded manifest %d times across Open+Snapshot+Read, want 1", c.ID, probe.manifestHits))
 		}

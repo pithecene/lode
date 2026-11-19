@@ -158,16 +158,16 @@ ReaderAt(ctx context.Context, obj ObjectRef) (io.ReaderAt, error)
 - `WithAnchor(id)` opens the view at `SnapshotID` `id` in place of the head:
   - It MUST reject with `ErrInvalidArgument` any `id` that is not a single
     canonical path segment before any store call.
-  - It MUST NOT read `latest` or the head manifest unless `id` is absent (to
-    check whether the dataset was removed via `lode:removed`, returning
-    `ErrRemoved` when fenced).
+  - It checks the removal fence and returns `ErrRemoved` when fenced.
+    It looks up the named snapshot independently of the head manifest.
   - When `id` has expired, opening with `WithAnchor(id)` MUST return
     `ErrSnapshotExpired`; when `id` does not exist, it MUST return
     `ErrNotFound`.
   - It validates codec and layout settings against `id`'s manifest and
-    **retains** that immutable `*Snapshot` on the view so a subsequent
+    retains a private copy of the validated manifest on the view so a subsequent
     `Snapshot(ctx, id)` or `Read(ctx, id)` reuses the validated manifest with
-    zero additional manifest `Get` calls. All other methods (`Latest`,
+    zero additional manifest `Get` calls while its canonical object exists.
+    Each lookup checks the removal fence and canonical object existence. All other methods (`Latest`,
     `Snapshots`, `ListPartitions`, `Manifests`, and `Snapshot`/`Read` for
     other IDs) consult live storage normally.
 - Opening a view validates the anchor or head manifest (`ErrManifestInvalid`
@@ -277,13 +277,13 @@ committed snapshots).
 |-----------|-------------|--------|
 | `ListDatasets` (with `PrefixLister`) | 1 `ListPrefixes` + O(D) pointer/manifest checks | O(D) |
 | `ListDatasets` (fallback without `PrefixLister`) | 1 `List` + O(D) pointer checks | O(N) |
-| `ListPartitions` (Hive, fully indexed) | 1 `List` + 0 `Get` calls | O(N) |
-| `ListPartitions` (Hive, `C` canonical-only) | 1 `List` + `C` `Get` calls | O(N + manifest) |
-| `Manifests` (`M` yielded) | 1 `List` + `M` `Get` calls | O(N + manifest) |
+| `ListPartitions` (Hive, fully indexed) | 1 `List` + 1 pointer `Get` | O(N) |
+| `ListPartitions` (Hive, `C` canonical-only) | 1 `List` + `1 + C` `Get` calls | O(N + manifest) |
+| `Manifests` (`M` yielded) | 1 `List` + `1 + M` `Get` calls | O(N + manifest) |
 | `Latest` (warm) | 2 `Get` calls (pointer + manifest) | O(manifest) |
-| `Snapshot(id)` | 1 `Get` (`0` `Get` calls when `id` matches `WithAnchor(id)`) | O(manifest) |
-| `Read(id)` | `1 + F` `Get` calls (`F` `Get` calls when `id` matches `WithAnchor(id)`) | O(R_total) |
-| `Snapshots` | 1 `List` + `S` `Get` calls | O(S × manifest) |
+| `Snapshot(id)` | 2 `Get` calls (1 pointer `Get` and 1 `Exists` for a live canonical anchor) | O(manifest) |
+| `Read(id)` | snapshot lookup + `F` object reads | O(R_total) |
+| `Snapshots` | 1 `List` + `1 + S` `Get` calls | O(S × manifest) |
 | `OpenObject` | 1 `Get` | O(1) streaming |
 | `OpenDecompressed` | 1 `Get` | O(1) streaming |
 

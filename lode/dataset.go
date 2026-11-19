@@ -226,13 +226,14 @@ func resolveViewConfig(opts []ViewOption) (*viewConfig, error) {
 // -----------------------------------------------------------------------------
 
 type dataset struct {
-	id         DatasetID
-	store      Store
-	layout     *pathLayout
-	codec      codecIdentity
-	components components
-	anchor     *Snapshot // immutable anchor retained when opened with WithAnchor
-	history    history.History[SnapshotID, Manifest]
+	id             DatasetID
+	store          Store
+	layout         *pathLayout
+	codec          codecIdentity
+	components     components
+	anchorID       SnapshotID
+	anchorManifest []byte // private copy of the validated manifest
+	history        history.History[SnapshotID, Manifest]
 }
 
 type writer struct {
@@ -345,8 +346,21 @@ func (d *dataset) Snapshot(ctx context.Context, id SnapshotID) (*Snapshot, error
 	if err := validateSnapshotID(id); err != nil {
 		return nil, err
 	}
-	if d.anchor != nil && d.anchor.ID == id {
-		return &Snapshot{ID: d.anchor.ID, Manifest: d.anchor.Manifest}, nil
+	if err := d.history.CheckLive(ctx); err != nil {
+		return nil, err
+	}
+	if d.anchorID == id {
+		present, err := d.store.Exists(ctx, d.layout.manifestPath(d.id, id))
+		if err != nil {
+			return nil, err
+		}
+		if present {
+			var manifest Manifest
+			if err := json.Unmarshal(d.anchorManifest, &manifest); err != nil {
+				return nil, err
+			}
+			return &Snapshot{ID: id, Manifest: &manifest}, nil
+		}
 	}
 	return findSnapshot(ctx, []*dataset{d}, id)
 }
@@ -361,13 +375,7 @@ func findSnapshot(ctx context.Context, candidates []*dataset, id SnapshotID) (*S
 	if expired := candidates[0].tombstones().expiredError(ctx, id); expired != nil {
 		return nil, expired
 	}
-	s, err = firstFound(candidates, scanned)
-	if isAbsence(err) {
-		if _, ptrErr := candidates[0].history.ReadPointer(ctx); errors.Is(ptrErr, ErrRemoved) {
-			return nil, ptrErr
-		}
-	}
-	return s, err
+	return firstFound(candidates, scanned)
 }
 
 func loadedManifest(s *history.Snapshot[SnapshotID, Manifest], err error) (*Snapshot, error) {
@@ -404,11 +412,6 @@ func (d *dataset) Snapshots(ctx context.Context) ([]*Snapshot, error) {
 	all, err := d.history.Snapshots(ctx)
 	if err != nil {
 		return nil, err
-	}
-	if len(all) == 0 {
-		if _, ptrErr := d.history.ReadPointer(ctx); errors.Is(ptrErr, ErrRemoved) {
-			return nil, ptrErr
-		}
 	}
 	snapshots := make([]*Snapshot, len(all))
 	for i, s := range all {
