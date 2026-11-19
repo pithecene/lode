@@ -9,6 +9,7 @@ package lode
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"time"
 
@@ -492,45 +493,45 @@ var (
 	ErrNotFound = errNotFound{}
 
 	// ErrNoSnapshots indicates a dataset or volume has no committed snapshots.
-	ErrNoSnapshots = errNoSnapshots{}
+	ErrNoSnapshots = errors.New("no snapshots")
 
 	// ErrPathExists indicates an attempt to write to an existing path.
-	ErrPathExists = errPathExists{}
+	ErrPathExists = errors.New("path exists")
 
 	// ErrRangeReadNotSupported indicates the store does not support range reads.
-	ErrRangeReadNotSupported = errRangeReadNotSupported{}
+	ErrRangeReadNotSupported = errors.New("range read not supported")
 
 	// ErrCodecNotStreamable indicates Records.StreamWrite was called with a
 	// codec that is not a StreamingCodec.
-	ErrCodecNotStreamable = errCodecNotStreamable{}
+	ErrCodecNotStreamable = errors.New("codec does not support streaming")
 
 	// ErrPartitioningNotSupported indicates Records.StreamWrite was called on
 	// a partitioned layout.
-	ErrPartitioningNotSupported = errPartitioningNotSupported{}
+	ErrPartitioningNotSupported = errors.New("StreamWrite does not support partitioning; use Write for partitioned data")
 
 	// ErrNotPartitioned indicates a partition filter or partition expiry was
 	// requested on a dataset whose layout does not partition data.
-	ErrNotPartitioned = errNotPartitioned{}
+	ErrNotPartitioned = errors.New("operation requires a partitioned layout")
 
 	// ErrSchemaViolation indicates a schema or record violates the Parquet schema.
-	ErrSchemaViolation = errSchemaViolation{}
+	ErrSchemaViolation = errors.New("schema violation")
 
 	// ErrInvalidFormat indicates a persisted data file is malformed or corrupted.
-	ErrInvalidFormat = errInvalidFormat{}
+	ErrInvalidFormat = errors.New("invalid format")
 
 	// ErrChecksumMismatch indicates an object's stored bytes did not match the
 	// digest recorded in its manifest.
-	ErrChecksumMismatch error = errChecksumMismatch{}
+	ErrChecksumMismatch = errors.New("checksum mismatch")
 
 	// ErrSnapshotConflict indicates another writer committed since parent
 	// was resolved. Retry-safe: re-read Latest(), merge state, re-commit.
-	ErrSnapshotConflict = errSnapshotConflict{}
+	ErrSnapshotConflict = errors.New("snapshot conflict: another writer committed")
 
 	// ErrInvalidArgument indicates a caller-supplied value that cannot be used.
 	ErrInvalidArgument error = validate.ErrInvalidArgument
 
 	// ErrInvalidPath indicates a storage path or range the store refuses.
-	ErrInvalidPath error = errInvalidPath{}
+	ErrInvalidPath = errors.New("invalid path")
 
 	// ErrSnapshotExpired indicates the snapshot was removed by Expire.
 	// It also matches ErrNotFound.
@@ -538,21 +539,21 @@ var (
 
 	// ErrRemoved indicates the dataset or volume was removed via
 	// Root.RemoveDataset or volume.Remove.
-	ErrRemoved error = errRemoved{}
+	ErrRemoved = errors.New("removed")
 
 	// ErrHeadUncommitted indicates retention or removal cannot tell the
 	// committed head because a commit is pending or the pointer is missing.
-	ErrHeadUncommitted error = errHeadUncommitted{}
+	ErrHeadUncommitted = errors.New("head snapshot is not committed yet")
 
 	// ErrSettingsMismatch indicates a handle's settings differ from those the
 	// dataset's manifests record.
-	ErrSettingsMismatch error = errSettingsMismatch{}
+	ErrSettingsMismatch = errors.New("settings mismatch")
 
 	// ErrManifestInvalid indicates a manifest failed validation.
 	ErrManifestInvalid error = validate.ErrManifestInvalid
 
 	// ErrReadOnly indicates a write attempted through a read-only store.
-	ErrReadOnly error = errReadOnly{}
+	ErrReadOnly = errors.New("read-only store")
 )
 
 type errNotFound struct{}
@@ -566,70 +567,6 @@ func (errSnapshotExpired) Error() string { return "snapshot expired" }
 // Is makes an expired snapshot also a missing one, so callers matching
 // ErrNotFound keep working.
 func (errSnapshotExpired) Is(target error) bool { return target == ErrNotFound }
-
-type errRemoved struct{}
-
-func (errRemoved) Error() string { return "removed" }
-
-type errSettingsMismatch struct{}
-
-func (errSettingsMismatch) Error() string { return "settings mismatch" }
-
-type errHeadUncommitted struct{}
-
-func (errHeadUncommitted) Error() string { return "head snapshot is not committed yet" }
-
-type errNoSnapshots struct{}
-
-func (errNoSnapshots) Error() string { return "no snapshots" }
-
-type errPathExists struct{}
-
-func (errPathExists) Error() string { return "path exists" }
-
-type errRangeReadNotSupported struct{}
-
-func (errRangeReadNotSupported) Error() string { return "range read not supported" }
-
-type errCodecNotStreamable struct{}
-
-func (errCodecNotStreamable) Error() string { return "codec does not support streaming" }
-
-type errNotPartitioned struct{}
-
-func (errNotPartitioned) Error() string {
-	return "operation requires a partitioned layout"
-}
-
-type errPartitioningNotSupported struct{}
-
-func (errPartitioningNotSupported) Error() string {
-	return "StreamWrite does not support partitioning; use Write for partitioned data"
-}
-
-type errSchemaViolation struct{}
-
-func (errSchemaViolation) Error() string { return "schema violation" }
-
-type errInvalidFormat struct{}
-
-func (errInvalidFormat) Error() string { return "invalid format" }
-
-type errChecksumMismatch struct{}
-
-func (errChecksumMismatch) Error() string { return "checksum mismatch" }
-
-type errSnapshotConflict struct{}
-
-func (errSnapshotConflict) Error() string { return "snapshot conflict: another writer committed" }
-
-type errInvalidPath struct{}
-
-func (errInvalidPath) Error() string { return "invalid path" }
-
-type errReadOnly struct{}
-
-func (errReadOnly) Error() string { return "read-only store" }
 
 // -----------------------------------------------------------------------------
 // Listing

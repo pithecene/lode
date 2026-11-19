@@ -90,11 +90,7 @@ func TestStreamWrite_Cleanup(t *testing.T) {
 			t.Fatalf("StreamWrite with failing reader = %v, want %v", err, errReaderBoom)
 		}
 
-		if _, err := ds.Latest(t.Context()); !errors.Is(err, ErrNoSnapshots) {
-			t.Errorf("expected ErrNoSnapshots after reader error, got: %v", err)
-		}
-		assertNoDataObject(t, fs, inner)
-		assertNoDataDelete(t, fs)
+		assertUncommittedCleanStore(t, ds.dataset, fs, inner)
 	})
 
 	t.Run("cleanup error ignored", func(t *testing.T) {
@@ -151,11 +147,7 @@ func TestStreamWriteRecords_Cleanup(t *testing.T) {
 			t.Fatal("expected error from failing iterator")
 		}
 
-		if _, err := ds.Latest(t.Context()); !errors.Is(err, ErrNoSnapshots) {
-			t.Errorf("expected ErrNoSnapshots after iterator error, got: %v", err)
-		}
-		assertNoDataObject(t, fs, inner)
-		assertNoDataDelete(t, fs)
+		assertUncommittedCleanStore(t, ds.dataset, fs, inner)
 	})
 
 	t.Run("manifest put error no manifest", func(t *testing.T) {
@@ -264,14 +256,7 @@ func TestStreamWrite_PutFailure(t *testing.T) {
 	})
 
 	t.Run("buffered compressor stops once put returned", func(t *testing.T) {
-		fs := testutil.NewFaultStore(NewMemory())
-		fs.SetPutError(ErrPathExists, "/data/")
-		putReturned := make(chan struct{})
-		fs.SetAfterPut(func(path string, _ error) {
-			if strings.Contains(path, "/data/") {
-				close(putReturned)
-			}
-		})
+		fs, putReturned := newZstdDataPutFaultStore(t, ErrPathExists)
 		ds, err := Open(Use(fs)).Blobs(t.Context(), "test-ds", WithCompressor(Zstd()))
 		if err != nil {
 			t.Fatal(err)
@@ -365,14 +350,7 @@ func TestStreamWriteRecords_PutFailure(t *testing.T) {
 	})
 
 	t.Run("buffered compressor stops once put returned", func(t *testing.T) {
-		fs := testutil.NewFaultStore(NewMemory())
-		fs.SetPutError(ErrPathExists, "/data/")
-		putReturned := make(chan struct{})
-		fs.SetAfterPut(func(path string, _ error) {
-			if strings.Contains(path, "/data/") {
-				close(putReturned)
-			}
-		})
+		fs, putReturned := newZstdDataPutFaultStore(t, ErrPathExists)
 		ds, err := Open(Use(fs)).Records(t.Context(), "test-ds", JSONL[D](), WithCompressor(Zstd()))
 		if err != nil {
 			t.Fatal(err)
@@ -388,14 +366,8 @@ func TestStreamWriteRecords_PutFailure(t *testing.T) {
 	})
 
 	t.Run("put failure takes precedence over iterator error", func(t *testing.T) {
-		fs := testutil.NewFaultStore(NewMemory())
-		fs.SetPutError(ErrPathExists, "/data/")
-		gate := afterPutPublished(fs)
-		ds, err := Open(Use(fs)).Records(t.Context(), "test-ds", JSONL[D](), WithCompressor(Zstd()))
-		if err != nil {
-			t.Fatal(err)
-		}
-		err = awaitOrFail(t, func() error {
+		fs, gate, ds := openGatedZstdFaultRecords(t)
+		err := awaitOrFail(t, func() error {
 			_, werr := ds.StreamWrite(t.Context(), oneThenGate(gate, errIterator), nil)
 			return werr
 		})
@@ -406,14 +378,7 @@ func TestStreamWriteRecords_PutFailure(t *testing.T) {
 	})
 
 	t.Run("put failure during iterator err takes precedence", func(t *testing.T) {
-		fs := testutil.NewFaultStore(NewMemory())
-		fs.SetPutError(ErrPathExists, "/data/")
-		putReturned := make(chan struct{})
-		fs.SetAfterPut(func(path string, _ error) {
-			if strings.Contains(path, "/data/") {
-				close(putReturned)
-			}
-		})
+		fs, putReturned := newZstdDataPutFaultStore(t, ErrPathExists)
 		ds, err := Open(Use(fs)).Records(t.Context(), "test-ds", JSONL[D](), WithCompressor(Zstd()))
 		if err != nil {
 			t.Fatal(err)
@@ -434,14 +399,8 @@ func TestStreamWriteRecords_PutFailure(t *testing.T) {
 	})
 
 	t.Run("reported when the iterator ends after the failure", func(t *testing.T) {
-		fs := testutil.NewFaultStore(NewMemory())
-		fs.SetPutError(ErrPathExists, "/data/")
-		gate := afterPutPublished(fs)
-		ds, err := Open(Use(fs)).Records(t.Context(), "test-ds", JSONL[D](), WithCompressor(Zstd()))
-		if err != nil {
-			t.Fatal(err)
-		}
-		err = awaitOrFail(t, func() error {
+		_, gate, ds := openGatedZstdFaultRecords(t)
+		err := awaitOrFail(t, func() error {
 			_, werr := ds.StreamWrite(t.Context(), oneThenGate(gate, nil), nil)
 			return werr
 		})
@@ -474,14 +433,7 @@ func TestStreamWrite_ForeignObject(t *testing.T) {
 		for _, comp := range []Compressor{Uncompressed(), Zstd()} {
 			fs := testutil.NewFaultStore(NewMemory())
 			fs.SetPutError(ErrPathExists, "/data/")
-			ds, err := Open(Use(fs)).Blobs(t.Context(), "test-ds", WithCompressor(comp))
-			if err != nil {
-				t.Fatal(err)
-			}
-			err = awaitOrFail(t, func() error {
-				_, werr := ds.StreamWrite(t.Context(), bytes.NewReader(make([]byte, 1<<20)), nil)
-				return werr
-			})
+			ds, err := streamOneMegabyteBlob(t, fs, comp)
 			if !errors.Is(err, ErrPathExists) {
 				t.Fatalf("%s: expected ErrPathExists, got %v", comp.Name(), err)
 			}
@@ -684,4 +636,50 @@ func (s lostManifestResponse) Put(ctx context.Context, path string, r io.Reader)
 
 func (s lostManifestResponse) CompareAndSwap(ctx context.Context, path, expected, replacement string) error {
 	return s.Store.(ConditionalWriter).CompareAndSwap(ctx, path, expected, replacement)
+}
+
+func newZstdDataPutFaultStore(t *testing.T, putErr error) (*testutil.FaultStore, chan struct{}) {
+	t.Helper()
+	fs := testutil.NewFaultStore(NewMemory())
+	fs.SetPutError(putErr, "/data/")
+	putReturned := make(chan struct{})
+	fs.SetAfterPut(func(path string, _ error) {
+		if strings.Contains(path, "/data/") {
+			close(putReturned)
+		}
+	})
+	return fs, putReturned
+}
+
+func openGatedZstdFaultRecords(t *testing.T) (*testutil.FaultStore, <-chan struct{}, *Records[D]) {
+	t.Helper()
+	fs := testutil.NewFaultStore(NewMemory())
+	fs.SetPutError(ErrPathExists, "/data/")
+	gate := afterPutPublished(fs)
+	ds, err := Open(Use(fs)).Records(t.Context(), "test-ds", JSONL[D](), WithCompressor(Zstd()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return fs, gate, ds
+}
+
+func streamOneMegabyteBlob(t *testing.T, store Store, comp Compressor) (*Blobs, error) {
+	t.Helper()
+	ds, err := Open(Use(store)).Blobs(t.Context(), "test-ds", WithCompressor(comp))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ds, awaitOrFail(t, func() error {
+		_, werr := ds.StreamWrite(t.Context(), bytes.NewReader(make([]byte, 1<<20)), nil)
+		return werr
+	})
+}
+
+func assertUncommittedCleanStore(t *testing.T, d *dataset, fs *testutil.FaultStore, inner Store) {
+	t.Helper()
+	if _, err := d.Latest(t.Context()); !errors.Is(err, ErrNoSnapshots) {
+		t.Errorf("Latest = %v, want ErrNoSnapshots", err)
+	}
+	assertNoDataObject(t, fs, inner)
+	assertNoDataDelete(t, fs)
 }

@@ -344,46 +344,31 @@ func TestFS_WithSync(t *testing.T) {
 	}
 }
 
+func putStoreBytes(t *testing.T, store Store, key, body string) {
+	t.Helper()
+	if err := store.Put(t.Context(), key, bytes.NewReader([]byte(body))); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestStore_ReadRange(t *testing.T) {
-	t.Run("basic", func(t *testing.T) {
-		forEachStore(t, func(t *testing.T, store RangeStore) {
-			ctx := t.Context()
-
-			content := []byte("hello world")
-			err := store.Put(ctx, "test.txt", bytes.NewReader(content))
-			if err != nil {
-				t.Fatal(err)
-			}
-
-			data, err := store.ReadRange(ctx, "test.txt", 6, 5)
-			if err != nil {
-				t.Fatalf("ReadRange failed: %v", err)
-			}
-			if string(data) != "world" {
-				t.Errorf("expected 'world', got %q", string(data))
-			}
+	for _, tc := range []struct {
+		name, body, want string
+		offset, length   int64
+	}{
+		{"basic", "hello world", "world", 6, 5},
+		{"beyond EOF", "hello", "lo", 3, 100},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			forEachStore(t, func(t *testing.T, store RangeStore) {
+				putStoreBytes(t, store, "test.txt", tc.body)
+				data, err := store.ReadRange(t.Context(), "test.txt", tc.offset, tc.length)
+				if err != nil || string(data) != tc.want {
+					t.Fatalf("ReadRange = %q, %v; want %q", data, err, tc.want)
+				}
+			})
 		})
-	})
-
-	t.Run("beyond EOF", func(t *testing.T) {
-		forEachStore(t, func(t *testing.T, store RangeStore) {
-			ctx := t.Context()
-
-			content := []byte("hello")
-			err := store.Put(ctx, "test.txt", bytes.NewReader(content))
-			if err != nil {
-				t.Fatal(err)
-			}
-
-			data, err := store.ReadRange(ctx, "test.txt", 3, 100)
-			if err != nil {
-				t.Fatalf("ReadRange failed: %v", err)
-			}
-			if string(data) != "lo" {
-				t.Errorf("expected 'lo', got %q", string(data))
-			}
-		})
-	})
+	}
 
 	t.Run("offset beyond EOF", func(t *testing.T) {
 		forEachStore(t, func(t *testing.T, store RangeStore) {
@@ -475,15 +460,8 @@ func TestStore_ReadRange_Bounds(t *testing.T) {
 func TestStore_ReaderAt(t *testing.T) {
 	t.Run("basic", func(t *testing.T) {
 		forEachStore(t, func(t *testing.T, store RangeStore) {
-			ctx := t.Context()
-
-			content := []byte("hello world")
-			err := store.Put(ctx, "test.txt", bytes.NewReader(content))
-			if err != nil {
-				t.Fatal(err)
-			}
-
-			ra, err := store.ReaderAt(ctx, "test.txt")
+			putStoreBytes(t, store, "test.txt", "hello world")
+			ra, err := store.ReaderAt(t.Context(), "test.txt")
 			if err != nil {
 				t.Fatalf("ReaderAt failed: %v", err)
 			}

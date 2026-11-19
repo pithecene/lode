@@ -118,22 +118,10 @@ func TestKeyScope_EveryEntryPoint(t *testing.T) {
 				}
 			}
 		},
-		"Records.Read": readFinds("datasets/a/", func(f keyScopeFixture, id SnapshotID) error {
-			_, err := f.records.Read(t.Context(), id)
-			return err
-		}),
-		"RecordView.Read": readFinds("datasets/a/", func(f keyScopeFixture, id SnapshotID) error {
-			_, err := f.recordView.Read(t.Context(), id)
-			return err
-		}),
-		"Blobs.Read": readFinds("datasets/blobs/", func(f keyScopeFixture, id SnapshotID) error {
-			_, err := f.blobs.Read(t.Context(), id)
-			return err
-		}),
-		"BlobView.Read": readFinds("datasets/blobs/", func(f keyScopeFixture, id SnapshotID) error {
-			_, err := f.blobView.Read(t.Context(), id)
-			return err
-		}),
+		"Records.Read":    readFinds("datasets/a/", func(f keyScopeFixture, id SnapshotID) error { return discardRead(f.records.Read(t.Context(), id)) }),
+		"RecordView.Read": readFinds("datasets/a/", func(f keyScopeFixture, id SnapshotID) error { return discardRead(f.recordView.Read(t.Context(), id)) }),
+		"Blobs.Read":      readFinds("datasets/blobs/", func(f keyScopeFixture, id SnapshotID) error { return discardRead(f.blobs.Read(t.Context(), id)) }),
+		"BlobView.Read":   readFinds("datasets/blobs/", func(f keyScopeFixture, id SnapshotID) error { return discardRead(f.blobView.Read(t.Context(), id)) }),
 	}
 
 	declared, err := testutil.EntryPoints(".", "DatasetID", "SnapshotID", "ManifestRef", "ExpireRequest")
@@ -256,3 +244,5 @@ type extensionCompressor struct {
 
 func (c *extensionCompressor) Name() string      { return "extension" }
 func (c *extensionCompressor) Extension() string { return c.ext }
+
+func discardRead[T any](_ T, err error) error { return err }

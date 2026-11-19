@@ -657,12 +657,7 @@ func TestExpire_Head(t *testing.T) {
 
 		// Once the first snapshot's data is deleted, a commit starts: the
 		// pointer moves to a snapshot without a manifest yet.
-		hs.onDelete = func(p string) error {
-			if strings.Contains(p, string(first.ID)+"/data/") {
-				setPointer(t, mem, string(idAt(time.Now()))) // a commit in flight
-			}
-			return nil
-		}
+		startCommitOnDataDelete(t, hs, mem, first.ID)
 		report, err := ds.Expire(t.Context(), ExpireRequest{IDs: []SnapshotID{first.ID, second.ID}})
 		if !errors.Is(err, ErrHeadUncommitted) {
 			t.Fatalf("Expire = %v, want ErrHeadUncommitted", err)
@@ -682,12 +677,7 @@ func TestExpire_Head(t *testing.T) {
 
 		// After the first snapshot is expired, a commit starts before the run
 		// reaches the head it already protects.
-		hs.onDelete = func(p string) error {
-			if strings.Contains(p, string(first.ID)+"/data/") {
-				setPointer(t, mem, string(idAt(time.Now()))) // a commit in flight
-			}
-			return nil
-		}
+		startCommitOnDataDelete(t, hs, mem, first.ID)
 		report, err := ds.Expire(t.Context(), ExpireRequest{IDs: []SnapshotID{first.ID, head.ID}})
 		if !errors.Is(err, ErrHeadUncommitted) {
 			t.Fatalf("Expire = %v, want ErrHeadUncommitted", err)
@@ -1085,12 +1075,7 @@ func TestExpire_ReusedID(t *testing.T) {
 		earlier.CreatedAt = earlier.CreatedAt.Add(-time.Hour)
 		putTombstone(t, mem, first.ID, newTombstone(first.ID, &earlier))
 
-		for _, dryRun := range []bool{true, false} {
-			if _, err := ds.Expire(t.Context(), ExpireRequest{IDs: []SnapshotID{first.ID}, DryRun: dryRun}); err == nil {
-				t.Errorf("Expire(dry=%v) used another snapshot's tombstone", dryRun)
-			}
-		}
-		assertPresent(t, ds, first)
+		assertExpireRefusesTombstone(t, ds, first)
 	})
 
 	t.Run("a fresh expiry checks every manifest copy", func(t *testing.T) {
@@ -1122,12 +1107,7 @@ func TestExpire_ReusedID(t *testing.T) {
 		// An earlier snapshot with the same ID, expired long ago, left this.
 		putTombstone(t, mem, first.ID, foreignTombstone(first.ID, []ObjectRef{{Path: "datasets/events/snapshots/" + string(first.ID) + "/data/old", SizeBytes: 1}}))
 
-		for _, dryRun := range []bool{true, false} {
-			if _, err := ds.Expire(t.Context(), ExpireRequest{IDs: []SnapshotID{first.ID}, DryRun: dryRun}); err == nil {
-				t.Errorf("Expire(dry=%v) used a tombstone that does not match the manifest", dryRun)
-			}
-		}
-		assertPresent(t, ds, first)
+		assertExpireRefusesTombstone(t, ds, first)
 	})
 
 	t.Run("recorded tombstone must match every manifest copy", func(t *testing.T) {
@@ -1325,12 +1305,7 @@ func TestExpire_PathSafety(t *testing.T) {
 
 		// A commit starts once the first snapshot is gone, so the second's
 		// recheck stops the run before it is expired.
-		hs.onDelete = func(p string) error {
-			if strings.Contains(p, string(first.ID)+"/data/") {
-				setPointer(t, mem, string(idAt(time.Now()))) // a commit in flight
-			}
-			return nil
-		}
+		startCommitOnDataDelete(t, hs, mem, first.ID)
 		report, err := ds.Expire(t.Context(), ExpireRequest{IDs: []SnapshotID{first.ID, second.ID}})
 		if !errors.Is(err, ErrHeadUncommitted) {
 			t.Fatalf("Expire = %v, want ErrHeadUncommitted", err)
@@ -1575,4 +1550,24 @@ func TestLatestScan(t *testing.T) {
 			t.Errorf("Latest = %v, want ErrNoSnapshots when every manifest vanished", err)
 		}
 	})
+}
+
+func startCommitOnDataDelete(t *testing.T, hs *hookStore, mem Store, id SnapshotID) {
+	t.Helper()
+	hs.onDelete = func(p string) error {
+		if strings.Contains(p, string(id)+"/data/") {
+			setPointer(t, mem, string(idAt(time.Now())))
+		}
+		return nil
+	}
+}
+
+func assertExpireRefusesTombstone(t *testing.T, ds *Records[D], snap *Snapshot) {
+	t.Helper()
+	for _, dryRun := range []bool{true, false} {
+		if _, err := ds.Expire(t.Context(), ExpireRequest{IDs: []SnapshotID{snap.ID}, DryRun: dryRun}); err == nil {
+			t.Errorf("Expire(dry=%v) accepted mismatched tombstone", dryRun)
+		}
+	}
+	assertPresent(t, ds, snap)
 }

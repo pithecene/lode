@@ -443,18 +443,9 @@ ds, err := root.Records(ctx, "users", lode.Parquet[User](schema))
 
 ### Supported Types
 
-Each `ParquetField.Type` uses a `ParquetType` constant:
-
-| Type | Struct Field Type (Required / Nullable) | Map (`D`) Input Types | Map Decoded Type |
-|------|-----------------------------------------|-----------------------|------------------|
-| `ParquetInt32` | `int32` or `int` / `*int32` or `*int` | `int`, `int32`, `int64`, `float64` | `int32` |
-| `ParquetInt64` | `int64` or `int` / `*int64` or `*int` | `int`, `int32`, `int64`, `float64` | `int64` |
-| `ParquetFloat32` | `float32` / `*float32` | `float32`, `float64` | `float32` |
-| `ParquetFloat64` | `float64` / `*float64` | `float32`, `float64` | `float64` |
-| `ParquetString` | `string` / `*string` | `string` | `string` |
-| `ParquetBool` | `bool` / `*bool` | `bool` | `bool` |
-| `ParquetBytes` | `[]byte` / `[]byte` | `[]byte`, `string` | `[]byte` |
-| `ParquetTimestamp` | `time.Time` / `*time.Time` | `time.Time`, `string` (RFC 3339) | `time.Time` |
+Each `ParquetField.Type` uses one of the `ParquetType` constants:
+- Integer and float types: `ParquetInt32` (`int32`/`int`), `ParquetInt64` (`int64`/`int`), `ParquetFloat32` (`float32`), and `ParquetFloat64` (`float64`), using pointer fields on structs when `Nullable` is true.
+- Text, binary, boolean, and temporal types: `ParquetString` (`string`), `ParquetBytes` (`[]byte`), `ParquetBool` (`bool`), and `ParquetTimestamp` (`time.Time` in UTC, or RFC 3339 strings in `D` maps). See `docs/contracts/CONTRACT_PARQUET.md` for full map coercion rules.
 
 ### Streaming Limitation and Compression Layering
 

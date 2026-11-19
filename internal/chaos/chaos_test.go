@@ -205,7 +205,7 @@ func TestChaos_Workloads(t *testing.T) {
 		t.Run(layout, func(t *testing.T) {
 			runSmokePair(t, Config{
 				Seed:      seed,
-				Duration:  25 * time.Millisecond,
+				Duration:  150 * time.Millisecond,
 				Writers:   3,
 				Readers:   2,
 				Layout:    layout,
@@ -217,7 +217,7 @@ func TestChaos_Workloads(t *testing.T) {
 	t.Run("volume", func(t *testing.T) {
 		runSmokePair(t, Config{
 			Seed:     42,
-			Duration: 25 * time.Millisecond,
+			Duration: 150 * time.Millisecond,
 			Writers:  3,
 			Retries:  4,
 			Volume:   true,

@@ -103,44 +103,36 @@ func (s *prefixedStore) Delete(ctx context.Context, path string) error {
 	return s.inner.Delete(ctx, k)
 }
 
-func (s *prefixedStore) List(ctx context.Context, prefix string) ([]string, error) {
+func (s *prefixedStore) listTrimmed(prefix, label string, fetch func(string) ([]string, error)) ([]string, error) {
 	p, ok := storepath.Prefix(prefix)
 	if !ok {
 		return nil, fmt.Errorf("lode: invalid prefix %q: %w", prefix, ErrInvalidPath)
 	}
-	keys, err := s.inner.List(ctx, s.prefix+p)
+	items, err := fetch(s.prefix + p)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]string, 0, len(keys))
-	for _, k := range keys {
-		rel, found := strings.CutPrefix(k, s.prefix)
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		rel, found := strings.CutPrefix(item, s.prefix)
 		if !found {
-			return nil, fmt.Errorf("lode: store listed %q outside the prefix %q", k, s.prefix)
+			return nil, fmt.Errorf("lode: store listed %s%q outside the prefix %q", label, item, s.prefix)
 		}
 		out = append(out, rel)
 	}
 	return out, nil
 }
 
+func (s *prefixedStore) List(ctx context.Context, prefix string) ([]string, error) {
+	return s.listTrimmed(prefix, "", func(full string) ([]string, error) {
+		return s.inner.List(ctx, full)
+	})
+}
+
 func (s *prefixedPrefixStore) ListPrefixes(ctx context.Context, prefix string) ([]string, error) {
-	p, ok := storepath.Prefix(prefix)
-	if !ok {
-		return nil, fmt.Errorf("lode: invalid prefix %q: %w", prefix, ErrInvalidPath)
-	}
-	prefixes, err := s.prefixes.ListPrefixes(ctx, s.prefix+p)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]string, 0, len(prefixes))
-	for _, cp := range prefixes {
-		rel, found := strings.CutPrefix(cp, s.prefix)
-		if !found {
-			return nil, fmt.Errorf("lode: store listed prefix %q outside the prefix %q", cp, s.prefix)
-		}
-		out = append(out, rel)
-	}
-	return out, nil
+	return s.listTrimmed(prefix, "prefix ", func(full string) ([]string, error) {
+		return s.prefixes.ListPrefixes(ctx, full)
+	})
 }
 
 func (s *prefixedStore) ReadRange(ctx context.Context, path string, offset, length int64) ([]byte, error) {

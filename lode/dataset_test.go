@@ -284,26 +284,7 @@ func TestRecords_Read(t *testing.T) {
 	})
 
 	t.Run("a custom compressor is passed to the view", func(t *testing.T) {
-		store := NewMemory()
-		custom := renamedCompressor{Gzip()}
-		snap, err := blobsOn(t, store, "test-ds", WithCompressor(custom)).Write(t.Context(), []byte("data"), nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		bare, err := OpenReadOnly(Use(store)).Blobs(t.Context(), "test-ds")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := bare.Read(t.Context(), snap.ID); !errors.Is(err, ErrSettingsMismatch) || !strings.Contains(err.Error(), "custom-gzip") {
-			t.Errorf("without it: got %v, want an ErrSettingsMismatch naming the compressor", err)
-		}
-		view, err := OpenReadOnly(Use(store)).Blobs(t.Context(), "test-ds", WithCompressor(custom))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got, err := view.Read(t.Context(), snap.ID); err != nil || string(got) != "data" {
-			t.Errorf("with it: Read = %q, %v; want the blob", got, err)
-		}
+		assertCustomBlobComponentRequired(t, "custom-gzip", WithCompressor(renamedCompressor{Gzip()}))
 	})
 }
 
@@ -939,14 +920,7 @@ func TestBlobs_StreamWrite_Commit(t *testing.T) {
 			t.Errorf("expected metadata source=test, got %v", snap.Metadata)
 		}
 
-		// Verify snapshot is visible via Latest
-		latest, err := ds.Latest(t.Context())
-		if err != nil {
-			t.Fatalf("Latest failed: %v", err)
-		}
-		if latest.ID != snap.ID {
-			t.Errorf("expected latest ID %s, got %s", snap.ID, latest.ID)
-		}
+		assertLatestIs(t, ds.dataset, snap.ID)
 
 		// Verify data can be read back
 		readData, err := ds.Read(t.Context(), snap.ID)
@@ -1052,14 +1026,7 @@ func TestBlobs_StreamWrite_Lineage(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		listCallsAfterSecond := len(fs.ListCalls())
-		if listCallsAfterSecond != listCallsAfterFirst {
-			t.Errorf("expected no new List calls after StreamWrite wrote pointer, got %d new calls",
-				listCallsAfterSecond-listCallsAfterFirst)
-		}
-		if snap2.ParentSnapshotID != snap1.ID {
-			t.Errorf("expected parent %s, got %s", snap1.ID, snap2.ParentSnapshotID)
-		}
+		assertNoNewListsAndParent(t, fs, listCallsAfterFirst, snap2, snap1.ID)
 	})
 }
 
@@ -1075,89 +1042,30 @@ func TestBlobs_StreamWrite_Encoding(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		// Verify checksum algorithm recorded
-		if snap.ChecksumAlgorithm != "md5" {
-			t.Errorf("expected ChecksumAlgorithm 'md5', got %q", snap.ChecksumAlgorithm)
-		}
-
-		// Verify object has checksum
-		if snap.Manifest.Objects[0].Checksum == "" {
-			t.Error("expected non-empty checksum")
-		}
-		if len(snap.Manifest.Objects[0].Checksum) != 32 {
-			t.Errorf("expected 32 char MD5 checksum, got %d chars", len(snap.Manifest.Objects[0].Checksum))
-		}
+		assertMD5ObjectChecksum(t, snap)
 	})
 
-	t.Run("with gzip compression", func(t *testing.T) {
-		ds, err := Open(Memory()).Blobs(t.Context(), "test-ds", WithCompressor(Gzip()))
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		data := []byte("compressible data that should be gzipped")
-		snap, err := ds.StreamWrite(t.Context(), bytes.NewReader(data), nil)
-		if err != nil {
-			t.Fatalf("StreamWrite failed: %v", err)
-		}
-
-		// Verify manifest indicates gzip compression
-		if snap.Compressor != "gzip" {
-			t.Errorf("expected compressor 'gzip', got %q", snap.Compressor)
-		}
-
-		// Verify object path ends with .gz
-		if len(snap.Objects) != 1 {
-			t.Fatalf("expected 1 object, got %d", len(snap.Objects))
-		}
-		if !strings.HasSuffix(snap.Manifest.Objects[0].Path, ".gz") {
-			t.Errorf("expected .gz extension, got %s", snap.Manifest.Objects[0].Path)
-		}
-
-		// Verify data can be read back correctly
-		readData, err := ds.Read(t.Context(), snap.ID)
-		if err != nil {
-			t.Fatalf("Read failed: %v", err)
-		}
-		if string(readData) != string(data) {
-			t.Errorf("expected %q, got %q", data, readData)
-		}
-	})
-
-	t.Run("with zstd compression", func(t *testing.T) {
-		ds, err := Open(Memory()).Blobs(t.Context(), "test-ds", WithCompressor(Zstd()))
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		data := []byte("compressible data that should be zstd compressed")
-		snap, err := ds.StreamWrite(t.Context(), bytes.NewReader(data), nil)
-		if err != nil {
-			t.Fatalf("StreamWrite failed: %v", err)
-		}
-
-		// Verify manifest indicates zstd compression
-		if snap.Compressor != "zstd" {
-			t.Errorf("expected compressor 'zstd', got %q", snap.Compressor)
-		}
-
-		// Verify object path ends with .zst
-		if len(snap.Objects) != 1 {
-			t.Fatalf("expected 1 object, got %d", len(snap.Objects))
-		}
-		if !strings.HasSuffix(snap.Manifest.Objects[0].Path, ".zst") {
-			t.Errorf("expected .zst extension, got %s", snap.Manifest.Objects[0].Path)
-		}
-
-		// Verify data can be read back correctly
-		readData, err := ds.Read(t.Context(), snap.ID)
-		if err != nil {
-			t.Fatalf("Read failed: %v", err)
-		}
-		if string(readData) != string(data) {
-			t.Errorf("expected %q, got %q", data, readData)
-		}
-	})
+	for _, tc := range []struct {
+		sub, name, ext string
+		comp           Compressor
+	}{
+		{"with gzip compression", "gzip", ".gz", Gzip()},
+		{"with zstd compression", "zstd", ".zst", Zstd()},
+	} {
+		t.Run(tc.sub, func(t *testing.T) {
+			ds := blobsOn(t, NewMemory(), "test-ds", WithCompressor(tc.comp))
+			data := []byte("compressible stream payload for " + tc.name)
+			snap, err := ds.StreamWrite(t.Context(), bytes.NewReader(data), nil)
+			if err != nil {
+				t.Fatalf("StreamWrite: %v", err)
+			}
+			assertCompressedSnapAndExt(t, snap, tc.name, tc.ext)
+			got, err := ds.Read(t.Context(), snap.ID)
+			if err != nil || !bytes.Equal(got, data) {
+				t.Fatalf("Read = %q, %v; want %q", got, err, data)
+			}
+		})
+	}
 }
 
 func TestDataset_Write_Encoding(t *testing.T) {
@@ -1229,12 +1137,7 @@ func TestDataset_Write_Encoding(t *testing.T) {
 		}
 
 		// Verify manifest indicates zstd compression
-		if snap.Compressor != "zstd" {
-			t.Errorf("expected compressor 'zstd', got %q", snap.Compressor)
-		}
-		if !strings.HasSuffix(snap.Manifest.Objects[0].Path, ".zst") {
-			t.Errorf("expected .zst extension, got %s", snap.Manifest.Objects[0].Path)
-		}
+		assertCompressedSnapAndExt(t, snap, "zstd", ".zst")
 
 		// Verify data can be read back
 		readData, err := ds.Read(t.Context(), snap.ID)
@@ -1260,87 +1163,32 @@ func TestRecords_StreamWrite_Encoding(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		// Verify checksum algorithm recorded
-		if snap.ChecksumAlgorithm != "md5" {
-			t.Errorf("expected ChecksumAlgorithm 'md5', got %q", snap.ChecksumAlgorithm)
-		}
-
-		// Verify object has checksum
-		if snap.Manifest.Objects[0].Checksum == "" {
-			t.Error("expected non-empty checksum")
-		}
-		if len(snap.Manifest.Objects[0].Checksum) != 32 {
-			t.Errorf("expected 32 char MD5 checksum, got %d chars", len(snap.Manifest.Objects[0].Checksum))
-		}
+		assertMD5ObjectChecksum(t, snap)
 	})
 
-	t.Run("with compression", func(t *testing.T) {
-		ds, err := Open(Memory()).Records(t.Context(), "test-ds", JSONL[D](), WithCompressor(Gzip()))
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		records := []D{
-			{"id": "1", "data": "some compressible content"},
-			{"id": "2", "data": "more compressible content"},
-		}
-		iter := seqOf(records...)
-
-		snap, err := ds.StreamWrite(t.Context(), iter, nil)
-		if err != nil {
-			t.Fatalf("StreamWriteRecords failed: %v", err)
-		}
-
-		if snap.Compressor != "gzip" {
-			t.Errorf("expected compressor 'gzip', got %q", snap.Compressor)
-		}
-		if !strings.HasSuffix(snap.Manifest.Objects[0].Path, ".gz") {
-			t.Errorf("expected .gz extension, got %s", snap.Manifest.Objects[0].Path)
-		}
-
-		// Verify data can be read back
-		readData, err := ds.Read(t.Context(), snap.ID)
-		if err != nil {
-			t.Fatalf("Read failed: %v", err)
-		}
-		if len(readData) != 2 {
-			t.Errorf("expected 2 records, got %d", len(readData))
-		}
-	})
-
-	t.Run("with zstd compression", func(t *testing.T) {
-		ds, err := Open(Memory()).Records(t.Context(), "test-ds", JSONL[D](), WithCompressor(Zstd()))
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		records := []D{
-			{"id": "1", "data": "some zstd compressible content"},
-			{"id": "2", "data": "more zstd compressible content"},
-		}
-		iter := seqOf(records...)
-
-		snap, err := ds.StreamWrite(t.Context(), iter, nil)
-		if err != nil {
-			t.Fatalf("StreamWriteRecords failed: %v", err)
-		}
-
-		if snap.Compressor != "zstd" {
-			t.Errorf("expected compressor 'zstd', got %q", snap.Compressor)
-		}
-		if !strings.HasSuffix(snap.Manifest.Objects[0].Path, ".zst") {
-			t.Errorf("expected .zst extension, got %s", snap.Manifest.Objects[0].Path)
-		}
-
-		// Verify data can be read back
-		readData, err := ds.Read(t.Context(), snap.ID)
-		if err != nil {
-			t.Fatalf("Read failed: %v", err)
-		}
-		if len(readData) != 2 {
-			t.Errorf("expected 2 records, got %d", len(readData))
-		}
-	})
+	for _, tc := range []struct {
+		sub, name, ext string
+		comp           Compressor
+	}{
+		{"with compression", "gzip", ".gz", Gzip()},
+		{"with zstd compression", "zstd", ".zst", Zstd()},
+	} {
+		t.Run(tc.sub, func(t *testing.T) {
+			ds, err := Open(Memory()).Records(t.Context(), "test-ds", JSONL[D](), WithCompressor(tc.comp))
+			if err != nil {
+				t.Fatal(err)
+			}
+			records := []D{{"id": "1", "data": "content"}, {"id": "2", "data": "more"}}
+			snap, err := ds.StreamWrite(t.Context(), seqOf(records...), nil)
+			if err != nil {
+				t.Fatalf("StreamWrite: %v", err)
+			}
+			assertCompressedSnapAndExt(t, snap, tc.name, tc.ext)
+			if got, err := ds.Read(t.Context(), snap.ID); err != nil || len(got) != 2 {
+				t.Fatalf("Read = %v, %v; want 2 records", got, err)
+			}
+		})
+	}
 }
 
 // -----------------------------------------------------------------------------
@@ -1379,14 +1227,7 @@ func TestRecords_StreamWrite_Commit(t *testing.T) {
 			t.Errorf("expected metadata source=stream, got %v", snap.Metadata)
 		}
 
-		// Verify snapshot is visible via Latest
-		latest, err := ds.Latest(t.Context())
-		if err != nil {
-			t.Fatalf("Latest failed: %v", err)
-		}
-		if latest.ID != snap.ID {
-			t.Errorf("expected latest ID %s, got %s", snap.ID, latest.ID)
-		}
+		assertLatestIs(t, ds.dataset, snap.ID)
 
 		// Verify data can be read back
 		readData, err := ds.Read(t.Context(), snap.ID)
@@ -2985,26 +2826,7 @@ type renamedChecksum struct{ Checksum }
 func (renamedChecksum) Name() string { return "custom-md5" }
 
 func TestBlobs_Read_CustomChecksumIsPassedToTheView(t *testing.T) {
-	store := NewMemory()
-	custom := renamedChecksum{MD5()}
-	snap, err := blobsOn(t, store, "test-ds", WithChecksum(custom)).Write(t.Context(), []byte("data"), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	bare, err := OpenReadOnly(Use(store)).Blobs(t.Context(), "test-ds")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := bare.Read(t.Context(), snap.ID); !errors.Is(err, ErrSettingsMismatch) || !strings.Contains(err.Error(), "custom-md5") {
-		t.Errorf("without it: got %v, want an ErrSettingsMismatch naming the checksum", err)
-	}
-	view, err := OpenReadOnly(Use(store)).Blobs(t.Context(), "test-ds", WithChecksum(custom))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got, err := view.Read(t.Context(), snap.ID); err != nil || string(got) != "data" {
-		t.Errorf("with it: Read = %q, %v; want the blob", got, err)
-	}
+	assertCustomBlobComponentRequired(t, "custom-md5", WithChecksum(renamedChecksum{MD5()}))
 }
 
 func TestRoot_RemoveDataset(t *testing.T) {
@@ -3040,14 +2862,8 @@ func TestRoot_RemoveDataset(t *testing.T) {
 
 		// Existing writer and view handles return ErrRemoved on every operation.
 		checks := map[string]func() error{
-			"writer Write":    func() error { _, err := ds.Write(t.Context(), R(D{"day": "2026-01-03"}), nil); return err },
-			"writer Latest":   func() error { _, err := ds.Latest(t.Context()); return err },
-			"writer Snapshot": func() error { _, err := ds.Snapshot(t.Context(), snap.ID); return err },
-			"writer Snapshots": func() error {
-				_, err := ds.Snapshots(t.Context())
-				return err
-			},
-			"writer Read": func() error { _, err := ds.Read(t.Context(), snap.ID); return err },
+			"writer Write": func() error { _, err := ds.Write(t.Context(), R(D{"day": "2026-01-03"}), nil); return err },
+			"writer Read":  func() error { _, err := ds.Read(t.Context(), snap.ID); return err },
 			"writer ListPartitions": func() error {
 				_, err := ds.ListPartitions(t.Context(), PartitionListOptions{})
 				return err
@@ -3066,12 +2882,6 @@ func TestRoot_RemoveDataset(t *testing.T) {
 				_, err := ds.Sweep(t.Context(), SweepRequest{Grace: time.Minute})
 				return err
 			},
-			"view Latest":   func() error { _, err := view.Latest(t.Context()); return err },
-			"view Snapshot": func() error { _, err := view.Snapshot(t.Context(), snap.ID); return err },
-			"view Snapshots": func() error {
-				_, err := view.Snapshots(t.Context())
-				return err
-			},
 			"view Read": func() error { _, err := view.Read(t.Context(), snap.ID); return err },
 			"open new writer": func() error {
 				_, err := root.Records(t.Context(), "events", JSONL[D](), hive("day"))
@@ -3085,6 +2895,11 @@ func TestRoot_RemoveDataset(t *testing.T) {
 				_, err := OpenReadOnly(Use(store)).Records(t.Context(), "events", JSONL[D](), WithAnchor(snap.ID))
 				return err
 			},
+		}
+		for label, d := range map[string]*dataset{"writer": ds.dataset, "view": view.dataset} {
+			checks[label+" Latest"] = errOnly(func() (*Snapshot, error) { return d.Latest(t.Context()) })
+			checks[label+" Snapshot"] = errOnly(func() (*Snapshot, error) { return d.Snapshot(t.Context(), snap.ID) })
+			checks[label+" Snapshots"] = errOnly(func() ([]*Snapshot, error) { return d.Snapshots(t.Context()) })
 		}
 		for name, fn := range checks {
 			if err := fn(); !errors.Is(err, ErrRemoved) {
@@ -3139,15 +2954,9 @@ func TestChecksum_ReadVerification(t *testing.T) {
 			raw, _ := io.ReadAll(rc)
 			_ = rc.Close()
 			raw[len(raw)-1] ^= 0xff
-			if err := store.Delete(t.Context(), blobKey); err != nil {
-				t.Fatal(err)
-			}
-			if err := store.Put(t.Context(), blobKey, bytes.NewReader(raw)); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := blobs.Read(t.Context(), bsnap.ID); !errors.Is(err, ErrChecksumMismatch) {
-				t.Fatalf("corrupted blob Read = %v, want ErrChecksumMismatch", err)
-			}
+			overwriteObjectAndExpectChecksumMismatch(t, store, blobKey, raw, func() ([]byte, error) {
+				return blobs.Read(t.Context(), bsnap.ID)
+			})
 
 			// Parquet ReaderAt path with checksum verification.
 			type row struct {
@@ -3179,15 +2988,9 @@ func TestChecksum_ReadVerification(t *testing.T) {
 			pqRaw, _ := io.ReadAll(prc)
 			_ = prc.Close()
 			pqRaw[0] ^= 0xff
-			if err := pstore.Delete(t.Context(), pqKey); err != nil {
-				t.Fatal(err)
-			}
-			if err := pstore.Put(t.Context(), pqKey, bytes.NewReader(pqRaw)); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := pds.Read(t.Context(), psnap.ID); !errors.Is(err, ErrChecksumMismatch) {
-				t.Fatalf("corrupted parquet Read = %v, want ErrChecksumMismatch", err)
-			}
+			overwriteObjectAndExpectChecksumMismatch(t, pstore, pqKey, pqRaw, func() ([]row, error) {
+				return pds.Read(t.Context(), psnap.ID)
+			})
 		})
 	}
 
@@ -3205,14 +3008,93 @@ func TestChecksum_ReadVerification(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := store.Delete(t.Context(), manifestKey); err != nil {
-			t.Fatal(err)
-		}
-		if err := store.Put(t.Context(), manifestKey, bytes.NewReader(raw)); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := blobs.Read(t.Context(), snap.ID); !errors.Is(err, ErrChecksumMismatch) {
-			t.Fatalf("missing checksum Read = %v, want ErrChecksumMismatch", err)
-		}
+		overwriteObjectAndExpectChecksumMismatch(t, store, manifestKey, raw, func() ([]byte, error) {
+			return blobs.Read(t.Context(), snap.ID)
+		})
 	})
+}
+
+func overwriteObjectAndExpectChecksumMismatch[R any](t *testing.T, store Store, key string, raw []byte, read func() (R, error)) {
+	t.Helper()
+	if err := store.Delete(t.Context(), key); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Put(t.Context(), key, bytes.NewReader(raw)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := read(); !errors.Is(err, ErrChecksumMismatch) {
+		t.Fatalf("Read(%s) = %v, want ErrChecksumMismatch", key, err)
+	}
+}
+
+func assertCustomBlobComponentRequired(t *testing.T, wantName string, opt interface {
+	DatasetOption
+	ViewOption
+},
+) {
+	t.Helper()
+	store := NewMemory()
+	snap, err := blobsOn(t, store, "test-ds", opt).Write(t.Context(), []byte("data"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bare, err := OpenReadOnly(Use(store)).Blobs(t.Context(), "test-ds")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := bare.Read(t.Context(), snap.ID); !errors.Is(err, ErrSettingsMismatch) || !strings.Contains(err.Error(), wantName) {
+		t.Errorf("without custom option: got %v, want ErrSettingsMismatch naming %s", err, wantName)
+	}
+	view, err := OpenReadOnly(Use(store)).Blobs(t.Context(), "test-ds", opt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := view.Read(t.Context(), snap.ID); err != nil || string(got) != "data" {
+		t.Errorf("with custom option: Read = %q, %v; want data", got, err)
+	}
+}
+
+func assertMD5ObjectChecksum(t *testing.T, snap *Snapshot) {
+	t.Helper()
+	if snap.ChecksumAlgorithm != "md5" {
+		t.Errorf("ChecksumAlgorithm = %q, want md5", snap.ChecksumAlgorithm)
+	}
+	if len(snap.Manifest.Objects[0].Checksum) != 32 {
+		t.Errorf("MD5 checksum len = %d, want 32", len(snap.Manifest.Objects[0].Checksum))
+	}
+}
+
+func assertCompressedSnapAndExt(t *testing.T, snap *Snapshot, wantComp, wantExt string) {
+	t.Helper()
+	if snap.Compressor != wantComp {
+		t.Errorf("Compressor = %q, want %q", snap.Compressor, wantComp)
+	}
+	if len(snap.Objects) != 1 || !strings.HasSuffix(snap.Objects[0].Path, wantExt) {
+		t.Fatalf("Objects = %+v, want 1 object ending with %s", snap.Objects, wantExt)
+	}
+}
+
+func errOnly[T any](fn func() (T, error)) func() error {
+	return func() error { _, err := fn(); return err }
+}
+
+func assertLatestIs(t *testing.T, d *dataset, want SnapshotID) {
+	t.Helper()
+	latest, err := d.Latest(t.Context())
+	if err != nil {
+		t.Fatalf("Latest: %v", err)
+	}
+	if latest.ID != want {
+		t.Errorf("Latest.ID = %s, want %s", latest.ID, want)
+	}
+}
+
+func assertNoNewListsAndParent(t *testing.T, fs *testutil.FaultStore, before int, snap *Snapshot, wantParent SnapshotID) {
+	t.Helper()
+	if got := len(fs.ListCalls()); got != before {
+		t.Errorf("List calls = %d, want %d", got, before)
+	}
+	if snap.ParentSnapshotID != wantParent {
+		t.Errorf("ParentSnapshotID = %s, want %s", snap.ParentSnapshotID, wantParent)
+	}
 }

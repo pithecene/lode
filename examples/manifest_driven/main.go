@@ -21,20 +21,21 @@ import (
 )
 
 func main() {
-	if err := run(); err != nil {
+	if err := execExample(); err != nil {
 		log.Fatal(err)
 	}
 }
 
-func run() error {
-	ctx := context.Background()
-
+func execExample() error {
 	tmpDir, err := os.MkdirTemp("", "lode-manifest-example-*")
 	if err != nil {
-		return fmt.Errorf("failed to create temp dir: %w", err)
+		return err
 	}
 	defer func() { _ = os.RemoveAll(tmpDir) }()
+	return run(context.Background(), tmpDir)
+}
 
+func run(ctx context.Context, tmpDir string) error {
 	fmt.Printf("Storage root: %s\n\n", tmpDir)
 
 	store, err := lode.NewFS(tmpDir)
@@ -114,19 +115,19 @@ func run() error {
 		return fmt.Errorf("failed to open view: %w", err)
 	}
 
-	var manifests []lode.LoadedManifest
+	var loadedManifest *lode.Manifest
+	count := 0
 	for m, err := range view.Manifests(ctx, lode.PartitionPath{}, lode.ManifestListOptions{}) {
 		if err != nil {
-			return fmt.Errorf("failed to iterate manifests: %w", err)
+			return fmt.Errorf("iterate manifests: %w", err)
 		}
-		manifests = append(manifests, m)
+		if loadedManifest == nil {
+			loadedManifest = m.Manifest
+		}
+		count++
+		fmt.Printf("  discovered manifest: %s\n", m.Ref.ID)
 	}
-	fmt.Printf("Manifests in 'committed-ds': %d manifest(s)\n", len(manifests))
-	for _, m := range manifests {
-		fmt.Printf("  - %s\n", m.Ref.ID)
-	}
-
-	loadedManifest := manifests[0].Manifest
+	fmt.Printf("Total manifests in 'committed-ds': %d\n", count)
 
 	fmt.Println("\nManifest provides all metadata:")
 	fmt.Printf("  Schema: %s v%s\n", loadedManifest.SchemaName, loadedManifest.FormatVersion)
