@@ -187,7 +187,6 @@ var (
 	contractFilePattern = regexp.MustCompile(`\bCONTRACT_[A-Z0-9_]+\.md\b`)
 	goFencePattern      = regexp.MustCompile("(?s)```go\n(.*?)```")
 	contractTypeDecl    = regexp.MustCompile(`(?m)^type\s+([A-Z][A-Za-z0-9_]*)\b`)
-
 )
 
 func TestEveryContractIsIndexedAndTypesExist(t *testing.T) {
