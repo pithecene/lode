@@ -21,7 +21,7 @@ import (
 // Key principle: assert on core invariants (no manifest = no visible snapshot),
 // but don't make timing-dependent assertions that could flake.
 //
-// Contract reference: ai/TEST_MATRIX.md §Streaming Cancellation
+// Contract reference: docs/contracts/CONTRACT_WRITE_API.md
 
 // cancelAfterRead yields data on the first Read, then cancels ctx and returns
 // context.Canceled on the subsequent Read.

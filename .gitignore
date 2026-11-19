@@ -18,8 +18,5 @@ bench-*.txt
 /vector_artifacts
 /volume_sparse
 
-# Bonsai check output (ephemeral)
-ai/out/
-
 # Bosun: its checkout, installed components, and run records
 .bosun/
