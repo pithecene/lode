@@ -151,26 +151,31 @@ func (f *fsStore) prepareDir(dir string) (string, error) {
 	cleanDir := filepath.Clean(dir)
 	var existing string
 	if f.sync {
-		cleanRoot := filepath.Clean(f.root)
-		for cur := cleanDir; ; cur = filepath.Dir(cur) {
-			_, err := os.Stat(cur)
-			if err == nil {
-				existing = cur
-				break
-			}
-			if !os.IsNotExist(err) {
-				return "", fmt.Errorf("fs: stat dir: %w", err)
-			}
-			if cur == cleanRoot || filepath.Dir(cur) == cur {
-				existing = cur
-				break
-			}
+		var err error
+		existing, err = deepestExistingDir(cleanDir, filepath.Clean(f.root))
+		if err != nil {
+			return "", err
 		}
 	}
 	if err := os.MkdirAll(cleanDir, 0o755); err != nil {
 		return "", fmt.Errorf("fs: mkdir: %w", err)
 	}
 	return existing, nil
+}
+
+func deepestExistingDir(dir, root string) (string, error) {
+	for cur := dir; ; cur = filepath.Dir(cur) {
+		_, err := os.Stat(cur)
+		if err == nil {
+			return cur, nil
+		}
+		if !os.IsNotExist(err) {
+			return "", fmt.Errorf("fs: stat dir: %w", err)
+		}
+		if cur == root || filepath.Dir(cur) == cur {
+			return cur, nil
+		}
+	}
 }
 
 func (f *fsStore) syncPublishedDir(existing, dir string) error {
@@ -218,7 +223,7 @@ func isTemporary(name string) bool {
 	return storepath.Reserved(filepath.ToSlash(name))
 }
 
-func (f *fsStore) Get(_ context.Context, path string) (io.ReadCloser, error) {
+func (f *fsStore) openObject(path, op string) (*os.File, error) {
 	fullPath, err := f.safePathForFile(path)
 	if err != nil {
 		return nil, err
@@ -228,9 +233,13 @@ func (f *fsStore) Get(_ context.Context, path string) (io.ReadCloser, error) {
 		if os.IsNotExist(err) {
 			return nil, ErrNotFound
 		}
-		return nil, fmt.Errorf("fs: get: %w", err)
+		return nil, fmt.Errorf("fs: %s: %w", op, err)
 	}
 	return file, nil
+}
+
+func (f *fsStore) Get(_ context.Context, path string) (io.ReadCloser, error) {
+	return f.openObject(path, "get")
 }
 
 func (f *fsStore) Exists(_ context.Context, path string) (bool, error) {
@@ -440,20 +449,7 @@ func (f *fsStore) ReadRange(_ context.Context, path string, offset, length int64
 }
 
 func (f *fsStore) ReaderAt(_ context.Context, path string) (io.ReaderAt, error) {
-	fullPath, err := f.safePathForFile(path)
-	if err != nil {
-		return nil, err
-	}
-
-	file, err := openRead(fullPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, ErrNotFound
-		}
-		return nil, fmt.Errorf("fs: reader at: %w", err)
-	}
-
-	return file, nil
+	return f.openObject(path, "reader at")
 }
 
 func (f *fsStore) safePathForFile(path string) (string, error) {
@@ -553,23 +549,26 @@ func (m *memoryStore) Put(_ context.Context, path string, r io.Reader) error {
 	return nil
 }
 
-func (m *memoryStore) Get(_ context.Context, path string) (io.ReadCloser, error) {
+func (m *memoryStore) bytesCopy(path string) ([]byte, error) {
 	normalized, valid := storepath.Key(path)
 	if !valid {
 		return nil, ErrInvalidPath
 	}
-
 	m.mu.RLock()
 	data, exists := m.data[normalized]
 	m.mu.RUnlock()
-
 	if !exists {
 		return nil, ErrNotFound
 	}
+	return bytes.Clone(data), nil
+}
 
-	dataCopy := make([]byte, len(data))
-	copy(dataCopy, data)
-	return io.NopCloser(strings.NewReader(string(dataCopy))), nil
+func (m *memoryStore) Get(_ context.Context, path string) (io.ReadCloser, error) {
+	b, err := m.bytesCopy(path)
+	if err != nil {
+		return nil, err
+	}
+	return io.NopCloser(bytes.NewReader(b)), nil
 }
 
 func (m *memoryStore) Exists(_ context.Context, path string) (bool, error) {
@@ -705,20 +704,9 @@ func (m *memoryStore) ReadRange(_ context.Context, path string, offset, length i
 }
 
 func (m *memoryStore) ReaderAt(_ context.Context, path string) (io.ReaderAt, error) {
-	normalized, valid := storepath.Key(path)
-	if !valid {
-		return nil, ErrInvalidPath
+	b, err := m.bytesCopy(path)
+	if err != nil {
+		return nil, err
 	}
-
-	m.mu.RLock()
-	data, exists := m.data[normalized]
-	m.mu.RUnlock()
-
-	if !exists {
-		return nil, ErrNotFound
-	}
-
-	dataCopy := make([]byte, len(data))
-	copy(dataCopy, data)
-	return bytes.NewReader(dataCopy), nil
+	return bytes.NewReader(b), nil
 }

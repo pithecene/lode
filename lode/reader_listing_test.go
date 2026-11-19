@@ -556,15 +556,7 @@ func (s extraListStore) List(ctx context.Context, prefix string) ([]string, erro
 
 func TestView_ListPartitions_RejectsNoncanonicalPartitions(t *testing.T) {
 	t.Run("canonical manifest fallback", func(t *testing.T) {
-		store := NewMemory()
-		ds, err := Open(Use(store)).Records(t.Context(), "test-ds", JSONL[D](), hive("day"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		snap, err := ds.Write(t.Context(), R(D{"day": "a"}), nil)
-		if err != nil {
-			t.Fatal(err)
-		}
+		store, ds, snap := writeSingleDayHive(t)
 		// Remove the partition manifest copy so ListPartitions loads the canonical
 		// manifest, whose object path was rewritten with a backslash in its partition.
 		if err := store.Delete(t.Context(), "datasets/test-ds/partitions/day=a/segments/"+string(snap.ID)+"/manifest.json"); err != nil {
@@ -574,22 +566,14 @@ func TestView_ListPartitions_RejectsNoncanonicalPartitions(t *testing.T) {
 		rewriteObject(t, store, canonical, func(s string) string {
 			return strings.ReplaceAll(s, "day=a/", `day=a\\b/`)
 		})
-		_, err = ds.ListPartitions(t.Context(), PartitionListOptions{})
+		_, err := ds.ListPartitions(t.Context(), PartitionListOptions{})
 		if !errors.Is(err, ErrManifestInvalid) || !strings.Contains(err.Error(), "not a canonical path") {
 			t.Errorf("ListPartitions = %v, want ErrManifestInvalid for the noncanonical partition", err)
 		}
 	})
 
 	t.Run("listed partition index key", func(t *testing.T) {
-		store := NewMemory()
-		ds, err := Open(Use(store)).Records(t.Context(), "test-ds", JSONL[D](), hive("day"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		snap, err := ds.Write(t.Context(), R(D{"day": "a"}), nil)
-		if err != nil {
-			t.Fatal(err)
-		}
+		store, _, snap := writeSingleDayHive(t)
 		badKey := `datasets/test-ds/partitions/day=a\b/segments/` + string(snap.ID) + "/manifest.json"
 		view, err := OpenReadOnly(Use(extraListStore{Store: store, extra: badKey})).Records(t.Context(), "test-ds", JSONL[D]())
 		if err != nil {
@@ -758,4 +742,18 @@ func TestView_ListManifests_EmptyHiveSnapshot(t *testing.T) {
 	if want := []ManifestRef{{ID: snap.ID}}; !slices.Equal(refs, want) {
 		t.Errorf("Manifests = %v, want %v", refs, want)
 	}
+}
+
+func writeSingleDayHive(t *testing.T) (RangeStore, *Records[D], *Snapshot) {
+	t.Helper()
+	store := NewMemory()
+	ds, err := Open(Use(store)).Records(t.Context(), "test-ds", JSONL[D](), hive("day"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap, err := ds.Write(t.Context(), R(D{"day": "a"}), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store, ds, snap
 }

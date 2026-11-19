@@ -90,35 +90,7 @@ func setupTestBucket(t *testing.T, backend s3Backend) *Store {
 		t.Fatalf("failed to create %s client: %v", backend.name, err)
 	}
 
-	bucket := fmt.Sprintf("lode-test-%d", time.Now().UnixNano())
-
-	_, err = client.CreateBucket(ctx, &s3.CreateBucketInput{
-		Bucket: aws.String(bucket),
-	})
-	if err != nil {
-		t.Fatalf("failed to create bucket: %v", err)
-	}
-
-	t.Cleanup(func() {
-		// Intentional: t.Context() is canceled before t.Cleanup runs,
-		// so cleanup operations need an independent context.
-		cleanupCtx := context.Background()
-		out, _ := client.ListObjectsV2(cleanupCtx, &s3.ListObjectsV2Input{Bucket: aws.String(bucket)})
-		for _, obj := range out.Contents {
-			_, _ = client.DeleteObject(cleanupCtx, &s3.DeleteObjectInput{
-				Bucket: aws.String(bucket),
-				Key:    obj.Key,
-			})
-		}
-		_, _ = client.DeleteBucket(cleanupCtx, &s3.DeleteBucketInput{Bucket: aws.String(bucket)})
-	})
-
-	store, err := New(client, bucket)
-	if err != nil {
-		t.Fatalf("failed to create store: %v", err)
-	}
-
-	return store
+	return newEphemeralBucketStore(ctx, t, client, "lode-test")
 }
 
 // -----------------------------------------------------------------------------
@@ -470,4 +442,27 @@ func (r *cancelingReader) Read(p []byte) (int, error) {
 	}
 	r.cancel()
 	return 0, context.Canceled
+}
+
+func deleteTestBucket(cleanupCtx context.Context, client *s3.Client, bucket string) {
+	out, _ := client.ListObjectsV2(cleanupCtx, &s3.ListObjectsV2Input{Bucket: aws.String(bucket)})
+	for _, obj := range out.Contents {
+		_, _ = client.DeleteObject(cleanupCtx, &s3.DeleteObjectInput{Bucket: aws.String(bucket), Key: obj.Key})
+	}
+	_, _ = client.DeleteBucket(cleanupCtx, &s3.DeleteBucketInput{Bucket: aws.String(bucket)})
+}
+
+func newEphemeralBucketStore(ctx context.Context, tb testing.TB, client *s3.Client, prefix string) *Store {
+	tb.Helper()
+	bucket := fmt.Sprintf("%s-%d", prefix, time.Now().UnixNano())
+	if _, err := client.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: aws.String(bucket)}); err != nil {
+		tb.Fatalf("failed to create bucket: %v", err)
+	}
+	detached := context.WithoutCancel(ctx)
+	tb.Cleanup(func() { deleteTestBucket(detached, client, bucket) })
+	store, err := New(client, bucket)
+	if err != nil {
+		tb.Fatalf("failed to create store: %v", err)
+	}
+	return store
 }

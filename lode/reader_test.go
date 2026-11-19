@@ -94,345 +94,89 @@ func manifestErr(t *testing.T, store Store, ref ManifestRef) error {
 // -----------------------------------------------------------------------------
 
 func TestView_GetManifest_InvalidManifest(t *testing.T) {
-	t.Run("missing schema name", func(t *testing.T) {
-		ctx := t.Context()
-		store := NewMemory()
-
-		manifest := &Manifest{
-			FormatVersion: "1.0.0",
-			DatasetID:     "test-ds",
-			SnapshotID:    "snap-1",
-			CreatedAt:     time.Now().UTC(),
-			Metadata:      emptyMetadata(),
-			Objects:       []ObjectRef{},
-			RowCount:      0,
-			Compressor:    "noop",
-			Partitioner:   "noop",
-		}
-		writeManifest(ctx, t, store, manifest)
-
-		err := manifestErr(t, store, ManifestRef{ID: "snap-1"})
-		if !errors.Is(err, ErrManifestInvalid) {
-			t.Errorf("expected ErrManifestInvalid, got: %v", err)
-		}
-	})
-
-	t.Run("missing format version", func(t *testing.T) {
-		ctx := t.Context()
-		store := NewMemory()
-
-		manifest := &Manifest{
-			SchemaName:  "lode-manifest",
-			DatasetID:   "test-ds",
-			SnapshotID:  "snap-1",
-			CreatedAt:   time.Now().UTC(),
-			Metadata:    emptyMetadata(),
-			Objects:     []ObjectRef{},
-			RowCount:    0,
-			Compressor:  "noop",
-			Partitioner: "noop",
-		}
-		writeManifest(ctx, t, store, manifest)
-
-		err := manifestErr(t, store, ManifestRef{ID: "snap-1"})
-		if !errors.Is(err, ErrManifestInvalid) {
-			t.Errorf("expected ErrManifestInvalid, got: %v", err)
-		}
-	})
+	mutCases := []struct {
+		name   string
+		mutate func(*Manifest)
+	}{
+		{"missing schema name", func(m *Manifest) { m.SchemaName = "" }},
+		{"missing format version", func(m *Manifest) { m.FormatVersion = "" }},
+		{"zero created at", func(m *Manifest) { m.CreatedAt = time.Time{} }},
+		{"nil objects", func(m *Manifest) { m.Objects = nil }},
+		{"negative row count", func(m *Manifest) { m.RowCount = -1 }},
+		{"missing compressor", func(m *Manifest) { m.Compressor = "" }},
+		{"missing partitioner", func(m *Manifest) { m.Partitioner = "" }},
+		{"empty object path", func(m *Manifest) { m.Objects = []ObjectRef{{Path: "", SizeBytes: 100}}; m.RowCount = 1 }},
+		{"negative object size", func(m *Manifest) { m.Objects = []ObjectRef{{Path: "data/file.bin", SizeBytes: -100}}; m.RowCount = 1 }},
+	}
+	for _, tc := range mutCases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := NewMemory()
+			m := validTestManifest()
+			tc.mutate(m)
+			writeManifest(t.Context(), t, store, m)
+			if err := manifestErr(t, store, ManifestRef{ID: "snap-1"}); !errors.Is(err, ErrManifestInvalid) {
+				t.Errorf("expected ErrManifestInvalid, got: %v", err)
+			}
+		})
+	}
 
 	t.Run("nil metadata", func(t *testing.T) {
-		ctx := t.Context()
 		store := NewMemory()
-
-		manifest := &Manifest{
-			SchemaName:    "lode-manifest",
-			FormatVersion: "1.0.0",
-			DatasetID:     "test-ds",
-			SnapshotID:    "snap-1",
-			CreatedAt:     time.Now().UTC(),
-			Metadata:      emptyMetadata(),
-			Objects:       []ObjectRef{},
-			RowCount:      0,
-			Compressor:    "noop",
-			Partitioner:   "noop",
-		}
-		data, err := json.Marshal(manifest)
+		data, err := json.Marshal(validTestManifest())
 		if err != nil {
 			t.Fatal(err)
 		}
 		data = bytes.Replace(data, []byte(`"metadata":{}`), []byte(`"metadata":null`), 1)
-		if err := store.Put(ctx, "datasets/test-ds/snapshots/snap-1/manifest.json", bytes.NewReader(data)); err != nil {
+		if err := store.Put(t.Context(), "datasets/test-ds/snapshots/snap-1/manifest.json", bytes.NewReader(data)); err != nil {
 			t.Fatal(err)
 		}
-
-		err = manifestErr(t, store, ManifestRef{ID: "snap-1"})
-		if !errors.Is(err, ErrManifestInvalid) {
+		if err := manifestErr(t, store, ManifestRef{ID: "snap-1"}); !errors.Is(err, ErrManifestInvalid) {
 			t.Errorf("expected ErrManifestInvalid, got: %v", err)
 		}
 	})
 
 	t.Run("missing dataset ID", func(t *testing.T) {
-		ctx := t.Context()
 		store := NewMemory()
-
-		manifest := &Manifest{
-			SchemaName:    "lode-manifest",
-			FormatVersion: "1.0.0",
-			SnapshotID:    "snap-1",
-			CreatedAt:     time.Now().UTC(),
-			Metadata:      emptyMetadata(),
-			Objects:       []ObjectRef{},
-			RowCount:      0,
-			Compressor:    "noop",
-			Partitioner:   "noop",
-		}
-		data, _ := json.Marshal(manifest)
-		_ = store.Put(ctx, "datasets/test-ds/snapshots/snap-1/manifest.json", bytes.NewReader(data))
-
-		err := manifestErr(t, store, ManifestRef{ID: "snap-1"})
-		if !errors.Is(err, ErrManifestInvalid) {
+		m := validTestManifest()
+		m.DatasetID = ""
+		data, _ := json.Marshal(m)
+		_ = store.Put(t.Context(), "datasets/test-ds/snapshots/snap-1/manifest.json", bytes.NewReader(data))
+		if err := manifestErr(t, store, ManifestRef{ID: "snap-1"}); !errors.Is(err, ErrManifestInvalid) {
 			t.Errorf("expected ErrManifestInvalid, got: %v", err)
 		}
 	})
 
 	t.Run("missing snapshot ID", func(t *testing.T) {
-		ctx := t.Context()
 		store := NewMemory()
-
-		manifest := &Manifest{
-			SchemaName:    "lode-manifest",
-			FormatVersion: "1.0.0",
-			DatasetID:     "test-ds",
-			CreatedAt:     time.Now().UTC(),
-			Metadata:      emptyMetadata(),
-			Objects:       []ObjectRef{},
-			RowCount:      0,
-			Compressor:    "noop",
-			Partitioner:   "noop",
-		}
-		writeManifestAt(t, store, "datasets/test-ds/snapshots/snap-1/manifest.json", manifest)
+		m := validTestManifest()
+		m.SnapshotID = ""
+		writeManifestAt(t, store, "datasets/test-ds/snapshots/snap-1/manifest.json", m)
 		valid := validTestManifest()
 		valid.SnapshotID = "snap-0"
-		writeManifest(ctx, t, store, valid)
-
-		err := manifestErr(t, store, ManifestRef{ID: "snap-1"})
-		if !errors.Is(err, ErrManifestInvalid) {
-			t.Errorf("expected ErrManifestInvalid, got: %v", err)
-		}
-	})
-
-	t.Run("zero created at", func(t *testing.T) {
-		ctx := t.Context()
-		store := NewMemory()
-
-		manifest := &Manifest{
-			SchemaName:    "lode-manifest",
-			FormatVersion: "1.0.0",
-			DatasetID:     "test-ds",
-			SnapshotID:    "snap-1",
-			Metadata:      emptyMetadata(),
-			Objects:       []ObjectRef{},
-			RowCount:      0,
-			Compressor:    "noop",
-			Partitioner:   "noop",
-		}
-		writeManifest(ctx, t, store, manifest)
-
-		err := manifestErr(t, store, ManifestRef{ID: "snap-1"})
-		if !errors.Is(err, ErrManifestInvalid) {
-			t.Errorf("expected ErrManifestInvalid, got: %v", err)
-		}
-	})
-
-	t.Run("nil objects", func(t *testing.T) {
-		ctx := t.Context()
-		store := NewMemory()
-
-		manifest := &Manifest{
-			SchemaName:    "lode-manifest",
-			FormatVersion: "1.0.0",
-			DatasetID:     "test-ds",
-			SnapshotID:    "snap-1",
-			CreatedAt:     time.Now().UTC(),
-			Metadata:      emptyMetadata(),
-			Objects:       nil,
-			RowCount:      0,
-			Compressor:    "noop",
-			Partitioner:   "noop",
-		}
-		writeManifest(ctx, t, store, manifest)
-
-		err := manifestErr(t, store, ManifestRef{ID: "snap-1"})
-		if !errors.Is(err, ErrManifestInvalid) {
-			t.Errorf("expected ErrManifestInvalid, got: %v", err)
-		}
-	})
-
-	t.Run("negative row count", func(t *testing.T) {
-		ctx := t.Context()
-		store := NewMemory()
-
-		manifest := &Manifest{
-			SchemaName:    "lode-manifest",
-			FormatVersion: "1.0.0",
-			DatasetID:     "test-ds",
-			SnapshotID:    "snap-1",
-			CreatedAt:     time.Now().UTC(),
-			Metadata:      emptyMetadata(),
-			Objects:       []ObjectRef{},
-			RowCount:      -1,
-			Compressor:    "noop",
-			Partitioner:   "noop",
-		}
-		writeManifest(ctx, t, store, manifest)
-
-		err := manifestErr(t, store, ManifestRef{ID: "snap-1"})
-		if !errors.Is(err, ErrManifestInvalid) {
-			t.Errorf("expected ErrManifestInvalid, got: %v", err)
-		}
-	})
-
-	t.Run("missing compressor", func(t *testing.T) {
-		ctx := t.Context()
-		store := NewMemory()
-
-		manifest := &Manifest{
-			SchemaName:    "lode-manifest",
-			FormatVersion: "1.0.0",
-			DatasetID:     "test-ds",
-			SnapshotID:    "snap-1",
-			CreatedAt:     time.Now().UTC(),
-			Metadata:      emptyMetadata(),
-			Objects:       []ObjectRef{},
-			RowCount:      0,
-			Partitioner:   "noop",
-		}
-		writeManifest(ctx, t, store, manifest)
-
-		err := manifestErr(t, store, ManifestRef{ID: "snap-1"})
-		if !errors.Is(err, ErrManifestInvalid) {
-			t.Errorf("expected ErrManifestInvalid, got: %v", err)
-		}
-	})
-
-	t.Run("missing partitioner", func(t *testing.T) {
-		ctx := t.Context()
-		store := NewMemory()
-
-		manifest := &Manifest{
-			SchemaName:    "lode-manifest",
-			FormatVersion: "1.0.0",
-			DatasetID:     "test-ds",
-			SnapshotID:    "snap-1",
-			CreatedAt:     time.Now().UTC(),
-			Metadata:      emptyMetadata(),
-			Objects:       []ObjectRef{},
-			RowCount:      0,
-			Compressor:    "noop",
-		}
-		writeManifest(ctx, t, store, manifest)
-
-		err := manifestErr(t, store, ManifestRef{ID: "snap-1"})
-		if !errors.Is(err, ErrManifestInvalid) {
-			t.Errorf("expected ErrManifestInvalid, got: %v", err)
-		}
-	})
-
-	t.Run("empty object path", func(t *testing.T) {
-		ctx := t.Context()
-		store := NewMemory()
-
-		manifest := &Manifest{
-			SchemaName:    "lode-manifest",
-			FormatVersion: "1.0.0",
-			DatasetID:     "test-ds",
-			SnapshotID:    "snap-1",
-			CreatedAt:     time.Now().UTC(),
-			Metadata:      emptyMetadata(),
-			Objects: []ObjectRef{
-				{Path: "", SizeBytes: 100},
-			},
-			RowCount:    1,
-			Compressor:  "noop",
-			Partitioner: "noop",
-		}
-		writeManifest(ctx, t, store, manifest)
-
-		err := manifestErr(t, store, ManifestRef{ID: "snap-1"})
-		if !errors.Is(err, ErrManifestInvalid) {
-			t.Errorf("expected ErrManifestInvalid, got: %v", err)
-		}
-	})
-
-	t.Run("negative object size", func(t *testing.T) {
-		ctx := t.Context()
-		store := NewMemory()
-
-		manifest := &Manifest{
-			SchemaName:    "lode-manifest",
-			FormatVersion: "1.0.0",
-			DatasetID:     "test-ds",
-			SnapshotID:    "snap-1",
-			CreatedAt:     time.Now().UTC(),
-			Metadata:      emptyMetadata(),
-			Objects: []ObjectRef{
-				{Path: "data/file.bin", SizeBytes: -100},
-			},
-			RowCount:    1,
-			Compressor:  "noop",
-			Partitioner: "noop",
-		}
-		writeManifest(ctx, t, store, manifest)
-
-		err := manifestErr(t, store, ManifestRef{ID: "snap-1"})
-		if !errors.Is(err, ErrManifestInvalid) {
+		writeManifest(t.Context(), t, store, valid)
+		if err := manifestErr(t, store, ManifestRef{ID: "snap-1"}); !errors.Is(err, ErrManifestInvalid) {
 			t.Errorf("expected ErrManifestInvalid, got: %v", err)
 		}
 	})
 }
 
 func TestView_ListManifests(t *testing.T) {
-	t.Run("invalid manifest with partition filter returns error", func(t *testing.T) {
-		ctx := t.Context()
-		store := NewMemory()
-
-		manifest := &Manifest{
-			DatasetID:  "test-ds",
-			SnapshotID: "snap-1",
-		}
-		writeManifest(ctx, t, store, manifest)
-
-		reader, err := newTestReader(Use(store))
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		_, err = reader.ListManifests(ctx, "test-ds", "some-partition", ManifestListOptions{})
-		if !errors.Is(err, ErrManifestInvalid) {
-			t.Errorf("expected ErrManifestInvalid, got: %v", err)
-		}
-	})
-
-	t.Run("invalid manifest without partition filter returns error", func(t *testing.T) {
-		ctx := t.Context()
-		store := NewMemory()
-
-		manifest := &Manifest{
-			DatasetID:  "test-ds",
-			SnapshotID: "snap-1",
-		}
-		writeManifest(ctx, t, store, manifest)
-
-		reader, err := newTestReader(Use(store))
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		_, err = reader.ListManifests(ctx, "test-ds", "", ManifestListOptions{})
-		if !errors.Is(err, ErrManifestInvalid) {
-			t.Errorf("expected ErrManifestInvalid, got: %v", err)
-		}
-	})
+	for _, tc := range []struct{ name, part string }{
+		{"invalid manifest with partition filter returns error", "some-partition"},
+		{"invalid manifest without partition filter returns error", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := NewMemory()
+			writeManifest(t.Context(), t, store, &Manifest{DatasetID: "test-ds", SnapshotID: "snap-1"})
+			reader, err := newTestReader(Use(store))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := reader.ListManifests(t.Context(), "test-ds", tc.part, ManifestListOptions{}); !errors.Is(err, ErrManifestInvalid) {
+				t.Errorf("expected ErrManifestInvalid, got: %v", err)
+			}
+		})
+	}
 
 	t.Run("hive layout skips canonical manifest", func(t *testing.T) {
 		store := NewMemory()
@@ -473,63 +217,37 @@ func TestView_ListManifests(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestView_ListDatasets(t *testing.T) {
-	t.Run("uncommitted data without manifests returns empty list", func(t *testing.T) {
-		ctx := t.Context()
-		store := NewMemory()
-
-		if err := store.Put(ctx, "datasets/test-ds/snapshots/snap-1/data/file.txt", bytes.NewReader([]byte("data"))); err != nil {
-			t.Fatal(err)
-		}
-
+	assertNoDatasets := func(t *testing.T, store RangeStore) {
+		t.Helper()
 		reader, err := newTestReader(Use(store))
 		if err != nil {
 			t.Fatal(err)
 		}
-
-		datasets, err := reader.ListDatasets(ctx, DatasetListOptions{})
+		datasets, err := reader.ListDatasets(t.Context(), DatasetListOptions{})
 		if err != nil {
-			t.Fatalf("expected nil error when no committed datasets exist, got: %v", err)
+			t.Fatalf("ListDatasets = %v, want nil", err)
 		}
 		if datasets == nil || len(datasets) != 0 {
 			t.Errorf("expected non-nil empty slice, got: %#v", datasets)
 		}
+	}
+
+	t.Run("uncommitted data without manifests returns empty list", func(t *testing.T) {
+		store := NewMemory()
+		if err := store.Put(t.Context(), "datasets/test-ds/snapshots/snap-1/data/file.txt", bytes.NewReader([]byte("data"))); err != nil {
+			t.Fatal(err)
+		}
+		assertNoDatasets(t, store)
 	})
 
 	t.Run("empty storage", func(t *testing.T) {
-		ctx := t.Context()
-		store := NewMemory()
-
-		reader, err := newTestReader(Use(store))
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		datasets, err := reader.ListDatasets(ctx, DatasetListOptions{})
-		if err != nil {
-			t.Fatalf("expected no error for empty storage, got: %v", err)
-		}
-		if datasets == nil || len(datasets) != 0 {
-			t.Errorf("expected non-nil empty list, got: %#v", datasets)
-		}
+		assertNoDatasets(t, NewMemory())
 	})
 
 	t.Run("with valid manifest", func(t *testing.T) {
 		ctx := t.Context()
 		store := NewMemory()
-
-		manifest := &Manifest{
-			SchemaName:    "lode-manifest",
-			FormatVersion: "1.2.0",
-			DatasetID:     "test-ds",
-			SnapshotID:    "snap-1",
-			CreatedAt:     time.Now().UTC(),
-			Metadata:      emptyMetadata(),
-			Objects:       []ObjectRef{},
-			RowCount:      0,
-			Compressor:    "noop",
-			Partitioner:   "noop",
-		}
-		writeManifest(ctx, t, store, manifest)
+		writeManifest(ctx, t, store, validTestManifest())
 
 		reader, err := newTestReader(Use(store))
 		if err != nil {
