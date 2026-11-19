@@ -22,21 +22,17 @@ import (
 )
 
 func main() {
-	if err := run(); err != nil {
+	if err := streamDemo(context.Background()); err != nil {
 		log.Fatal(err)
 	}
 }
 
-func run() error {
-	ctx := context.Background()
-
-	// Create a temporary directory for storage
+func streamDemo(ctx context.Context) error {
 	tmpDir, err := os.MkdirTemp("", "lode-stream-records-*")
 	if err != nil {
-		return fmt.Errorf("create temp dir: %w", err)
+		return err
 	}
 	defer func() { _ = os.RemoveAll(tmpDir) }()
-
 	fmt.Printf("Storage root: %s\n\n", tmpDir)
 
 	// Open a root over the filesystem store.

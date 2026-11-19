@@ -93,8 +93,8 @@ func documentReferences(t *testing.T) map[string]bool {
 	return found
 }
 
-// exports returns the exported top-level identifiers of the package in dir,
-// read from its non-test sources.
+// collectDecls parses non-test Go sources in dir and returns the sorted unique
+// identifiers extracted from their top-level declarations.
 func collectDecls(t *testing.T, dir string, extract func(ast.Decl) []string) []string {
 	t.Helper()
 	entries, err := os.ReadDir(filepath.Join(root, dir))
@@ -166,19 +166,21 @@ func specNames(spec ast.Spec) []string {
 }
 
 func exportedTypes(t *testing.T, dir string) []string {
-	return collectDecls(t, dir, func(decl ast.Decl) []string {
-		gen, ok := decl.(*ast.GenDecl)
-		if !ok {
-			return nil
+	return collectDecls(t, dir, typeSpecNames)
+}
+
+func typeSpecNames(decl ast.Decl) []string {
+	gen, ok := decl.(*ast.GenDecl)
+	if !ok {
+		return nil
+	}
+	var out []string
+	for _, spec := range gen.Specs {
+		if ts, ok := spec.(*ast.TypeSpec); ok && ts.Name.IsExported() {
+			out = append(out, ts.Name.Name)
 		}
-		var out []string
-		for _, spec := range gen.Specs {
-			if ts, ok := spec.(*ast.TypeSpec); ok && ts.Name.IsExported() {
-				out = append(out, ts.Name.Name)
-			}
-		}
-		return out
-	})
+	}
+	return out
 }
 
 var (
@@ -221,15 +223,9 @@ func TestEveryContractIsIndexedAndTypesExist(t *testing.T) {
 		if !indexed[name] {
 			t.Errorf("docs/contracts/%s is not listed in docs/ARCH_INDEX.md", name)
 		}
-		body, err := os.ReadFile(filepath.Join(contractsDir, name))
-		if err != nil {
-			t.Fatalf("read %s: %v", name, err)
-		}
-		for _, block := range goFencePattern.FindAllStringSubmatch(string(body), -1) {
-			for _, tm := range contractTypeDecl.FindAllStringSubmatch(block[1], -1) {
-				if !allTypes[tm[1]] {
-					t.Errorf("docs/contracts/%s declares type %s, which no public package exports", name, tm[1])
-				}
+		for _, typ := range declaredContractTypes(t, filepath.Join(contractsDir, name)) {
+			if !allTypes[typ] {
+				t.Errorf("docs/contracts/%s declares type %s, which no public package exports", name, typ)
 			}
 		}
 	}
@@ -283,4 +279,19 @@ func collectTestFuncs(t *testing.T) map[string]bool {
 		}
 	}
 	return found
+}
+
+func declaredContractTypes(t *testing.T, path string) []string {
+	t.Helper()
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	var types []string
+	for _, block := range goFencePattern.FindAllStringSubmatch(string(body), -1) {
+		for _, tm := range contractTypeDecl.FindAllStringSubmatch(block[1], -1) {
+			types = append(types, tm[1])
+		}
+	}
+	return types
 }

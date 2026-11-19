@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 
 	"github.com/pithecene/lode/lode"
@@ -31,35 +30,7 @@ func setupBenchBucket(b *testing.B, newClient func(context.Context) (*s3.Client,
 		b.Fatalf("failed to create S3 client: %v", err)
 	}
 
-	bucket := fmt.Sprintf("lode-bench-%d", time.Now().UnixNano())
-
-	_, err = client.CreateBucket(ctx, &s3.CreateBucketInput{
-		Bucket: aws.String(bucket),
-	})
-	if err != nil {
-		b.Fatalf("failed to create bucket: %v", err)
-	}
-
-	b.Cleanup(func() {
-		// Intentional: b.Context() is canceled before b.Cleanup runs,
-		// so cleanup operations need an independent context.
-		cleanupCtx := context.Background()
-		out, _ := client.ListObjectsV2(cleanupCtx, &s3.ListObjectsV2Input{Bucket: aws.String(bucket)})
-		for _, obj := range out.Contents {
-			_, _ = client.DeleteObject(cleanupCtx, &s3.DeleteObjectInput{
-				Bucket: aws.String(bucket),
-				Key:    obj.Key,
-			})
-		}
-		_, _ = client.DeleteBucket(cleanupCtx, &s3.DeleteBucketInput{Bucket: aws.String(bucket)})
-	})
-
-	store, err := New(client, bucket)
-	if err != nil {
-		b.Fatalf("failed to create store: %v", err)
-	}
-
-	return store
+	return newEphemeralBucketStore(ctx, b, client, "lode-bench")
 }
 
 // benchRecords are the records that each benchmark iteration writes.

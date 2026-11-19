@@ -205,7 +205,7 @@ func TestChaos_Workloads(t *testing.T) {
 		t.Run(layout, func(t *testing.T) {
 			runSmokePair(t, Config{
 				Seed:      seed,
-				Duration:  25 * time.Millisecond,
+				Duration:  150 * time.Millisecond,
 				Writers:   3,
 				Readers:   2,
 				Layout:    layout,
@@ -217,7 +217,7 @@ func TestChaos_Workloads(t *testing.T) {
 	t.Run("volume", func(t *testing.T) {
 		runSmokePair(t, Config{
 			Seed:     42,
-			Duration: 25 * time.Millisecond,
+			Duration: 150 * time.Millisecond,
 			Writers:  3,
 			Retries:  4,
 			Volume:   true,
@@ -259,19 +259,7 @@ func TestChaos_RemoveDatasetFence(t *testing.T) {
 	done := make(chan error, 4)
 	for w := range 3 {
 		go func(worker int) {
-			h, openErr := root.Records(ctx, "fenced", lode.JSONL[lode.D](), lode.WithRetry(4))
-			if openErr != nil {
-				done <- openErr
-				return
-			}
-			for i := range 10 {
-				_, wErr := h.Write(ctx, lode.R(lode.D{"w": worker, "i": i}), nil)
-				if errors.Is(wErr, lode.ErrRemoved) {
-					done <- nil
-					return
-				}
-			}
-			done <- nil
+			done <- writeUntilRemoved(ctx, root, worker)
 		}(w)
 	}
 	go func() {
@@ -289,4 +277,17 @@ func TestChaos_RemoveDatasetFence(t *testing.T) {
 	if _, err := root.Records(ctx, "fenced", lode.JSONL[lode.D]()); !errors.Is(err, lode.ErrRemoved) {
 		t.Fatalf("Records after RemoveDataset = %v, want ErrRemoved", err)
 	}
+}
+
+func writeUntilRemoved(ctx context.Context, root *lode.Root, worker int) error {
+	h, err := root.Records(ctx, "fenced", lode.JSONL[lode.D](), lode.WithRetry(4))
+	if err != nil {
+		return err
+	}
+	for i := range 10 {
+		if _, err := h.Write(ctx, lode.R(lode.D{"w": worker, "i": i}), nil); errors.Is(err, lode.ErrRemoved) {
+			return nil
+		}
+	}
+	return nil
 }

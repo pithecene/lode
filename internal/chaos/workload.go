@@ -57,6 +57,26 @@ func (h *recordsHandle) readUnits(ctx context.Context, id lode.SnapshotID) (int6
 	return int64(len(rows)), err
 }
 
+type anchoredReader[P any] interface {
+	Snapshot(ctx context.Context, id lode.SnapshotID) (*lode.Snapshot, error)
+	Read(ctx context.Context, id lode.SnapshotID) (P, error)
+}
+
+func verifyAnchoredView[V anchoredReader[P], P any](ctx context.Context, id lode.SnapshotID, open func() (V, error), match func(P) bool) (bool, error) {
+	view, err := open()
+	if err != nil {
+		return false, err
+	}
+	if _, err := view.Snapshot(ctx, id); err != nil {
+		return false, err
+	}
+	payload, err := view.Read(ctx, id)
+	if err != nil {
+		return false, err
+	}
+	return match(payload), nil
+}
+
 func (h *recordsHandle) checkCommit(ctx context.Context, c Commit) (bool, error) {
 	rows, err := h.Read(ctx, c.ID)
 	if err != nil {
@@ -66,26 +86,15 @@ func (h *recordsHandle) checkCommit(ctx context.Context, c Commit) (bool, error)
 }
 
 func (h *recordsHandle) checkAnchored(ctx context.Context, store lode.ObjectStore, c Commit) (bool, error) {
-	view, err := lode.OpenReadOnly(lode.Use(store)).Records(ctx, datasetID, h.codec, lode.WithAnchor(c.ID))
-	if err != nil {
-		return false, err
-	}
-	if _, err := view.Snapshot(ctx, c.ID); err != nil {
-		return false, err
-	}
-	rows, err := view.Read(ctx, c.ID)
-	if err != nil {
-		return false, err
-	}
-	return c.matches(rows), nil
+	return verifyAnchoredView(ctx, c.ID, func() (*lode.RecordView[lode.D], error) {
+		return lode.OpenReadOnly(lode.Use(store)).Records(ctx, datasetID, h.codec, lode.WithAnchor(c.ID))
+	}, c.matches)
 }
 
 func (h *recordsHandle) readWithStore(ctx context.Context, store lode.ObjectStore, id lode.SnapshotID) error {
-	view, err := lode.OpenReadOnly(lode.Use(store)).Records(ctx, datasetID, h.codec, lode.WithAnchor(id))
-	if err != nil {
-		return err
-	}
-	_, err = view.Read(ctx, id)
+	_, err := verifyAnchoredView(ctx, id, func() (*lode.RecordView[lode.D], error) {
+		return lode.OpenReadOnly(lode.Use(store)).Records(ctx, datasetID, h.codec, lode.WithAnchor(id))
+	}, func([]lode.D) bool { return true })
 	return err
 }
 
@@ -106,42 +115,29 @@ func (h *blobsHandle) writeSettle(ctx context.Context) (*lode.Snapshot, error) {
 	return h.StreamWrite(ctx, bytes.NewReader(settle.blobBytes()), lode.D{"op": "settle"})
 }
 
+func (h *blobsHandle) checkCommit(ctx context.Context, c Commit) (bool, error) {
+	data, err := h.Read(ctx, c.ID)
+	return err == nil && c.matchesBlob(data), err
+}
+
 func (h *blobsHandle) readUnits(ctx context.Context, id lode.SnapshotID) (int64, error) {
-	if _, err := h.Read(ctx, id); err != nil {
+	_, err := h.Read(ctx, id)
+	if err != nil {
 		return 0, err
 	}
 	return 1, nil
 }
 
-func (h *blobsHandle) checkCommit(ctx context.Context, c Commit) (bool, error) {
-	data, err := h.Read(ctx, c.ID)
-	if err != nil {
-		return false, err
-	}
-	return c.matchesBlob(data), nil
-}
-
 func (h *blobsHandle) checkAnchored(ctx context.Context, store lode.ObjectStore, c Commit) (bool, error) {
-	view, err := lode.OpenReadOnly(lode.Use(store)).Blobs(ctx, datasetID, lode.WithAnchor(c.ID))
-	if err != nil {
-		return false, err
-	}
-	if _, err := view.Snapshot(ctx, c.ID); err != nil {
-		return false, err
-	}
-	data, err := view.Read(ctx, c.ID)
-	if err != nil {
-		return false, err
-	}
-	return c.matchesBlob(data), nil
+	return verifyAnchoredView(ctx, c.ID, func() (*lode.BlobView, error) {
+		return lode.OpenReadOnly(lode.Use(store)).Blobs(ctx, datasetID, lode.WithAnchor(c.ID))
+	}, c.matchesBlob)
 }
 
 func (h *blobsHandle) readWithStore(ctx context.Context, store lode.ObjectStore, id lode.SnapshotID) error {
-	view, err := lode.OpenReadOnly(lode.Use(store)).Blobs(ctx, datasetID, lode.WithAnchor(id))
-	if err != nil {
-		return err
-	}
-	_, err = view.Read(ctx, id)
+	_, err := verifyAnchoredView(ctx, id, func() (*lode.BlobView, error) {
+		return lode.OpenReadOnly(lode.Use(store)).Blobs(ctx, datasetID, lode.WithAnchor(id))
+	}, func([]byte) bool { return true })
 	return err
 }
 
