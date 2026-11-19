@@ -14,6 +14,8 @@ This command installs:
 - [Task](https://taskfile.dev/) 3.47.0
 - [golangci-lint](https://golangci-lint.run/) 2.15.0
 - [deadcode](https://pkg.go.dev/golang.org/x/tools/cmd/deadcode) 0.53.0
+- [gremlins](https://github.com/go-gremlins/gremlins) 0.6.0
+- [yamllint](https://yamllint.readthedocs.io/) 1.38.0
 - [benchstat](https://pkg.go.dev/golang.org/x/perf/cmd/benchstat)
 
 ## Development Tasks
@@ -29,6 +31,7 @@ This command installs:
 | `task examples` | Run all examples |
 | `task snippets` | Verify the runnable Markdown snippets |
 | `task fuzz` | Run every fuzz target (`FUZZTIME=30s` each by default) |
+| `task mutate` | Run mutation testing with `gremlins` |
 | `task chaos` | Run the chaos harness (see `internal/chaos`; start `s3:up` first for `localstack` or `rustfs`) |
 | `task bench` | Run all benchmarks (run `s3:up` first for S3) |
 | `task bench:stat` | Run the benchmarks with `-count=10` and summarize them with benchstat |
