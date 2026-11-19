@@ -298,19 +298,17 @@ func (k datasetKind) Decode(id SnapshotID, r io.Reader) (*Manifest, error) {
 	if err := validateManifest(&m); err != nil {
 		return nil, err
 	}
-	if m.DatasetID != k.id {
-		return nil, &validate.ManifestError{
-			Field:   "dataset_id",
-			Message: fmt.Sprintf("got %q, want %q", m.DatasetID, k.id),
-		}
-	}
-	if m.SnapshotID != id {
-		return nil, &validate.ManifestError{
-			Field:   "snapshot_id",
-			Message: fmt.Sprintf("got %q, want %q", m.SnapshotID, id),
-		}
+	if m.DatasetID != k.id || m.SnapshotID != id {
+		return nil, manifestIdentityErr(&m, k.id, id)
 	}
 	return &m, nil
+}
+
+func manifestIdentityErr(m *Manifest, wantDataset DatasetID, wantSnap SnapshotID) error {
+	if m.DatasetID != wantDataset {
+		return &validate.ManifestError{Field: "dataset_id", Message: fmt.Sprintf("got %q, want %q", m.DatasetID, wantDataset)}
+	}
+	return &validate.ManifestError{Field: "snapshot_id", Message: fmt.Sprintf("got %q, want %q", m.SnapshotID, wantSnap)}
 }
 
 var (
