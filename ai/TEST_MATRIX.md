@@ -283,9 +283,12 @@ the tests for its verification.
 | A blob dataset with a partitioned layout rejected | `TestRoot_Blobs/a_partitioned_layout_is_rejected` |
 | Hive keys rejected when empty, not one segment, or containing `=` | `TestHive_KeysNamePartitionsUnambiguously` |
 | Typed records partition with `Hive(...).By`; a `By` for another type, or a partition naming other keys, is rejected | `TestRoot_Records_Typed/Hive_partitions_typed_records_with_By`, `TestRoot_Records_Typed/a_By_function_for_another_record_type_is_rejected`, `TestRoot_Records_Typed/a_partition_naming_other_keys_fails_the_write` |
-| Path names: custom names land at their paths; same names read them; another datasets directory is another dataset; other names conflict or are rejected | `TestRootPaths_CustomNames` |
-| Path names: invalid, duplicate, `latest`, and flat with a datasets or snapshots directory are rejected | `TestRootPaths_InvalidNames` |
+| Nil root options rejected with `ErrInvalidArgument` | `TestRootPaths_InvalidOptions` |
+| Pre-v1.0 manifests (`format_version` `"1.1.0"`, Lode v0.12–v0.17.1) with default or flat `paths` read cleanly; custom `paths` rejected with `ErrManifestInvalid` | `TestRootPaths_ManifestFormat11Compat` |
 | Flat paths, partitioned: paths, no dataset listing, views list partitions | `TestRootPaths_Flat` |
+| `Root.RemoveDataset` writes a tombstone, deletes dataset objects, blocks writers/views with `ErrRemoved`, and refuses pending commits with `ErrHeadUncommitted` | `TestRoot_RemoveDataset` |
+| `SHA256`, `CRC32C`, and `MD5` verify stored object bytes on read and return `ErrChecksumMismatch` on tampered bytes or missing checksums | `TestChecksum_ReadVerification` |
+| `PrefixLister.ListPrefixes` enumerates immediate child prefixes across built-in and `Prefixed` stores; `FS(..., WithSync())` fsyncs writes | `TestStore_ListPrefixes`, `TestFS_WithSync` |
 
 **Compression**
 

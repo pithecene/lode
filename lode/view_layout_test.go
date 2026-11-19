@@ -13,7 +13,7 @@ import (
 // store that records the keys each call reaches.
 type layoutFixture struct {
 	store *testutil.KeyRecorder
-	snap  *DatasetSnapshot
+	snap  *Snapshot
 }
 
 func newLayoutFixture(t *testing.T, opts ...DatasetOption) layoutFixture {
@@ -28,9 +28,9 @@ func newLayoutFixture(t *testing.T, opts ...DatasetOption) layoutFixture {
 
 // open opens a view of the fixture's dataset with opts and returns the keys
 // that opening reached.
-func (f layoutFixture) open(t *testing.T, opts ...ViewOption) (RecordView[D], []string, error) {
+func (f layoutFixture) open(t *testing.T, opts ...ViewOption) (*RecordView[D], []string, error) {
 	t.Helper()
-	var view RecordView[D]
+	var view *RecordView[D]
 	var err error
 	keys := f.store.Recorded(func() {
 		view, err = OpenReadOnly(Use(f.store)).Records(t.Context(), "ds", jsonl, opts...)
@@ -120,7 +120,7 @@ func TestWithLayout_ViewVerifiesLegacyKeys(t *testing.T) {
 			legacyHive(t, f.store, f.snap)
 			opts := []ViewOption{WithLayout(c.layout)}
 			if c.pinned {
-				opts = append(opts, WithPinnedSnapshot(f.snap.ID))
+				opts = append(opts, WithAnchor(f.snap.ID))
 			}
 			_, _, err := f.open(t, opts...)
 			if !errors.Is(err, c.err) || (c.err == nil) != (err == nil) {

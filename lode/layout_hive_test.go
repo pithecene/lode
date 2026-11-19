@@ -18,7 +18,7 @@ import "testing"
 // the grammar must read them as dataset IDs, not markers.
 
 func hiveForTest(*testing.T) *pathLayout {
-	return newPathLayout(defaultPaths(false), partitionScheme{name: "hive", keys: []string{"day"}})
+	return newPathLayout(false, partitionScheme{name: "hive", keys: []string{"day"}})
 }
 
 func TestHiveLayout_Manifests(t *testing.T) {
@@ -82,7 +82,7 @@ func TestHiveLayout_Manifests(t *testing.T) {
 		cases := []struct {
 			path        string
 			wantDataset DatasetID
-			wantSegment DatasetSnapshotID
+			wantSegment SnapshotID
 		}{
 			{"datasets/ds/segments/1/manifest.json", "ds", "1"},
 			{"datasets/ds/partitions/day=1/segments/7/manifest.json", "ds", "7"},

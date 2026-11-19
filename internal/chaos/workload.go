@@ -1,6 +1,7 @@
 package chaos
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -14,44 +15,188 @@ import (
 
 const datasetID lode.DatasetID = "chaos"
 
-// layout is a dataset layout a run can use: the layout and the writes it
-// supports.
-type layout struct {
-	layout func() lode.Layout
-	writes []writeOp
+// chaosDataset is the common surface of *lode.Records[lode.D] and *lode.Blobs
+// used by the harness actors and verifiers.
+type chaosDataset interface {
+	Latest(ctx context.Context) (*lode.Snapshot, error)
+	Snapshot(ctx context.Context, id lode.SnapshotID) (*lode.Snapshot, error)
+	Snapshots(ctx context.Context) ([]*lode.Snapshot, error)
+	ListPartitions(ctx context.Context, opts lode.PartitionListOptions) ([]lode.PartitionPath, error)
+	Manifests(ctx context.Context, partition lode.PartitionPath, opts lode.ManifestListOptions) iter.Seq2[lode.LoadedManifest, error]
+	Expire(ctx context.Context, req lode.ExpireRequest) (*lode.ExpireReport, error)
+	Sweep(ctx context.Context, req lode.SweepRequest) (*lode.SweepReport, error)
+
+	writeCommit(ctx context.Context, rng *rand.Rand, c Commit) (*lode.Snapshot, error)
+	writeSettle(ctx context.Context) (*lode.Snapshot, error)
+	readUnits(ctx context.Context, id lode.SnapshotID) (int64, error)
+	checkCommit(ctx context.Context, c Commit) (bool, error)
+	checkAnchored(ctx context.Context, store lode.ObjectStore, c Commit) (bool, error)
+	readWithStore(ctx context.Context, store lode.ObjectStore, id lode.SnapshotID) error
 }
 
-// layouts are the dataset layouts a run can use. StreamWrite does not
-// partition, so the Hive layout uses Write alone.
-var layouts = map[string]layout{
-	"default": {layout: lode.Unpartitioned, writes: []writeOp{writeBatch, writeStream}},
-	"hive":    {layout: func() lode.Layout { return lode.Hive("day") }, writes: []writeOp{writeBatch}},
+type recordsHandle struct {
+	*lode.Records[lode.D]
+	codec   lode.Codec[lode.D]
+	streams bool
+}
+
+func (h *recordsHandle) writeCommit(ctx context.Context, rng *rand.Rand, c Commit) (*lode.Snapshot, error) {
+	if h.streams && rng.IntN(2) == 0 {
+		return h.StreamWrite(ctx, each(c.records()), lode.D{"op": "stream"})
+	}
+	return h.Write(ctx, c.records(), lode.D{"op": "write"})
+}
+
+func (h *recordsHandle) writeSettle(ctx context.Context) (*lode.Snapshot, error) {
+	settle := Commit{Writer: -1, Rows: 1, Days: []string{days[0]}}
+	return h.Write(ctx, settle.records(), lode.D{"op": "settle"})
+}
+
+func (h *recordsHandle) readUnits(ctx context.Context, id lode.SnapshotID) (int64, error) {
+	rows, err := h.Read(ctx, id)
+	return int64(len(rows)), err
+}
+
+type anchoredReader[P any] interface {
+	Snapshot(ctx context.Context, id lode.SnapshotID) (*lode.Snapshot, error)
+	Read(ctx context.Context, id lode.SnapshotID) (P, error)
+}
+
+func verifyAnchoredView[V anchoredReader[P], P any](ctx context.Context, id lode.SnapshotID, open func() (V, error), match func(P) bool) (bool, error) {
+	view, err := open()
+	if err != nil {
+		return false, err
+	}
+	if _, err := view.Snapshot(ctx, id); err != nil {
+		return false, err
+	}
+	payload, err := view.Read(ctx, id)
+	if err != nil {
+		return false, err
+	}
+	return match(payload), nil
+}
+
+func (h *recordsHandle) checkCommit(ctx context.Context, c Commit) (bool, error) {
+	rows, err := h.Read(ctx, c.ID)
+	if err != nil {
+		return false, err
+	}
+	return c.matches(rows), nil
+}
+
+func (h *recordsHandle) checkAnchored(ctx context.Context, store lode.ObjectStore, c Commit) (bool, error) {
+	return verifyAnchoredView(ctx, c.ID, func() (*lode.RecordView[lode.D], error) {
+		return lode.OpenReadOnly(lode.Use(store)).Records(ctx, datasetID, h.codec, lode.WithAnchor(c.ID))
+	}, c.matches)
+}
+
+func (h *recordsHandle) readWithStore(ctx context.Context, store lode.ObjectStore, id lode.SnapshotID) error {
+	_, err := verifyAnchoredView(ctx, id, func() (*lode.RecordView[lode.D], error) {
+		return lode.OpenReadOnly(lode.Use(store)).Records(ctx, datasetID, h.codec, lode.WithAnchor(id))
+	}, func([]lode.D) bool { return true })
+	return err
+}
+
+type blobsHandle struct {
+	*lode.Blobs
+}
+
+func (h *blobsHandle) writeCommit(ctx context.Context, rng *rand.Rand, c Commit) (*lode.Snapshot, error) {
+	data := c.blobBytes()
+	if rng.IntN(2) == 0 {
+		return h.StreamWrite(ctx, bytes.NewReader(data), lode.D{"op": "stream-blob"})
+	}
+	return h.Write(ctx, data, lode.D{"op": "write-blob"})
+}
+
+func (h *blobsHandle) writeSettle(ctx context.Context) (*lode.Snapshot, error) {
+	settle := Commit{Writer: -1, Seq: -1, Rows: 1, Blob: true}
+	return h.StreamWrite(ctx, bytes.NewReader(settle.blobBytes()), lode.D{"op": "settle"})
+}
+
+func (h *blobsHandle) checkCommit(ctx context.Context, c Commit) (bool, error) {
+	data, err := h.Read(ctx, c.ID)
+	return err == nil && c.matchesBlob(data), err
+}
+
+func (h *blobsHandle) readUnits(ctx context.Context, id lode.SnapshotID) (int64, error) {
+	_, err := h.Read(ctx, id)
+	if err != nil {
+		return 0, err
+	}
+	return 1, nil
+}
+
+func (h *blobsHandle) checkAnchored(ctx context.Context, store lode.ObjectStore, c Commit) (bool, error) {
+	return verifyAnchoredView(ctx, c.ID, func() (*lode.BlobView, error) {
+		return lode.OpenReadOnly(lode.Use(store)).Blobs(ctx, datasetID, lode.WithAnchor(c.ID))
+	}, c.matchesBlob)
+}
+
+func (h *blobsHandle) readWithStore(ctx context.Context, store lode.ObjectStore, id lode.SnapshotID) error {
+	_, err := verifyAnchoredView(ctx, id, func() (*lode.BlobView, error) {
+		return lode.OpenReadOnly(lode.Use(store)).Blobs(ctx, datasetID, lode.WithAnchor(id))
+	}, func([]byte) bool { return true })
+	return err
+}
+
+// layoutSpec configures one dataset workload a run can execute.
+type layoutSpec struct {
+	blob        bool
+	partitioned bool
+	open        func(ctx context.Context, root *lode.Root, opts ...lode.DatasetOption) (chaosDataset, error)
+}
+
+func hiveByDay() lode.Layout { return lode.Hive("day") }
+
+func parquetCommitCodec() lode.Codec[lode.D] { return lode.Parquet[lode.D](commitSchema) }
+
+func recordsLayout(newCodec func() lode.Codec[lode.D], newLayout func() lode.Layout, streams, partitioned bool) layoutSpec {
+	return layoutSpec{
+		partitioned: partitioned,
+		open: func(ctx context.Context, root *lode.Root, opts ...lode.DatasetOption) (chaosDataset, error) {
+			codec := newCodec()
+			allOpts := append([]lode.DatasetOption{lode.WithLayout(newLayout())}, opts...)
+			ds, err := root.Records(ctx, datasetID, codec, allOpts...)
+			if err != nil {
+				return nil, err
+			}
+			return &recordsHandle{Records: ds, codec: codec, streams: streams}, nil
+		},
+	}
+}
+
+// layouts are the dataset workloads a run can use.
+var layouts = map[string]layoutSpec{
+	"default":      recordsLayout(lode.JSONL[lode.D], lode.Unpartitioned, true, false),
+	"hive":         recordsLayout(lode.JSONL[lode.D], hiveByDay, false, true),
+	"parquet":      recordsLayout(parquetCommitCodec, lode.Unpartitioned, false, false),
+	"parquet-hive": recordsLayout(parquetCommitCodec, hiveByDay, false, true),
+	"blobs": {
+		blob: true,
+		open: func(ctx context.Context, root *lode.Root, opts ...lode.DatasetOption) (chaosDataset, error) {
+			b, err := root.Blobs(ctx, datasetID, opts...)
+			if err != nil {
+				return nil, err
+			}
+			return &blobsHandle{Blobs: b}, nil
+		},
+	},
 }
 
 // LayoutNames lists the layouts a run can use in a stable order.
 func LayoutNames() []string { return slices.Sorted(maps.Keys(layouts)) }
 
-// writeOp is one kind of write a writer can issue: it writes rows and
-// returns the snapshot the library acknowledged.
-type writeOp func(ctx context.Context, ds lode.Records[any], rows []any) (*lode.DatasetSnapshot, error)
-
-func writeBatch(ctx context.Context, ds lode.Records[any], rows []any) (*lode.DatasetSnapshot, error) {
-	return ds.Write(ctx, rows, lode.D{"op": "write"})
-}
-
-func writeStream(ctx context.Context, ds lode.Records[any], rows []any) (*lode.DatasetSnapshot, error) {
-	return ds.StreamWrite(ctx, each(rows), lode.D{"op": "stream"})
-}
-
 // openDataset opens a handle on the run's dataset over store. Opening reads
 // the head, so an injected fault can fail it.
-func (r *run) openDataset(ctx context.Context, store lode.RangeStore) (lode.Records[any], error) {
+func (r *run) openDataset(ctx context.Context, store lode.RangeStore) (chaosDataset, error) {
 	if err := requireKnown("layout", r.cfg.Layout, LayoutNames()); err != nil {
 		return nil, err
 	}
-	l := layouts[r.cfg.Layout]
-	return lode.Open(lode.Use(store)).Records(ctx, datasetID, lode.JSONL[any](),
-		lode.WithLayout(l.layout()),
+	spec := layouts[r.cfg.Layout]
+	return spec.open(ctx, lode.Open(lode.Use(store)),
+		lode.WithChecksum(lode.CRC32C()),
 		lode.WithRetry(r.cfg.Retries),
 	)
 }
@@ -59,11 +204,11 @@ func (r *run) openDataset(ctx context.Context, store lode.RangeStore) (lode.Reco
 // datasetHandle is the handle an actor holds on the run's dataset, as a
 // separate process would: its own in-memory head and, when faults are
 // enabled, its own faulty store, whose faults rng decides.
-func (r *run) datasetHandle(who string, rng *rand.Rand) handle[lode.Records[any]] {
-	return handle[lode.Records[any]]{
+func (r *run) datasetHandle(who string, rng *rand.Rand) handle[chaosDataset] {
+	return handle[chaosDataset]{
 		who:    who,
 		ledger: r.ledger,
-		open: func(ctx context.Context) (lode.Records[any], error) {
+		open: func(ctx context.Context) (chaosDataset, error) {
 			return r.openDataset(ctx, r.storeFor(rng))
 		},
 	}
@@ -135,25 +280,25 @@ func (r *run) datasetCommitters() []actor {
 	return actors
 }
 
-// writer commits batches of 1 to 5 records until the deadline, recording
+// writer commits batches of records or blobs until the deadline, recording
 // every acknowledged commit. A conflict that outlasts the retries is
 // expected under contention; any other error is a violation.
 type writer struct {
 	*run
-	index  int
-	rng    *rand.Rand
-	writes []writeOp
-	ds     handle[lode.Records[any]]
+	index int
+	rng   *rand.Rand
+	blob  bool
+	ds    handle[chaosDataset]
 }
 
 func (r *run) newWriter(index int) *writer {
 	rng := r.random(uint64(index) + 1)
 	return &writer{
-		run:    r,
-		index:  index,
-		rng:    rng,
-		writes: layouts[r.cfg.Layout].writes,
-		ds:     r.datasetHandle(fmt.Sprintf("writer %d", index), rng),
+		run:   r,
+		index: index,
+		rng:   rng,
+		blob:  layouts[r.cfg.Layout].blob,
+		ds:    r.datasetHandle(fmt.Sprintf("writer %d", index), rng),
 	}
 }
 
@@ -170,11 +315,10 @@ func (w *writer) act(ctx context.Context) {
 	}
 }
 
-// commit writes the batch numbered seq with a randomly chosen write and
-// records its outcome.
-func (w *writer) commit(ctx context.Context, ds lode.Records[any], seq int) {
-	c := newCommit(w.rng, w.index, seq)
-	snap, err := w.writes[w.rng.IntN(len(w.writes))](ctx, ds, c.records())
+// commit writes the batch numbered seq and records its outcome.
+func (w *writer) commit(ctx context.Context, ds chaosDataset, seq int) {
+	c := newCommit(w.rng, w.index, seq, w.blob)
+	snap, err := ds.writeCommit(ctx, w.rng, c)
 	switch {
 	case err == nil:
 		c.ID = snap.ID
@@ -193,19 +337,33 @@ func (w *writer) commit(ctx context.Context, ds lode.Records[any], seq int) {
 func (r *run) readers() []actor {
 	var actors []actor
 	for i := range r.cfg.Readers {
-		rng := r.random(uint64(1000 + i))
-		actors = append(actors, &reader{run: r, rng: rng, ds: r.datasetHandle(fmt.Sprintf("reader %d", i), rng)})
+		actors = append(actors, r.newReader(i))
 	}
 	return actors
 }
 
-// reader repeatedly reads the head and a random acknowledged snapshot until
-// the deadline. A head must be readable in full, and an acknowledged
-// snapshot must hold exactly the rows its writer committed.
+// reader repeatedly reads the head and a random acknowledged snapshot (via
+// either its held handle or a fresh ReadRoot view with WithAnchor) until the
+// deadline.
 type reader struct {
 	*run
-	rng *rand.Rand
-	ds  handle[lode.Records[any]]
+	rng   *rand.Rand
+	store lode.RangeStore
+	ds    handle[chaosDataset]
+}
+
+func (r *run) newReader(index int) *reader {
+	rng := r.random(uint64(1000 + index))
+	rd := &reader{run: r, rng: rng}
+	rd.ds = handle[chaosDataset]{
+		who:    fmt.Sprintf("reader %d", index),
+		ledger: r.ledger,
+		open: func(ctx context.Context) (chaosDataset, error) {
+			rd.store = r.storeFor(rng)
+			return r.openDataset(ctx, rd.store)
+		},
+	}
+	return rd
 }
 
 func (rd *reader) act(ctx context.Context) {
@@ -242,7 +400,7 @@ func (rd *reader) ignorable(ctx context.Context, err error) bool {
 // the snapshot meanwhile, which a reader holding its ID may observe
 // (CONTRACT_RETENTION §Order of Operations); the end of the run confirms
 // the expiry.
-func (rd *reader) expired(id lode.DatasetSnapshotID, err error) bool {
+func (rd *reader) expired(id lode.SnapshotID, err error) bool {
 	if !rd.cfg.Retention || !expiredRead(err) {
 		return false
 	}
@@ -252,13 +410,13 @@ func (rd *reader) expired(id lode.DatasetSnapshotID, err error) bool {
 
 // uninformative reports whether a read of id failed for a reason that says
 // nothing about the library.
-func (rd *reader) uninformative(ctx context.Context, id lode.DatasetSnapshotID, err error) bool {
+func (rd *reader) uninformative(ctx context.Context, id lode.SnapshotID, err error) bool {
 	return rd.ignorable(ctx, err) || rd.expired(id, err)
 }
 
 // head reads the head in full. It returns the error so that a killed
 // process is restarted.
-func (rd *reader) head(ctx context.Context, ds lode.Records[any]) error {
+func (rd *reader) head(ctx context.Context, ds chaosDataset) error {
 	head, err := ds.Latest(ctx)
 	if errors.Is(err, lode.ErrNoSnapshots) || rd.ignorable(ctx, err) {
 		return err
@@ -267,34 +425,41 @@ func (rd *reader) head(ctx context.Context, ds lode.Records[any]) error {
 		rd.ledger.violate("read-head", "Latest: %v", err)
 		return err
 	}
-	rows, err := ds.Read(ctx, head.ID)
+	units, err := ds.readUnits(ctx, head.ID)
 	if rd.uninformative(ctx, head.ID, err) {
 		return err
 	}
 	rd.ledger.read()
-	if err != nil || int64(len(rows)) != head.RowCount {
-		rd.ledger.violate("read-head", "head %s: %d rows, manifest records %d (%v)", head.ID, len(rows), head.RowCount, err)
+	if err != nil || units != head.RowCount {
+		rd.ledger.violate("read-head", "head %s: %d units, manifest records %d (%v)", head.ID, units, head.RowCount, err)
 	}
 	return err
 }
 
-// commit reads an acknowledged snapshot, which must hold exactly its
-// writer's records.
-func (rd *reader) commit(ctx context.Context, ds lode.Records[any], c Commit) error {
-	rows, err := ds.Read(ctx, c.ID)
+// commit reads an acknowledged snapshot (alternating between the held handle
+// and an anchored ReadRoot view), which must hold exactly what its writer
+// committed.
+func (rd *reader) commit(ctx context.Context, ds chaosDataset, c Commit) error {
+	var ok bool
+	var err error
+	if rd.rng.IntN(2) == 0 {
+		ok, err = ds.checkAnchored(ctx, rd.store, c)
+	} else {
+		ok, err = ds.checkCommit(ctx, c)
+	}
 	if rd.uninformative(ctx, c.ID, err) {
 		return err
 	}
 	rd.ledger.read()
-	if err != nil || !c.matches(rows) {
-		rd.ledger.violate("read-commit", "acknowledged %s (writer %d seq %d): %d rows, not the %d its writer committed (%v)", c.ID, c.Writer, c.Seq, len(rows), c.Rows, err)
+	if err != nil || !ok {
+		rd.ledger.violate("read-commit", "acknowledged %s (writer %d seq %d) did not match (%v)", c.ID, c.Writer, c.Seq, err)
 	}
 	return err
 }
 
 // each yields rows to StreamWrite, without an error.
-func each(rows []any) iter.Seq2[any, error] {
-	return func(yield func(any, error) bool) {
+func each(rows []lode.D) iter.Seq2[lode.D, error] {
+	return func(yield func(lode.D, error) bool) {
 		for _, row := range rows {
 			if !yield(row, nil) {
 				return

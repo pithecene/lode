@@ -22,21 +22,17 @@ import (
 )
 
 func main() {
-	if err := run(); err != nil {
+	if err := streamDemo(context.Background()); err != nil {
 		log.Fatal(err)
 	}
 }
 
-func run() error {
-	ctx := context.Background()
-
-	// Create a temporary directory for storage
+func streamDemo(ctx context.Context) error {
 	tmpDir, err := os.MkdirTemp("", "lode-stream-records-*")
 	if err != nil {
-		return fmt.Errorf("create temp dir: %w", err)
+		return err
 	}
 	defer func() { _ = os.RemoveAll(tmpDir) }()
-
 	fmt.Printf("Storage root: %s\n\n", tmpDir)
 
 	// Open a root over the filesystem store.
@@ -94,9 +90,9 @@ func run() error {
 	fmt.Printf("Created snapshot: %s\n", snapshot.ID)
 	fmt.Printf("Row count: %d\n", snapshot.RowCount)
 	fmt.Printf("Codec: %s\n", snapshot.Codec)
-	fmt.Printf("Files:\n")
-	for _, f := range snapshot.Files {
-		fmt.Printf("  - %s (%d bytes)\n", f.Path, f.SizeBytes)
+	fmt.Printf("Objects:\n")
+	for _, obj := range snapshot.Objects {
+		fmt.Printf("  - %s (%d bytes)\n", obj.Path, obj.SizeBytes)
 	}
 	fmt.Println()
 

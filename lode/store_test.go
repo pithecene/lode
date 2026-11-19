@@ -278,46 +278,97 @@ func TestStore_List(t *testing.T) {
 	t.Run("string prefix semantics", func(t *testing.T) { forEachStore(t, assertStringPrefixSemantics) })
 }
 
+func TestStore_ListPrefixes(t *testing.T) {
+	forEachStore(t, func(t *testing.T, store RangeStore) {
+		lister, ok := store.(PrefixLister)
+		if !ok {
+			t.Fatalf("%T does not implement PrefixLister", store)
+		}
+		ctx := t.Context()
+
+		if got, err := lister.ListPrefixes(ctx, "datasets/"); err != nil || len(got) != 0 {
+			t.Fatalf("empty ListPrefixes = %v, %v; want empty", got, err)
+		}
+		if _, err := lister.ListPrefixes(ctx, "../escape"); !errors.Is(err, ErrInvalidPath) {
+			t.Fatalf("traversal ListPrefixes = %v, want ErrInvalidPath", err)
+		}
+
+		for _, key := range []string{
+			"datasets/alpha/snapshots/s1/manifest.json",
+			"datasets/alpha/latest",
+			"datasets/alps/snapshots/s1/manifest.json",
+			"datasets/beta/latest",
+			"top-file.txt",
+		} {
+			if err := store.Put(ctx, key, bytes.NewReader([]byte("x"))); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		gotRoot, err := lister.ListPrefixes(ctx, "")
+		if err != nil || !slices.Equal(gotRoot, []string{"datasets/"}) {
+			t.Errorf("ListPrefixes(\"\") = %v, %v; want [datasets/]", gotRoot, err)
+		}
+		gotDS, err := lister.ListPrefixes(ctx, "datasets/")
+		if err != nil || !slices.Equal(gotDS, []string{"datasets/alpha/", "datasets/alps/", "datasets/beta/"}) {
+			t.Errorf("ListPrefixes(\"datasets/\") = %v, %v; want alpha, alps, beta", gotDS, err)
+		}
+		gotPartial, err := lister.ListPrefixes(ctx, "datasets/alp")
+		if err != nil || !slices.Equal(gotPartial, []string{"datasets/alpha/", "datasets/alps/"}) {
+			t.Errorf("ListPrefixes(\"datasets/alp\") = %v, %v; want alpha, alps", gotPartial, err)
+		}
+	})
+}
+
+func TestFS_WithSync(t *testing.T) {
+	tmpDir := t.TempDir()
+	if _, err := NewFS(tmpDir, nil); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("NewFS(nil option) = %v, want ErrInvalidArgument", err)
+	}
+	store, err := FS(tmpDir, WithSync())()
+	if err != nil {
+		t.Fatalf("FS(WithSync): %v", err)
+	}
+	ctx := t.Context()
+	if err := store.Put(ctx, "a/b/c/d.txt", bytes.NewReader([]byte("durable"))); err != nil {
+		t.Fatalf("Put nested: %v", err)
+	}
+	if err := store.Put(ctx, "a/b/c/e.txt", bytes.NewReader([]byte("warm"))); err != nil {
+		t.Fatalf("Put warm: %v", err)
+	}
+	if got := readOrAbsent(t, store, "a/b/c/d.txt"); got != "durable" {
+		t.Fatalf("Get = %q, want durable", got)
+	}
+	if err := store.(ConditionalWriter).CompareAndSwap(ctx, "ptr/nested/latest", "", "s1"); err != nil && !errors.Is(err, errors.ErrUnsupported) {
+		t.Fatalf("CompareAndSwap: %v", err)
+	}
+}
+
+func putStoreBytes(t *testing.T, store Store, key, body string) {
+	t.Helper()
+	if err := store.Put(t.Context(), key, bytes.NewReader([]byte(body))); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestStore_ReadRange(t *testing.T) {
-	t.Run("basic", func(t *testing.T) {
-		forEachStore(t, func(t *testing.T, store RangeStore) {
-			ctx := t.Context()
-
-			content := []byte("hello world")
-			err := store.Put(ctx, "test.txt", bytes.NewReader(content))
-			if err != nil {
-				t.Fatal(err)
-			}
-
-			data, err := store.ReadRange(ctx, "test.txt", 6, 5)
-			if err != nil {
-				t.Fatalf("ReadRange failed: %v", err)
-			}
-			if string(data) != "world" {
-				t.Errorf("expected 'world', got %q", string(data))
-			}
+	for _, tc := range []struct {
+		name, body, want string
+		offset, length   int64
+	}{
+		{"basic", "hello world", "world", 6, 5},
+		{"beyond EOF", "hello", "lo", 3, 100},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			forEachStore(t, func(t *testing.T, store RangeStore) {
+				putStoreBytes(t, store, "test.txt", tc.body)
+				data, err := store.ReadRange(t.Context(), "test.txt", tc.offset, tc.length)
+				if err != nil || string(data) != tc.want {
+					t.Fatalf("ReadRange = %q, %v; want %q", data, err, tc.want)
+				}
+			})
 		})
-	})
-
-	t.Run("beyond EOF", func(t *testing.T) {
-		forEachStore(t, func(t *testing.T, store RangeStore) {
-			ctx := t.Context()
-
-			content := []byte("hello")
-			err := store.Put(ctx, "test.txt", bytes.NewReader(content))
-			if err != nil {
-				t.Fatal(err)
-			}
-
-			data, err := store.ReadRange(ctx, "test.txt", 3, 100)
-			if err != nil {
-				t.Fatalf("ReadRange failed: %v", err)
-			}
-			if string(data) != "lo" {
-				t.Errorf("expected 'lo', got %q", string(data))
-			}
-		})
-	})
+	}
 
 	t.Run("offset beyond EOF", func(t *testing.T) {
 		forEachStore(t, func(t *testing.T, store RangeStore) {
@@ -409,15 +460,8 @@ func TestStore_ReadRange_Bounds(t *testing.T) {
 func TestStore_ReaderAt(t *testing.T) {
 	t.Run("basic", func(t *testing.T) {
 		forEachStore(t, func(t *testing.T, store RangeStore) {
-			ctx := t.Context()
-
-			content := []byte("hello world")
-			err := store.Put(ctx, "test.txt", bytes.NewReader(content))
-			if err != nil {
-				t.Fatal(err)
-			}
-
-			ra, err := store.ReaderAt(ctx, "test.txt")
+			putStoreBytes(t, store, "test.txt", "hello world")
+			ra, err := store.ReaderAt(t.Context(), "test.txt")
 			if err != nil {
 				t.Fatalf("ReaderAt failed: %v", err)
 			}

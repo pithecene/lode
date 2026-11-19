@@ -15,40 +15,38 @@ import (
 // View.OpenObject and ReaderAt coverage
 // -----------------------------------------------------------------------------
 
-// blobView writes payload as one blob of dataset "test-ds" over store and
-// opens a view of it, returning the view and the blob's object reference,
-// discovered through the view's listing.
-func blobViewOf(t *testing.T, store Store, payload []byte) (BlobView, ObjectRef) {
+// blobViewOf writes payload as one blob of dataset "test-ds" over store and
+// opens a view of it, returning the view, its snapshot ID, and the blob's
+// object reference discovered through the view's manifest iteration.
+func blobViewOf(t *testing.T, store Store, payload []byte) (*BlobView, SnapshotID, ObjectRef) {
 	t.Helper()
-	snap, err := blobsOn(t, store, "test-ds").Write(t.Context(), payload, nil)
-	if err != nil {
+	if _, err := blobsOn(t, store, "test-ds").Write(t.Context(), payload, nil); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 	view, err := OpenReadOnly(Use(store)).Blobs(t.Context(), "test-ds")
 	if err != nil {
 		t.Fatalf("Blobs view: %v", err)
 	}
-	refs, err := view.ListManifests(t.Context(), PartitionPath{}, ManifestListOptions{})
-	if err != nil {
-		t.Fatalf("ListManifests: %v", err)
+	var loaded []LoadedManifest
+	for m, err := range view.Manifests(t.Context(), PartitionPath{}, ManifestListOptions{}) {
+		if err != nil {
+			t.Fatalf("Manifests: %v", err)
+		}
+		loaded = append(loaded, m)
 	}
-	if len(refs) != 1 {
-		t.Fatalf("expected 1 manifest ref, got %d", len(refs))
+	if len(loaded) != 1 {
+		t.Fatalf("expected 1 manifest, got %d", len(loaded))
 	}
-	manifest, err := view.GetManifest(t.Context(), refs[0])
-	if err != nil {
-		t.Fatalf("GetManifest: %v", err)
+	if len(loaded[0].Manifest.Objects) != 1 {
+		t.Fatalf("expected 1 object ref, got %d", len(loaded[0].Manifest.Objects))
 	}
-	if len(manifest.Files) != 1 {
-		t.Fatalf("expected 1 file ref, got %d", len(manifest.Files))
-	}
-	return view, ObjectRef{Manifest: ManifestRef{ID: snap.ID}, Path: manifest.Files[0].Path}
+	return view, loaded[0].Ref.ID, loaded[0].Manifest.Objects[0]
 }
 
 func TestView_Objects(t *testing.T) {
 	t.Run("open object", func(t *testing.T) {
 		payload := []byte("hello-open-object")
-		view, obj := blobViewOf(t, NewMemory(), payload)
+		view, _, obj := blobViewOf(t, NewMemory(), payload)
 
 		rc, err := view.OpenObject(t.Context(), obj)
 		if err != nil {
@@ -66,11 +64,14 @@ func TestView_Objects(t *testing.T) {
 	})
 
 	t.Run("open object not found", func(t *testing.T) {
-		view, obj := blobViewOf(t, NewMemory(), []byte("x"))
+		view, snapID, obj := blobViewOf(t, NewMemory(), []byte("x"))
 		missing := idAt(time.Now().Add(time.Hour))
-		obj = ObjectRef{Manifest: ManifestRef{ID: missing}, Path: strings.Replace(obj.Path, string(obj.Manifest.ID), string(missing), 1)}
+		obj = ObjectRef{Path: strings.Replace(obj.Path, string(snapID), string(missing), 1)}
 		if _, err := view.OpenObject(t.Context(), obj); !errors.Is(err, ErrNotFound) {
-			t.Errorf("expected ErrNotFound, got: %v", err)
+			t.Errorf("OpenObject: expected ErrNotFound, got: %v", err)
+		}
+		if _, err := view.ReaderAt(t.Context(), obj); !errors.Is(err, ErrNotFound) {
+			t.Errorf("ReaderAt: expected ErrNotFound, got: %v", err)
 		}
 	})
 
@@ -80,12 +81,13 @@ func TestView_Objects(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		view, obj := blobViewOf(t, store, []byte("x"))
+		view, _, obj := blobViewOf(t, store, []byte("x"))
 		refs := map[string]ObjectRef{
-			"another dataset":        {Path: other.Files[0].Path},
-			"a manifest":             {Path: strings.Replace(obj.Path, "data/", "", 1)},
-			"another snapshot's ref": {Manifest: ManifestRef{ID: other.ID}, Path: obj.Path},
-			"an arbitrary key":       {Path: "no/such/path"},
+			"another dataset":    {Path: other.Objects[0].Path},
+			"a manifest":         {Path: strings.Replace(obj.Path, "data/blob", "manifest.json", 1)},
+			"outside data dir":   {Path: strings.Replace(obj.Path, "data/", "", 1)},
+			"non-canonical path": {Path: "/" + obj.Path},
+			"an arbitrary key":   {Path: "no/such/path"},
 		}
 		for name, ref := range refs {
 			if _, err := view.OpenObject(t.Context(), ref); !errors.Is(err, ErrInvalidArgument) {
@@ -98,7 +100,7 @@ func TestView_Objects(t *testing.T) {
 	})
 
 	t.Run("reader at", func(t *testing.T) {
-		view, obj := blobViewOf(t, NewMemory(), []byte("abcdefghijklmnop"))
+		view, _, obj := blobViewOf(t, NewMemory(), []byte("abcdefghijklmnop"))
 
 		ra, err := view.ReaderAt(t.Context(), obj)
 		if err != nil {
@@ -129,7 +131,7 @@ type objectsOnly struct{ ObjectStore }
 func TestRangeReader_IsOptional(t *testing.T) {
 	t.Run("ReaderAt without range reads", func(t *testing.T) {
 		store := noRanges{NewMemory()}
-		view, obj := blobViewOf(t, store, []byte("abc"))
+		view, _, obj := blobViewOf(t, store, []byte("abc"))
 		if _, err := view.ReaderAt(t.Context(), obj); !errors.Is(err, ErrRangeReadNotSupported) {
 			t.Errorf("view ReaderAt = %v, want ErrRangeReadNotSupported", err)
 		}

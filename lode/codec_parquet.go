@@ -9,6 +9,7 @@ import (
 	"math"
 	"reflect"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/parquet-go/parquet-go"
@@ -63,12 +64,16 @@ const (
 	ParquetCompressionGzip
 )
 
+type parquetConfig struct {
+	compression ParquetCompression
+}
+
 // ParquetOption configures Parquet codec behavior.
-type ParquetOption func(*parquetCodec)
+type ParquetOption func(*parquetConfig)
 
 // WithParquetCompression sets internal Parquet compression.
 func WithParquetCompression(codec ParquetCompression) ParquetOption {
-	return func(c *parquetCodec) {
+	return func(c *parquetConfig) {
 		c.compression = codec
 	}
 }
@@ -77,25 +82,23 @@ func WithParquetCompression(codec ParquetCompression) ParquetOption {
 // Parquet Codec Implementation
 // -----------------------------------------------------------------------------
 
-// Error sentinels ErrSchemaViolation and ErrInvalidFormat are defined in api.go.
-
-// parquetCodec implements Codec[D] and StatisticalCodec for Apache Parquet.
-type parquetCodec struct {
-	err          error // an invalid schema, reported by Root.Records
+// parquetCodec implements Codec[T] and StatisticalCodec[T] for Apache Parquet.
+// All state on parquetCodec is immutable after construction, so a single codec
+// value is safe for concurrent Encode, EncodeWithStats, and Decode calls.
+type parquetCodec[T any] struct {
+	err          error // an invalid schema or record type, reported by Root.Records
 	schema       ParquetSchema
 	compression  ParquetCompression
 	pqSchema     *parquet.Schema
 	fieldOrder   []string                // ordered field names matching schema columns
+	fieldIndex   map[string]int          // schema field position by name
 	fieldsByName map[string]ParquetField // field lookup by name
-	lastStats    *FileStats              // stats from most recent Encode call
+	binder       recordBinder[T]
 }
 
+var _ StatisticalCodec[D] = (*parquetCodec[D])(nil)
+
 // validateSchema validates a ParquetSchema and builds a field lookup map.
-// Returns an error if the schema contains invalid types, empty names, or duplicates.
-//
-// Contract: On success, the returned map contains an entry for every field in
-// schema.Fields. This guarantees that all fieldOrder entries (derived from
-// schema.Fields) will be present in fieldsByName.
 func validateSchema(schema ParquetSchema) (map[string]ParquetField, error) {
 	if len(schema.Fields) == 0 {
 		return nil, fmt.Errorf("parquet: %w: schema must have at least one field", ErrSchemaViolation)
@@ -116,66 +119,73 @@ func validateSchema(schema ParquetSchema) (map[string]ParquetField, error) {
 	return fieldsByName, nil
 }
 
-// Parquet returns a Parquet codec for map records with the given schema.
+// Parquet returns a stateless Parquet codec for records of type T (either D /
+// map[string]any or a flat Go struct) validated against the explicit schema.
 //
-// The schema defines the structure of records. All records must conform to
-// it during encoding; fields not in the schema are ignored. An invalid
-// schema is recorded and returned, matching ErrSchemaViolation, by
-// Root.Records and ReadRoot.Records, and by Encode and Decode, so that the
-// codec can be passed in a chain: root.Records(ctx, id, lode.Parquet(schema)).
+// Struct fields match schema.Fields by `parquet` tag name, else `json` tag
+// name, else exported Go field name; no schema is ever inferred from T. An
+// invalid schema or incompatible struct type is recorded and returned,
+// matching ErrSchemaViolation, by Root.Records and ReadRoot.Records, and by
+// Encode, EncodeWithStats, and Decode:
 //
-// The Parquet codec is not a StreamingCodec, because a Parquet file requires
-// a footer that references all row groups. Use Records.Write.
-func Parquet(schema ParquetSchema, opts ...ParquetOption) Codec[D] {
-	c, err := newParquetCodec(schema, opts...)
+//	events, err := root.Records(ctx, "events", lode.Parquet[Event](schema))
+//
+// The Parquet codec is not a StreamingCodec, because a Parquet file requires a
+// footer that references all row groups. Use Records.Write.
+func Parquet[T any](schema ParquetSchema, opts ...ParquetOption) Codec[T] {
+	c, err := newParquetCodec[T](schema, opts...)
 	if err != nil {
-		return &parquetCodec{err: err}
+		return &parquetCodec[T]{err: err}
 	}
 	return c
 }
 
-func newParquetCodec(schema ParquetSchema, opts ...ParquetOption) (*parquetCodec, error) {
-	// The codec retains the schema; a later change to the caller's slice
-	// must not change what it encodes or describes.
+func newParquetCodec[T any](schema ParquetSchema, opts ...ParquetOption) (*parquetCodec[T], error) {
 	schema.Fields = slices.Clone(schema.Fields)
 	fieldsByName, err := validateSchema(schema)
 	if err != nil {
 		return nil, err
 	}
 
-	c := &parquetCodec{
-		schema:       schema,
-		compression:  ParquetCompressionSnappy,
-		fieldsByName: fieldsByName,
-	}
+	cfg := parquetConfig{compression: ParquetCompressionSnappy}
 	for _, opt := range opts {
 		if opt != nil {
-			opt(c)
+			opt(&cfg)
 		}
 	}
+
 	pqSchema, err := buildParquetSchema(schema)
 	if err != nil {
 		return nil, err
 	}
-	c.pqSchema = pqSchema
 
-	// Extract field order from the built schema
-	c.fieldOrder = make([]string, len(schema.Fields))
-	for i, f := range c.pqSchema.Fields() {
-		c.fieldOrder[i] = f.Name()
+	fieldOrder := make([]string, len(schema.Fields))
+	fieldIndex := make(map[string]int, len(schema.Fields))
+	for i, f := range pqSchema.Fields() {
+		fieldOrder[i] = f.Name()
+		fieldIndex[f.Name()] = i
 	}
 
-	return c, nil
+	binder, err := buildRecordBinder[T](schema)
+	if err != nil {
+		return nil, err
+	}
+
+	return &parquetCodec[T]{
+		schema:       schema,
+		compression:  cfg.compression,
+		pqSchema:     pqSchema,
+		fieldOrder:   fieldOrder,
+		fieldIndex:   fieldIndex,
+		fieldsByName: fieldsByName,
+		binder:       binder,
+	}, nil
 }
 
-func (c *parquetCodec) Name() string {
-	return "parquet"
-}
+func (c *parquetCodec[T]) Name() string { return "parquet" }
 
-// configError is the construction error a chain defers to Root.Records.
-func (c *parquetCodec) configError() error { return c.err }
+func (c *parquetCodec[T]) configError() error { return c.err }
 
-// parquetTypeNames spells each ParquetType in a codec description.
 var parquetTypeNames = [parquetTypeMax]string{
 	ParquetInt32:     "int32",
 	ParquetInt64:     "int64",
@@ -187,17 +197,16 @@ var parquetTypeNames = [parquetTypeMax]string{
 	ParquetTimestamp: "timestamp",
 }
 
-// describedField is one schema field in a codec description.
 type describedField struct {
 	Name     string `json:"name"`
 	Type     string `json:"type"`
 	Nullable bool   `json:"nullable"`
 }
 
-// Describe returns the schema as JSON, its fields in schema order. The
-// internal compression is omitted: it does not affect which records a file
-// holds or how they decode.
-func (c *parquetCodec) Describe() string {
+// Describe returns the schema as JSON, its fields in schema order. Both
+// Parquet[D](schema) and Parquet[MyStruct](schema) produce the same
+// description for the same schema.
+func (c *parquetCodec[T]) Describe() string {
 	if c.err != nil {
 		return ""
 	}
@@ -205,76 +214,77 @@ func (c *parquetCodec) Describe() string {
 	for i, f := range c.schema.Fields {
 		fields[i] = describedField{Name: f.Name, Type: parquetTypeNames[f.Type], Nullable: f.Nullable}
 	}
-	// Strings and bools always encode, so Marshal cannot fail here.
 	data, _ := json.Marshal(struct { //nolint:errchkjson // a struct of strings and bools always encodes
 		Fields []describedField `json:"fields"`
 	}{fields})
 	return string(data)
 }
 
-// FileStats returns statistics accumulated during the most recent Encode call.
-func (c *parquetCodec) FileStats() *FileStats {
-	return c.lastStats
-}
-
-func (c *parquetCodec) Encode(w io.Writer, records []D) error {
-	if c.err != nil {
-		return c.err
-	}
-	c.lastStats = nil // reset before encoding
-	// Buffer to collect complete parquet file
-	var buf bytes.Buffer
-
-	// Create buffer for collecting rows
-	rowBuf := parquet.NewBuffer(c.pqSchema)
-
-	if len(records) > 0 {
-		// Convert and write records to buffer
-		for i, record := range records {
-			row, err := c.recordToRow(record, i)
-			if err != nil {
-				return err
-			}
-			if _, err := rowBuf.WriteRows([]parquet.Row{row}); err != nil {
-				return fmt.Errorf("parquet: write row %d: %w", i, err)
-			}
-		}
-	}
-
-	// Write buffer to parquet file
-	pqWriter := parquet.NewWriter(&buf, c.pqSchema, c.getCompressionOption())
-	if _, err := pqWriter.WriteRowGroup(rowBuf); err != nil {
-		_ = pqWriter.Close()
-		return fmt.Errorf("parquet: write row group: %w", err)
-	}
-
-	if err := pqWriter.Close(); err != nil {
-		return fmt.Errorf("parquet: close writer: %w", err)
-	}
-
-	// Compute per-column statistics from the input records
-	c.lastStats = computeFileStats(c.schema, records)
-
-	// Write buffered content to output
-	_, err := io.Copy(w, &buf)
+func (c *parquetCodec[T]) Encode(w io.Writer, records []T) error {
+	_, err := c.EncodeWithStats(w, records)
 	return err
 }
 
-func (c *parquetCodec) Decode(r io.Reader) ([]D, error) {
+// EncodeWithStats encodes records to w and returns per-object column
+// statistics without mutating codec state.
+func (c *parquetCodec[T]) EncodeWithStats(w io.Writer, records []T) (*ObjectStats, error) {
 	if c.err != nil {
 		return nil, c.err
 	}
-	// Read all content into buffer (parquet needs seeking)
+
+	var buf bytes.Buffer
+	rowBuf := parquet.NewBuffer(c.pqSchema)
+
+	accumulators := make([]columnAccumulator, len(c.schema.Fields))
+	for i, field := range c.schema.Fields {
+		accumulators[i] = columnAccumulator{field: field}
+	}
+
+	for i, record := range records {
+		row, err := c.recordToRow(record, i, accumulators)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := rowBuf.WriteRows([]parquet.Row{row}); err != nil {
+			return nil, fmt.Errorf("parquet: write row %d: %w", i, err)
+		}
+	}
+
+	pqWriter := parquet.NewWriter(&buf, c.pqSchema, c.getCompressionOption())
+	if _, err := pqWriter.WriteRowGroup(rowBuf); err != nil {
+		_ = pqWriter.Close()
+		return nil, fmt.Errorf("parquet: write row group: %w", err)
+	}
+	if err := pqWriter.Close(); err != nil {
+		return nil, fmt.Errorf("parquet: close writer: %w", err)
+	}
+
+	if _, err := io.Copy(w, &buf); err != nil {
+		return nil, err
+	}
+
+	columns := make([]ColumnStats, len(accumulators))
+	for i, acc := range accumulators {
+		columns[i] = acc.finish()
+	}
+	return &ObjectStats{
+		RowCount: int64(len(records)),
+		Columns:  columns,
+	}, nil
+}
+
+func (c *parquetCodec[T]) Decode(r io.Reader) ([]T, error) {
+	if c.err != nil {
+		return nil, c.err
+	}
 	data, err := io.ReadAll(r)
 	if err != nil {
 		return nil, fmt.Errorf("parquet: read file: %w", err)
 	}
-
 	if len(data) == 0 {
 		return nil, ErrInvalidFormat
 	}
 
-	// Open parquet file from buffer
 	file, err := parquet.OpenFile(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
 		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
@@ -290,31 +300,27 @@ func (c *parquetCodec) Decode(r io.Reader) ([]D, error) {
 
 	numRows := file.NumRows()
 	if numRows == 0 {
-		return []D{}, nil
+		return []T{}, nil
 	}
 
-	// Read all rows
 	reader := parquet.NewReader(file)
 	defer closer(reader)()
 
-	records := make([]D, 0, numRows)
+	records := make([]T, 0, numRows)
 	rows := make([]parquet.Row, 100)
 	for {
 		n, err := reader.ReadRows(rows)
-		if n > 0 {
-			for i := 0; i < n; i++ {
-				record, rowErr := c.rowToRecord(rows[i], plan)
-				if rowErr != nil {
-					return nil, rowErr
-				}
-				records = append(records, record)
+		for i := range n {
+			record, rowErr := c.binder.decodeRow(rows[i], plan)
+			if rowErr != nil {
+				return nil, rowErr
 			}
+			records = append(records, record)
 		}
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				break
 			}
-			// Wrap ReadRows errors with ErrInvalidFormat per contract
 			return nil, fmt.Errorf("parquet: %w: read rows: %w", ErrInvalidFormat, err)
 		}
 	}
@@ -322,7 +328,7 @@ func (c *parquetCodec) Decode(r io.Reader) ([]D, error) {
 	return records, nil
 }
 
-func (c *parquetCodec) getCompressionOption() parquet.WriterOption {
+func (c *parquetCodec[T]) getCompressionOption() parquet.WriterOption {
 	switch c.compression {
 	case ParquetCompressionSnappy:
 		return parquet.Compression(&parquet.Snappy)
@@ -333,33 +339,25 @@ func (c *parquetCodec) getCompressionOption() parquet.WriterOption {
 	}
 }
 
-// getFieldByName returns the ParquetField for a given field name.
-// Schema validation guarantees presence; missing key returns zero value (programmer error).
-func (c *parquetCodec) getFieldByName(name string) ParquetField {
-	return c.fieldsByName[name]
-}
-
-// recordToRow converts a map record to a parquet Row.
-// The row values must be in the same order as the schema fields.
-func (c *parquetCodec) recordToRow(m D, index int) (parquet.Row, error) {
-	// Build row in schema field order
+func (c *parquetCodec[T]) recordToRow(record T, index int, accumulators []columnAccumulator) (parquet.Row, error) {
 	row := make(parquet.Row, len(c.fieldOrder))
 	for i, fieldName := range c.fieldOrder {
-		field := c.getFieldByName(fieldName)
-
-		val, exists := m[fieldName]
+		field := c.fieldsByName[fieldName]
+		val, exists := c.binder.extractField(record, i)
 		if !exists || val == nil {
 			if !field.Nullable {
 				return nil, fmt.Errorf("parquet: %w: record %d missing required field %q", ErrSchemaViolation, index, fieldName)
 			}
+			accumulators[i].observe(nil)
 			row[i] = parquet.NullValue().Level(0, 0, i)
 			continue
 		}
 
-		pqVal, err := c.convertToParquetValue(val, field, index)
+		pqVal, err := convertToParquetValue(val, field, index)
 		if err != nil {
 			return nil, err
 		}
+		accumulators[i].observe(val)
 		defLevel := 1
 		if !field.Nullable {
 			defLevel = 0
@@ -369,22 +367,390 @@ func (c *parquetCodec) recordToRow(m D, index int) (parquet.Row, error) {
 	return row, nil
 }
 
-// decodeColumn maps one physical column in a Parquet file to its declared
-// schema field, when the column is part of the codec's schema.
-type decodeColumn struct {
-	field   ParquetField
-	matched bool
+// -----------------------------------------------------------------------------
+// Record Binding (D / map[string]any and flat Go structs)
+// -----------------------------------------------------------------------------
+
+type recordBinder[T any] interface {
+	extractField(record T, schemaIdx int) (any, bool)
+	decodeRow(row parquet.Row, plan decodePlan) (T, error)
 }
 
-// decodePlan holds validated physical-to-schema column mappings and any
-// nullable schema fields absent from the physical file.
+func buildRecordBinder[T any](schema ParquetSchema) (recordBinder[T], error) {
+	rt := reflect.TypeFor[T]()
+	if rt == reflect.TypeFor[D]() {
+		return fastMapBinder[T]{fields: schema.Fields}, nil
+	}
+	if rt.Kind() == reflect.Map && rt.Key() == reflect.TypeFor[string]() && rt.Elem() == reflect.TypeFor[any]() {
+		return reflectMapBinder[T]{mapType: rt, fields: schema.Fields}, nil
+	}
+	if rt.Kind() == reflect.Struct {
+		return buildStructBinder[T](rt, schema)
+	}
+	return nil, fmt.Errorf("parquet: %w: unsupported record type %s; want lode.D (map[string]any) or a struct value", ErrSchemaViolation, rt)
+}
+
+type fastMapBinder[T any] struct {
+	fields []ParquetField
+}
+
+func (b fastMapBinder[T]) extractField(record T, schemaIdx int) (any, bool) {
+	m := any(record).(D)
+	if m == nil {
+		return nil, false
+	}
+	val, ok := m[b.fields[schemaIdx].Name]
+	return val, ok
+}
+
+func (b fastMapBinder[T]) decodeRow(row parquet.Row, plan decodePlan) (T, error) {
+	var zero T
+	m, err := rowToMap(row, plan, len(b.fields))
+	if err != nil {
+		return zero, err
+	}
+	return any(m).(T), nil
+}
+
+type reflectMapBinder[T any] struct {
+	mapType reflect.Type
+	fields  []ParquetField
+}
+
+func (b reflectMapBinder[T]) extractField(record T, schemaIdx int) (any, bool) {
+	rv := reflect.ValueOf(record)
+	if rv.IsNil() {
+		return nil, false
+	}
+	v := rv.MapIndex(reflect.ValueOf(b.fields[schemaIdx].Name))
+	if !v.IsValid() || v.IsNil() {
+		return nil, false
+	}
+	return v.Interface(), true
+}
+
+func (b reflectMapBinder[T]) decodeRow(row parquet.Row, plan decodePlan) (T, error) {
+	var zero T
+	m, err := rowToMap(row, plan, len(b.fields))
+	if err != nil {
+		return zero, err
+	}
+	return reflect.ValueOf(m).Convert(b.mapType).Interface().(T), nil
+}
+
+func rowToMap(row parquet.Row, plan decodePlan, fieldCount int) (D, error) {
+	record := make(D, fieldCount)
+	for _, name := range plan.missingNullable {
+		record[name] = nil
+	}
+	for _, val := range row {
+		colIdx := val.Column()
+		if colIdx < 0 || colIdx >= len(plan.columns) || !plan.columns[colIdx].matched {
+			continue
+		}
+		field := plan.columns[colIdx].field
+		if val.IsNull() {
+			if !field.Nullable {
+				return nil, fmt.Errorf("parquet: %w: null value in required column %q", ErrInvalidFormat, field.Name)
+			}
+			record[field.Name] = nil
+			continue
+		}
+		record[field.Name] = convertFromParquetValue(val, field)
+	}
+	return record, nil
+}
+
+type structFieldAccessor struct {
+	index    []int
+	elemType reflect.Type
+	isPtr    bool
+	isBytes  bool
+}
+
+type structBinder[T any] struct {
+	accessors []structFieldAccessor // indexed by schemaIdx
+}
+
+func buildStructBinder[T any](rt reflect.Type, schema ParquetSchema) (recordBinder[T], error) {
+	byColName := make(map[string]reflect.StructField, rt.NumField())
+	for _, sf := range reflect.VisibleFields(rt) {
+		if !sf.IsExported() || isEmbeddedStructContainer(sf) {
+			continue
+		}
+		colName, skip := structColumnName(sf)
+		if skip {
+			continue
+		}
+		if _, dup := byColName[colName]; dup {
+			return nil, fmt.Errorf("parquet: %w: duplicate struct field mapping for %q on %s", ErrSchemaViolation, colName, rt)
+		}
+		byColName[colName] = sf
+	}
+
+	accessors := make([]structFieldAccessor, len(schema.Fields))
+	for i, field := range schema.Fields {
+		sf, ok := byColName[field.Name]
+		if !ok {
+			return nil, fmt.Errorf("parquet: %w: struct %s is missing schema field %q", ErrSchemaViolation, rt, field.Name)
+		}
+		if unexp, bad := unexportedEmbeddedPointer(rt, sf.Index); bad {
+			return nil, fmt.Errorf("parquet: %w: field %q on %s is promoted through unexported embedded pointer %q", ErrSchemaViolation, field.Name, rt, unexp)
+		}
+		acc, err := validateStructField(rt, sf, field)
+		if err != nil {
+			return nil, err
+		}
+		accessors[i] = acc
+	}
+	return structBinder[T]{accessors: accessors}, nil
+}
+
+func unexportedEmbeddedPointer(rt reflect.Type, index []int) (string, bool) {
+	cur := rt
+	for _, fieldIdx := range index[:len(index)-1] {
+		if cur.Kind() == reflect.Pointer {
+			cur = cur.Elem()
+		}
+		sf := cur.Field(fieldIdx)
+		if sf.Type.Kind() == reflect.Pointer && !sf.IsExported() {
+			return sf.Name, true
+		}
+		cur = sf.Type
+	}
+	return "", false
+}
+
+func isEmbeddedStructContainer(sf reflect.StructField) bool {
+	if !sf.Anonymous {
+		return false
+	}
+	if sf.Type.Kind() == reflect.Struct && sf.Type != timeType {
+		return true
+	}
+	return sf.Type.Kind() == reflect.Pointer && sf.Type.Elem().Kind() == reflect.Struct && sf.Type.Elem() != timeType
+}
+
+func structColumnName(sf reflect.StructField) (name string, skip bool) {
+	if tag, ok := sf.Tag.Lookup("parquet"); ok {
+		col, _, _ := strings.Cut(tag, ",")
+		if col == "-" {
+			return "", true
+		}
+		if col != "" {
+			return col, false
+		}
+	}
+	if tag, ok := sf.Tag.Lookup("json"); ok {
+		col, _, _ := strings.Cut(tag, ",")
+		if col == "-" {
+			return "", true
+		}
+		if col != "" {
+			return col, false
+		}
+	}
+	return sf.Name, false
+}
+
+var (
+	timeType = reflect.TypeFor[time.Time]()
+	byteType = reflect.TypeFor[byte]()
+)
+
+func validateStructField(structType reflect.Type, sf reflect.StructField, field ParquetField) (structFieldAccessor, error) {
+	ft := sf.Type
+	isBytes := ft.Kind() == reflect.Slice && ft.Elem() == byteType
+
+	if field.Nullable {
+		if field.Type == ParquetBytes && isBytes {
+			return structFieldAccessor{index: sf.Index, elemType: ft, isBytes: true}, nil
+		}
+		if ft.Kind() != reflect.Pointer {
+			return structFieldAccessor{}, fmt.Errorf("parquet: %w: nullable field %q on %s requires a pointer type, got %s", ErrSchemaViolation, field.Name, structType, ft)
+		}
+		if !compatibleScalarType(ft.Elem(), field.Type) {
+			return structFieldAccessor{}, fmt.Errorf("parquet: %w: field %q on %s has incompatible type %s for Parquet %s", ErrSchemaViolation, field.Name, structType, ft, parquetTypeNames[field.Type])
+		}
+		return structFieldAccessor{index: sf.Index, elemType: ft.Elem(), isPtr: true}, nil
+	}
+
+	if ft.Kind() == reflect.Pointer {
+		return structFieldAccessor{}, fmt.Errorf("parquet: %w: non-nullable field %q on %s must not be a pointer type (%s)", ErrSchemaViolation, field.Name, structType, ft)
+	}
+	if !compatibleScalarType(ft, field.Type) {
+		return structFieldAccessor{}, fmt.Errorf("parquet: %w: field %q on %s has incompatible type %s for Parquet %s", ErrSchemaViolation, field.Name, structType, ft, parquetTypeNames[field.Type])
+	}
+	return structFieldAccessor{index: sf.Index, elemType: ft, isBytes: isBytes}, nil
+}
+
+func compatibleScalarType(t reflect.Type, ptype ParquetType) bool {
+	switch ptype {
+	case ParquetInt32:
+		return t.Kind() == reflect.Int32 || t.Kind() == reflect.Int
+	case ParquetInt64:
+		return t.Kind() == reflect.Int64 || t.Kind() == reflect.Int
+	case ParquetFloat32:
+		return t.Kind() == reflect.Float32
+	case ParquetFloat64:
+		return t.Kind() == reflect.Float64
+	case ParquetString:
+		return t.Kind() == reflect.String
+	case ParquetBool:
+		return t.Kind() == reflect.Bool
+	case ParquetBytes:
+		return t.Kind() == reflect.Slice && t.Elem() == byteType
+	case ParquetTimestamp:
+		return t == timeType
+	default:
+		return false
+	}
+}
+
+func (b structBinder[T]) extractField(record T, schemaIdx int) (any, bool) {
+	acc := b.accessors[schemaIdx]
+	fv, ok := fieldByIndexRead(reflect.ValueOf(record), acc.index)
+	if !ok {
+		return nil, false
+	}
+	if acc.isPtr {
+		if fv.IsNil() {
+			return nil, false
+		}
+		fv = fv.Elem()
+	} else if acc.isBytes && fv.IsNil() {
+		return nil, false
+	}
+	return normalizeReflectedScalar(fv), true
+}
+
+func fieldByIndexRead(v reflect.Value, index []int) (reflect.Value, bool) {
+	for i, fieldIdx := range index {
+		if i > 0 && v.Kind() == reflect.Pointer {
+			if v.IsNil() {
+				return reflect.Value{}, false
+			}
+			v = v.Elem()
+		}
+		v = v.Field(fieldIdx)
+	}
+	return v, true
+}
+
+func fieldByIndexAlloc(v reflect.Value, index []int) reflect.Value {
+	for i, fieldIdx := range index {
+		if i > 0 && v.Kind() == reflect.Pointer {
+			if v.IsNil() {
+				v.Set(reflect.New(v.Type().Elem()))
+			}
+			v = v.Elem()
+		}
+		v = v.Field(fieldIdx)
+	}
+	return v
+}
+
+func normalizeReflectedScalar(fv reflect.Value) any {
+	if fv.Type() == timeType {
+		return fv.Interface()
+	}
+	switch fv.Kind() {
+	case reflect.Int32:
+		return int32(fv.Int())
+	case reflect.Int, reflect.Int64:
+		return fv.Int()
+	case reflect.Float32:
+		return float32(fv.Float())
+	case reflect.Float64:
+		return fv.Float()
+	case reflect.String:
+		return fv.String()
+	case reflect.Bool:
+		return fv.Bool()
+	case reflect.Slice:
+		return fv.Bytes()
+	default:
+		return fv.Interface()
+	}
+}
+
+func (b structBinder[T]) decodeRow(row parquet.Row, plan decodePlan) (T, error) {
+	var out T
+	rv := reflect.ValueOf(&out).Elem()
+	for _, val := range row {
+		colIdx := val.Column()
+		if colIdx < 0 || colIdx >= len(plan.columns) || !plan.columns[colIdx].matched {
+			continue
+		}
+		col := plan.columns[colIdx]
+		if val.IsNull() {
+			if !col.field.Nullable {
+				return out, fmt.Errorf("parquet: %w: null value in required column %q", ErrInvalidFormat, col.field.Name)
+			}
+			continue
+		}
+		acc := b.accessors[col.schemaIdx]
+		fv := fieldByIndexAlloc(rv, acc.index)
+		if acc.isPtr {
+			ptr := reflect.New(acc.elemType)
+			if err := setScalarValue(ptr.Elem(), val, col.field); err != nil {
+				return out, err
+			}
+			fv.Set(ptr)
+			continue
+		}
+		if err := setScalarValue(fv, val, col.field); err != nil {
+			return out, err
+		}
+	}
+	return out, nil
+}
+
+func setScalarValue(dst reflect.Value, val parquet.Value, field ParquetField) error {
+	switch field.Type {
+	case ParquetInt32:
+		dst.SetInt(int64(val.Int32()))
+	case ParquetInt64:
+		n := val.Int64()
+		if dst.OverflowInt(n) {
+			return fmt.Errorf("parquet: %w: column %q value %d overflows %s", ErrInvalidFormat, field.Name, n, dst.Type())
+		}
+		dst.SetInt(n)
+	case ParquetFloat32:
+		dst.SetFloat(float64(val.Float()))
+	case ParquetFloat64:
+		dst.SetFloat(val.Double())
+	case ParquetString:
+		dst.SetString(string(val.ByteArray()))
+	case ParquetBool:
+		dst.SetBool(val.Boolean())
+	case ParquetBytes:
+		raw := bytes.Clone(val.ByteArray())
+		if raw == nil {
+			raw = []byte{}
+		}
+		dst.SetBytes(raw)
+	case ParquetTimestamp:
+		dst.Set(reflect.ValueOf(time.Unix(0, val.Int64()).UTC()))
+	}
+	return nil
+}
+
+// -----------------------------------------------------------------------------
+// Decode Column Plan
+// -----------------------------------------------------------------------------
+
+type decodeColumn struct {
+	field     ParquetField
+	schemaIdx int
+	matched   bool
+}
+
 type decodePlan struct {
 	columns         []decodeColumn
 	missingNullable []string
 }
 
-// expectedParquetKind maps each ParquetType to the physical Parquet kind its
-// leaf column must carry.
 var expectedParquetKind = [parquetTypeMax]parquet.Kind{
 	ParquetInt32:     parquet.Int32,
 	ParquetInt64:     parquet.Int64,
@@ -396,10 +762,7 @@ var expectedParquetKind = [parquetTypeMax]parquet.Kind{
 	ParquetTimestamp: parquet.Int64,
 }
 
-// planDecodeColumns validates a Parquet file's schema against c.schema and
-// maps each physical leaf column by name, so files with any column order
-// (including external writers and pre-v1 alphabetical files) decode safely.
-func (c *parquetCodec) planDecodeColumns(fileSchema *parquet.Schema) (decodePlan, error) {
+func (c *parquetCodec[T]) planDecodeColumns(fileSchema *parquet.Schema) (decodePlan, error) {
 	if fileSchema == nil {
 		return decodePlan{}, fmt.Errorf("parquet: %w: missing file schema", ErrInvalidFormat)
 	}
@@ -423,7 +786,7 @@ func (c *parquetCodec) planDecodeColumns(fileSchema *parquet.Schema) (decodePlan
 		if got, want := pf.Type().Kind(), expectedParquetKind[expected.Type]; got != want {
 			return decodePlan{}, fmt.Errorf("parquet: %w: column %q has physical kind %s, want %s", ErrInvalidFormat, name, got, want)
 		}
-		cols[i] = decodeColumn{field: expected, matched: true}
+		cols[i] = decodeColumn{field: expected, schemaIdx: c.fieldIndex[name], matched: true}
 	}
 
 	var missingNullable []string
@@ -439,34 +802,12 @@ func (c *parquetCodec) planDecodeColumns(fileSchema *parquet.Schema) (decodePlan
 	return decodePlan{columns: cols, missingNullable: missingNullable}, nil
 }
 
-// rowToRecord converts a parquet Row back to a map using the validated column plan.
-func (c *parquetCodec) rowToRecord(row parquet.Row, plan decodePlan) (map[string]any, error) {
-	record := make(map[string]any, len(c.schema.Fields))
-	for _, name := range plan.missingNullable {
-		record[name] = nil
-	}
-	for _, val := range row {
-		colIdx := val.Column()
-		if colIdx < 0 || colIdx >= len(plan.columns) || !plan.columns[colIdx].matched {
-			continue
-		}
-		field := plan.columns[colIdx].field
-		if val.IsNull() {
-			if !field.Nullable {
-				return nil, fmt.Errorf("parquet: %w: null value in required column %q", ErrInvalidFormat, field.Name)
-			}
-			record[field.Name] = nil
-			continue
-		}
-		record[field.Name] = c.convertFromParquetValue(val, field)
-	}
-	return record, nil
-}
+// -----------------------------------------------------------------------------
+// Value Conversion & Schema Construction
+// -----------------------------------------------------------------------------
 
-// convertToParquetValue converts a Go value to a parquet Value.
-//
-//nolint:gocyclo // Type switch with validation for each Parquet type is inherently complex.
-func (c *parquetCodec) convertToParquetValue(val any, field ParquetField, index int) (parquet.Value, error) {
+//nolint:gocyclo // Type switch with validation for each Parquet type is inherently flat dispatch.
+func convertToParquetValue(val any, field ParquetField, index int) (parquet.Value, error) {
 	switch field.Type {
 	case ParquetInt32:
 		switch v := val.(type) {
@@ -482,7 +823,7 @@ func (c *parquetCodec) convertToParquetValue(val any, field ParquetField, index 
 				return parquet.Value{}, fmt.Errorf("parquet: %w: record %d field %q: value %d overflows int32", ErrSchemaViolation, index, field.Name, v)
 			}
 			return parquet.Int32Value(int32(v)), nil
-		case float64: // JSON numbers
+		case float64:
 			if math.Trunc(v) != v {
 				return parquet.Value{}, fmt.Errorf("parquet: %w: record %d field %q: float64 %v is not an integer", ErrSchemaViolation, index, field.Name, v)
 			}
@@ -502,11 +843,10 @@ func (c *parquetCodec) convertToParquetValue(val any, field ParquetField, index 
 			return parquet.Int64Value(int64(v)), nil
 		case int64:
 			return parquet.Int64Value(v), nil
-		case float64: // JSON numbers
+		case float64:
 			if math.Trunc(v) != v {
 				return parquet.Value{}, fmt.Errorf("parquet: %w: record %d field %q: float64 %v is not an integer", ErrSchemaViolation, index, field.Name, v)
 			}
-			// float64 can represent integers up to 2^53 exactly
 			if v < -maxSafeInt64 || v > maxSafeInt64 {
 				return parquet.Value{}, fmt.Errorf("parquet: %w: record %d field %q: value %v exceeds safe integer range for float64", ErrSchemaViolation, index, field.Name, v)
 			}
@@ -554,6 +894,9 @@ func (c *parquetCodec) convertToParquetValue(val any, field ParquetField, index 
 	case ParquetBytes:
 		switch v := val.(type) {
 		case []byte:
+			if v == nil && !field.Nullable {
+				return parquet.Value{}, fmt.Errorf("parquet: %w: record %d missing required field %q", ErrSchemaViolation, index, field.Name)
+			}
 			return parquet.ByteArrayValue(v), nil
 		case string:
 			return parquet.ByteArrayValue([]byte(v)), nil
@@ -580,8 +923,7 @@ func (c *parquetCodec) convertToParquetValue(val any, field ParquetField, index 
 	}
 }
 
-// convertFromParquetValue converts a parquet Value back to a Go value.
-func (c *parquetCodec) convertFromParquetValue(val parquet.Value, field ParquetField) any {
+func convertFromParquetValue(val parquet.Value, field ParquetField) any {
 	switch field.Type {
 	case ParquetInt32:
 		return val.Int32()
@@ -596,7 +938,11 @@ func (c *parquetCodec) convertFromParquetValue(val parquet.Value, field ParquetF
 	case ParquetBool:
 		return val.Boolean()
 	case ParquetBytes:
-		return val.ByteArray()
+		raw := bytes.Clone(val.ByteArray())
+		if raw == nil {
+			return []byte{}
+		}
+		return raw
 	case ParquetTimestamp:
 		return time.Unix(0, val.Int64()).UTC()
 	default:
@@ -604,8 +950,6 @@ func (c *parquetCodec) convertFromParquetValue(val parquet.Value, field ParquetF
 	}
 }
 
-// orderedGroup is a parquet root group node that preserves declared schema
-// field order rather than parquet.Group's alphabetical map order.
 type orderedGroup struct {
 	parquet.Group
 	fields []parquet.Field
@@ -632,7 +976,6 @@ func (f *orderedField) Value(base reflect.Value) reflect.Value {
 	return base.MapIndex(reflect.ValueOf(f.name))
 }
 
-// buildParquetSchema creates a parquet-go schema preserving schema.Fields order.
 func buildParquetSchema(schema ParquetSchema) (*parquet.Schema, error) {
 	group := make(parquet.Group, len(schema.Fields))
 	fields := make([]parquet.Field, len(schema.Fields))
@@ -649,7 +992,6 @@ func buildParquetSchema(schema ParquetSchema) (*parquet.Schema, error) {
 
 func buildFieldNode(field ParquetField) (parquet.Node, error) {
 	var node parquet.Node
-
 	switch field.Type {
 	case ParquetInt32:
 		node = parquet.Int(32)
@@ -670,31 +1012,16 @@ func buildFieldNode(field ParquetField) (parquet.Node, error) {
 	default:
 		return nil, fmt.Errorf("parquet: %w: invalid ParquetType %d for field %q", ErrSchemaViolation, field.Type, field.Name)
 	}
-
 	if field.Nullable {
 		node = parquet.Optional(node)
 	}
-
 	return node, nil
 }
 
 // -----------------------------------------------------------------------------
-// Per-file statistics
+// Per-object statistics
 // -----------------------------------------------------------------------------
 
-// computeFileStats computes per-column statistics from the input records.
-func computeFileStats(schema ParquetSchema, records []D) *FileStats {
-	columns := make([]ColumnStats, len(schema.Fields))
-	for i, field := range schema.Fields {
-		columns[i] = computeColumnStats(field, records)
-	}
-	return &FileStats{
-		RowCount: int64(len(records)),
-		Columns:  columns,
-	}
-}
-
-// columnAccumulator tracks min/max/nullCount for a single column.
 type columnAccumulator struct {
 	field     ParquetField
 	min       any
@@ -703,25 +1030,21 @@ type columnAccumulator struct {
 	hasValue  bool
 }
 
-// observe records a single value for this column.
 func (a *columnAccumulator) observe(val any) {
 	if val == nil {
 		a.nullCount++
 		return
 	}
-
 	norm, ok := normalizeStatValue(a.field.Type, val)
 	if !ok {
 		return
 	}
-
 	if !a.hasValue {
 		a.min = norm
 		a.max = norm
 		a.hasValue = true
 		return
 	}
-
 	if lessThan(a.field.Type, norm, a.min) {
 		a.min = norm
 	}
@@ -730,9 +1053,18 @@ func (a *columnAccumulator) observe(val any) {
 	}
 }
 
-// normalizeStatValue coerces a validated record value to the canonical decoded
-// Go type for its Parquet column and filters out unordered types (bool, bytes)
-// and non-finite floats (NaN, ±Inf), which JSON manifests cannot represent.
+func (a columnAccumulator) finish() ColumnStats {
+	cs := ColumnStats{
+		Name:      a.field.Name,
+		NullCount: a.nullCount,
+	}
+	if a.hasValue {
+		cs.Min = a.min
+		cs.Max = a.max
+	}
+	return cs
+}
+
 func normalizeStatValue(ptype ParquetType, val any) (any, bool) {
 	switch ptype {
 	case ParquetInt32:
@@ -761,34 +1093,6 @@ func normalizeStatValue(ptype ParquetType, val any) (any, bool) {
 	}
 }
 
-// computeColumnStats computes statistics for a single column across all records.
-func computeColumnStats(field ParquetField, records []D) ColumnStats {
-	acc := columnAccumulator{field: field}
-
-	for _, m := range records {
-		val, exists := m[field.Name]
-		if !exists {
-			acc.observe(nil)
-			continue
-		}
-		acc.observe(val)
-	}
-
-	cs := ColumnStats{
-		Name:      field.Name,
-		NullCount: acc.nullCount,
-	}
-	if acc.hasValue {
-		cs.Min = acc.min
-		cs.Max = acc.max
-	}
-	return cs
-}
-
-// lessThan returns true if a < b for the given orderable ParquetType.
-// Both a and b must be non-nil. Handles type coercion for numeric types
-// that may arrive as different Go types (int, int32, int64, float64).
-//
 //nolint:gocyclo // Type dispatch for each orderable Parquet type.
 func lessThan(ptype ParquetType, a, b any) bool {
 	switch ptype {
@@ -811,7 +1115,6 @@ func lessThan(ptype ParquetType, a, b any) bool {
 	}
 }
 
-// toInt64 coerces numeric Go values to int64 for comparison.
 func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int:
@@ -827,7 +1130,6 @@ func toInt64(v any) int64 {
 	}
 }
 
-// toFloat64 coerces numeric Go values to float64 for comparison.
 func toFloat64(v any) float64 {
 	switch n := v.(type) {
 	case float32:
@@ -839,7 +1141,6 @@ func toFloat64(v any) float64 {
 	}
 }
 
-// toTimestamp coerces time values for comparison.
 func toTimestamp(v any) time.Time {
 	switch t := v.(type) {
 	case time.Time:

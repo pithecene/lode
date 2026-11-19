@@ -23,8 +23,8 @@ const (
 // measured figure rounded up to the next 64 bytes, because map growth in the
 // in-memory store varies it by a few bytes.
 var allocGates = []testutil.AllocGate{
-	{Name: "ReadAt within one of ten blocks", Allocs: 41, Bytes: 10816, Setup: gateReadAt},
-	{Name: "Commit of one block onto a small volume", Allocs: 135, Bytes: 252032, Setup: gateCommit},
+	{Name: "ReadAt within one of ten blocks", Allocs: 36, Bytes: 10816, Setup: gateReadAt},
+	{Name: "Commit of one block onto a small volume", Allocs: 105, Bytes: 284160, Setup: gateCommit},
 }
 
 // TestAllocationGates holds each Volume hot path to its allocation ceiling.
@@ -42,7 +42,7 @@ func gateVolume(t *testing.T) (Volume, *Snapshot) {
 	for i := range refs {
 		refs[i] = gateStage(t, vol, int64(i))
 	}
-	snap, err := vol.Commit(t.Context(), refs, Metadata{})
+	snap, err := vol.Commit(t.Context(), refs, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +79,7 @@ func gateCommit(t *testing.T) func() {
 	}
 	next := 0
 	return func() {
-		if _, err := vol.Commit(t.Context(), refs[next:next+1], Metadata{}); err != nil {
+		if _, err := vol.Commit(t.Context(), refs[next:next+1], nil); err != nil {
 			t.Fatal(err)
 		}
 		next++

@@ -94,12 +94,12 @@ view, _ := lode.OpenReadOnly(lode.FS("/tmp/lode-demo")).Records(ctx, "events", l
 ```
 
 Lode stores data on the filesystem (`lode.FS`), in memory (`lode.Memory`),
-or on S3-compatible storage (`s3.Factory`). The storage location must exist
+or on S3-compatible storage (`s3.Bucket`). The storage location must exist
 before the caller opens a dataset (see [Storage
 Prerequisites](PUBLIC_API.md#storage-prerequisites)).
-[`PUBLIC_API.md`](PUBLIC_API.md) describes streaming writes and the
-experimental Volume API, and [`examples/`](examples/) contains complete
-programs.
+[`PUBLIC_API.md`](PUBLIC_API.md) describes streaming writes, Parquet schemas,
+checksums, retention, and the experimental Volume API, and
+[`examples/`](examples/) contains complete programs.
 
 ---
 
@@ -107,9 +107,9 @@ programs.
 
 A **Dataset**, which holds structured collections, follows these rules:
 - Each write produces a new, immutable snapshot.
-- Each snapshot references a manifest that describes its data files and
+- Each snapshot references a manifest that describes its data objects and
   metadata.
-- A caller chooses storage, format, compression, and partitioning
+- A caller chooses storage, format, compression, checksums, and partitioning
   independently of one another.
 
 A **Volume**, which stores sparse byte ranges and resides in the
@@ -173,9 +173,11 @@ holds the same documents:
 
 ## Status
 
-The current release of Lode is **v0.17.1**. [`docs/plans/V1_API_DECISIONS.md`](docs/plans/V1_API_DECISIONS.md)
-lists the breaking changes still under consideration for v1.0, and
-[`CHANGELOG.md`](CHANGELOG.md) describes each release.
+The latest tagged release of Lode is **v0.17.1**, with the unified v1.0 API
+surface on `main` ahead of **v1.0.0**.
+[`docs/plans/V1_API_DECISIONS.md`](docs/plans/V1_API_DECISIONS.md) records the
+API decisions settled for v1.0, and [`CHANGELOG.md`](CHANGELOG.md) describes
+each release.
 
 ---
 

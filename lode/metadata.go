@@ -20,17 +20,17 @@ type Metadata struct {
 // emptyObject is the metadata of a write that supplied none.
 var emptyObject = json.RawMessage("{}")
 
-// newMetadata encodes a caller's metadata value, which must encode as a JSON
+// NewMetadata encodes a caller's metadata value, which must encode as a JSON
 // object: a struct, a map, or nil (including typed-nil string maps and struct
 // pointers), which persists as {}.
-func newMetadata(v any) (Metadata, error) {
+func NewMetadata(v any) (Metadata, error) {
 	if isNilMetadata(v) {
 		return Metadata{raw: emptyObject}, nil
 	}
 	// A Metadata decoded from JSON holds whatever value it was given, so it
 	// is checked as an encoded value is.
 	if m, ok := v.(Metadata); ok {
-		if m = m.orEmpty(); !m.valid() {
+		if m = m.orEmpty(); !m.Valid() {
 			return Metadata{}, validate.Argument("metadata must be a JSON object, got %s", m.raw)
 		}
 		return m, nil
@@ -81,6 +81,11 @@ func (m Metadata) orEmpty() Metadata {
 	return m
 }
 
+// Valid reports whether m holds a JSON object, as a manifest requires.
+func (m Metadata) Valid() bool {
+	return isObject(m.raw)
+}
+
 // Decode unmarshals the metadata into v, as encoding/json does.
 func (m Metadata) Decode(v any) error {
 	if err := json.Unmarshal(m.orEmpty().raw, v); err != nil {
@@ -101,7 +106,7 @@ func (m Metadata) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON retains a copy of data. JSON null empties m, so a reused
 // value retains nothing it held before; a manifest whose metadata is absent or
-// not an object fails validation (valid).
+// not an object fails validation (Valid).
 func (m *Metadata) UnmarshalJSON(data []byte) error {
 	if string(data) == "null" {
 		m.raw = nil
@@ -110,6 +115,3 @@ func (m *Metadata) UnmarshalJSON(data []byte) error {
 	m.raw = bytes.Clone(data)
 	return nil
 }
-
-// valid reports whether m holds a JSON object, as a manifest requires.
-func (m Metadata) valid() bool { return isObject(m.raw) }

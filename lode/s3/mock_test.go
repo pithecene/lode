@@ -10,6 +10,7 @@ import (
 	"crypto/md5" //nolint:gosec // the mock reproduces S3's ETag
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"sync"
 
@@ -280,21 +281,43 @@ func (m *MockS3Client) DeleteObject(_ context.Context, params *s3.DeleteObjectIn
 // ListObjectsV2 implements API.ListObjectsV2 for testing.
 func (m *MockS3Client) ListObjectsV2(_ context.Context, params *s3.ListObjectsV2Input, _ ...func(*s3.Options)) (*s3.ListObjectsV2Output, error) {
 	prefix := aws.ToString(params.Prefix)
+	delim := aws.ToString(params.Delimiter)
 
 	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	var contents []types.Object
+	keys := make([]string, 0, len(m.objects))
 	for key := range m.objects {
 		if strings.HasPrefix(key, prefix) {
-			k := key
-			contents = append(contents, types.Object{Key: &k})
+			keys = append(keys, key)
 		}
+	}
+	m.mu.RUnlock()
+
+	slices.Sort(keys)
+
+	var contents []types.Object
+	var commonPrefixes []types.CommonPrefix
+	seenPrefixes := make(map[string]struct{})
+
+	for _, key := range keys {
+		if delim == "/" {
+			rest := strings.TrimPrefix(key, prefix)
+			if idx := strings.Index(rest, delim); idx >= 0 {
+				cp := prefix + rest[:idx+len(delim)]
+				if _, seen := seenPrefixes[cp]; !seen {
+					seenPrefixes[cp] = struct{}{}
+					commonPrefixes = append(commonPrefixes, types.CommonPrefix{Prefix: aws.String(cp)})
+				}
+				continue
+			}
+		}
+		k := key
+		contents = append(contents, types.Object{Key: &k})
 	}
 
 	return &s3.ListObjectsV2Output{
-		Contents:    contents,
-		IsTruncated: aws.Bool(false),
+		Contents:       contents,
+		CommonPrefixes: commonPrefixes,
+		IsTruncated:    aws.Bool(false),
 	}, nil
 }
 

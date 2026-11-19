@@ -21,32 +21,50 @@ import (
 // manifest's commit instant, which with the inventory tells this snapshot
 // from a later one that reused its ID.
 type tombstone struct {
-	SnapshotID        DatasetSnapshotID `json:"snapshot_id"`
-	RequestedAt       time.Time         `json:"requested_at"`
-	ManifestCreatedAt time.Time         `json:"manifest_created_at"`
-	Files             []FileRef         `json:"files"`
+	SnapshotID        SnapshotID  `json:"snapshot_id"`
+	RequestedAt       time.Time   `json:"requested_at"`
+	ManifestCreatedAt time.Time   `json:"manifest_created_at"`
+	Objects           []ObjectRef `json:"objects"`
+}
+
+// UnmarshalJSON decodes format 1.2.0 tombstones ("objects") as well as
+// pre-1.2.0 tombstones ("files").
+func (t *tombstone) UnmarshalJSON(data []byte) error {
+	type tombstoneAlias tombstone
+	var wire struct {
+		tombstoneAlias
+		LegacyFiles []ObjectRef `json:"files"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	*t = tombstone(wire.tombstoneAlias)
+	if t.Objects == nil && wire.LegacyFiles != nil {
+		t.Objects = wire.LegacyFiles
+	}
+	return nil
 }
 
 // newTombstone records the expiry of snapshot id from its manifest m.
-func newTombstone(id DatasetSnapshotID, m *Manifest) tombstone {
-	files := m.Files
-	if files == nil {
-		files = []FileRef{} // an inventory is never null, so absence means corruption
+func newTombstone(id SnapshotID, m *Manifest) tombstone {
+	objects := m.Objects
+	if objects == nil {
+		objects = []ObjectRef{} // an inventory is never null, so absence means corruption
 	}
-	return tombstone{SnapshotID: id, RequestedAt: time.Now().UTC(), ManifestCreatedAt: m.CreatedAt, Files: files}
+	return tombstone{SnapshotID: id, RequestedAt: time.Now().UTC(), ManifestCreatedAt: m.CreatedAt, Objects: objects}
 }
 
 // sameSnapshot reports whether t and o record the same snapshot: the same
 // commit instant and the same inventory, paths and sizes.
 func (t tombstone) sameSnapshot(o tombstone) bool {
 	return t.ManifestCreatedAt.Equal(o.ManifestCreatedAt) &&
-		slices.EqualFunc(t.Files, o.Files, func(x, y FileRef) bool { return x.Path == y.Path && x.SizeBytes == y.SizeBytes })
+		slices.EqualFunc(t.Objects, o.Objects, func(x, y ObjectRef) bool { return x.Path == y.Path && x.SizeBytes == y.SizeBytes })
 }
 
 // describes reports whether t is the record of manifest m
 // (CONTRACT_RETENTION §Tombstone).
 func (t tombstone) describes(m *Manifest) bool {
-	return t.sameSnapshot(tombstone{ManifestCreatedAt: m.CreatedAt, Files: m.Files})
+	return t.sameSnapshot(tombstone{ManifestCreatedAt: m.CreatedAt, Objects: m.Objects})
 }
 
 // tombstones is a dataset's tombstone directory. Tombstones are created
@@ -64,7 +82,7 @@ func (d *dataset) tombstones() tombstones {
 // path is where snapshot id's tombstone lives. ok is false unless id is in
 // the generated form: only such an ID names a tombstone, and no other
 // caller-supplied string is ever turned into a store path.
-func (ts tombstones) path(id DatasetSnapshotID) (p string, ok bool) {
+func (ts tombstones) path(id SnapshotID) (p string, ok bool) {
 	if !history.IsGeneratedID(id) {
 		return "", false
 	}
@@ -94,7 +112,7 @@ func (ts tombstones) record(ctx context.Context, t tombstone) error {
 
 // matchRecorded accepts the tombstone that won the create at p only if it
 // records the same snapshot as t: another must never stand as the record of
-// the files this run deletes.
+// the objects this run deletes.
 func (ts tombstones) matchRecorded(ctx context.Context, p string, t tombstone) error {
 	existing, err := ts.lookup(ctx, t.SnapshotID)
 	if errors.Is(err, ErrNotFound) {
@@ -123,7 +141,7 @@ func (ts tombstones) list(ctx context.Context) ([]string, error) {
 // errUntombstonable is the error for a snapshot whose ID is not in the
 // generated form: no tombstone path can be formed for it, so it is never
 // expired, on a dry run or a real one.
-func errUntombstonable(id DatasetSnapshotID) error {
+func errUntombstonable(id SnapshotID) error {
 	return fmt.Errorf("lode: snapshot ID %q is not in the generated form; it cannot be tombstoned", id)
 }
 
@@ -143,7 +161,7 @@ var errInvalidTombstone = errors.New("invalid tombstone")
 // one whose key is not canonical or that does not record the snapshot its
 // own path names with a valid inventory.
 func (ts tombstones) recorded(ctx context.Context, key string) (tombstone, error) {
-	id := DatasetSnapshotID(strings.TrimPrefix(key, ts.paths.tombstonesPrefix(ts.dataset)))
+	id := SnapshotID(strings.TrimPrefix(key, ts.paths.tombstonesPrefix(ts.dataset)))
 	if !ts.isCanonicalPath(key, id) {
 		return tombstone{}, fmt.Errorf("lode: %w: %s is not a canonical tombstone path", errInvalidTombstone, key)
 	}
@@ -160,7 +178,7 @@ func (ts tombstones) recorded(ctx context.Context, key string) (tombstone, error
 
 // isCanonicalPath reports whether key is a canonical store key and exactly
 // the path of snapshot id's tombstone.
-func (ts tombstones) isCanonicalPath(key string, id DatasetSnapshotID) bool {
+func (ts tombstones) isCanonicalPath(key string, id SnapshotID) bool {
 	canonical, ok := storepath.Key(key)
 	p, named := ts.path(id)
 	return ok && named && canonical == key && key == p
@@ -180,7 +198,7 @@ var errEmptyTombstone = errors.New("tombstone is empty")
 // none, and errEmptyTombstone reports the zero-length placeholder above.
 // Anything else must be a valid tombstone of this snapshot; otherwise it is
 // corruption.
-func (ts tombstones) lookup(ctx context.Context, id DatasetSnapshotID) (tombstone, error) {
+func (ts tombstones) lookup(ctx context.Context, id SnapshotID) (tombstone, error) {
 	p, ok := ts.path(id)
 	if !ok {
 		return tombstone{}, fmt.Errorf("lode: snapshot ID %q names no tombstone: %w", id, ErrNotFound)
@@ -196,25 +214,22 @@ func (ts tombstones) lookup(ctx context.Context, id DatasetSnapshotID) (tombston
 }
 
 // validTombstone decodes data and requires it to record snapshot id, the
-// manifest's commit instant, and an inventory whose every FileRef is valid.
-func validTombstone(p string, data []byte, id DatasetSnapshotID) (tombstone, error) {
+// manifest's commit instant, and an inventory whose every ObjectRef is valid.
+func validTombstone(p string, data []byte, id SnapshotID) (tombstone, error) {
 	var t tombstone
 	if err := json.Unmarshal(data, &t); err != nil {
 		return t, fmt.Errorf("lode: failed to decode tombstone %s: %w", p, err)
 	}
-	for _, check := range []struct {
-		bad     bool
-		problem string
-	}{
-		{t.SnapshotID != id, fmt.Sprintf("records snapshot %q, not %q", t.SnapshotID, id)},
-		{t.ManifestCreatedAt.IsZero(), "has no manifest commit instant"},
-		{t.Files == nil, "has no inventory"},
-	} {
-		if check.bad {
-			return t, fmt.Errorf("lode: tombstone %s %s", p, check.problem)
-		}
+	if t.SnapshotID != id {
+		return t, fmt.Errorf("lode: tombstone %s records snapshot %q, not %q", p, t.SnapshotID, id)
 	}
-	if err := validateFiles(t.Files); err != nil {
+	if t.ManifestCreatedAt.IsZero() {
+		return t, fmt.Errorf("lode: tombstone %s has no manifest commit instant", p)
+	}
+	if t.Objects == nil {
+		return t, fmt.Errorf("lode: tombstone %s has no inventory", p)
+	}
+	if err := validateObjects(t.Objects); err != nil {
 		return t, fmt.Errorf("tombstone %s has an invalid inventory: %w", p, err)
 	}
 	return t, nil
@@ -235,7 +250,7 @@ func (ts tombstones) readRaw(ctx context.Context, p string) ([]byte, error) {
 
 // expiredError is ErrSnapshotExpired when snapshot id has a tombstone, nil
 // when it has none. Only meaningful once its canonical manifest is missing.
-func (ts tombstones) expiredError(ctx context.Context, id DatasetSnapshotID) error {
+func (ts tombstones) expiredError(ctx context.Context, id SnapshotID) error {
 	absent, err := ts.absent(ctx, id)
 	if err != nil || absent {
 		return err
@@ -245,7 +260,7 @@ func (ts tombstones) expiredError(ctx context.Context, id DatasetSnapshotID) err
 
 // absent reports whether snapshot id has no valid tombstone. An ID outside
 // the generated form never has one.
-func (ts tombstones) absent(ctx context.Context, id DatasetSnapshotID) (bool, error) {
+func (ts tombstones) absent(ctx context.Context, id SnapshotID) (bool, error) {
 	// Only a valid tombstone expires a snapshot: an empty placeholder records
 	// nothing, and anything else at the path is corruption, surfaced rather
 	// than read as an expiry.

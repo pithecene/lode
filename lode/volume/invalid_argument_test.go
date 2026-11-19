@@ -44,7 +44,7 @@ func TestErrInvalidArgument_Classification(t *testing.T) {
 		{"New ID with the reserved prefix", func() error { _, err := New(".lode-tmp-x", factory, 1); return err }, "volume ID"},
 		{"New non-positive length", func() error { _, err := New("v", factory, 0); return err }, "total length"},
 		{"New nil store", func() error { _, err := New("v", nilStore, 1); return err }, "nil store"},
-		{"WithRetryCount negative", func() error { _, err := New("v", factory, 1, WithRetryCount(-1)); return err }, "WithRetryCount: n must be non-negative"},
+		{"WithRetry negative", func() error { _, err := New("v", factory, 1, WithRetry(-1)); return err }, "WithRetry: n must be non-negative"},
 		{"WithRetryBaseDelay zero", func() error { _, err := New("v", factory, 1, WithRetryBaseDelay(0)); return err }, "WithRetryBaseDelay: delay must be positive"},
 		{"WithRetryMaxDelay zero", func() error { _, err := New("v", factory, 1, WithRetryMaxDelay(0)); return err }, "WithRetryMaxDelay: delay must be positive"},
 		{"WithRetryJitter out of range", func() error { _, err := New("v", factory, 1, WithRetryJitter(2)); return err }, "WithRetryJitter: jitter must be between 0.0 and 1.0"},
@@ -52,6 +52,9 @@ func TestErrInvalidArgument_Classification(t *testing.T) {
 		{"StageWriteAt negative offset", func() error { _, err := vol.StageWriteAt(ctx, -1, bytes.NewReader([]byte("x"))); return err }, "offset"},
 		{"StageWriteAt empty block", func() error { _, err := vol.StageWriteAt(ctx, 0, bytes.NewReader(nil)); return err }, "must not be empty"},
 		{"StageWriteAt beyond volume", func() error { _, err := vol.StageWriteAt(ctx, 15, bytes.NewReader([]byte("xy"))); return err }, "address space"},
+		{"Commit int metadata", func() error { _, err := vol.Commit(ctx, []BlockRef{staged}, 123); return err }, "metadata"},
+		{"Commit slice metadata", func() error { _, err := vol.Commit(ctx, []BlockRef{staged}, []int{1}); return err }, "metadata"},
+		{"Commit unmarshalable metadata", func() error { _, err := vol.Commit(ctx, []BlockRef{staged}, func() {}); return err }, "metadata"},
 		{"Commit no blocks", func() error { _, err := vol.Commit(ctx, nil, nil); return err }, "at least one new block"},
 		{"Commit already committed", func() error { _, err := vol.Commit(ctx, []BlockRef{staged}, nil); return err }, "already committed"},
 		{"Commit negative offset", func() error {
@@ -96,7 +99,7 @@ func TestErrInvalidArgument_BeforeStoreFactory(t *testing.T) {
 	calls := 0
 	failing := func() (lode.RangeStore, error) { calls++; return nil, errors.New("factory down") }
 
-	_, err := New("v", failing, 1, WithRetryCount(-1))
+	_, err := New("v", failing, 1, WithRetry(-1))
 	if !errors.Is(err, lode.ErrInvalidArgument) {
 		t.Fatalf("got %v, want lode.ErrInvalidArgument", err)
 	}
@@ -107,12 +110,16 @@ func TestErrInvalidArgument_BeforeStoreFactory(t *testing.T) {
 
 // The Volume sentinels keep the messages they had in package lode.
 func TestSentinels_Messages(t *testing.T) {
+	if !errors.Is(ErrRemoved, lode.ErrRemoved) {
+		t.Error("expected volume.ErrRemoved to match lode.ErrRemoved")
+	}
 	for _, c := range []struct {
 		err  error
 		want string
 	}{
 		{ErrRangeMissing, "range missing: requested range is not fully committed"},
 		{ErrOverlappingBlocks, "overlapping blocks in cumulative manifest"},
+		{ErrRemoved, "removed"},
 	} {
 		if c.err.Error() != c.want {
 			t.Errorf("got %q, want %q", c.err, c.want)
