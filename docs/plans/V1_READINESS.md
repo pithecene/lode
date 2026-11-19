@@ -16,11 +16,18 @@ Stability is proven by **usage and time**, not design review.
 
 ---
 
-## Current Assessment (2026-11-18)
+## Current Assessment (2026-11-19)
 
-Based on the full-history audit of the production dataset
-([`dogfood_audit_2026-10.md`](dogfood_audit_2026-10.md)) and the v1.0.0 API
-unification pass ([`V1_API_DECISIONS.md`](V1_API_DECISIONS.md) D12):
+[Stack #382](https://github.com/pithecene/lode/stack/382) merged on 2026-11-19.
+The [merge commit](https://github.com/pithecene/lode/commit/0b07f506a4ddc93f97eb0cdcd1d4b91fef404c8c)
+has the same Git tree as the tested head of [#392](https://github.com/pithecene/lode/pull/392).
+GitHub recorded 194 passing checks across the 15 PR heads, including 77 on
+#376–#381. All seven review threads on those six PRs were resolved at merge.
+All 13 checks on the merge commit also passed.
+
+The production evidence below comes from the [October audit](dogfood_audit_2026-10.md).
+The latest published release at merge was v0.17.1. The D12 freeze windows
+start with a release containing the unified API and manifest format.
 
 - **Holds:** no corruption detected and zero manifest decode failures across 96,478
   snapshots over 8 months on R2; manifest format `1.2.0` (`objects` and
@@ -32,10 +39,12 @@ unification pass ([`V1_API_DECISIONS.md`](V1_API_DECISIONS.md) D12):
   then selected the head's parent, because snapshot ID order is not commit
   order. v0.11.0 removes every path to that outcome
   ([#208](https://github.com/pithecene/lode/issues/208)); the criterion
-  remains unmet until v0.11.0+ is observed in production.
+  remains unmet until v0.11.0+ is observed in production. [#392](https://github.com/pithecene/lode/pull/392)
+  also verified that an applied CAS keeps its original parent when another
+  writer publishes descendants before the first writer receives its response.
 - **Not yet met, time-gated:** the API surface, sentinel, option, and
   manifest format (`1.2.0`) freeze windows restart with the v1.0.0 API
-  unification pass (D12, 2026-11-18; §1, §2). No API decision remains open.
+  unification release (D12, §1 and §2). No API decision remains open.
 - **Not yet met, evidence missing:** native AWS S3 (§6), steady-state snapshot
   reads (§3), checksum-backed corruption checks in production (§10; read-time
   checksum verification returning `ErrChecksumMismatch` is now implemented via
@@ -157,7 +166,7 @@ partitions, one dataset on R2.
 > Date: 2026-11-05 | Observer: @pithecene | Project: lode, quarry
 > **Evidence:** Window restarted by v0.17.0 (2026-11-06), which changes the result type of `WithLayout` from `DatasetOption` to `ComponentOption`. Every call that passed `WithLayout` to a writer still compiles. No other signature changes, and Lode has no open pull request or issue that changes the v1.0-promised surface. Earliest pass: 2026-12-04.
 > Date: 2026-11-06 | Observer: @pithecene | Project: lode, quarry
-> **Evidence:** Unreleased (2026-11-18): D12 (`feat/v1-api-unification`) unifies the v1.0.0 surface—concrete `*Records[T]`, `*Blobs`, `*RecordView[T]`, `*BlobView` handles; `Snapshot`, `SnapshotID`, `ObjectRef`, `ObjectStats`; single-call `Blobs.StreamWrite`; generic `Parquet[T]`; `PrefixLister` and 0-`Get` `ListPartitions`; `Uncompressed`/`Gzip`/`Zstd` and `SHA256`/`CRC32C`/`MD5`; `Root.RemoveDataset`; `s3.Bucket`/`s3.New`; and removal of `ListManifests`, `GetManifest`, `PartitionRef`, `StreamWriter`, and `With*Dir` options. The 4-week window restarts when released.
+> **Evidence:** Unreleased (2026-11-18): D12 (`feat/v1-api-unification`) unifies the v1.0.0 surface—concrete `*Records[T]`, `*Blobs`, `*RecordView[T]`, `*BlobView` handles; `Snapshot`, `SnapshotID`, `ObjectRef`, `ObjectStats`; single-call `Blobs.StreamWrite`; generic `Parquet[T]`; `PrefixLister` and `ListPartitions` with one fence read and zero manifest reads on a fully indexed Hive layout; `Uncompressed`/`Gzip`/`Zstd` and `SHA256`/`CRC32C`/`MD5`; `Root.RemoveDataset`; `s3.Bucket`/`s3.New`; and removal of `ListManifests`, `GetManifest`, `PartitionRef`, `StreamWriter`, and `With*Dir` options. The 4-week window restarts when released.
 > Date: 2026-11-18 | Observer: @pithecene | Project: lode
 > Summary: Not met; window restarts on every API change.
 > Issue: lode#175
@@ -254,7 +263,7 @@ partitions, one dataset on R2.
 > **Evidence:** Window restarted by v0.12.0 (2026-10-23), which releases format 1.1.0. Every 1.0.0 manifest remains readable: data that v0.11.0 wrote reads back in every dataset and the volume, accepts new commits in the record datasets and the volume, and lists, expires, and sweeps in the Hive dataset (`TestCompat_v0_11_0_*`). Earliest pass: 2026-11-20.
 > Date: 2026-10-23 | Observer: @pithecene | Project: lode
 >
-> **Evidence:** Unreleased (2026-11-18): manifest format `1.2.0` (D12) replaces `files` (`[]FileRef`) with `objects` (`[]ObjectRef`) and `paths` (`ManifestPaths`) with `flat` (`bool`), while decoding `1.0.0` and `1.1.0` manifests (`files`, `paths`) and pre-`1.2.0` tombstones (`files`) seamlessly. The window restarts when released.
+> **Evidence:** Unreleased (2026-11-18): manifest format `1.2.0` (D12) replaces `files` (`[]FileRef`) with `objects` (`[]ObjectRef`) and `paths` (`ManifestPaths`) with `flat` (`bool`), and reads legacy manifest formats `1.0.0` and `1.1.0` in place for standard or flat layouts with standard internal names. Readers also accept pre-`1.2.0` tombstone inventories. Datasets with custom internal names require [migration](../../PUBLIC_API.md#upgrading-a-dataset-with-custom-internal-names). The window restarts when released.
 > Date: 2026-11-18 | Observer: @pithecene | Project: lode
 > Summary: Not met.
 > Issue: —
