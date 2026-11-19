@@ -257,7 +257,10 @@ func (f *fsStore) Exists(_ context.Context, path string) (bool, error) {
 	return false, fmt.Errorf("fs: exists: %w", err)
 }
 
-func (f *fsStore) List(_ context.Context, prefix string) ([]string, error) {
+func (f *fsStore) List(ctx context.Context, prefix string) ([]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	searchPath, err := f.safePathForPrefix(prefix)
 	if err != nil {
 		return nil, err
@@ -276,6 +279,9 @@ func (f *fsStore) List(_ context.Context, prefix string) ([]string, error) {
 
 	var paths []string
 	err = filepath.WalkDir(walkRoot, func(path string, d fs.DirEntry, err error) error {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		if err != nil {
 			if os.IsNotExist(err) {
 				return nil
@@ -304,7 +310,10 @@ func (f *fsStore) List(_ context.Context, prefix string) ([]string, error) {
 
 // ListPrefixes returns immediate child prefixes (each ending in "/") beneath
 // prefix that contain at least one stored object, sorted lexicographically.
-func (f *fsStore) ListPrefixes(_ context.Context, prefix string) ([]string, error) {
+func (f *fsStore) ListPrefixes(ctx context.Context, prefix string) ([]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	normalized, ok := storepath.Prefix(prefix)
 	if !ok || isRooted(prefix) {
 		return nil, ErrInvalidPath
