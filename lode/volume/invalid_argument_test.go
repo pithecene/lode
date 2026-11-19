@@ -30,6 +30,12 @@ func TestErrInvalidArgument_Classification(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	commitBlock := func(block BlockRef) func() error {
+		return func() error {
+			_, err := vol.Commit(ctx, []BlockRef{block}, nil)
+			return err
+		}
+	}
 	cases := []struct {
 		name string
 		call func() error
@@ -57,22 +63,10 @@ func TestErrInvalidArgument_Classification(t *testing.T) {
 		{"Commit unmarshalable metadata", func() error { _, err := vol.Commit(ctx, []BlockRef{staged}, func() {}); return err }, "metadata"},
 		{"Commit no blocks", func() error { _, err := vol.Commit(ctx, nil, nil); return err }, "at least one new block"},
 		{"Commit already committed", func() error { _, err := vol.Commit(ctx, []BlockRef{staged}, nil); return err }, "already committed"},
-		{"Commit negative offset", func() error {
-			_, err := vol.Commit(ctx, []BlockRef{{Offset: -1, Length: 1, Path: "p"}}, nil)
-			return err
-		}, "offset"},
-		{"Commit non-positive length", func() error {
-			_, err := vol.Commit(ctx, []BlockRef{{Offset: 4, Length: 0, Path: "p"}}, nil)
-			return err
-		}, "length"},
-		{"Commit beyond volume", func() error {
-			_, err := vol.Commit(ctx, []BlockRef{{Offset: 4, Length: 100, Path: "p"}}, nil)
-			return err
-		}, "address space"},
-		{"Commit foreign path", func() error {
-			_, err := vol.Commit(ctx, []BlockRef{{Offset: 4, Length: 4, Path: "elsewhere"}}, nil)
-			return err
-		}, "layout path"},
+		{"Commit negative offset", commitBlock(BlockRef{Offset: -1, Length: 1, Path: "p"}), "offset"},
+		{"Commit non-positive length", commitBlock(BlockRef{Offset: 4, Length: 0, Path: "p"}), "length"},
+		{"Commit beyond volume", commitBlock(BlockRef{Offset: 4, Length: 100, Path: "p"}), "address space"},
+		{"Commit foreign path", commitBlock(BlockRef{Offset: 4, Length: 4, Path: "elsewhere"}), "layout path"},
 		{"ReadAt negative offset", func() error { _, err := vol.ReadAt(ctx, snap.ID, -1, 1); return err }, "offset"},
 		{"ReadAt non-positive length", func() error { _, err := vol.ReadAt(ctx, snap.ID, 0, 0); return err }, "length"},
 		{"ReadAt beyond volume", func() error { _, err := vol.ReadAt(ctx, snap.ID, 0, 17); return err }, "address space"},

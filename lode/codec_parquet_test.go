@@ -290,39 +290,6 @@ func TestParquetCodec_RoundTrip(t *testing.T) {
 }
 
 func TestParquetCodec_Nullable(t *testing.T) {
-	t.Run("nullable fields", func(t *testing.T) {
-		schema := ParquetSchema{
-			Fields: []ParquetField{
-				{Name: "id", Type: ParquetInt64},
-				{Name: "name", Type: ParquetString, Nullable: true},
-			},
-		}
-		codec, err := newParquet(schema)
-		if err != nil {
-			t.Fatalf("newParquet() error = %v", err)
-		}
-
-		records := []D{
-			map[string]any{"id": int64(1), "name": "alice"},
-			map[string]any{"id": int64(2), "name": nil},
-			map[string]any{"id": int64(3)}, // missing field treated as nil
-		}
-
-		var buf bytes.Buffer
-		if err := codec.Encode(&buf, records); err != nil {
-			t.Fatalf("Encode() error = %v", err)
-		}
-
-		decoded, err := codec.Decode(&buf)
-		if err != nil {
-			t.Fatalf("Decode() error = %v", err)
-		}
-
-		if len(decoded) != 3 {
-			t.Fatalf("Decode() got %d records, want 3", len(decoded))
-		}
-	})
-
 	t.Run("nullable fields round trip verify values", func(t *testing.T) {
 		// Verify that explicitly nil vs missing field both decode as nil
 		schema := ParquetSchema{
@@ -432,186 +399,30 @@ func TestParquetCodec_Nullable(t *testing.T) {
 }
 
 func TestParquetCodec_EncodeErrors(t *testing.T) {
-	t.Run("missing required field", func(t *testing.T) {
-		schema := ParquetSchema{
-			Fields: []ParquetField{
-				{Name: "id", Type: ParquetInt64},
-				{Name: "name", Type: ParquetString}, // required
-			},
-		}
-		codec, err := newParquet(schema)
-		if err != nil {
-			t.Fatalf("newParquet() error = %v", err)
-		}
-
-		records := []D{
-			map[string]any{"id": int64(1)}, // missing required "name"
-		}
-
-		var buf bytes.Buffer
-		err = codec.Encode(&buf, records)
-		if err == nil {
-			t.Fatal("Encode() expected error for missing required field")
-		}
-		if !errors.Is(err, ErrSchemaViolation) {
-			t.Errorf("Encode() error = %v, want ErrSchemaViolation", err)
-		}
-	})
-
-	t.Run("type mismatch", func(t *testing.T) {
-		schema := ParquetSchema{
-			Fields: []ParquetField{
-				{Name: "id", Type: ParquetInt64},
-			},
-		}
-		codec, err := newParquet(schema)
-		if err != nil {
-			t.Fatalf("newParquet() error = %v", err)
-		}
-
-		records := []D{
-			map[string]any{"id": "not an int"}, // wrong type
-		}
-
-		var buf bytes.Buffer
-		err = codec.Encode(&buf, records)
-		if err == nil {
-			t.Fatal("Encode() expected error for type mismatch")
-		}
-		if !errors.Is(err, ErrSchemaViolation) {
-			t.Errorf("Encode() error = %v, want ErrSchemaViolation", err)
-		}
-	})
-
-	t.Run("int32 overflow", func(t *testing.T) {
-		schema := ParquetSchema{
-			Fields: []ParquetField{
-				{Name: "val", Type: ParquetInt32},
-			},
-		}
-		codec, err := newParquet(schema)
-		if err != nil {
-			t.Fatalf("newParquet() error = %v", err)
-		}
-
-		// Value exceeds int32 max
-		records := []D{
-			map[string]any{"val": float64(3000000000)}, // > 2147483647
-		}
-
-		var buf bytes.Buffer
-		err = codec.Encode(&buf, records)
-		if err == nil {
-			t.Fatal("Encode() expected error for int32 overflow")
-		}
-		if !errors.Is(err, ErrSchemaViolation) {
-			t.Errorf("Encode() error = %v, want ErrSchemaViolation", err)
-		}
-	})
-
-	t.Run("int32 underflow", func(t *testing.T) {
-		// Test int32 underflow (negative bound)
-		schema := ParquetSchema{
-			Fields: []ParquetField{
-				{Name: "val", Type: ParquetInt32},
-			},
-		}
-		codec, err := newParquet(schema)
-		if err != nil {
-			t.Fatalf("newParquet() error = %v", err)
-		}
-
-		records := []D{
-			map[string]any{"val": float64(-3000000000)}, // < -2147483648
-		}
-
-		var buf bytes.Buffer
-		err = codec.Encode(&buf, records)
-		if err == nil {
-			t.Fatal("Encode() expected error for int32 underflow")
-		}
-		if !errors.Is(err, ErrSchemaViolation) {
-			t.Errorf("Encode() error = %v, want ErrSchemaViolation", err)
-		}
-	})
-
-	t.Run("int64 safe range", func(t *testing.T) {
-		schema := ParquetSchema{
-			Fields: []ParquetField{
-				{Name: "val", Type: ParquetInt64},
-			},
-		}
-		codec, err := newParquet(schema)
-		if err != nil {
-			t.Fatalf("newParquet() error = %v", err)
-		}
-
-		// Value exceeds safe integer range for float64 (2^53)
-		// Use 1e18 which is much larger than 2^53 (≈9e15)
-		records := []D{
-			map[string]any{"val": float64(1e18)}, // 1e18 >> 2^53
-		}
-
-		var buf bytes.Buffer
-		err = codec.Encode(&buf, records)
-		if err == nil {
-			t.Fatal("Encode() expected error for int64 safe range exceeded")
-		}
-		if !errors.Is(err, ErrSchemaViolation) {
-			t.Errorf("Encode() error = %v, want ErrSchemaViolation", err)
-		}
-	})
-
-	t.Run("float64 not integer", func(t *testing.T) {
-		schema := ParquetSchema{
-			Fields: []ParquetField{
-				{Name: "val", Type: ParquetInt32},
-			},
-		}
-		codec, err := newParquet(schema)
-		if err != nil {
-			t.Fatalf("newParquet() error = %v", err)
-		}
-
-		// Float64 with fractional part
-		records := []D{
-			map[string]any{"val": float64(42.5)}, // not an integer
-		}
-
-		var buf bytes.Buffer
-		err = codec.Encode(&buf, records)
-		if err == nil {
-			t.Fatal("Encode() expected error for non-integer float64")
-		}
-		if !errors.Is(err, ErrSchemaViolation) {
-			t.Errorf("Encode() error = %v, want ErrSchemaViolation", err)
-		}
-	})
-
-	t.Run("invalid timestamp string", func(t *testing.T) {
-		schema := ParquetSchema{
-			Fields: []ParquetField{
-				{Name: "ts", Type: ParquetTimestamp},
-			},
-		}
-		codec, err := newParquet(schema)
-		if err != nil {
-			t.Fatalf("newParquet() error = %v", err)
-		}
-
-		records := []D{
-			map[string]any{"ts": "not-a-valid-timestamp"},
-		}
-
-		var buf bytes.Buffer
-		err = codec.Encode(&buf, records)
-		if err == nil {
-			t.Fatal("Encode() expected error for invalid timestamp string")
-		}
-		if !errors.Is(err, ErrSchemaViolation) {
-			t.Errorf("Encode() error = %v, want ErrSchemaViolation", err)
-		}
-	})
+	for _, tc := range []struct {
+		name   string
+		fields []ParquetField
+		record D
+	}{
+		{"missing required field", []ParquetField{{Name: "id", Type: ParquetInt64}, {Name: "name", Type: ParquetString}}, D{"id": int64(1)}},
+		{"type mismatch", []ParquetField{{Name: "id", Type: ParquetInt64}}, D{"id": "not an int"}},
+		{"int32 overflow", []ParquetField{{Name: "val", Type: ParquetInt32}}, D{"val": float64(3000000000)}},
+		{"int32 underflow", []ParquetField{{Name: "val", Type: ParquetInt32}}, D{"val": float64(-3000000000)}},
+		{"int64 safe range", []ParquetField{{Name: "val", Type: ParquetInt64}}, D{"val": float64(1e18)}},
+		{"float64 not integer", []ParquetField{{Name: "val", Type: ParquetInt32}}, D{"val": 42.5}},
+		{"invalid timestamp string", []ParquetField{{Name: "ts", Type: ParquetTimestamp}}, D{"ts": "not-a-valid-timestamp"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			codec, err := newParquet(ParquetSchema{Fields: tc.fields})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var buf bytes.Buffer
+			if err := codec.Encode(&buf, []D{tc.record}); !errors.Is(err, ErrSchemaViolation) {
+				t.Errorf("Encode = %v, want ErrSchemaViolation", err)
+			}
+		})
+	}
 }
 
 func TestParquetCodec_Conversion(t *testing.T) {

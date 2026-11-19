@@ -96,13 +96,7 @@ func TestSweep_Request(t *testing.T) {
 		}
 		lister.failPrefix = "datasets/events/snapshots/"
 
-		report, err := ds.Sweep(t.Context(), SweepRequest{Grace: sweepGrace})
-		if !errors.Is(err, errListFailed) {
-			t.Fatalf("Sweep = %v, want the listing failure", err)
-		}
-		if !slices.Equal(report.Unparseable, []string{tomb}) {
-			t.Errorf("Unparseable = %v, want the invalid tombstone examined before the failure", report.Unparseable)
-		}
+		assertSweepReportsInvalid(t, ds, errListFailed, tomb)
 	})
 
 	t.Run("a tombstone read failure still reports earlier invalid ones", func(t *testing.T) {
@@ -119,13 +113,7 @@ func TestSweep_Request(t *testing.T) {
 		putTombstone(t, mem, second.ID, newTombstone(second.ID, second.Manifest))
 		lister.failGet = "datasets/events/expired/" + string(second.ID)
 
-		report, err := ds.Sweep(t.Context(), SweepRequest{Grace: sweepGrace})
-		if !errors.Is(err, errGetFailed) {
-			t.Fatalf("Sweep = %v, want the read failure", err)
-		}
-		if !slices.Equal(report.Unparseable, []string{invalid}) {
-			t.Errorf("Unparseable = %v, want the invalid tombstone examined first", report.Unparseable)
-		}
+		assertSweepReportsInvalid(t, ds, errGetFailed, invalid)
 	})
 
 	t.Run("a delete failure reports completed work", func(t *testing.T) {
@@ -1112,4 +1100,15 @@ func interruptExpireAndSweep(t *testing.T, hs *hookStore, ds *Records[D], id Sna
 		t.Fatal(err)
 	}
 	return report
+}
+
+func assertSweepReportsInvalid(t *testing.T, ds *Records[D], wantErr error, tomb string) {
+	t.Helper()
+	report, err := ds.Sweep(t.Context(), SweepRequest{Grace: sweepGrace})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("Sweep = %v, want %v", err, wantErr)
+	}
+	if !slices.Equal(report.Unparseable, []string{tomb}) {
+		t.Errorf("Unparseable = %v, want [%s]", report.Unparseable, tomb)
+	}
 }

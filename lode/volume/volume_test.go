@@ -1252,49 +1252,31 @@ func TestVolume_Snapshot_InvalidManifest(t *testing.T) {
 		assertInvalidStoredVolumeManifest(t, store, m)
 	})
 
-	t.Run("missing volume ID", func(t *testing.T) {
-		store := lode.NewMemory()
-		m := validVolumeManifest("test-vol", 100)
-		snapID := m.SnapshotID
-		m.VolumeID = ""
-		// Write to the correct path (using "test-vol" for lookup, not the empty ID).
-		data, err := json.Marshal(m)
-		if err != nil {
-			t.Fatal(err)
-		}
-		p := volumeManifestPath("test-vol", snapID)
-		if err := store.Put(t.Context(), p, bytes.NewReader(data)); err != nil {
-			t.Fatal(err)
-		}
-
-		vol := newTestVolume(t, "test-vol", memoryFactoryFrom(store), 100)
-		_, err = vol.Snapshot(t.Context(), snapID)
-		if !errors.Is(err, lode.ErrManifestInvalid) {
-			t.Errorf("expected lode.ErrManifestInvalid, got: %v", err)
-		}
-	})
-
-	t.Run("missing snapshot ID", func(t *testing.T) {
-		store := lode.NewMemory()
-		m := validVolumeManifest("test-vol", 100)
-		snapID := m.SnapshotID
-		m.SnapshotID = ""
-		// We must write at the correct path (using the original snapID for path lookup).
-		data, err := json.Marshal(m)
-		if err != nil {
-			t.Fatal(err)
-		}
-		p := volumeManifestPath("test-vol", snapID)
-		if err := store.Put(t.Context(), p, bytes.NewReader(data)); err != nil {
-			t.Fatal(err)
-		}
-
-		vol := newTestVolume(t, "test-vol", memoryFactoryFrom(store), 100)
-		_, err = vol.Snapshot(t.Context(), snapID)
-		if !errors.Is(err, lode.ErrManifestInvalid) {
-			t.Errorf("expected lode.ErrManifestInvalid, got: %v", err)
-		}
-	})
+	for _, tc := range []struct {
+		name  string
+		clear func(*Manifest)
+	}{
+		{"missing volume ID", func(m *Manifest) { m.VolumeID = "" }},
+		{"missing snapshot ID", func(m *Manifest) { m.SnapshotID = "" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := lode.NewMemory()
+			m := validVolumeManifest("test-vol", 100)
+			id := m.SnapshotID
+			tc.clear(m)
+			data, err := json.Marshal(m)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := store.Put(t.Context(), volumeManifestPath("test-vol", id), bytes.NewReader(data)); err != nil {
+				t.Fatal(err)
+			}
+			vol := newTestVolume(t, "test-vol", memoryFactoryFrom(store), 100)
+			if _, err := vol.Snapshot(t.Context(), id); !errors.Is(err, lode.ErrManifestInvalid) {
+				t.Errorf("Snapshot = %v, want ErrManifestInvalid", err)
+			}
+		})
+	}
 
 	t.Run("zero created at", func(t *testing.T) {
 		store := lode.NewMemory()
@@ -1634,6 +1616,11 @@ func TestVolume_LatestPointer(t *testing.T) {
 // uses binary search on sorted blocks. Tests cover exact matches, partial overlaps,
 // gaps, and large block counts.
 func TestFindCoveringBlocks_BinarySearch(t *testing.T) {
+	contiguous := []BlockRef{
+		{Offset: 0, Length: 10},
+		{Offset: 10, Length: 10},
+		{Offset: 20, Length: 10},
+	}
 	tests := []struct {
 		name    string
 		blocks  []BlockRef
@@ -1643,32 +1630,20 @@ func TestFindCoveringBlocks_BinarySearch(t *testing.T) {
 		wantErr error
 	}{
 		{
-			name: "exact single block",
-			blocks: []BlockRef{
-				{Offset: 0, Length: 10},
-				{Offset: 10, Length: 10},
-				{Offset: 20, Length: 10},
-			},
+			name:   "exact single block",
+			blocks: contiguous,
 			offset: 10, length: 10,
 			wantN: 1,
 		},
 		{
-			name: "spanning two blocks",
-			blocks: []BlockRef{
-				{Offset: 0, Length: 10},
-				{Offset: 10, Length: 10},
-				{Offset: 20, Length: 10},
-			},
+			name:   "spanning two blocks",
+			blocks: contiguous,
 			offset: 5, length: 15,
 			wantN: 2,
 		},
 		{
-			name: "all blocks",
-			blocks: []BlockRef{
-				{Offset: 0, Length: 10},
-				{Offset: 10, Length: 10},
-				{Offset: 20, Length: 10},
-			},
+			name:   "all blocks",
+			blocks: contiguous,
 			offset: 0, length: 30,
 			wantN: 3,
 		},
