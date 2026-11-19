@@ -14,10 +14,14 @@ This document defines the deterministic behavior of store composition.
 ## Required Semantics
 
 - A composition requires exactly one base store.
-- The composition applies wrappers in the order that the **user defines**.
-- Reordering wrappers MUST NOT affect the correctness of reads or writes.
-- Wrapper order MAY affect observability, such as recorded metrics, and
-  performance, such as cache hit rate, but not results.
+- The composition applies wrappers in the explicit order that the **user
+  defines**.
+- Purely observational wrappers (such as logging or metrics) MUST NOT alter
+  the results of reads or writes when reordered.
+- Semantic wrappers (such as `Prefixed`, which scopes keys, or
+  `SingleProcess`, which serializes in-process conditional writes over an
+  `ObjectStore`) compose strictly from inside out in the caller's order and
+  MUST preserve the store capabilities of the wrapped store where applicable.
 
 ---
 

@@ -93,9 +93,9 @@ func documentReferences(t *testing.T) map[string]bool {
 	return found
 }
 
-// exports returns the exported top-level identifiers of the package in dir,
-// read from its non-test sources.
-func exports(t *testing.T, dir string) []string {
+// collectDecls parses non-test Go sources in dir and returns the sorted unique
+// identifiers extracted from their top-level declarations.
+func collectDecls(t *testing.T, dir string, extract func(ast.Decl) []string) []string {
 	t.Helper()
 	entries, err := os.ReadDir(filepath.Join(root, dir))
 	if err != nil {
@@ -112,11 +112,15 @@ func exports(t *testing.T, dir string) []string {
 			t.Fatalf("parse %s: %v", entry.Name(), err)
 		}
 		for _, decl := range file.Decls {
-			names = append(names, declared(decl)...)
+			names = append(names, extract(decl)...)
 		}
 	}
 	slices.Sort(names)
 	return slices.Compact(names)
+}
+
+func exports(t *testing.T, dir string) []string {
+	return collectDecls(t, dir, declared)
 }
 
 // isSource reports whether a directory entry is a non-test Go source file.
@@ -159,4 +163,135 @@ func specNames(spec ast.Spec) []string {
 		return names
 	}
 	return nil
+}
+
+func exportedTypes(t *testing.T, dir string) []string {
+	return collectDecls(t, dir, typeSpecNames)
+}
+
+func typeSpecNames(decl ast.Decl) []string {
+	gen, ok := decl.(*ast.GenDecl)
+	if !ok {
+		return nil
+	}
+	var out []string
+	for _, spec := range gen.Specs {
+		if ts, ok := spec.(*ast.TypeSpec); ok && ts.Name.IsExported() {
+			out = append(out, ts.Name.Name)
+		}
+	}
+	return out
+}
+
+var (
+	contractFilePattern = regexp.MustCompile(`\bCONTRACT_[A-Z0-9_]+\.md\b`)
+	goFencePattern      = regexp.MustCompile("(?s)```go\n(.*?)```")
+	contractTypeDecl    = regexp.MustCompile(`(?m)^type\s+([A-Z][A-Za-z0-9_]*)\b`)
+	matrixTestRef       = regexp.MustCompile("`((?:Test|Benchmark|Fuzz)[A-Za-z0-9_]+)(?:/[^`]*)?`")
+)
+
+func TestEveryContractIsIndexedAndTypesExist(t *testing.T) {
+	t.Parallel()
+	indexData, err := os.ReadFile(filepath.Join(root, "docs", "ARCH_INDEX.md"))
+	if err != nil {
+		t.Fatalf("read docs/ARCH_INDEX.md: %v", err)
+	}
+	indexed := map[string]bool{}
+	for _, m := range contractFilePattern.FindAllString(string(indexData), -1) {
+		indexed[m] = true
+	}
+
+	allTypes := map[string]bool{}
+	for _, dir := range packages {
+		for _, typ := range exportedTypes(t, dir) {
+			allTypes[typ] = true
+		}
+	}
+
+	contractsDir := filepath.Join(root, "docs", "contracts")
+	entries, err := os.ReadDir(contractsDir)
+	if err != nil {
+		t.Fatalf("read docs/contracts: %v", err)
+	}
+	onDisk := map[string]bool{}
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasPrefix(name, "CONTRACT_") || !strings.HasSuffix(name, ".md") {
+			continue
+		}
+		onDisk[name] = true
+		if !indexed[name] {
+			t.Errorf("docs/contracts/%s is not listed in docs/ARCH_INDEX.md", name)
+		}
+		for _, typ := range declaredContractTypes(t, filepath.Join(contractsDir, name)) {
+			if !allTypes[typ] {
+				t.Errorf("docs/contracts/%s declares type %s, which no public package exports", name, typ)
+			}
+		}
+	}
+	for name := range indexed {
+		if !onDisk[name] {
+			t.Errorf("docs/ARCH_INDEX.md lists %s, which does not exist in docs/contracts/", name)
+		}
+	}
+}
+
+func TestMatrixNamesExistingTests(t *testing.T) {
+	t.Parallel()
+	matrixData, err := os.ReadFile(filepath.Join(root, "ai", "TEST_MATRIX.md"))
+	if err != nil {
+		t.Fatalf("read ai/TEST_MATRIX.md: %v", err)
+	}
+	declaredTests := collectTestFuncs(t)
+	for _, m := range matrixTestRef.FindAllStringSubmatch(string(matrixData), -1) {
+		if !declaredTests[m[1]] {
+			t.Errorf("ai/TEST_MATRIX.md references %s, which does not exist in *_test.go", m[1])
+		}
+	}
+}
+
+func collectTestFuncs(t *testing.T) map[string]bool {
+	t.Helper()
+	found := map[string]bool{}
+	fset := token.NewFileSet()
+	for _, base := range []string{"lode", "internal"} {
+		err := filepath.WalkDir(filepath.Join(root, base), func(path string, d fs.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if d.IsDir() || !strings.HasSuffix(d.Name(), "_test.go") {
+				return nil
+			}
+			file, err := parser.ParseFile(fset, path, nil, 0)
+			if err != nil {
+				t.Fatalf("parse %s: %v", path, err)
+			}
+			for _, decl := range file.Decls {
+				fn, ok := decl.(*ast.FuncDecl)
+				if ok && fn.Recv == nil && fn.Name.IsExported() {
+					found[fn.Name.Name] = true
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("walk %s: %v", base, err)
+		}
+	}
+	return found
+}
+
+func declaredContractTypes(t *testing.T, path string) []string {
+	t.Helper()
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	var types []string
+	for _, block := range goFencePattern.FindAllStringSubmatch(string(body), -1) {
+		for _, tm := range contractTypeDecl.FindAllStringSubmatch(block[1], -1) {
+			types = append(types, tm[1])
+		}
+	}
+	return types
 }

@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"os"
 	"strings"
 	"testing"
@@ -67,32 +66,6 @@ func (r *testReader) ListManifests(ctx context.Context, id DatasetID, partition 
 		return nil, err
 	}
 	return v.ListManifests(ctx, path, opts)
-}
-
-func (r *testReader) GetManifest(ctx context.Context, id DatasetID, ref ManifestRef) (*Manifest, error) {
-	v, err := r.view(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	return v.GetManifest(ctx, ref)
-}
-
-func (r *testReader) OpenObject(ctx context.Context, obj ObjectRef) (io.ReadCloser, error) {
-	if r.root.err != nil {
-		return nil, r.root.err
-	}
-	return r.root.store.Get(ctx, obj.Path)
-}
-
-func (r *testReader) ReaderAt(ctx context.Context, obj ObjectRef) (io.ReaderAt, error) {
-	if r.root.err != nil {
-		return nil, r.root.err
-	}
-	ranges, ok := r.root.store.(RangeReader)
-	if !ok {
-		return nil, ErrRangeReadNotSupported
-	}
-	return ranges.ReaderAt(ctx, obj.Path)
 }
 
 // manifestErr opens a view of dataset test-ds over store and loads ref's

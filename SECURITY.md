@@ -2,9 +2,9 @@
 
 ## Supported Versions
 
-Lode is pre-1.0. Security fixes are released as a new patch version of the
-latest minor version; earlier versions do not receive backported fixes. To
-obtain a fix, upgrade to the latest release.
+Security fixes are released as a new patch version of the latest minor
+release; earlier minor lines do not receive backported fixes. To obtain a
+fix, upgrade to the latest release.
 
 | Version | Supported |
 |---------|-----------|

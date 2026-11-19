@@ -319,8 +319,12 @@ type ConditionalWriter interface {
   such as Plan 9, no such lock exists, and `CompareAndSwap` returns an error
   that matches `errors.ErrUnsupported`.
 - While holding the lock, read the current content, compare it, and write
-  the replacement.
+  the replacement via a temporary file and atomic rename.
 - Release the lock.
+- By default, temporary-file writes and atomic renames ensure visibility
+  atomicity across process crashes without issuing `fsync` on every object;
+  callers that require power-loss durability configure explicit sync options
+  when provided by the adapter.
 
 **S3 adapter:**
 - The conditional `PutObject` decides every outcome: `If-None-Match: *`
