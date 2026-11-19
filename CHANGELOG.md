@@ -199,7 +199,7 @@ and Lode adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- **Snapshot expiry**: `Dataset.Expire` removes the snapshots selected by ID, by partition (on Hive layouts), or by age, and `DryRun` previews the result. `Expire` never expires the head, and it retains a snapshot with files outside the selected partition and reports that snapshot in `ExpireReport.Mixed`. Reading an expired snapshot returns the new `ErrSnapshotExpired`, which also matches `ErrNotFound`. The new `ErrHeadUncommitted` reports that expiry cannot proceed for one of two reasons: an uncommitted head, or a dataset with snapshots but no `latest` pointer. Any commit creates the pointer. ([#174](https://github.com/pithecene/lode/issues/174))
+- **Snapshot expiry**: `Dataset.Expire` removes the snapshots selected by ID, by partition (on Hive layouts), or by age, and `DryRun` previews the result. `Expire` never expires the head, and it retains a snapshot with files outside the selected partition and reports that snapshot in `ExpireReport.Mixed`. Reading an expired snapshot returns the new `ErrSnapshotExpired`, which also matches `ErrNotFound`. The new `ErrHeadUncommitted` reports that expiry cannot proceed because the head is uncommitted or because the dataset holds snapshots without a `latest` pointer. Any commit creates the pointer. ([#174](https://github.com/pithecene/lode/issues/174))
 - **Sweep of unreferenced objects**: `Dataset.Sweep` completes interrupted expiries and, once an uncommitted snapshot is older than a grace period, reclaims its data. ([#174](https://github.com/pithecene/lode/issues/174))
 - **`lode.SingleProcess`**: this wrapper adds `CompareAndSwap` to a store without a conditional write by serializing its calls under an in-process lock. The wrapper serializes writers only if they use the same returned store, and it does not coordinate writers in other processes.
 - **Concurrent writers on Windows**: the filesystem store implements `CompareAndSwap` on Windows, so several processes may write to one dataset or volume.
@@ -252,7 +252,7 @@ and Lode adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixed
 
 - **Backslashes in keys**: every store rejects a key or prefix that contains `\` with `ErrInvalidPath` on every platform, and `s3.New` applies the rule to `Config.Prefix`.
-- **Filesystem listing by prefix**: the filesystem store treated a prefix as a directory, so a partial final segment such as `day=2024-01` listed nothing. It now matches a string prefix, as the other stores do.
+- **Filesystem listing by prefix**: the filesystem store treated a prefix as a directory, so a partial final segment such as `day=2024-01` listed nothing. It now matches a string prefix, matching the other stores.
 - **A failed `Put` leaves no partial object**: the filesystem store left a partial object when the reader failed during the copy. It now removes the object.
 - **Stream writes no longer hang on a failed `Put`**: when a store's `Put` failed before it read the whole stream, `StreamWrite` and `StreamWriteRecords` blocked indefinitely. They now return the error.
 - **Filesystem `ReadRange` allocation**: a range that extends far beyond the end of a file no longer allocates the full requested length.
@@ -287,7 +287,7 @@ and Lode adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Breaking Changes
 
 - **The removal of `VolumeOption`**: `NewVolume` takes the `Option` type that `NewDataset` and `NewDatasetReader` take, and an option that does not apply to a Volume returns the new `ErrOptionNotValidForVolume`. ([#164](https://github.com/pithecene/lode/pull/164))
-- **The removal of `WithVolumeChecksum`**: a Volume takes `WithChecksum`, as a Dataset does.
+- **The removal of `WithVolumeChecksum`**: a Volume takes `WithChecksum`, matching a Dataset.
 
 ### Added
 
@@ -532,6 +532,8 @@ and Lode adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Requirements**: Go 1.25.6 or later. The filesystem root and an S3 bucket must exist before use. Lode creates directories beneath the root but neither the root nor the bucket.
 
 ---
+
+<!-- jscpd:ignore-start -->
 
 [Unreleased]: https://github.com/pithecene/lode/compare/v0.17.1...HEAD
 [0.17.1]: https://github.com/pithecene/lode/compare/v0.17.0...v0.17.1
