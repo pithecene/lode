@@ -162,12 +162,7 @@ func TestSweep_Request(t *testing.T) {
 
 func TestSweep_Settle(t *testing.T) {
 	t.Run("a manifest the listing omits is still removed", func(t *testing.T) {
-		mem := NewMemory()
-		lister := &listInjector{Store: mem}
-		ds := newDefaultRetention(t, lister)
-		first := writeRecord(t, ds, 1)
-		writeRecord(t, ds, 2)
-		putTombstone(t, mem, first.ID, newTombstone(first.ID, first.Manifest))
+		mem, lister, ds, first := newTombstonedListFixture(t)
 		manifest := "datasets/events/snapshots/" + string(first.ID) + "/manifest.json"
 		lister.hidden = []string{manifest}
 
@@ -181,12 +176,7 @@ func TestSweep_Settle(t *testing.T) {
 	})
 
 	t.Run("an inventory object the listing omits is still removed", func(t *testing.T) {
-		mem := NewMemory()
-		lister := &listInjector{Store: mem}
-		ds := newDefaultRetention(t, lister)
-		first := writeRecord(t, ds, 1)
-		writeRecord(t, ds, 2)
-		putTombstone(t, mem, first.ID, newTombstone(first.ID, first.Manifest))
+		mem, lister, ds, first := newTombstonedListFixture(t)
 		data := first.Manifest.Objects[0].Path
 		lister.hidden = []string{data}
 
@@ -200,12 +190,7 @@ func TestSweep_Settle(t *testing.T) {
 	})
 
 	t.Run("a snapshot the listing shows nothing of is left alone", func(t *testing.T) {
-		mem := NewMemory()
-		lister := &listInjector{Store: mem}
-		ds := newDefaultRetention(t, lister)
-		first := writeRecord(t, ds, 1)
-		writeRecord(t, ds, 2)
-		putTombstone(t, mem, first.ID, newTombstone(first.ID, first.Manifest)) // misplaced
+		mem, lister, ds, first := newTombstonedListFixture(t) // misplaced
 		// A lagging listing omits every manifest and object of the snapshot.
 		for _, k := range storeKeys(t, mem) {
 			if strings.Contains(k, string(first.ID)) && !strings.Contains(k, "expired/") {
@@ -233,21 +218,9 @@ func TestSweep_Settle(t *testing.T) {
 		stray := "datasets/events/partitions/run_id=a/event_type=x/segments/" + string(run.ID) + "/data/partial.bin"
 		putObject(t, mem, stray)
 
-		hs.onDelete = func(p string) error {
-			if strings.Contains(p, "partitions/") && strings.HasSuffix(p, "manifest.json") {
-				return errors.New("injected")
-			}
-			return nil
-		}
-		if _, err := ds.Expire(t.Context(), ExpireRequest{IDs: []SnapshotID{run.ID}}); err == nil {
-			t.Fatal("Expire succeeded despite the injected failure")
-		}
-		hs.onDelete = nil
-
-		report, err := ds.Sweep(t.Context(), SweepRequest{Grace: 1000 * time.Hour})
-		if err != nil {
-			t.Fatal(err)
-		}
+		report := interruptExpireAndSweep(t, hs, ds, run.ID, func(p string) bool {
+			return strings.Contains(p, "partitions/") && strings.HasSuffix(p, "manifest.json")
+		})
 		if !slices.Equal(report.Settled, []SnapshotID{run.ID}) {
 			t.Errorf("Settled = %v, want [%s]", report.Settled, run.ID)
 		}
@@ -265,21 +238,7 @@ func TestSweep_Settle(t *testing.T) {
 		ds := newDefaultRetention(t, hs)
 		first := writeRecord(t, ds, 1)
 		writeRecord(t, ds, 2)
-		hs.onDelete = func(p string) error {
-			if strings.Contains(p, "/data/") {
-				return errors.New("injected")
-			}
-			return nil
-		}
-		if _, err := ds.Expire(t.Context(), ExpireRequest{IDs: []SnapshotID{first.ID}}); err == nil {
-			t.Fatal("Expire succeeded despite the injected failure")
-		}
-		hs.onDelete = nil
-
-		report, err := ds.Sweep(t.Context(), SweepRequest{Grace: 1000 * time.Hour})
-		if err != nil {
-			t.Fatal(err)
-		}
+		report := interruptExpireAndSweep(t, hs, ds, first.ID, func(p string) bool { return strings.Contains(p, "/data/") })
 		// Expire already removed every manifest, so nothing is settled this
 		// run; the tombstone still marks the data as reclaimable.
 		if len(report.Settled) != 0 || report.Objects != len(first.Objects) ||
@@ -1123,4 +1082,34 @@ func putVolumeFixture(t *testing.T, store Store, prefix string) []string {
 		t.Fatal("the volume fixture holds no objects")
 	}
 	return paths
+}
+
+func newTombstonedListFixture(t *testing.T) (RangeStore, *listInjector, *Records[D], *Snapshot) {
+	t.Helper()
+	mem := NewMemory()
+	lister := &listInjector{Store: mem}
+	ds := newDefaultRetention(t, lister)
+	first := writeRecord(t, ds, 1)
+	writeRecord(t, ds, 2)
+	putTombstone(t, mem, first.ID, newTombstone(first.ID, first.Manifest))
+	return mem, lister, ds, first
+}
+
+func interruptExpireAndSweep(t *testing.T, hs *hookStore, ds *Records[D], id SnapshotID, failPath func(string) bool) *SweepReport {
+	t.Helper()
+	hs.onDelete = func(p string) error {
+		if failPath(p) {
+			return errors.New("injected")
+		}
+		return nil
+	}
+	if _, err := ds.Expire(t.Context(), ExpireRequest{IDs: []SnapshotID{id}}); err == nil {
+		t.Fatal("Expire succeeded despite the injected failure")
+	}
+	hs.onDelete = nil
+	report, err := ds.Sweep(t.Context(), SweepRequest{Grace: 1000 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return report
 }

@@ -14,7 +14,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"path/filepath"
 
 	"github.com/pithecene/lode/lode"
 )
@@ -83,23 +82,17 @@ func run() error {
 	}
 	fmt.Println()
 
-	fmt.Println("File structure (Hive layout):")
-	err = filepath.Walk(tmpDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, _ := filepath.Rel(tmpDir, path)
-		if rel != "." {
-			if info.IsDir() {
-				fmt.Printf("  %s/\n", rel)
-			} else {
-				fmt.Printf("  %s\n", rel)
-			}
-		}
-		return nil
-	})
+	fmt.Println("Stored Hive keys:")
+	store, err := lode.NewFS(tmpDir)
 	if err != nil {
 		return err
+	}
+	keys, err := store.List(ctx, "")
+	if err != nil {
+		return err
+	}
+	for _, k := range keys {
+		fmt.Printf("  %s\n", k)
 	}
 	fmt.Println()
 

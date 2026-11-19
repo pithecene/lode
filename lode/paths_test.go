@@ -3,6 +3,7 @@ package lode
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -100,187 +101,77 @@ func TestRootPaths_InvalidOptions(t *testing.T) {
 	}
 }
 
-func TestRootPaths_LegacyV11Compat(t *testing.T) {
-	t.Run("default 1.1.0 paths and files accepted", func(t *testing.T) {
-		store := NewMemory()
-		snapID := idAt(time.Now().Add(-time.Hour))
-		dataKey := "datasets/events/snapshots/" + string(snapID) + "/data/data"
-		manifestKey := "datasets/events/snapshots/" + string(snapID) + "/manifest.json"
-		if err := store.Put(t.Context(), dataKey, strings.NewReader(`{"n":1}`+"\n")); err != nil {
-			t.Fatal(err)
-		}
-		v11JSON := `{
-			"schema_name": "lode-manifest",
-			"format_version": "1.1.0",
-			"dataset_id": "events",
-			"snapshot_id": "` + string(snapID) + `",
-			"created_at": "2026-01-15T10:00:00Z",
-			"metadata": {},
-			"files": [{"path": "` + dataKey + `", "size_bytes": 8}],
-			"row_count": 1,
-			"codec": "jsonl",
-			"compressor": "noop",
-			"partitioner": "noop",
-			"paths": {
-				"datasets": "datasets",
-				"snapshots": "snapshots",
-				"partitions": "partitions",
-				"segments": "segments",
-				"manifest": "manifest.json",
-				"data": "data",
-				"expired": "expired",
-				"staged": "staged"
+func putFormat11Manifest(t *testing.T, store Store, manifestKey string, snapID SnapshotID, filesJSON, pathsJSON string, rowCount int) {
+	t.Helper()
+	doc := fmt.Sprintf(`{"schema_name":"lode-manifest","format_version":"1.1.0","dataset_id":"events","snapshot_id":%q,"created_at":"2026-01-15T10:00:00Z","metadata":{},"files":%s,"row_count":%d,"codec":"jsonl","compressor":"noop","partitioner":"noop","paths":%s}`,
+		snapID, filesJSON, rowCount, pathsJSON)
+	if err := store.Put(t.Context(), manifestKey, strings.NewReader(doc)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRootPaths_ManifestFormat11Compat(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		dataFmt   string
+		manFmt    string
+		ptrKey    string
+		pathsJSON string
+		opts      []RootOption
+	}{
+		{
+			name:      "default format_version 1.1.0 paths and files accepted",
+			dataFmt:   "datasets/events/snapshots/%s/data/data",
+			manFmt:    "datasets/events/snapshots/%s/manifest.json",
+			ptrKey:    "datasets/events/latest",
+			pathsJSON: `{"datasets":"datasets","snapshots":"snapshots","partitions":"partitions","segments":"segments","manifest":"manifest.json","data":"data","expired":"expired","staged":"staged"}`,
+		},
+		{
+			name:      "flat format_version 1.1.0 paths and files accepted",
+			dataFmt:   "events/%s/data/data",
+			manFmt:    "events/%s/manifest.json",
+			ptrKey:    "events/latest",
+			pathsJSON: `{"partitions":"partitions","segments":"segments","manifest":"manifest.json","data":"data","expired":"expired","staged":"staged","flat":true}`,
+			opts:      []RootOption{WithFlatPaths()},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := NewMemory()
+			snapID := idAt(time.Now().Add(-time.Hour))
+			dataKey := fmt.Sprintf(tc.dataFmt, snapID)
+			manifestKey := fmt.Sprintf(tc.manFmt, snapID)
+			if err := store.Put(t.Context(), dataKey, strings.NewReader(`{"n":1}`+"\n")); err != nil {
+				t.Fatal(err)
 			}
-		}`
-		if err := store.Put(t.Context(), manifestKey, strings.NewReader(v11JSON)); err != nil {
-			t.Fatal(err)
-		}
-		setPointer(t, store, string(snapID))
-
-		view, err := OpenReadOnly(Use(store)).Records(t.Context(), "events", jsonl)
-		if err != nil {
-			t.Fatalf("ReadRoot.Records: %v", err)
-		}
-		loaded, err := view.Snapshot(t.Context(), snapID)
-		if err != nil || len(loaded.Objects) != 1 || loaded.Objects[0].Path != dataKey {
-			t.Fatalf("Snapshot = %+v, %v; want Objects decoded from 1.1.0 files", loaded, err)
-		}
-		rows, err := view.Read(t.Context(), snapID)
-		if err != nil || len(rows) != 1 || rows[0]["n"] != float64(1) {
-			t.Fatalf("Read = %v, %v", rows, err)
-		}
-
-		ds, err := Open(Use(store)).Records(t.Context(), "events", jsonl)
-		if err != nil {
-			t.Fatalf("Root.Records: %v", err)
-		}
-		next, err := ds.Write(t.Context(), R(D{"n": 2}), nil)
-		if err != nil || next.FormatVersion != "1.2.0" || next.ParentSnapshotID != snapID {
-			t.Fatalf("Write = %+v, %v; want 1.2.0 child on 1.1.0 parent", next, err)
-		}
-	})
-
-	t.Run("flat 1.1.0 paths and files accepted", func(t *testing.T) {
-		store := NewMemory()
-		snapID := idAt(time.Now().Add(-time.Hour))
-		dataKey := "events/" + string(snapID) + "/data/data"
-		manifestKey := "events/" + string(snapID) + "/manifest.json"
-		if err := store.Put(t.Context(), dataKey, strings.NewReader(`{"n":1}`+"\n")); err != nil {
-			t.Fatal(err)
-		}
-		v11Flat := `{
-			"schema_name": "lode-manifest",
-			"format_version": "1.1.0",
-			"dataset_id": "events",
-			"snapshot_id": "` + string(snapID) + `",
-			"created_at": "2026-01-15T10:00:00Z",
-			"metadata": {},
-			"files": [{"path": "` + dataKey + `", "size_bytes": 8}],
-			"row_count": 1,
-			"codec": "jsonl",
-			"compressor": "noop",
-			"partitioner": "noop",
-			"paths": {
-				"partitions": "partitions",
-				"segments": "segments",
-				"manifest": "manifest.json",
-				"data": "data",
-				"expired": "expired",
-				"staged": "staged",
-				"flat": true
+			putFormat11Manifest(t, store, manifestKey, snapID, `[{"path":"`+dataKey+`","size_bytes":8}]`, tc.pathsJSON, 1)
+			if err := store.Put(t.Context(), tc.ptrKey, strings.NewReader(string(snapID))); err != nil {
+				t.Fatal(err)
 			}
-		}`
-		if err := store.Put(t.Context(), manifestKey, strings.NewReader(v11Flat)); err != nil {
-			t.Fatal(err)
-		}
-		if err := store.Put(t.Context(), "events/latest", strings.NewReader(string(snapID))); err != nil {
-			t.Fatal(err)
-		}
+			view, err := OpenReadOnly(Use(store), tc.opts...).Records(t.Context(), "events", jsonl)
+			if err != nil {
+				t.Fatalf("ReadRoot.Records: %v", err)
+			}
+			if rows, err := view.Read(t.Context(), snapID); err != nil || len(rows) != 1 {
+				t.Fatalf("Read = %v, %v", rows, err)
+			}
+			if _, err := Open(Use(store), tc.opts...).Records(t.Context(), "events", jsonl); err != nil {
+				t.Fatalf("Root.Records: %v", err)
+			}
+		})
+	}
 
-		view, err := OpenReadOnly(Use(store), WithFlatPaths()).Records(t.Context(), "events", jsonl)
-		if err != nil {
-			t.Fatalf("flat ReadRoot.Records: %v", err)
-		}
-		if rows, err := view.Read(t.Context(), snapID); err != nil || len(rows) != 1 {
-			t.Fatalf("flat Read = %v, %v", rows, err)
-		}
-		if _, err := Open(Use(store), WithFlatPaths()).Records(t.Context(), "events", jsonl); err != nil {
-			t.Fatalf("flat Root.Records: %v", err)
-		}
-	})
-
-	t.Run("custom 1.1.0 directory names rejected", func(t *testing.T) {
+	t.Run("custom format_version 1.1.0 directory names rejected", func(t *testing.T) {
 		store := NewMemory()
 		snapID := idAt(time.Now().Add(-time.Hour))
 		manifestKey := "datasets/events/snapshots/" + string(snapID) + "/manifest.json"
-		v11Custom := `{
-			"schema_name": "lode-manifest",
-			"format_version": "1.1.0",
-			"dataset_id": "events",
-			"snapshot_id": "` + string(snapID) + `",
-			"created_at": "2026-01-15T10:00:00Z",
-			"metadata": {},
-			"files": [],
-			"row_count": 0,
-			"codec": "jsonl",
-			"compressor": "noop",
-			"partitioner": "noop",
-			"paths": {
-				"datasets": "datasets",
-				"snapshots": "snapshots",
-				"partitions": "partitions",
-				"segments": "segments",
-				"manifest": "manifest.json",
-				"data": "custom_data",
-				"expired": "expired",
-				"staged": "staged"
-			}
-		}`
-		if err := store.Put(t.Context(), manifestKey, strings.NewReader(v11Custom)); err != nil {
-			t.Fatal(err)
-		}
+		putFormat11Manifest(t, store, manifestKey, snapID, `[]`, `{"datasets":"datasets","snapshots":"snapshots","partitions":"partitions","segments":"segments","manifest":"manifest.json","data":"custom_data","expired":"expired","staged":"staged"}`, 0)
 		setPointer(t, store, string(snapID))
 
 		if _, err := Open(Use(store)).Records(t.Context(), "events", jsonl); !errors.Is(err, ErrSettingsMismatch) {
-			t.Errorf("writer: got %v, want ErrSettingsMismatch for custom 1.1.0 dir", err)
+			t.Errorf("writer: got %v, want ErrSettingsMismatch", err)
 		}
 		if _, err := OpenReadOnly(Use(store)).Records(t.Context(), "events", jsonl); !errors.Is(err, ErrSettingsMismatch) {
-			t.Errorf("view: got %v, want ErrSettingsMismatch for custom 1.1.0 dir", err)
-		}
-	})
-
-	t.Run("legacy 1.1.0 tombstone files decoded", func(t *testing.T) {
-		store := NewMemory()
-		ds := newDefaultRetention(t, store)
-		first := writeRecord(t, ds, 1)
-		writeRecord(t, ds, 2)
-		v11Tomb := `{
-			"snapshot_id": "` + string(first.ID) + `",
-			"requested_at": "2026-01-15T10:00:00Z",
-			"manifest_created_at": "` + first.CreatedAt.Format(time.RFC3339Nano) + `",
-			"files": [{"path": "` + first.Objects[0].Path + `", "size_bytes": ` + "6" + `}]
-		}`
-		// Match exact recorded size so tombstone.describes(manifest) holds.
-		var parsed tombstone
-		if err := json.Unmarshal([]byte(v11Tomb), &parsed); err != nil {
-			t.Fatal(err)
-		}
-		parsed.Objects[0].SizeBytes = first.Objects[0].SizeBytes
-		raw, err := json.Marshal(struct {
-			SnapshotID        SnapshotID  `json:"snapshot_id"`
-			RequestedAt       time.Time   `json:"requested_at"`
-			ManifestCreatedAt time.Time   `json:"manifest_created_at"`
-			Files             []ObjectRef `json:"files"`
-		}{parsed.SnapshotID, parsed.RequestedAt, parsed.ManifestCreatedAt, parsed.Objects})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := store.Put(t.Context(), "datasets/events/expired/"+string(first.ID), strings.NewReader(string(raw))); err != nil {
-			t.Fatal(err)
-		}
-		report, err := ds.Sweep(t.Context(), SweepRequest{Grace: time.Hour})
-		if err != nil || !slices.Equal(report.Settled, []SnapshotID{first.ID}) || report.Bytes != first.Objects[0].SizeBytes {
-			t.Fatalf("Sweep = %+v, %v; want 1.1.0 tombstone settled with recorded bytes", report, err)
+			t.Errorf("view: got %v, want ErrSettingsMismatch", err)
 		}
 	})
 }

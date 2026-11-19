@@ -728,25 +728,7 @@ func TestStore_Get(t *testing.T) {
 		}
 	})
 
-	t.Run("err not found", func(t *testing.T) {
-		ctx := t.Context()
-		store, _ := New(NewMockS3Client(), "test")
-
-		_, err := store.Get(ctx, "nonexistent.txt")
-		if !errors.Is(err, lode.ErrNotFound) {
-			t.Errorf("expected ErrNotFound, got: %v", err)
-		}
-	})
-
-	t.Run("err invalid path", func(t *testing.T) {
-		ctx := t.Context()
-		store, _ := New(NewMockS3Client(), "test")
-
-		_, err := store.Get(ctx, "")
-		if !errors.Is(err, lode.ErrInvalidPath) {
-			t.Errorf("expected ErrInvalidPath for empty path, got: %v", err)
-		}
-	})
+	assertMissingAndEmptyKeyErrors(t, "err not found", func(st *Store, k string) error { _, err := st.Get(t.Context(), k); return err })
 }
 
 // -----------------------------------------------------------------------------
@@ -856,14 +838,8 @@ func TestStore_List(t *testing.T) {
 	})
 
 	t.Run("with prefix", func(t *testing.T) {
-		ctx := t.Context()
-		store, _ := New(NewMockS3Client(), "test")
-
-		_ = store.Put(ctx, "a/1.txt", bytes.NewReader([]byte("1")))
-		_ = store.Put(ctx, "a/2.txt", bytes.NewReader([]byte("2")))
-		_ = store.Put(ctx, "b/3.txt", bytes.NewReader([]byte("3")))
-
-		keys, err := store.List(ctx, "a/")
+		store := mockStoreWith(t, map[string]string{"a/1.txt": "1", "a/2.txt": "2", "b/3.txt": "3"})
+		keys, err := store.List(t.Context(), "a/")
 		if err != nil {
 			t.Fatalf("List failed: %v", err)
 		}
@@ -1147,14 +1123,7 @@ func TestStore_ReadRange(t *testing.T) {
 	})
 
 	t.Run("beyond EOF", func(t *testing.T) {
-		ctx := t.Context()
-		store, _ := New(NewMockS3Client(), "test")
-
-		content := []byte("hello")
-		_ = store.Put(ctx, "test.txt", bytes.NewReader(content))
-
-		// Read beyond EOF - should return available bytes
-		data, err := store.ReadRange(ctx, "test.txt", 3, 100)
+		data, err := mockStoreWith(t, map[string]string{"test.txt": "hello"}).ReadRange(t.Context(), "test.txt", 3, 100)
 		if err != nil {
 			t.Fatalf("ReadRange failed: %v", err)
 		}
@@ -1273,13 +1242,7 @@ func TestStore_ReadRange_Bounds(t *testing.T) {
 
 func TestStore_ReaderAt(t *testing.T) {
 	t.Run("basic", func(t *testing.T) {
-		ctx := t.Context()
-		store, _ := New(NewMockS3Client(), "test")
-
-		content := []byte("hello world")
-		_ = store.Put(ctx, "test.txt", bytes.NewReader(content))
-
-		ra, err := store.ReaderAt(ctx, "test.txt")
+		ra, err := mockStoreWith(t, map[string]string{"test.txt": "hello world"}).ReaderAt(t.Context(), "test.txt")
 		if err != nil {
 			t.Fatalf("ReaderAt failed: %v", err)
 		}
@@ -1331,25 +1294,7 @@ func TestStore_ReaderAt(t *testing.T) {
 		<-done
 	})
 
-	t.Run("not found", func(t *testing.T) {
-		ctx := t.Context()
-		store, _ := New(NewMockS3Client(), "test")
-
-		_, err := store.ReaderAt(ctx, "nonexistent.txt")
-		if !errors.Is(err, lode.ErrNotFound) {
-			t.Errorf("expected ErrNotFound, got: %v", err)
-		}
-	})
-
-	t.Run("err invalid path", func(t *testing.T) {
-		ctx := t.Context()
-		store, _ := New(NewMockS3Client(), "test")
-
-		_, err := store.ReaderAt(ctx, "")
-		if !errors.Is(err, lode.ErrInvalidPath) {
-			t.Errorf("expected ErrInvalidPath, got: %v", err)
-		}
-	})
+	assertMissingAndEmptyKeyErrors(t, "not found", func(st *Store, k string) error { _, err := st.ReaderAt(t.Context(), k); return err })
 
 	t.Run("EOF", func(t *testing.T) {
 		ctx := t.Context()
@@ -1401,46 +1346,16 @@ func (m *racingMockS3Client) CompleteMultipartUpload(ctx context.Context, params
 
 func TestStore_CompareAndSwap(t *testing.T) {
 	t.Run("create when empty", func(t *testing.T) {
-		ctx := t.Context()
-		store, _ := New(NewMockS3Client(), "test")
-
-		err := store.CompareAndSwap(ctx, "ptr/latest", "", "snap-1")
-		if err != nil {
-			t.Fatalf("CompareAndSwap create failed: %v", err)
-		}
-
-		rc, err := store.Get(ctx, "ptr/latest")
-		if err != nil {
-			t.Fatalf("Get after CAS create failed: %v", err)
-		}
-		defer closer(rc)()
-		data, _ := io.ReadAll(rc)
-		if string(data) != "snap-1" {
-			t.Errorf("expected 'snap-1', got %q", string(data))
-		}
+		store := mockStoreWith(t, nil)
+		mustCAS(t, store, "ptr/latest", "", "snap-1")
+		assertStoreValue(t, store, "ptr/latest", "snap-1")
 	})
 
 	t.Run("update match", func(t *testing.T) {
-		ctx := t.Context()
-		store, _ := New(NewMockS3Client(), "test")
-
-		if err := store.CompareAndSwap(ctx, "ptr/latest", "", "snap-1"); err != nil {
-			t.Fatalf("initial create failed: %v", err)
-		}
-
-		if err := store.CompareAndSwap(ctx, "ptr/latest", "snap-1", "snap-2"); err != nil {
-			t.Fatalf("CompareAndSwap update failed: %v", err)
-		}
-
-		rc, err := store.Get(ctx, "ptr/latest")
-		if err != nil {
-			t.Fatalf("Get after CAS update: %v", err)
-		}
-		defer closer(rc)()
-		data, _ := io.ReadAll(rc)
-		if string(data) != "snap-2" {
-			t.Errorf("expected 'snap-2', got %q", string(data))
-		}
+		store := mockStoreWith(t, nil)
+		mustCAS(t, store, "ptr/latest", "", "snap-1")
+		mustCAS(t, store, "ptr/latest", "snap-1", "snap-2")
+		assertStoreValue(t, store, "ptr/latest", "snap-2")
 	})
 
 	t.Run("conflict mismatch", func(t *testing.T) {
@@ -1753,3 +1668,54 @@ func TestStore_CompareAndSwap_Requests(t *testing.T) {
 
 // Compile-time interface assertion.
 var _ lode.ConditionalWriter = (*Store)(nil)
+
+func mockStoreWith(t *testing.T, initial map[string]string) *Store {
+	t.Helper()
+	st, err := New(NewMockS3Client(), "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for k, v := range initial {
+		if err := st.Put(t.Context(), k, bytes.NewReader([]byte(v))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return st
+}
+
+func mustCAS(t *testing.T, st *Store, key, expected, next string) {
+	t.Helper()
+	if err := st.CompareAndSwap(t.Context(), key, expected, next); err != nil {
+		t.Fatalf("CompareAndSwap(%q -> %q): %v", expected, next, err)
+	}
+}
+
+func assertStoreValue(t *testing.T, st *Store, key, want string) {
+	t.Helper()
+	rc, err := st.Get(t.Context(), key)
+	if err != nil {
+		t.Fatalf("Get(%q): %v", key, err)
+	}
+	defer closer(rc)()
+	data, _ := io.ReadAll(rc)
+	if string(data) != want {
+		t.Errorf("Get(%q) = %q, want %q", key, data, want)
+	}
+}
+
+func assertMissingAndEmptyKeyErrors(t *testing.T, notFoundName string, call func(*Store, string) error) {
+	t.Helper()
+	for _, tc := range []struct {
+		name, key string
+		want      error
+	}{
+		{notFoundName, "nonexistent.txt", lode.ErrNotFound},
+		{"err invalid path", "", lode.ErrInvalidPath},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := call(mockStoreWith(t, nil), tc.key); !errors.Is(err, tc.want) {
+				t.Errorf("call(%q) = %v, want %v", tc.key, err, tc.want)
+			}
+		})
+	}
+}

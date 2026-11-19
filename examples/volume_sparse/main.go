@@ -29,21 +29,29 @@ import (
 )
 
 func main() {
-	if err := run(); err != nil {
+	if err := execExample(); err != nil {
 		log.Fatal(err)
 	}
 }
 
-func run() error {
-	ctx := context.Background()
-
-	// Create a temporary directory for storage
+func execExample() error {
 	tmpDir, err := os.MkdirTemp("", "lode-volume-sparse-*")
 	if err != nil {
-		return fmt.Errorf("failed to create temp dir: %w", err)
+		return err
 	}
 	defer func() { _ = os.RemoveAll(tmpDir) }()
+	return runSparseVolume(context.Background(), tmpDir)
+}
 
+func commitSector(ctx context.Context, vol volume.Volume, offset int64, fill byte, step string) (*volume.Snapshot, error) {
+	blk, err := vol.StageWriteAt(ctx, offset, bytes.NewReader(bytes.Repeat([]byte{fill}, 256)))
+	if err != nil {
+		return nil, fmt.Errorf("stage offset %d: %w", offset, err)
+	}
+	return vol.Commit(ctx, []volume.BlockRef{blk}, lode.D{"step": step})
+}
+
+func runSparseVolume(ctx context.Context, tmpDir string) error {
 	fmt.Printf("Storage root: %s\n\n", tmpDir)
 
 	// Create filesystem store factory
@@ -127,14 +135,9 @@ func run() error {
 	fmt.Println("=== INCREMENTAL COMMIT (fill gap) ===")
 
 	// Stage sector 1: [256, 512)
-	blk1, err := vol.StageWriteAt(ctx, 256, bytes.NewReader(bytes.Repeat([]byte{0xCC}, 256)))
+	snap2, err := commitSector(ctx, vol, 256, 0xCC, "fill-gap")
 	if err != nil {
-		return fmt.Errorf("failed to stage sector 1: %w", err)
-	}
-
-	snap2, err := vol.Commit(ctx, []volume.BlockRef{blk1}, lode.D{"step": "fill-gap"})
-	if err != nil {
-		return fmt.Errorf("failed to commit: %w", err)
+		return err
 	}
 
 	fmt.Printf("Snapshot 2: %s\n", snap2.ID)
@@ -168,14 +171,9 @@ func run() error {
 	fmt.Printf("  Committed blocks: %d\n", len(latest.Manifest.Blocks))
 
 	// Stage the final sector: [768, 1024)
-	blk3, err := vol2.StageWriteAt(ctx, 768, bytes.NewReader(bytes.Repeat([]byte{0xDD}, 256)))
+	snap3, err := commitSector(ctx, vol2, 768, 0xDD, "complete")
 	if err != nil {
-		return fmt.Errorf("failed to stage sector 3: %w", err)
-	}
-
-	snap3, err := vol2.Commit(ctx, []volume.BlockRef{blk3}, lode.D{"step": "complete"})
-	if err != nil {
-		return fmt.Errorf("failed to commit: %w", err)
+		return err
 	}
 
 	fmt.Printf("\nSnapshot 3: %s\n", snap3.ID)
