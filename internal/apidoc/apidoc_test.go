@@ -95,7 +95,7 @@ func documentReferences(t *testing.T) map[string]bool {
 
 // exports returns the exported top-level identifiers of the package in dir,
 // read from its non-test sources.
-func exports(t *testing.T, dir string) []string {
+func collectDecls(t *testing.T, dir string, extract func(ast.Decl) []string) []string {
 	t.Helper()
 	entries, err := os.ReadDir(filepath.Join(root, dir))
 	if err != nil {
@@ -112,11 +112,15 @@ func exports(t *testing.T, dir string) []string {
 			t.Fatalf("parse %s: %v", entry.Name(), err)
 		}
 		for _, decl := range file.Decls {
-			names = append(names, declared(decl)...)
+			names = append(names, extract(decl)...)
 		}
 	}
 	slices.Sort(names)
 	return slices.Compact(names)
+}
+
+func exports(t *testing.T, dir string) []string {
+	return collectDecls(t, dir, declared)
 }
 
 // isSource reports whether a directory entry is a non-test Go source file.
@@ -162,35 +166,19 @@ func specNames(spec ast.Spec) []string {
 }
 
 func exportedTypes(t *testing.T, dir string) []string {
-	t.Helper()
-	entries, err := os.ReadDir(filepath.Join(root, dir))
-	if err != nil {
-		t.Fatalf("read %s: %v", dir, err)
-	}
-	fset := token.NewFileSet()
-	var names []string
-	for _, entry := range entries {
-		if !isSource(entry) {
-			continue
+	return collectDecls(t, dir, func(decl ast.Decl) []string {
+		gen, ok := decl.(*ast.GenDecl)
+		if !ok {
+			return nil
 		}
-		file, err := parser.ParseFile(fset, filepath.Join(root, dir, entry.Name()), nil, 0)
-		if err != nil {
-			t.Fatalf("parse %s: %v", entry.Name(), err)
-		}
-		for _, decl := range file.Decls {
-			gen, ok := decl.(*ast.GenDecl)
-			if !ok {
-				continue
-			}
-			for _, spec := range gen.Specs {
-				if ts, ok := spec.(*ast.TypeSpec); ok && ts.Name.IsExported() {
-					names = append(names, ts.Name.Name)
-				}
+		var out []string
+		for _, spec := range gen.Specs {
+			if ts, ok := spec.(*ast.TypeSpec); ok && ts.Name.IsExported() {
+				out = append(out, ts.Name.Name)
 			}
 		}
-	}
-	slices.Sort(names)
-	return slices.Compact(names)
+		return out
+	})
 }
 
 var (
