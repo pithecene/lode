@@ -2,6 +2,8 @@ package lode
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"testing"
 )
 
@@ -89,5 +91,13 @@ func TestMemoryStore_List_EmptyPrefix(t *testing.T) {
 	}
 	if len(paths) != 2 {
 		t.Errorf("expected 2 paths for empty prefix, got %d: %v", len(paths), paths)
+	}
+}
+
+func TestCanceledPrefixScanStopsBeforeOpeningChild(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := hasAnyObject(ctx, t.TempDir()); !errors.Is(err, context.Canceled) {
+		t.Fatalf("scanning child directory = %v, want context.Canceled", err)
 	}
 }
