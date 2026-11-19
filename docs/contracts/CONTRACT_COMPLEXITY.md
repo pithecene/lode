@@ -60,9 +60,14 @@ depth of a dataset's or volume's snapshot history.
 | `ReadRange` | 1 | O(min(L, available)) | |
 | `ReaderAt` | 1 to open + 1 per `ReadAt` | O(L) per read | |
 | `List` | `⌈N/page⌉` | O(N) | Materializes all keys matching prefix |
-| `ListPrefixes` | `⌈D/page⌉` | O(D) | Shallow delimiter listing (`PrefixLister`) |
+| `ListPrefixes` | `⌈D/page⌉` | O(D) | S3 delimiter listing (`PrefixLister`) |
 
 ---
+
+S3 returns child prefixes in pages without transferring every descendant
+key. Memory examines its key map. FS can descend into a child directory
+to find an object. Dataset listing applies its limit after discovery, so a
+page of one dataset can still inspect other candidates.
 
 ## Opening a Dataset Handle or View
 
