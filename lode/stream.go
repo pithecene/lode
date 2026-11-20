@@ -63,31 +63,28 @@ type dataStream struct {
 	reader *io.PipeReader
 	pipe   *io.PipeWriter
 	comp   io.WriteCloser
-	count  *countingWriter
+	count  countingWriter
 	hasher HashWriter
-	put    *putResult
+	put    putResult
 }
 
 func (d *writer) openStream(ctx context.Context, id SnapshotID, role string) (*dataStream, error) {
 	pr, pw := io.Pipe()
-	count := &countingWriter{w: pw}
-
-	var sink io.Writer = count
-	var hasher HashWriter
-	if d.components.checksum != nil {
-		hasher = d.components.checksum.NewHasher()
-		sink = io.MultiWriter(count, hasher)
-	}
-
 	path := d.filePath(id, "", role)
 	s := &dataStream{
 		path:   path,
 		reader: pr,
 		pipe:   pw,
-		count:  count,
-		hasher: hasher,
-		put:    startPut(ctx, d.store, path, pr),
+		count:  countingWriter{w: pw},
 	}
+
+	var sink io.Writer = &s.count
+	if d.components.checksum != nil {
+		s.hasher = d.components.checksum.NewHasher()
+		sink = io.MultiWriter(&s.count, s.hasher)
+	}
+
+	s.put.start(ctx, d.store, path, pr)
 	comp, err := d.components.compressor.Compress(sink)
 	if err != nil {
 		fromPut, cause := s.put.rootCause(err)
@@ -109,9 +106,6 @@ func (s *dataStream) Write(p []byte) (int, error) {
 }
 
 func (s *dataStream) failed() error {
-	if s.put == nil {
-		return nil
-	}
 	if finished, err := s.put.poll(); finished {
 		return err
 	}
@@ -261,21 +255,25 @@ type putResult struct {
 	err      error
 }
 
-func startPut(ctx context.Context, store Store, path string, pr *io.PipeReader) *putResult {
-	r := &putResult{done: make(chan struct{})}
-	stopCancel := context.AfterFunc(ctx, func() {
-		_ = pr.CloseWithError(ctx.Err())
-	})
+func (r *putResult) start(ctx context.Context, store Store, path string, pr *io.PipeReader) {
+	r.done = make(chan struct{})
+	var stopCancel func() bool
+	if ctx.Done() != nil {
+		stopCancel = context.AfterFunc(ctx, func() {
+			_ = pr.CloseWithError(ctx.Err())
+		})
+	}
 	go func() {
 		err := store.Put(ctx, path, pr)
-		stopCancel()
+		if stopCancel != nil {
+			stopCancel()
+		}
 		r.mu.Lock()
 		r.err, r.finished = err, true
 		r.mu.Unlock()
 		_ = pr.CloseWithError(err)
 		close(r.done)
 	}()
-	return r
 }
 
 func (r *putResult) wait() error {

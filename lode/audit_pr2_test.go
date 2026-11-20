@@ -132,26 +132,32 @@ func finishRemovalAndAwaitWrite(t *testing.T, h gatedHarness, release chan<- str
 	assertDatasetFencedOnly(t, h.mem)
 }
 
+func startPausedCanonicalWriteAndFence(t *testing.T) (gatedHarness, chan<- struct{}, <-chan error) {
+	t.Helper()
+	h := openGatedHarness(t)
+	entered, release := pauseFirstPut(h.gs, func(key string) bool {
+		return strings.HasPrefix(key, "datasets/events/snapshots/") && strings.HasSuffix(key, "/manifest.json")
+	})
+
+	writeErrCh := make(chan error, 1)
+	go func() {
+		_, werr := h.ds.Write(t.Context(), lode.R(lode.D{"k": "v"}), nil)
+		writeErrCh <- werr
+	}()
+
+	<-entered
+	if err := h.root.RemoveDataset(t.Context(), "events"); !errors.Is(err, lode.ErrHeadUncommitted) {
+		t.Fatalf("first RemoveDataset = %v, want ErrHeadUncommitted", err)
+	}
+	return h, release, writeErrCh
+}
+
 func TestAudit_AdvancePostPublicationFence_DatasetAndHive(t *testing.T) {
 	t.Parallel()
 
 	t.Run("unpartitioned dataset write paused before canonical manifest", func(t *testing.T) {
 		t.Parallel()
-		h := openGatedHarness(t)
-		entered, release := pauseFirstPut(h.gs, func(key string) bool {
-			return strings.HasPrefix(key, "datasets/events/snapshots/") && strings.HasSuffix(key, "/manifest.json")
-		})
-
-		writeErrCh := make(chan error, 1)
-		go func() {
-			_, werr := h.ds.Write(t.Context(), lode.R(lode.D{"k": "v"}), nil)
-			writeErrCh <- werr
-		}()
-
-		<-entered
-		if err := h.root.RemoveDataset(t.Context(), "events"); !errors.Is(err, lode.ErrHeadUncommitted) {
-			t.Fatalf("first RemoveDataset = %v, want ErrHeadUncommitted", err)
-		}
+		h, release, writeErrCh := startPausedCanonicalWriteAndFence(t)
 		finishRemovalAndAwaitWrite(t, h, release, writeErrCh)
 	})
 
@@ -536,4 +542,76 @@ func TestAudit_WithRetryMaxInt_DoesNotOverflow(t *testing.T) {
 	if err != nil || bsnap == nil || bsnap.Manifest == nil {
 		t.Fatalf("Blobs.Write(WithRetry(MaxInt)) = %v, %v; want committed snapshot", bsnap, err)
 	}
+}
+
+func TestAudit_ReviewRegressions_PR395(t *testing.T) {
+	t.Parallel()
+
+	t.Run("late manifest cleanup delete failure joins with ErrRemoved", func(t *testing.T) {
+		t.Parallel()
+		h, release, writeErrCh := startPausedCanonicalWriteAndFence(t)
+		if err := h.root.RemoveDataset(t.Context(), "events"); err != nil {
+			t.Fatalf("second RemoveDataset = %v, want nil", err)
+		}
+
+		errDelBoom := errors.New("cleanup delete boom")
+		h.gs.setOnDelete(func(_ context.Context, key string) error {
+			if strings.HasSuffix(key, "/manifest.json") {
+				return errDelBoom
+			}
+			return nil
+		})
+		close(release)
+
+		err := <-writeErrCh
+		if !errors.Is(err, lode.ErrRemoved) || !errors.Is(err, errDelBoom) {
+			t.Fatalf("Write = %v, want joined ErrRemoved and %v", err, errDelBoom)
+		}
+	})
+
+	t.Run("Snapshots skips tombstone Get when canonical manifest is listed", func(t *testing.T) {
+		t.Parallel()
+		var tombGets int
+		var mu sync.Mutex
+		mem := lode.NewMemory()
+		spy := &getSpyStore{
+			RangeStore: mem,
+			onGet: func(key string) {
+				if strings.Contains(key, "/expired/") {
+					mu.Lock()
+					tombGets++
+					mu.Unlock()
+				}
+			},
+		}
+		ds, err := lode.Open(lode.Use(spy)).Records(t.Context(), "events", lode.JSONL[lode.D](), lode.WithLayout(lode.Hive("run_id")))
+		if err != nil {
+			t.Fatal(err)
+		}
+		mustWriteDoc(t, ds, lode.D{"run_id": "a", "v": 1})
+		mustWriteDoc(t, ds, lode.D{"run_id": "b", "v": 2})
+
+		snaps, err := ds.Snapshots(t.Context())
+		if err != nil || len(snaps) != 2 {
+			t.Fatalf("Snapshots = %v, %v; want 2", snaps, err)
+		}
+		mu.Lock()
+		got := tombGets
+		mu.Unlock()
+		if got != 0 {
+			t.Fatalf("Snapshots issued %d tombstone Gets on canonical snapshots, want 0", got)
+		}
+	})
+}
+
+type getSpyStore struct {
+	lode.RangeStore
+	onGet func(string)
+}
+
+func (s *getSpyStore) Get(ctx context.Context, key string) (io.ReadCloser, error) {
+	if s.onGet != nil {
+		s.onGet(key)
+	}
+	return s.RangeStore.Get(ctx, key)
 }
