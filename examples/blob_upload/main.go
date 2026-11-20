@@ -13,6 +13,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -98,7 +99,7 @@ func run() error {
 	fmt.Printf("Read blob content: %q\n", string(readBlob[:min(50, len(readBlob))]))
 
 	if !bytes.Equal(blobData, readBlob) {
-		return fmt.Errorf("data mismatch: blob was corrupted")
+		return errors.New("data mismatch: blob was corrupted")
 	}
 	fmt.Println("\nData integrity verified: blobs match!")
 

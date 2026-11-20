@@ -68,6 +68,8 @@ type Errors struct {
 // history open through the removal can never advance the pointer again.
 const RemovedPointer = "lode:removed"
 
+const removalCleanupTimeout = 10 * time.Second
+
 // Kind is what a container knows about its own snapshots: where they live
 // and how to read one. Implemented by small value types, not closures.
 type Kind[ID ~string, M any] interface {
@@ -180,9 +182,9 @@ func (h *History[ID, M]) LoadAt(ctx context.Context, id ID, path string) (*Snaps
 // commit, or another handle, may complete it concurrently, and the commit
 // is complete all the same (putManifest). Every outcome is checked against
 // the removal fence last: a removed history returns errs.Removed, and a
-// manifest this call wrote into it is deleted. On success id is remembered
-// as the head when the pointer still names it. A failed write matches
-// ErrManifestUncertain.
+// manifest this call may have written into it is deleted. On success id is
+// remembered as the head when the pointer still names it. A failed write
+// matches ErrManifestUncertain.
 func (h *History[ID, M]) CompletePending(ctx context.Context, id ID) error {
 	if h.stager == nil {
 		return fmt.Errorf("lode: %s %s has no staged copy: %w", h.noun, id, h.errs.NotFound)
@@ -193,15 +195,15 @@ func (h *History[ID, M]) CompletePending(ctx context.Context, id ID) error {
 	}
 	staged := h.stager.StagedPath(id)
 	canonical := h.kind.ManifestPath(id)
-	wrote, err := h.persistPending(ctx, id, staged, canonical)
-	// A removal fences the pointer before it lists and deletes, so a pointer
-	// read after the write either precedes the fence, and the removal's
-	// listing deletes the manifest, or finds the marker.
-	if removed := h.checkRemoval(ctx, "after completing a commit"); removed != nil {
-		if wrote && errors.Is(removed, h.errs.Removed) {
-			_ = h.store.Delete(ctx, canonical) // best-effort: the next removal deletes it too
-		}
-		return removed
+	mayHavePersisted, err := h.persistPending(ctx, id, staged, canonical)
+	var attempted []string
+	var putErr error
+	if mayHavePersisted {
+		attempted = []string{canonical}
+		putErr = err
+	}
+	if fenceErr := h.reconcilePublication(ctx, "after completing a commit", putErr, staged, mayHavePersisted, attempted); fenceErr != nil {
+		return fenceErr
 	}
 	if err != nil {
 		return err
@@ -214,11 +216,10 @@ func (h *History[ID, M]) CompletePending(ctx context.Context, id ID) error {
 }
 
 // persistPending persists the canonical manifest of snapshot id from its
-// staged copy. wrote reports that this call's Put stored it, so the call
-// owns the object. A missing staged copy means that a concurrent writer
-// completed the commit, whose manifest then exists, or that a removal
-// deleted both copies.
-func (h *History[ID, M]) persistPending(ctx context.Context, id ID, staged, canonical string) (wrote bool, err error) {
+// staged copy. It reports whether this call's Put may have stored it.
+// A missing staged copy means that a concurrent writer completed the commit,
+// whose manifest then exists, or that a removal deleted both copies.
+func (h *History[ID, M]) persistPending(ctx context.Context, id ID, staged, canonical string) (bool, error) {
 	data, err := h.readAll(ctx, staged)
 	switch {
 	case errors.Is(err, h.errs.NotFound):
@@ -229,11 +230,11 @@ func (h *History[ID, M]) persistPending(ctx context.Context, id ID, staged, cano
 	case err != nil:
 		return false, fmt.Errorf("failed to load staged %s: %w", h.noun, err)
 	}
-	wrote, err = h.putManifest(ctx, canonical, data)
+	mayHavePersisted, err := h.putManifest(ctx, canonical, data)
 	if err != nil {
-		return false, manifestUncertain{fmt.Errorf("failed to write %s: %w", h.noun, err)}
+		return mayHavePersisted, manifestUncertain{fmt.Errorf("failed to write %s: %w", h.noun, err)}
 	}
-	return wrote, nil
+	return mayHavePersisted, nil
 }
 
 // CheckLive reads the removal fence. A history without a pointer can still
@@ -273,19 +274,15 @@ func (h *History[ID, M]) checkRemoval(ctx context.Context, phase string) error {
 // commit. A snapshot ID carries a random nonce, so the only writers of that
 // path are the commit's own writer and the handles that complete it, and
 // each writes the staged copy's bytes. A Put refused with errs.PathExists
-// therefore finds the commit complete, and the object is not read: a path
-// whose Put failed belongs to another writer (CONTRACT_STORAGE §Put).
-// wrote reports that this Put stored the object.
-func (h *History[ID, M]) putManifest(ctx context.Context, path string, data []byte) (wrote bool, err error) {
-	err = h.store.Put(ctx, path, bytes.NewReader(data))
-	switch {
-	case err == nil:
-		return true, nil
-	case h.errs.PathExists != nil && errors.Is(err, h.errs.PathExists):
+// therefore finds the commit complete without a read. The path belongs to
+// another writer (CONTRACT_STORAGE §Put). Other write errors can leave this
+// call's manifest persisted.
+func (h *History[ID, M]) putManifest(ctx context.Context, path string, data []byte) (bool, error) {
+	err := h.store.Put(ctx, path, bytes.NewReader(data))
+	if h.errs.PathExists != nil && errors.Is(err, h.errs.PathExists) {
 		return false, nil
-	default:
-		return false, err
 	}
+	return true, err
 }
 
 // readAll reads the object at path whole.
@@ -894,16 +891,16 @@ func (h *History[ID, M]) Advance(ctx context.Context, expected string, id ID, ma
 	if err != nil {
 		return err
 	}
-	written, putErr := h.publishManifests(ctx, id, expected, data, paths)
-	if removed := h.checkRemoval(ctx, "after writing "+h.noun); removed != nil {
-		if errors.Is(removed, h.errs.Removed) {
-			return errors.Join(removed, h.cleanupRemoved(ctx, staged, stagedWrote, paths[:written]))
+	attempted, putErr := h.publishManifests(ctx, id, expected, data, paths)
+	if fenceErr := h.reconcilePublication(ctx, "after writing "+h.noun, putErr, staged, stagedWrote, paths[:attempted]); fenceErr != nil {
+		if errors.Is(fenceErr, h.errs.Removed) {
+			return fenceErr
 		}
 		h.Forget()
 		if putErr != nil {
 			return putErr
 		}
-		return manifestUncertain{removed}
+		return manifestUncertain{fenceErr}
 	}
 	if putErr != nil {
 		return putErr
@@ -921,7 +918,8 @@ func (h *History[ID, M]) publishManifests(ctx context.Context, id ID, expected s
 			// The pointer now names id, so the remembered head and pointer
 			// are stale: the next Resolve consults storage and adopts id.
 			h.Forget()
-			return i, manifestUncertain{fmt.Errorf("failed to write %s: %w", h.noun, err)}
+			// The failed Put may have reached storage before returning.
+			return i + 1, manifestUncertain{fmt.Errorf("failed to write %s: %w", h.noun, err)}
 		}
 		if h.adopted != "" && p == h.kind.ManifestPath(id) {
 			h.releaseAdopted(ctx, expected)
@@ -930,16 +928,42 @@ func (h *History[ID, M]) publishManifests(ctx context.Context, id ID, expected s
 	return len(paths), nil
 }
 
-func (h *History[ID, M]) cleanupRemoved(ctx context.Context, staged string, stagedWrote bool, written []string) error {
-	cleanupCtx := context.WithoutCancel(ctx)
+// Removal fences before listing, so a successful fence read after publication
+// either leaves the manifest to removal's later listing or observes the fence.
+// Only a failed publication, caller cancellation, or removal needs a detached
+// timeout. Once observed, the permanent fence is enough to authorize cleanup.
+func (h *History[ID, M]) reconcilePublication(ctx context.Context, phase string, putErr error, staged string, cleanupStaged bool, attempted []string) error {
+	if h.errs.Removed == nil {
+		return nil
+	}
+
+	var fenceErr error
+	if putErr == nil && ctx.Err() == nil {
+		fenceErr = h.checkRemoval(ctx, phase)
+		if fenceErr == nil || (!errors.Is(fenceErr, h.errs.Removed) && ctx.Err() == nil) {
+			return fenceErr
+		}
+	}
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), removalCleanupTimeout)
+	defer cancel()
+	if !errors.Is(fenceErr, h.errs.Removed) {
+		fenceErr = h.checkRemoval(cleanupCtx, phase)
+	}
+	if errors.Is(fenceErr, h.errs.Removed) {
+		return errors.Join(fenceErr, putErr, h.cleanupRemoved(cleanupCtx, staged, cleanupStaged, attempted))
+	}
+	return fenceErr
+}
+
+func (h *History[ID, M]) cleanupRemoved(ctx context.Context, staged string, stagedWrote bool, attempted []string) error {
 	var errs []error
-	for _, p := range written {
-		if err := h.store.Delete(cleanupCtx, p); err != nil && !errors.Is(err, h.errs.NotFound) {
+	for _, p := range attempted {
+		if err := h.store.Delete(ctx, p); err != nil && !errors.Is(err, h.errs.NotFound) {
 			errs = append(errs, fmt.Errorf("failed to delete %s %s after removal: %w", h.noun, p, err))
 		}
 	}
 	if stagedWrote && staged != "" {
-		if err := h.store.Delete(cleanupCtx, staged); err != nil && !errors.Is(err, h.errs.NotFound) {
+		if err := h.store.Delete(ctx, staged); err != nil && !errors.Is(err, h.errs.NotFound) {
 			errs = append(errs, fmt.Errorf("failed to delete staged %s %s after removal: %w", h.noun, staged, err))
 		}
 	}
