@@ -710,3 +710,34 @@ func assertUncommittedCleanStore(t *testing.T, d *dataset, fs *testutil.FaultSto
 	assertNoDataObject(t, fs, inner)
 	assertNoDataDelete(t, fs)
 }
+
+// readOnlyPutStore reads its whole input in Put, so a Put blocked on an empty
+// pipe observes how the pipe was closed.
+type readOnlyPutStore struct{ Store }
+
+func (s readOnlyPutStore) Put(_ context.Context, _ string, r io.Reader) error {
+	_, err := io.ReadAll(r)
+	return err
+}
+
+// TestPutResult_CallerCancelKeepsCause holds the caller's cancellation in
+// the upload error when the Put reads after the cancellation closed the
+// pipe, which reports only io.ErrClosedPipe.
+func TestPutResult_CallerCancelKeepsCause(t *testing.T) {
+	callerCtx, cancel := context.WithCancel(t.Context())
+	putCtx, cancelPut := context.WithCancel(callerCtx)
+	defer cancelPut()
+	pr, pw := io.Pipe()
+	defer closer(pw)()
+
+	var put putResult
+	put.start(putCtx, callerCtx, readOnlyPutStore{Store: NewMemory()}, "data.bin", pr)
+	cancel()
+	err := put.wait()
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("put error = %v, want context.Canceled", err)
+	}
+	if !errors.Is(err, io.ErrClosedPipe) {
+		t.Errorf("put error = %v, want the Put's own io.ErrClosedPipe kept", err)
+	}
+}
