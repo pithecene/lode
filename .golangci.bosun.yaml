@@ -10,6 +10,7 @@ linters:
     - mapboolset
     - osexitscope
     - spawnscope
+    - testparallel
     - testtable
     - unused
     - useany
@@ -25,8 +26,16 @@ linters:
         type: module
       spawnscope:
         type: module
+      testparallel:
+        type: module
+        settings:
+          serial-helper-packages:
+            - github.com/pithecene/lode/internal/testutil
       testtable:
         type: module
+        settings:
+          serial-helper-packages:
+            - github.com/pithecene/lode/internal/testutil
       useany:
         type: module
 

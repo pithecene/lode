@@ -28,7 +28,10 @@ var allocGates = []testutil.AllocGate{
 }
 
 // TestAllocationGates holds each Volume hot path to its allocation ceiling.
-func TestAllocationGates(t *testing.T) { testutil.RunAllocGates(t, allocGates) }
+func TestAllocationGates(t *testing.T) {
+	testutil.Serial(t, "measures allocations, which every running goroutine adds to")
+	testutil.RunAllocGates(t, allocGates)
+}
 
 // gateVolume returns a volume with gateBlockCount committed blocks, room
 // for as many more blocks as a gate commits, and its head.

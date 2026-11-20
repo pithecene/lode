@@ -18,6 +18,7 @@ import (
 //   - `c.jitter <= 0` → `<`: a zero jitter portion yields the same delay.
 
 func TestDefaultRetryConfig_Values(t *testing.T) {
+	t.Parallel()
 	cfg := Default()
 	if cfg.maxAttempts != 0 {
 		t.Errorf("maxAttempts: got %d, want 0 (retries are opt-in)", cfg.maxAttempts)
@@ -37,6 +38,7 @@ func TestDefaultRetryConfig_Values(t *testing.T) {
 }
 
 func TestJitteredBackoff(t *testing.T) {
+	t.Parallel()
 	t.Run("bounds", func(t *testing.T) {
 		cfg := Config{
 			baseDelay: 10 * time.Millisecond,
@@ -157,6 +159,7 @@ func TestJitteredBackoff(t *testing.T) {
 }
 
 func TestRetryBackoff(t *testing.T) {
+	t.Parallel()
 	t.Run("context canceled", func(t *testing.T) {
 		cfg := Config{
 			baseDelay: 10 * time.Second, // long delay so context cancels first
@@ -219,6 +222,7 @@ func TestRetryBackoff(t *testing.T) {
 // The setters are the single validation point for the WithRetry* options of
 // every container; each bound is checked at its edge.
 func TestConfig_Setters(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name    string
 		set     func(*Config) error
@@ -250,6 +254,7 @@ func TestConfig_Setters(t *testing.T) {
 // A setter that accepts its value stores it; one that rejects leaves the
 // config unchanged.
 func TestConfig_SettersStore(t *testing.T) {
+	t.Parallel()
 	cfg := Default()
 	observed := 0
 	for _, err := range []error{

@@ -41,6 +41,7 @@ func (r *cancelAfterRead) Read(p []byte) (int, error) {
 }
 
 func TestFSAdapter_ContextCancel(t *testing.T) {
+	testutil.Serial(t, "times a cancellation against real filesystem cleanup")
 	// TestFSAdapter_StreamWrite_ContextCancel_NoSnapshot verifies that when context
 	// is canceled during a streaming write, no snapshot becomes visible.
 	//

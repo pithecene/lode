@@ -156,7 +156,6 @@ func TestKeyScope_EveryEntryPoint(t *testing.T) {
 
 	for name, check := range allCases {
 		t.Run(name, func(t *testing.T) {
-			t.Parallel()
 			f := newKeyScopeFixture(t)
 			check(t, f)
 			if _, err := f.records.Snapshot(t.Context(), f.other.ID); err == nil {

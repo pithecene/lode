@@ -44,6 +44,7 @@ func blobViewOf(t *testing.T, store Store, payload []byte) (*BlobView, SnapshotI
 }
 
 func TestView_Objects(t *testing.T) {
+	t.Parallel()
 	t.Run("open object", func(t *testing.T) {
 		payload := []byte("hello-open-object")
 		view, _, obj := blobViewOf(t, NewMemory(), payload)
@@ -129,6 +130,7 @@ type noRanges struct{ Store }
 type objectsOnly struct{ ObjectStore }
 
 func TestRangeReader_IsOptional(t *testing.T) {
+	t.Parallel()
 	t.Run("ReaderAt without range reads", func(t *testing.T) {
 		store := noRanges{NewMemory()}
 		view, _, obj := blobViewOf(t, store, []byte("abc"))

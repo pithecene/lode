@@ -25,6 +25,7 @@ func flatLayout() *pathLayout {
 }
 
 func TestFlatLayout(t *testing.T) {
+	t.Parallel()
 	t.Run("write and read", func(t *testing.T) {
 		ds := flatBlobs(t, "myds")
 

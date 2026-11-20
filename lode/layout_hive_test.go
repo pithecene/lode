@@ -22,6 +22,7 @@ func hiveForTest(*testing.T) *pathLayout {
 }
 
 func TestHiveLayout_Manifests(t *testing.T) {
+	t.Parallel()
 	t.Run("is manifest", func(t *testing.T) {
 		l := hiveForTest(t)
 		cases := []struct {
@@ -145,6 +146,7 @@ func isManifestPath(l *pathLayout, p string) bool {
 }
 
 func TestHiveLayout_ExtractPartitionPath(t *testing.T) {
+	t.Parallel()
 	l := hiveForTest(t)
 	cases := []struct {
 		path string
@@ -175,6 +177,7 @@ func TestHiveLayout_ExtractPartitionPath(t *testing.T) {
 }
 
 func TestHiveLayout_Prefixes(t *testing.T) {
+	t.Parallel()
 	l := hiveForTest(t)
 	cases := []struct {
 		name string

@@ -18,6 +18,7 @@ import (
 // tie only selects a different manifest of the same snapshot.
 
 func TestRetryOptions_ExactBounds(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name    string
 		opt     DatasetOption
@@ -44,6 +45,7 @@ func TestRetryOptions_ExactBounds(t *testing.T) {
 }
 
 func TestRecords_Write_Commit(t *testing.T) {
+	t.Parallel()
 	// Manifest.Objects is sorted by Path regardless of partition write order.
 	t.Run("manifest files sorted by path", func(t *testing.T) {
 		ds, err := Open(Memory()).Records(t.Context(), "test-ds", JSONL[D](), hive("day"))

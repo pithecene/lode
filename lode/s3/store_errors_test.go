@@ -70,6 +70,7 @@ func (c *codeClient) rangeSeen() string {
 var conditionalCodes = []string{"PreconditionFailed", "412", "ConditionalRequestConflict", "409"}
 
 func TestStore_MapsPreconditionCodes(t *testing.T) {
+	t.Parallel()
 	t.Run("put maps precondition and conflict codes", func(t *testing.T) {
 		ctx := t.Context()
 		for _, code := range append(conditionalCodes, "SlowDown") {
@@ -132,6 +133,7 @@ func TestStore_MapsPreconditionCodes(t *testing.T) {
 }
 
 func TestStore_ReadRange_Headers(t *testing.T) {
+	t.Parallel()
 	t.Run("exact range header", func(t *testing.T) {
 		ctx := t.Context()
 		client := &codeClient{MockS3Client: NewMockS3Client()}
@@ -209,6 +211,7 @@ func (c conflictingStageClient) PutObject(ctx context.Context, p *s3api.PutObjec
 }
 
 func TestStageConflictDoesNotAdvanceDatasetHead(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	store, err := New(conflictingStageClient{NewMockS3Client()}, "test")
 	if err != nil {

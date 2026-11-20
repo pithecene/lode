@@ -21,6 +21,7 @@ import (
 // `length > math.MaxInt` → `>=` (a MaxInt read cannot be allocated to test).
 
 func TestMergeBlocks_OneSideExhaustsFirst(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name     string
 		sorted   []BlockRef
@@ -54,6 +55,7 @@ func TestMergeBlocks_OneSideExhaustsFirst(t *testing.T) {
 }
 
 func TestFindCoveringBlocks_AdjacentAtCursor(t *testing.T) {
+	t.Parallel()
 	adjacent := []BlockRef{{Offset: 0, Length: 10}, {Offset: 10, Length: 10}}
 	gapped := []BlockRef{{Offset: 0, Length: 10}, {Offset: 12, Length: 10}}
 
@@ -74,6 +76,7 @@ func TestFindCoveringBlocks_AdjacentAtCursor(t *testing.T) {
 }
 
 func TestVolume_ReadAt_ExactEndOfAddressSpace(t *testing.T) {
+	t.Parallel()
 	vol := newTestVolume(t, "test-vol", lode.Memory(), 20)
 	blk := stageBlock(t, vol, 0, bytes.Repeat([]byte("A"), 20))
 	snap := commitBlocks(t, vol, []BlockRef{blk}, nil)
@@ -98,6 +101,7 @@ func TestVolume_ReadAt_ExactEndOfAddressSpace(t *testing.T) {
 }
 
 func TestValidateVolumeManifest_Bounds(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name      string
 		mutate    func(m *Manifest)

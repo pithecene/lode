@@ -17,6 +17,7 @@ import (
 // non-strict comparator sorts the same distinct keys identically.
 
 func TestValidateManifest_ZeroIsValid_NegativeRejected(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name      string
 		mutate    func(m *Manifest)
@@ -47,6 +48,7 @@ func TestValidateManifest_ZeroIsValid_NegativeRejected(t *testing.T) {
 }
 
 func TestCursorWindow_Bounds(t *testing.T) {
+	t.Parallel()
 	items := []int{1, 2, 3}
 	after := func(cursor int) func(int) bool { return func(v int) bool { return v > cursor } }
 
@@ -81,6 +83,7 @@ func TestCursorWindow_Bounds(t *testing.T) {
 }
 
 func TestView_ListDatasets_Limit_Boundary(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	store := NewMemory()
 	for _, id := range []DatasetID{"ds-a", "ds-b", "ds-c"} {

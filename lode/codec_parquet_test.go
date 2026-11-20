@@ -20,6 +20,7 @@ func newParquet(schema ParquetSchema, opts ...ParquetOption) (Codec[D], error) {
 }
 
 func TestParquetCodec_Construction(t *testing.T) {
+	t.Parallel()
 	t.Run("name", func(t *testing.T) {
 		codec, err := newParquet(ParquetSchema{
 			Fields: []ParquetField{{Name: "id", Type: ParquetInt64}},
@@ -150,6 +151,7 @@ func TestParquetCodec_Construction(t *testing.T) {
 }
 
 func TestParquetCodec_RoundTrip(t *testing.T) {
+	t.Parallel()
 	t.Run("basic types", func(t *testing.T) {
 		schema := ParquetSchema{
 			Fields: []ParquetField{
@@ -290,6 +292,7 @@ func TestParquetCodec_RoundTrip(t *testing.T) {
 }
 
 func TestParquetCodec_Nullable(t *testing.T) {
+	t.Parallel()
 	t.Run("nullable fields round trip verify values", func(t *testing.T) {
 		// Verify that explicitly nil vs missing field both decode as nil
 		schema := ParquetSchema{
@@ -399,6 +402,7 @@ func TestParquetCodec_Nullable(t *testing.T) {
 }
 
 func TestParquetCodec_EncodeErrors(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		fields []ParquetField
@@ -426,6 +430,7 @@ func TestParquetCodec_EncodeErrors(t *testing.T) {
 }
 
 func TestParquetCodec_Conversion(t *testing.T) {
+	t.Parallel()
 	t.Run("extra fields ignored", func(t *testing.T) {
 		schema := ParquetSchema{
 			Fields: []ParquetField{
@@ -543,6 +548,7 @@ func TestParquetCodec_Conversion(t *testing.T) {
 }
 
 func TestParquetCodec_Dataset(t *testing.T) {
+	t.Parallel()
 	t.Run("large dataset", func(t *testing.T) {
 		schema := ParquetSchema{
 			Fields: []ParquetField{
@@ -653,6 +659,7 @@ func TestParquetCodec_Dataset(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestParquetCodec_StreamWrite_ReturnsErrCodecNotStreamable(t *testing.T) {
+	t.Parallel()
 	// Per CONTRACT_PARQUET.md: the Parquet codec is not a StreamingCodec, so
 	// Records.StreamWrite with it MUST return ErrCodecNotStreamable.
 
@@ -685,6 +692,7 @@ func TestParquetCodec_StreamWrite_ReturnsErrCodecNotStreamable(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestParquetCodec_Decode_InvalidFormat(t *testing.T) {
+	t.Parallel()
 	codec, err := newParquet(ParquetSchema{
 		Fields: []ParquetField{{Name: "id", Type: ParquetInt64}},
 	})
@@ -719,6 +727,7 @@ func TestParquetCodec_Decode_InvalidFormat(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestParquetCodec_FileStats(t *testing.T) {
+	t.Parallel()
 	t.Run("basic types", func(t *testing.T) {
 		schema := ParquetSchema{
 			Fields: []ParquetField{
@@ -857,6 +866,7 @@ func TestParquetCodec_FileStats(t *testing.T) {
 }
 
 func TestParquetCodec_FileStats_Nulls(t *testing.T) {
+	t.Parallel()
 	t.Run("nullable fields", func(t *testing.T) {
 		schema := ParquetSchema{
 			Fields: []ParquetField{
@@ -972,6 +982,7 @@ func TestParquetCodec_FileStats_Nulls(t *testing.T) {
 }
 
 func TestParquetCodec_FileStats_Timestamps(t *testing.T) {
+	t.Parallel()
 	schema := ParquetSchema{
 		Fields: []ParquetField{
 			{Name: "ts", Type: ParquetTimestamp},
@@ -1018,6 +1029,7 @@ func TestParquetCodec_FileStats_Timestamps(t *testing.T) {
 }
 
 func TestParquetCodec_PreservesColumnOrderAndValidatesDecodeSchema(t *testing.T) {
+	t.Parallel()
 	schema := ParquetSchema{
 		Fields: []ParquetField{
 			{Name: "z_id", Type: ParquetInt64},
@@ -1106,6 +1118,7 @@ func TestParquetCodec_PreservesColumnOrderAndValidatesDecodeSchema(t *testing.T)
 }
 
 func TestParquetCodec_NonFiniteFloatsAndNormalizedStats(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	schema := ParquetSchema{
 		Fields: []ParquetField{
@@ -1190,6 +1203,7 @@ var parquetTaggedSchema = ParquetSchema{
 }
 
 func TestParquetCodec_StructRoundTrip(t *testing.T) {
+	t.Parallel()
 	codec := Parquet[parquetTaggedRecord](parquetTaggedSchema)
 	sc, ok := codec.(StatisticalCodec[parquetTaggedRecord])
 	if !ok {
@@ -1264,6 +1278,7 @@ func assertTaggedRecord1(t *testing.T, r parquetTaggedRecord, occurred time.Time
 }
 
 func TestParquetCodec_StructSchemaMismatch(t *testing.T) {
+	t.Parallel()
 	baseSchema := ParquetSchema{Fields: []ParquetField{
 		{Name: "id", Type: ParquetInt64},
 		{Name: "note", Type: ParquetString, Nullable: true},
@@ -1335,6 +1350,7 @@ type parquetInteropEvent struct {
 }
 
 func TestParquetCodec_StructAndMapInterop(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	store := NewMemory()
 	schema := ParquetSchema{Fields: []ParquetField{
@@ -1393,6 +1409,7 @@ func TestParquetCodec_StructAndMapInterop(t *testing.T) {
 }
 
 func TestParquetCodec_ConcurrentSharedCodec(t *testing.T) {
+	t.Parallel()
 	schema := ParquetSchema{Fields: []ParquetField{
 		{Name: "id", Type: ParquetInt64},
 		{Name: "tag", Type: ParquetString},
@@ -1436,6 +1453,7 @@ func TestParquetCodec_ConcurrentSharedCodec(t *testing.T) {
 }
 
 func TestParquetCodec_EmbeddedPointerAndDefinedScalars(t *testing.T) {
+	t.Parallel()
 	type (
 		definedID      string
 		definedCount   int64
@@ -1532,6 +1550,7 @@ func TestParquetCodec_EmbeddedPointerAndDefinedScalars(t *testing.T) {
 }
 
 func TestParquetExternalLeafProjectionAndTimestampUnits(t *testing.T) {
+	t.Parallel()
 	type group struct {
 		X int64 `parquet:"x"`
 		Y int64 `parquet:"y"`

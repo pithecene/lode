@@ -98,6 +98,7 @@ func setupTestBucket(t *testing.T, backend s3Backend) *Store {
 // -----------------------------------------------------------------------------
 
 func TestIntegration_Reads(t *testing.T) {
+	t.Parallel()
 	t.Run("write list read", func(t *testing.T) {
 		forEachBucket(t, func(t *testing.T, store *Store) {
 			ctx := t.Context()
@@ -243,6 +244,7 @@ func testIntegrationListPrefixes(t *testing.T) {
 }
 
 func TestIntegration_Writes(t *testing.T) {
+	t.Parallel()
 	t.Run("immutability enforcement", func(t *testing.T) {
 		forEachBucket(t, func(t *testing.T, store *Store) {
 			ctx := t.Context()
