@@ -185,7 +185,7 @@ volumes/<volume_id>/data/<offset>-<length>-<nonce>.bin
   bytes), and fetches covered slices via `RangeStore.ReadRange`.
 - `ReaderAt(ctx, snapshotID)` loads and validates `snapshotID`'s manifest
   once and returns a concurrency-safe `SnapshotReaderAt` whose `ReadAt(p,
-  off)` fetches block ranges only (returning `io.EOF` at or past
+  off)` uses the loaded manifest (returning `io.EOF` at or past
   `TotalLength` per `io.ReaderAt`) and whose `Blocks()` returns a defensive
   copy of the sorted `[]BlockRef`.
 
@@ -207,6 +207,19 @@ volumes/<volume_id>/data/<offset>-<length>-<nonce>.bin
   4. Deletes all manifests, staged manifests, and blocks under
      `volumes/<id>/`, leaving `volumes/<id>/latest` in place as the permanent
      fence so `Latest`, `Head`, and `Commit` return `ErrRemoved`.
+- After attempting canonical manifest publication, including pending-commit
+  completion, a commit checks the removal fence and deletes any manifest it
+  may have persisted and its staged copy if fenced. A successful publication
+  checks the fence with the caller's context. A failed publication, a check
+  prevented or interrupted by caller cancellation, or a detected fence
+  triggers reconciliation with a ten-second timeout independent of caller
+  cancellation. Any fence check and deletes during reconciliation share that
+  timeout. When publication also failed, the error preserves both
+  `ErrRemoved` and the publication error, plus any cleanup error.
+- If a referenced block returns `lode.ErrNotFound`, `ReadAt` and
+  `SnapshotReaderAt.ReadAt` check the removal fence and return `ErrRemoved`
+  if the volume was removed. If the check fails, the read error preserves
+  both the missing-block error and the fence check error.
 - `Head(ctx, id, storeFactory)` reads `volumes/<id>/latest` without requiring
   `totalLength` and without writing: returns `SnapshotID` (including pending
   commits), `lode.ErrNoSnapshots` when empty, `ErrRemoved` when removed, or
@@ -228,3 +241,6 @@ volumes/<volume_id>/data/<offset>-<length>-<nonce>.bin
 | `Snapshot(id)` | 1 `Get` | O(B) | O(B) validation |
 | `Snapshots` | 1 `List` + `S` `Get` calls | O(S × B_avg) | O(S × B_avg + S log S) |
 | `Head` | 1 `Get` (+1 `List` only when pointer absent) | O(1) | O(1) |
+
+`ReadAt` and `SnapshotReaderAt.ReadAt` make one additional `Get` to check the
+removal fence if a block read returns `lode.ErrNotFound`.

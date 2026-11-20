@@ -572,7 +572,7 @@ func (v *volume) ReadAt(ctx context.Context, snapshotID SnapshotID, offset, leng
 		return nil, err
 	}
 	result := make([]byte, int(length))
-	if err := plan.fill(ctx, v.store, result); err != nil {
+	if err := v.fillRead(ctx, plan, result); err != nil {
 		return nil, err
 	}
 	return result, nil
@@ -591,16 +591,16 @@ func planRead(m *Manifest, offset, length int64) (readPlan, error) {
 	return readPlan{offset: offset, length: length, blocks: blocks}, nil
 }
 
-func (p readPlan) fill(ctx context.Context, store lode.RangeStore, dst []byte) error {
+func (v *volume) fillRead(ctx context.Context, p readPlan, dst []byte) error {
 	for _, b := range p.blocks {
 		readStart := max(p.offset, b.Offset)
 		readEnd := min(p.offset+p.length, b.Offset+b.Length)
 		readLen := readEnd - readStart
 		storeOffset := readStart - b.Offset
 
-		data, err := store.ReadRange(ctx, b.Path, storeOffset, readLen)
+		data, err := v.store.ReadRange(ctx, b.Path, storeOffset, readLen)
 		if err != nil {
-			return fmt.Errorf("failed to read block at offset %d: %w", b.Offset, err)
+			return v.blockReadError(ctx, b.Offset, err)
 		}
 		if int64(len(data)) != readLen {
 			return fmt.Errorf("lode: block data truncated at offset %d (expected %d bytes, got %d)", b.Offset, readLen, len(data))
@@ -609,6 +609,22 @@ func (p readPlan) fill(ctx context.Context, store lode.RangeStore, dst []byte) e
 		copy(dst[readStart-p.offset:], data)
 	}
 	return nil
+}
+
+func (v *volume) blockReadError(ctx context.Context, offset int64, err error) error {
+	blockErr := fmt.Errorf("failed to read block at offset %d: %w", offset, err)
+	if !errors.Is(err, lode.ErrNotFound) {
+		return blockErr
+	}
+	fenceErr := v.history.CheckLive(ctx)
+	switch {
+	case fenceErr == nil:
+		return blockErr
+	case errors.Is(fenceErr, ErrRemoved):
+		return ErrRemoved
+	default:
+		return errors.Join(blockErr, fmt.Errorf("failed to check volume removal: %w", fenceErr))
+	}
 }
 
 func (v *volume) ReaderAt(ctx context.Context, snapshotID SnapshotID) (SnapshotReaderAt, error) {
@@ -643,7 +659,7 @@ func (r *snapshotReaderAt) ReadAt(p []byte, off int64) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	if err := plan.fill(r.ctx, r.volume.store, p[:n]); err != nil {
+	if err := r.volume.fillRead(r.ctx, plan, p[:n]); err != nil {
 		return 0, err
 	}
 	if n < int64(len(p)) {
