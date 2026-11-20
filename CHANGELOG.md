@@ -33,6 +33,8 @@ and Lode adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Parquet timestamp bounds and nil byte slices**: `Parquet` rejects timestamps outside the signed `int64` nanosecond range with `ErrSchemaViolation`. Map records encode nil byte slices as null and increment `NullCount`.
+
 - **Commits, streaming writes, Volume checksums, and retention visibility**: Commits and `Sweep` check the removal fence after publishing manifests and delete late writes. Stream encoders start after the pipe reader and close cleanly. `Volume` commits reject parent checksum mismatches and nil block readers. Listings skip expired partition manifests, and `CommitLoop` avoids retry-count overflow.
 
 - **Single-process CAS recovery and store path checks**: `SingleProcess` journals the prior value before replacement, holds the read lock during `ReadAt`, and rejects typed-nil stores. `FS` honors context deadlines during lock waits, ignores directories on object reads, lists intermediate `.lode-tmp-` prefixes, and resolves root paths. All adapters reject rooted, empty, and dot-segment keys and prefixes.
