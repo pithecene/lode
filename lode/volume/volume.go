@@ -353,6 +353,9 @@ func (v *volume) StageWriteAt(ctx context.Context, offset int64, r io.Reader) (B
 	if offset < 0 {
 		return BlockRef{}, validate.Argument("offset must be non-negative")
 	}
+	if validate.Nil(r) {
+		return BlockRef{}, validate.Argument("block reader must not be nil")
+	}
 
 	data, err := io.ReadAll(r)
 	if err != nil {
@@ -424,6 +427,9 @@ func (v *volume) Commit(ctx context.Context, blocks []BlockRef, metadata any) (*
 		var existing []BlockRef
 		var parentID SnapshotID
 		if parent != nil {
+			if want, have := v.checksumAlgorithm(), parent.Manifest.ChecksumAlgorithm; want != have {
+				return fmt.Errorf("lode: checksum mismatch: volume records %q, writer has %q: %w", have, want, lode.ErrSettingsMismatch)
+			}
 			existing, parentID = parent.Manifest.Blocks, parent.ID
 		}
 		if !hasNewBlock(existing, blocks) {
@@ -472,11 +478,14 @@ func hasNewBlock(existing, blocks []BlockRef) bool {
 	return false
 }
 
-func (v *volume) buildManifest(snapshotID, parentID SnapshotID, metadata lode.Metadata, blocks []BlockRef) *Manifest {
-	var checksumAlgorithm string
-	if v.checksum != nil {
-		checksumAlgorithm = v.checksum.Name()
+func (v *volume) checksumAlgorithm() string {
+	if v.checksum == nil {
+		return ""
 	}
+	return v.checksum.Name()
+}
+
+func (v *volume) buildManifest(snapshotID, parentID SnapshotID, metadata lode.Metadata, blocks []BlockRef) *Manifest {
 	return &Manifest{
 		SchemaName:        volumeManifestSchemaName,
 		FormatVersion:     volumeManifestFormatVersion,
@@ -487,7 +496,7 @@ func (v *volume) buildManifest(snapshotID, parentID SnapshotID, metadata lode.Me
 		TotalLength:       v.totalLength,
 		Blocks:            blocks,
 		ParentSnapshotID:  parentID,
-		ChecksumAlgorithm: checksumAlgorithm,
+		ChecksumAlgorithm: v.checksumAlgorithm(),
 	}
 }
 

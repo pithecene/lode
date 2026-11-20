@@ -175,6 +175,10 @@ func (d *dataset) ListPartitions(ctx context.Context, opts PartitionListOptions)
 	if err != nil {
 		return nil, err
 	}
+	expFilter, err := d.newExpiryFilter(ctx, paths, prefix)
+	if err != nil {
+		return nil, err
+	}
 
 	anyManifest := false
 	seenPartitions := make(map[string]bool)
@@ -202,6 +206,13 @@ func (d *dataset) ListPartitions(ctx context.Context, opts PartitionListOptions)
 		if sp.kind != manifestLeaf {
 			continue
 		}
+		skip, err := expFilter.skipSnapshot(ctx, sp.snapshot)
+		if err != nil {
+			return nil, err
+		}
+		if skip {
+			continue
+		}
 		anyManifest = true
 		if sp.snapshot == "" || !d.layout.supportsPartitions() {
 			continue
@@ -211,10 +222,7 @@ func (d *dataset) ListPartitions(ctx context.Context, opts PartitionListOptions)
 			continue
 		}
 		indexedSnapshots[sp.snapshot] = true
-		if indexedParts[sp.snapshot] == nil {
-			indexedParts[sp.snapshot] = make(map[string]bool)
-		}
-		indexedParts[sp.snapshot][sp.partition] = true
+		addIndexedPartition(indexedParts, sp.snapshot, sp.partition)
 		if !seenPartitions[sp.partition] && strings.HasPrefix(sp.partition, opts.Prefix) {
 			partPath, err := listedPartitionPath(sp.partition, p)
 			if err != nil {
@@ -249,6 +257,13 @@ func (d *dataset) ListPartitions(ctx context.Context, opts PartitionListOptions)
 
 	sort.Slice(partitions, func(i, j int) bool { return partitions[i].path < partitions[j].path })
 	return cursorWindow(partitions, func(p PartitionPath) bool { return p.path > opts.StartAfter.path }, opts.Limit), nil
+}
+
+func addIndexedPartition(indexedParts map[SnapshotID]map[string]bool, id SnapshotID, part string) {
+	if indexedParts[id] == nil {
+		indexedParts[id] = make(map[string]bool)
+	}
+	indexedParts[id][part] = true
 }
 
 // collectUnindexedPartitions loads only canonical manifests whose partition
@@ -310,11 +325,11 @@ func (d *dataset) Manifests(ctx context.Context, partition PartitionPath, opts M
 		if partition.path != "" && !d.layout.supportsPartitions() {
 			return
 		}
-		d.yieldLoaded(ctx, inRefOrder(listing.manifests), opts, yield)
+		d.yieldLoaded(ctx, inRefOrder(listing.manifests), listing.tombstoned, opts, yield)
 	}
 }
 
-func (d *dataset) yieldLoaded(ctx context.Context, listed []listedManifest, opts ManifestListOptions, yield func(LoadedManifest, error) bool) {
+func (d *dataset) yieldLoaded(ctx context.Context, listed []listedManifest, tombstoned map[SnapshotID]bool, opts ManifestListOptions, yield func(LoadedManifest, error) bool) {
 	yielded := 0
 	for _, m := range listed {
 		if opts.Limit > 0 && yielded == opts.Limit {
@@ -322,6 +337,16 @@ func (d *dataset) yieldLoaded(ctx context.Context, listed []listedManifest, opts
 		}
 		if !manifestRefLess(opts.StartAfter, ManifestRef{ID: m.id, Partition: PartitionPath{path: m.partition}}) {
 			continue
+		}
+		if m.partition != "" && tombstoned[m.id] {
+			live, err := newDatasetKind(d.id, d.layout, d.store).NotExpired(ctx, m.id)
+			if err != nil {
+				yield(LoadedManifest{}, err)
+				return
+			}
+			if !live {
+				continue
+			}
 		}
 		loaded, err := d.loadRef(ctx, m)
 		if errors.Is(err, ErrNotFound) {
@@ -364,8 +389,9 @@ type listedManifest struct {
 }
 
 type manifestListing struct {
-	manifests []listedManifest
-	any       bool
+	manifests  []listedManifest
+	tombstoned map[SnapshotID]bool
+	any        bool
 }
 
 func (d *dataset) listManifests(ctx context.Context, prefix string) (manifestListing, error) {
@@ -373,12 +399,23 @@ func (d *dataset) listManifests(ctx context.Context, prefix string) (manifestLis
 	if err != nil {
 		return manifestListing{}, err
 	}
+	expFilter, err := d.newExpiryFilter(ctx, paths, prefix)
+	if err != nil {
+		return manifestListing{}, err
+	}
 
-	var listing manifestListing
+	listing := manifestListing{tombstoned: expFilter.tombstoned}
 	var indexed, canonical []listedManifest
 	for _, p := range paths {
 		sp, ok := d.layout.manifest(p)
 		if !ok {
+			continue
+		}
+		skip, err := expFilter.skipSnapshot(ctx, sp.snapshot)
+		if err != nil {
+			return manifestListing{}, err
+		}
+		if skip {
 			continue
 		}
 		listing.any = true
@@ -403,6 +440,59 @@ func (d *dataset) listManifests(ctx context.Context, prefix string) (manifestLis
 	}
 	sortListed(listing.manifests)
 	return listing, nil
+}
+
+type expiryFilter struct {
+	ds         *dataset
+	tombstoned map[SnapshotID]bool
+	cache      map[SnapshotID]*bool
+}
+
+func (d *dataset) newExpiryFilter(ctx context.Context, listedPaths []string, prefix string) (expiryFilter, error) {
+	f := expiryFilter{ds: d}
+	if !d.layout.supportsPartitions() {
+		return f, nil
+	}
+	tombPrefix := d.layout.tombstonesPrefix(d.id)
+	var keys []string
+	if prefix == d.layout.datasetPrefix(d.id) {
+		for _, p := range listedPaths {
+			if isTombstoneName(p, tombPrefix) {
+				keys = append(keys, p)
+			}
+		}
+	} else {
+		var err error
+		keys, err = d.tombstones().list(ctx)
+		if err != nil {
+			return f, err
+		}
+	}
+	if len(keys) == 0 {
+		return f, nil
+	}
+	f.tombstoned = make(map[SnapshotID]bool, len(keys))
+	for _, k := range keys {
+		f.tombstoned[SnapshotID(strings.TrimPrefix(k, tombPrefix))] = true
+	}
+	f.cache = make(map[SnapshotID]*bool, len(keys))
+	return f, nil
+}
+
+func (f expiryFilter) skipSnapshot(ctx context.Context, id SnapshotID) (bool, error) {
+	if id == "" || !f.tombstoned[id] {
+		return false, nil
+	}
+	if cached, ok := f.cache[id]; ok {
+		return *cached, nil
+	}
+	live, err := newDatasetKind(f.ds.id, f.ds.layout, f.ds.store).NotExpired(ctx, id)
+	if err != nil {
+		return false, err
+	}
+	expired := !live
+	f.cache[id] = &expired
+	return expired, nil
 }
 
 func sortListed(ms []listedManifest) {
