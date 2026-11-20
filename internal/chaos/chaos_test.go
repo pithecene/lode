@@ -200,7 +200,7 @@ func splitList(s string) []string {
 // views, Retention, Faults, and Volume) in brief in-memory runs during the
 // regular test suite.
 func TestChaos_Workloads(t *testing.T) {
-	testutil.Serial(t, "counts the process's goroutines and measures its heap")
+	testutil.Serial(t, "gives writers a short wall-clock window to start a commit")
 	if *flagChaos {
 		t.Skip("skipping brief smoke runs when full -chaos suite is enabled")
 	}
