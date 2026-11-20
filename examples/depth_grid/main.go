@@ -64,7 +64,7 @@ func execDepthGrid(storeDir string) error {
 		if err != nil {
 			return err
 		}
-		defer func() { _ = os.RemoveAll(tmp) }()
+		defer removeTempDir(tmp)
 		storeDir = tmp
 	}
 
@@ -143,4 +143,12 @@ func runDepthGrid(ctx context.Context, factory lode.Factory[lode.RangeStore]) er
 	}
 	fmt.Printf("Read full depth grid: %d bytes\n", len(all))
 	return nil
+}
+
+// removeTempDir deletes the example's scratch directory. A failed removal
+// does not change the example's outcome, so it is logged rather than returned.
+func removeTempDir(dir string) {
+	if err := os.RemoveAll(dir); err != nil {
+		log.Printf("remove temp dir %s: %v", dir, err)
+	}
 }

@@ -17,6 +17,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pithecene/lode/internal/errs"
+
 	"github.com/pithecene/lode/internal/history"
 	"github.com/pithecene/lode/internal/retry"
 	"github.com/pithecene/lode/internal/storepath"
@@ -291,7 +293,7 @@ func volumeStagedManifestPath(id ID, snapID SnapshotID) string {
 // never permanently occupies a byte range with ErrPathExists.
 func newVolumeBlockPath(id ID, offset, length int64) string {
 	var nonce [8]byte
-	_, _ = rand.Read(nonce[:])
+	errs.IgnoreResult(rand.Read(nonce[:]))
 	return path.Join("volumes", string(id), "data", fmt.Sprintf("%d-%d-%s.bin", offset, length, hex.EncodeToString(nonce[:])))
 }
 

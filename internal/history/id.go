@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/pithecene/lode/internal/errs"
 )
 
 // Snapshot IDs have the form <instant>-<nonce> (CONTRACT_CORE §Snapshot ID).
@@ -22,7 +24,7 @@ const (
 func NewID() string {
 	var nonce [NonceBytes]byte
 	// crypto/rand.Read never returns an error since Go 1.24; it aborts instead.
-	_, _ = rand.Read(nonce[:])
+	errs.IgnoreResult(rand.Read(nonce[:]))
 	return FormatID(time.Now(), nonce)
 }
 

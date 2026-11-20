@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pithecene/lode/internal/errs"
+
 	"github.com/parquet-go/parquet-go"
 )
 
@@ -252,7 +254,7 @@ func (c *parquetCodec[T]) EncodeWithStats(w io.Writer, records []T) (*ObjectStat
 
 	pqWriter := parquet.NewWriter(&buf, c.pqSchema, c.getCompressionOption())
 	if _, err := pqWriter.WriteRowGroup(rowBuf); err != nil {
-		_ = pqWriter.Close()
+		errs.DiscardClose(pqWriter)
 		return nil, fmt.Errorf("parquet: write row group: %w", err)
 	}
 	if err := pqWriter.Close(); err != nil {

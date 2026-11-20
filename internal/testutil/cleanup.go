@@ -1,7 +1,11 @@
 // Package testutil provides helpers for examples and tests.
 package testutil
 
-import "os"
+import (
+	"os"
+
+	"github.com/pithecene/lode/internal/errs"
+)
 
 // RemoveAll removes the path and any children. Errors are ignored.
 // Use for defer cleanup in examples and tests.
@@ -9,4 +13,4 @@ import "os"
 // Usage:
 //
 //	defer testutil.RemoveAll(tmpDir)
-func RemoveAll(path string) { _ = os.RemoveAll(path) }
+func RemoveAll(path string) { errs.IgnoreError(os.RemoveAll(path)) }

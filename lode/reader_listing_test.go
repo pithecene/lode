@@ -9,6 +9,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/pithecene/lode/internal/errs"
 )
 
 // Listing filters and cursors (#175): Prefix, StartAfter, ordering.
@@ -595,7 +597,7 @@ func rewriteObject(t *testing.T, store Store, key string, edit func(string) stri
 		t.Fatal(err)
 	}
 	data, err := io.ReadAll(rc)
-	_ = rc.Close()
+	errs.DiscardClose(rc)
 	if err != nil {
 		t.Fatal(err)
 	}

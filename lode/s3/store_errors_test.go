@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/pithecene/lode/internal/errs"
+
 	"github.com/aws/aws-sdk-go-v2/aws"
 	s3api "github.com/aws/aws-sdk-go-v2/service/s3"
 
@@ -93,9 +95,11 @@ func TestStore_MapsPreconditionCodes(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, _ = tmp.Write(data)
+			if _, err := tmp.Write(data); err != nil {
+				t.Fatal(err)
+			}
 			err = store.putMultipartFromFile(ctx, "large.bin", tmp, int64(len(data)))
-			_ = tmp.Close()
+			errs.DiscardClose(tmp)
 			wantExists := code == "PreconditionFailed" || code == "412"
 			if errors.Is(err, lode.ErrPathExists) != wantExists || err == nil {
 				t.Errorf("code %s: got %v, want ErrPathExists=%v", code, err, wantExists)

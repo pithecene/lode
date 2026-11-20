@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pithecene/lode/internal/errs"
+
 	"github.com/pithecene/lode/internal/testutil"
 	"github.com/pithecene/lode/lode"
 )
@@ -1531,7 +1533,7 @@ func TestVolume_LatestPointer(t *testing.T) {
 			t.Fatalf("expected pointer file at %s, got error: %v", pointerPath, err)
 		}
 		data, _ := io.ReadAll(rc)
-		_ = rc.Close()
+		errs.DiscardClose(rc)
 		if string(data) != string(snap.ID) {
 			t.Errorf("pointer content: expected %q, got %q", snap.ID, string(data))
 		}
@@ -1568,7 +1570,7 @@ func TestVolume_LatestPointer(t *testing.T) {
 				t.Fatalf("commit %d: pointer missing: %v", i, err)
 			}
 			data, _ := io.ReadAll(rc)
-			_ = rc.Close()
+			errs.DiscardClose(rc)
 			if string(data) != string(snap.ID) {
 				t.Errorf("commit %d: pointer %q, expected %q", i, string(data), snap.ID)
 			}
@@ -1585,7 +1587,9 @@ func TestVolume_LatestPointer(t *testing.T) {
 		snap1 := commitBlocks(t, vol, []BlockRef{blk}, lode.D{})
 
 		// Delete the pointer to simulate pre-pointer state.
-		_ = store.Delete(t.Context(), "volumes/test-vol/latest")
+		if err := store.Delete(t.Context(), "volumes/test-vol/latest"); err != nil {
+			t.Fatal(err)
+		}
 
 		// Latest() should still work via scan fallback.
 		latest, err := vol.Latest(t.Context())
@@ -1605,7 +1609,7 @@ func TestVolume_LatestPointer(t *testing.T) {
 			t.Fatalf("pointer should exist after commit: %v", err)
 		}
 		data, _ := io.ReadAll(rc)
-		_ = rc.Close()
+		errs.DiscardClose(rc)
 		if string(data) != string(snap2.ID) {
 			t.Errorf("pointer %q, expected %q", string(data), snap2.ID)
 		}
@@ -1790,7 +1794,7 @@ func TestVolume_Commit_PendingCommit(t *testing.T) {
 		t.Fatal(err)
 	}
 	manifest, _ := io.ReadAll(rc)
-	_ = rc.Close()
+	errs.DiscardClose(rc)
 	if err := mem.Delete(t.Context(), manifestPath); err != nil {
 		t.Fatal(err)
 	}
@@ -1967,7 +1971,7 @@ func lodeGet(t *testing.T, store lode.RangeStore, path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer func() { _ = rc.Close() }()
+	defer func() { errs.DiscardClose(rc) }()
 	b, err := io.ReadAll(rc)
 	return string(b), err
 }
@@ -2129,7 +2133,7 @@ func TestVolume_Commit_ColdStart(t *testing.T) {
 			t.Fatal(err)
 		}
 		data, _ := io.ReadAll(rc)
-		_ = rc.Close()
+		errs.DiscardClose(rc)
 		if string(data) != string(snap3.ID) {
 			t.Fatalf("pointer should track snap3, got %q", string(data))
 		}

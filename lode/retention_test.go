@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pithecene/lode/internal/errs"
+
 	"github.com/pithecene/lode/internal/history"
 	"github.com/pithecene/lode/internal/testutil"
 )
@@ -175,7 +177,7 @@ func vanishOnList(t *testing.T, hs *hookStore, target string) {
 	t.Helper()
 	hs.onList = func(_ string, keys []string) {
 		if slices.Contains(keys, target) {
-			_ = hs.Store.Delete(t.Context(), target)
+			errs.IgnoreError(hs.Store.Delete(t.Context(), target))
 		}
 	}
 }
@@ -466,7 +468,9 @@ func TestExpire_Partition(t *testing.T) {
 			hs.onList = nil
 			for _, k := range storeKeys(t, mem) {
 				if strings.Contains(k, string(both.ID)) && strings.HasSuffix(k, "manifest.json") {
-					_ = mem.Delete(t.Context(), k)
+					if err := mem.Delete(t.Context(), k); err != nil {
+						t.Fatal(err)
+					}
 				}
 			}
 		}
@@ -1445,7 +1449,7 @@ func TestEnumeration_ToleratesDeletion(t *testing.T) {
 			hs.onList = func(_ string, keys []string) {
 				for _, p := range paths {
 					if slices.Contains(keys, p) {
-						_ = mem.Delete(t.Context(), p)
+						errs.IgnoreError(mem.Delete(t.Context(), p))
 					}
 				}
 			}
@@ -1465,11 +1469,13 @@ func TestEnumeration_ToleratesDeletion(t *testing.T) {
 
 		// When a canonical-only snapshot's manifest vanishes between List and Get,
 		// ListPartitions skips it without failing.
-		_ = mem.Delete(t.Context(), paths[1])
+		if err := mem.Delete(t.Context(), paths[1]); err != nil {
+			t.Fatal(err)
+		}
 		rewriteManifest(t, mem, paths[0], gone.Manifest)
 		hs.onList = func(_ string, keys []string) {
 			if slices.Contains(keys, paths[0]) {
-				_ = mem.Delete(t.Context(), paths[0])
+				errs.IgnoreError(mem.Delete(t.Context(), paths[0]))
 			}
 		}
 		parts, err := ds.ListPartitions(t.Context(), PartitionListOptions{})

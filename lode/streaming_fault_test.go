@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pithecene/lode/internal/errs"
+
 	"github.com/pithecene/lode/internal/history"
 	"github.com/pithecene/lode/internal/testutil"
 )
@@ -477,7 +479,7 @@ func TestStreamWrite_ForeignObject(t *testing.T) {
 		ctx := t.Context()
 		fs.SetBeforePut(func(path string) {
 			if strings.Contains(path, "/data/") {
-				_ = inner.Put(ctx, path, strings.NewReader("foreign"))
+				errs.IgnoreError(inner.Put(ctx, path, strings.NewReader("foreign")))
 			}
 		})
 		ds, err := Open(Use(fs)).Blobs(ctx, "test-ds")
@@ -498,7 +500,7 @@ func TestStreamWrite_ForeignObject(t *testing.T) {
 				if gerr != nil {
 					t.Fatalf("foreign object missing after cleanup: %v", gerr)
 				}
-				_ = rc.Close()
+				errs.DiscardClose(rc)
 			}
 		}
 	})
@@ -638,7 +640,7 @@ func (c closeFailCompressor) Compress(w io.Writer) (io.WriteCloser, error) {
 type closeFailWriter struct{ io.WriteCloser }
 
 func (c *closeFailWriter) Close() error {
-	_ = c.WriteCloser.Close()
+	errs.DiscardClose(c.WriteCloser)
 	return errCloseBoom
 }
 

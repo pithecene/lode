@@ -6,6 +6,8 @@ import (
 	"maps"
 	"testing"
 
+	"github.com/pithecene/lode/internal/errs"
+
 	"github.com/pithecene/lode/internal/testutil"
 	"github.com/pithecene/lode/lode"
 )
@@ -21,8 +23,10 @@ func snapshotOf(t *testing.T, store lode.Store) map[string]string {
 			t.Fatal(err)
 		}
 		var b bytes.Buffer
-		_, _ = b.ReadFrom(rc)
-		_ = rc.Close()
+		if _, err := b.ReadFrom(rc); err != nil {
+			t.Fatal(err)
+		}
+		errs.DiscardClose(rc)
 		out[k] = b.String()
 	}
 	return out

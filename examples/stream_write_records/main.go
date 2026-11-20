@@ -32,7 +32,7 @@ func streamDemo(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	defer removeTempDir(tmpDir)
 	fmt.Printf("Storage root: %s\n\n", tmpDir)
 
 	// Open a root over the filesystem store.
@@ -144,5 +144,13 @@ func each(records []lode.D) iter.Seq2[lode.D, error] {
 				return
 			}
 		}
+	}
+}
+
+// removeTempDir deletes the example's scratch directory. A failed removal
+// does not change the example's outcome, so it is logged rather than returned.
+func removeTempDir(dir string) {
+	if err := os.RemoveAll(dir); err != nil {
+		log.Printf("remove temp dir %s: %v", dir, err)
 	}
 }
