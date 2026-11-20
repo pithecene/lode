@@ -7,6 +7,7 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/pithecene/lode/internal/storepath"
 	"github.com/pithecene/lode/internal/validate"
@@ -60,6 +61,7 @@ func SingleProcess(store ObjectStore) Store {
 	}
 	base := &singleProcessStore{
 		ObjectStore: store,
+		mu:          newSingleProcessLock(),
 		busy:        make(map[string]chan struct{}),
 		journaled:   make(map[string]bool),
 	}
@@ -86,44 +88,90 @@ func SingleProcess(store ObjectStore) Store {
 // while consuming caller-supplied readers.
 type singleProcessStore struct {
 	ObjectStore
-	mu        sync.RWMutex
+	mu        singleProcessLock
 	stateMu   sync.Mutex
 	busy      map[string]chan struct{}
 	journaled map[string]bool
 }
 
-func lockSingleProcess(ctx context.Context, mu *sync.RWMutex) error {
-	done := ctx.Done()
-	if done == nil {
-		mu.Lock()
-		return nil
+// singleProcessLock admits one writer at a time. An admitted writer blocks
+// new readers, and can give up its slot while waiting for existing readers.
+type singleProcessLock struct {
+	writerSlot  chan struct{}
+	mu          sync.Mutex
+	readers     int
+	writing     bool
+	readersDone chan struct{}
+	writerDone  chan struct{}
+}
+
+func newSingleProcessLock() singleProcessLock {
+	return singleProcessLock{writerSlot: make(chan struct{}, 1)}
+}
+
+func (m *singleProcessLock) Lock(ctx context.Context) error {
+	select {
+	case m.writerSlot <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
 	}
-	if err := ctx.Err(); err != nil {
-		return err
+
+	m.mu.Lock()
+	m.writing = true
+	if m.readers != 0 {
+		m.readersDone = make(chan struct{})
 	}
-	if !mu.TryLock() {
-		// An unbuffered handoff transfers ownership only to a caller still
-		// waiting. Otherwise the waiter releases the lock itself.
-		acquired := make(chan struct{})
-		go func() {
-			mu.Lock()
-			select {
-			case acquired <- struct{}{}:
-			case <-done:
-				mu.Unlock()
-			}
-		}()
+	readersDone := m.readersDone
+	m.mu.Unlock()
+
+	if readersDone != nil {
 		select {
-		case <-acquired:
-		case <-done:
-			return ctx.Err()
+		case <-readersDone:
+		case <-ctx.Done():
 		}
 	}
 	if err := ctx.Err(); err != nil {
-		mu.Unlock()
+		m.Unlock()
 		return err
 	}
 	return nil
+}
+
+func (m *singleProcessLock) Unlock() {
+	m.mu.Lock()
+	m.writing = false
+	m.readersDone = nil
+	if m.writerDone != nil {
+		close(m.writerDone)
+		m.writerDone = nil
+	}
+	m.mu.Unlock()
+	<-m.writerSlot
+}
+
+func (m *singleProcessLock) RLock() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for m.writing {
+		if m.writerDone == nil {
+			m.writerDone = make(chan struct{})
+		}
+		writerDone := m.writerDone
+		m.mu.Unlock()
+		<-writerDone
+		m.mu.Lock()
+	}
+	m.readers++
+}
+
+func (m *singleProcessLock) RUnlock() {
+	m.mu.Lock()
+	m.readers--
+	if m.readers == 0 && m.readersDone != nil {
+		close(m.readersDone)
+		m.readersDone = nil
+	}
+	m.mu.Unlock()
 }
 
 func (s *singleProcessStore) acquireKey(ctx context.Context, key string) (chan struct{}, error) {
@@ -253,7 +301,7 @@ func (s *singleProcessStore) Delete(ctx context.Context, path string) error {
 	}
 	defer s.releaseKey(cleaned, ch)
 
-	if err := lockSingleProcess(ctx, &s.mu); err != nil {
+	if err := s.mu.Lock(ctx); err != nil {
 		return err
 	}
 	defer s.mu.Unlock()
@@ -340,9 +388,18 @@ func (s singleProcessRangeStore) ReaderAt(ctx context.Context, path string) (io.
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	ra, err := s.openReaderAtLocked(ctx, path)
+	ra, fromJournal, err := s.openReaderAtLocked(ctx, path)
 	if err != nil {
 		return nil, err
+	}
+	c, closable := ra.(io.Closer)
+	if fromJournal {
+		// A journal handle can keep serving stale bytes after replacement.
+		// Resolve the logical key on every read instead of retaining it.
+		if closable {
+			closer(c)()
+		}
+		ra, c = nil, nil
 	}
 	wrapped := &singleProcessReaderAt{
 		store: s,
@@ -350,22 +407,22 @@ func (s singleProcessRangeStore) ReaderAt(ctx context.Context, path string) (io.
 		path:  path,
 		ra:    ra,
 	}
-	if c, ok := ra.(io.Closer); ok {
+	if closable {
 		return &singleProcessReadAtCloser{singleProcessReaderAt: wrapped, closer: c}, nil
 	}
 	return wrapped, nil
 }
 
-func (s singleProcessRangeStore) openReaderAtLocked(ctx context.Context, path string) (io.ReaderAt, error) {
-	ra, err := s.ranges.ReaderAt(ctx, path)
+func (s singleProcessRangeStore) openReaderAtLocked(ctx context.Context, path string) (ra io.ReaderAt, fromJournal bool, err error) {
+	ra, err = s.ranges.ReaderAt(ctx, path)
 	if !errors.Is(err, ErrNotFound) {
-		return ra, err
+		return ra, false, err
 	}
 	jra, jerr := s.ranges.ReaderAt(ctx, casJournalPath(path))
 	if errors.Is(jerr, ErrNotFound) {
-		return nil, err
+		return nil, false, err
 	}
-	return jra, jerr
+	return jra, true, jerr
 }
 
 type singleProcessReaderAt struct {
@@ -378,11 +435,13 @@ type singleProcessReaderAt struct {
 func (r *singleProcessReaderAt) ReadAt(p []byte, off int64) (int, error) {
 	r.store.mu.RLock()
 	defer r.store.mu.RUnlock()
-	n, err := r.ra.ReadAt(p, off)
-	if !errors.Is(err, ErrNotFound) {
-		return n, err
+	if r.ra != nil {
+		n, err := r.ra.ReadAt(p, off)
+		if !errors.Is(err, ErrNotFound) {
+			return n, err
+		}
 	}
-	ra, err := r.store.openReaderAtLocked(r.ctx, r.path)
+	ra, _, err := r.store.openReaderAtLocked(r.ctx, r.path)
 	if err != nil {
 		return 0, err
 	}
@@ -395,10 +454,22 @@ func (r *singleProcessReaderAt) ReadAt(p []byte, off int64) (int, error) {
 type singleProcessReadAtCloser struct {
 	*singleProcessReaderAt
 	closer io.Closer
+	closed atomic.Bool
+}
+
+func (r *singleProcessReadAtCloser) ReadAt(p []byte, off int64) (int, error) {
+	if r.closed.Load() {
+		return 0, io.ErrClosedPipe
+	}
+	return r.singleProcessReaderAt.ReadAt(p, off)
 }
 
 func (r *singleProcessReadAtCloser) Close() error {
-	return r.closer.Close()
+	if r.closer != nil {
+		return r.closer.Close()
+	}
+	r.closed.Store(true)
+	return nil
 }
 
 type singleProcessPrefixStore struct {
@@ -437,7 +508,7 @@ func (s *singleProcessStore) CompareAndSwap(ctx context.Context, path, expected,
 	}
 	defer s.releaseKey(cleaned, ch)
 
-	if err := lockSingleProcess(ctx, &s.mu); err != nil {
+	if err := s.mu.Lock(ctx); err != nil {
 		return err
 	}
 	defer s.mu.Unlock()
@@ -448,6 +519,9 @@ func (s *singleProcessStore) CompareAndSwap(ctx context.Context, path, expected,
 	}
 	if (exists && current != expected) || (!exists && expected != "") {
 		return ErrSnapshotConflict
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	if !exists {
 		if err := s.ObjectStore.Put(ctx, cleaned, strings.NewReader(replacement)); err != nil {

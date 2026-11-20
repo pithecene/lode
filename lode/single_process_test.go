@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/pithecene/lode/internal/testutil"
@@ -521,7 +522,8 @@ type recoveryStore struct {
 	journalDeleteErr  error
 	afterTargetDelete func()
 	afterJournalGet   func()
-	lastReader        *closableKeyReaderAt
+	lastReader        *trackedReaderAt
+	readerErr         error
 }
 
 func (s *recoveryStore) Put(ctx context.Context, path string, r io.Reader) error {
@@ -530,7 +532,7 @@ func (s *recoveryStore) Put(ctx context.Context, path string, r io.Reader) error
 
 func (s *recoveryStore) Get(ctx context.Context, path string) (io.ReadCloser, error) {
 	rc, err := s.ObjectStore.Get(context.WithoutCancel(ctx), path)
-	if err == nil && path == casJournalPath(s.failKey) && s.afterJournalGet != nil {
+	if path == casJournalPath(s.failKey) && s.afterJournalGet != nil {
 		s.afterJournalGet()
 	}
 	return rc, err
@@ -550,39 +552,37 @@ func (s *recoveryStore) Delete(ctx context.Context, path string) error {
 }
 
 func (s *recoveryStore) ReaderAt(ctx context.Context, path string) (io.ReaderAt, error) {
-	exists, err := s.Exists(ctx, path)
+	ra, err := s.RangeReader.ReaderAt(ctx, path)
 	if err != nil {
 		return nil, err
 	}
-	if !exists {
-		return nil, ErrNotFound
-	}
-	s.lastReader = &closableKeyReaderAt{keyReaderAt: keyReaderAt{ctx: ctx, ranges: s.RangeReader, path: path}}
+	s.lastReader = &trackedReaderAt{ReaderAt: ra, path: path, readErr: s.readerErr}
 	return s.lastReader, nil
 }
 
-type closableKeyReaderAt struct {
-	keyReaderAt
+type trackedReaderAt struct {
+	io.ReaderAt
+	path    string
 	closed  bool
 	readErr error
 }
 
-func (r *closableKeyReaderAt) ReadAt(buf []byte, off int64) (int, error) {
+func (r *trackedReaderAt) ReadAt(buf []byte, off int64) (int, error) {
 	if r.closed {
 		return 0, io.ErrClosedPipe
 	}
 	if r.readErr != nil {
 		return 0, r.readErr
 	}
-	return r.keyReaderAt.ReadAt(buf, off)
+	return r.ReaderAt.ReadAt(buf, off)
 }
 
-func (r *closableKeyReaderAt) Close() error {
+func (r *trackedReaderAt) Close() error {
 	r.closed = true
 	return nil
 }
 
-func TestSingleProcess_JournalReaderAtRecovers(t *testing.T) {
+func TestSingleProcess_JournalReaderAtRecoversMemory(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
 	const path = "ptr/latest"
@@ -604,6 +604,9 @@ func TestSingleProcess_JournalReaderAtRecovers(t *testing.T) {
 	if initialReader.path != casJournalPath(path) {
 		t.Fatalf("ReaderAt opened %q, want the journal", initialReader.path)
 	}
+	if !initialReader.closed {
+		t.Error("expected ReaderAt to close its temporary journal reader")
+	}
 	buf := make([]byte, 3)
 	if n, err := ra.ReadAt(buf, 0); err != nil || n != len(buf) || string(buf) != "old" {
 		t.Fatalf("journal ReadAt = %d, %q, %v, want 3, old, nil", n, buf, err)
@@ -612,6 +615,9 @@ func TestSingleProcess_JournalReaderAtRecovers(t *testing.T) {
 	raw.setFailPuts(0)
 	if err := store.CompareAndSwap(ctx, path, "old", "new"); err != nil {
 		t.Fatal(err)
+	}
+	if n, err := initialReader.ReaderAt.ReadAt(buf, 0); err != nil || n != len(buf) || string(buf) != "old" {
+		t.Fatalf("retained Memory reader = %d, %q, %v, want 3, old, nil", n, buf, err)
 	}
 	if n, err := ra.ReadAt(buf, 0); err != nil || n != len(buf) || string(buf) != "new" {
 		t.Errorf("recovered ReadAt = %d, %q, %v, want 3, new, nil", n, buf, err)
@@ -622,12 +628,13 @@ func TestSingleProcess_JournalReaderAtRecovers(t *testing.T) {
 	}
 
 	readErr := errors.New("injected range read failure")
-	initialReader.readErr = readErr
+	raw.readerErr = readErr
 	if _, err := ra.ReadAt(buf, 0); !errors.Is(err, readErr) {
 		t.Errorf("failed ReadAt = %v, want %v", err, readErr)
 	}
-	if raw.lastReader != latestReader {
-		t.Error("ReadAt reopened a reader after an I/O error")
+	latestReader = raw.lastReader
+	if !latestReader.closed {
+		t.Error("expected the failed read to close its temporary reader")
 	}
 
 	if err := ra.(io.Closer).Close(); err != nil {
@@ -638,6 +645,35 @@ func TestSingleProcess_JournalReaderAtRecovers(t *testing.T) {
 	}
 	if raw.lastReader != latestReader {
 		t.Error("ReadAt reopened a closed reader")
+	}
+}
+
+func TestSingleProcess_JournalReaderAtRecoversFS(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	const path = "ptr/latest"
+	fs, err := NewFS(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Put(ctx, casJournalPath(path), strings.NewReader("old")); err != nil {
+		t.Fatal(err)
+	}
+	store := SingleProcess(struct {
+		ObjectStore
+		RangeReader
+	}{fs, fs}).(RangeStore)
+	ra, err := store.ReaderAt(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closer(ra.(io.Closer))()
+	if err := store.CompareAndSwap(ctx, path, "old", "new"); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 3)
+	if n, err := ra.ReadAt(buf, 0); err != nil || n != len(buf) || string(buf) != "new" {
+		t.Errorf("recovered ReadAt = %d, %q, %v, want 3, new, nil", n, buf, err)
 	}
 }
 
@@ -770,16 +806,68 @@ func TestSingleProcess_CancelWhileWaitingForExclusiveLock(t *testing.T) {
 	}
 }
 
+func TestSingleProcess_CanceledWriterUnblocksReaders(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		lock := newSingleProcessLock()
+		lock.RLock()
+		defer lock.RUnlock()
+
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		writer := make(chan error, 1)
+		go func() {
+			err := lock.Lock(ctx)
+			if err == nil {
+				lock.Unlock()
+			}
+			writer <- err
+		}()
+		synctest.Wait()
+
+		reader := make(chan struct{})
+		go func() {
+			lock.RLock()
+			close(reader)
+			lock.RUnlock()
+		}()
+		synctest.Wait()
+		select {
+		case <-reader:
+			t.Error("reader bypassed a waiting writer")
+		default:
+		}
+
+		cancel()
+		synctest.Wait()
+		select {
+		case err := <-writer:
+			if !errors.Is(err, context.Canceled) {
+				t.Errorf("writer lock = %v, want context.Canceled", err)
+			}
+		default:
+			t.Error("canceled writer still waiting for the lock")
+		}
+		select {
+		case <-reader:
+		default:
+			t.Error("canceled writer still blocking the reader")
+		}
+	})
+}
+
 func TestSingleProcess_CancelBeforeReplacementPut(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name        string
 		fromJournal bool
 		failRestore bool
+		absent      bool
 	}{
 		{name: "after target delete"},
 		{name: "after target delete with failed restore", failRestore: true},
 		{name: "after reading journal", fromJournal: true},
+		{name: "after confirming absence", absent: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := t.Context()
@@ -788,12 +876,17 @@ func TestSingleProcess_CancelBeforeReplacementPut(t *testing.T) {
 			store := SingleProcess(raw).(RangeStore)
 			casCtx, cancel := context.WithCancel(ctx)
 			defer cancel()
-			if tc.fromJournal {
+			expected := "old"
+			switch {
+			case tc.absent:
+				expected = ""
+				raw.afterJournalGet = cancel
+			case tc.fromJournal:
 				if err := raw.Put(ctx, casJournalPath(path), strings.NewReader("old")); err != nil {
 					t.Fatal(err)
 				}
 				raw.afterJournalGet = cancel
-			} else {
+			default:
 				if err := store.CompareAndSwap(ctx, path, "", "old"); err != nil {
 					t.Fatal(err)
 				}
@@ -802,11 +895,11 @@ func TestSingleProcess_CancelBeforeReplacementPut(t *testing.T) {
 			if tc.failRestore {
 				raw.setFailPuts(-1)
 			}
-			if err := store.CompareAndSwap(casCtx, path, "old", "new"); !errors.Is(err, context.Canceled) {
+			if err := store.CompareAndSwap(casCtx, path, expected, "new"); !errors.Is(err, context.Canceled) {
 				t.Errorf("CompareAndSwap = %v, want context.Canceled", err)
 			}
-			if got := readOrAbsent(t, store, path); got != "old" {
-				t.Errorf("Get after canceled CAS = %q, want old", got)
+			if got := readOrAbsent(t, store, path); got != expected {
+				t.Errorf("Get after canceled CAS = %q, want %q", got, expected)
 			}
 		})
 	}
