@@ -374,7 +374,7 @@ func (h *History[ID, M]) Snapshots(ctx context.Context) ([]*Snapshot[ID, M], err
 	for _, e := range entries {
 		// A manifest an expiry deleted after the listing is skipped, not
 		// reported (CONTRACT_RETENTION §Lineage).
-		s, err := h.loadUnexpired(ctx, e)
+		s, err := h.loadSnapshotEntry(ctx, e)
 		if errors.Is(err, h.errs.NotFound) {
 			continue
 		}
@@ -384,6 +384,13 @@ func (h *History[ID, M]) Snapshots(ctx context.Context) ([]*Snapshot[ID, M], err
 		out = append(out, s)
 	}
 	return out, nil
+}
+
+func (h *History[ID, M]) loadSnapshotEntry(ctx context.Context, e manifestEntry[ID]) (*Snapshot[ID, M], error) {
+	if !slices.Contains(e.paths, h.kind.ManifestPath(e.id)) {
+		return h.loadUnexpired(ctx, e)
+	}
+	return h.loadEntry(ctx, e)
 }
 
 // ListByCreation returns the container's public snapshots in creation order.
@@ -890,8 +897,7 @@ func (h *History[ID, M]) Advance(ctx context.Context, expected string, id ID, ma
 	written, putErr := h.publishManifests(ctx, id, expected, data, paths)
 	if removed := h.checkRemoval(ctx, "after writing "+h.noun); removed != nil {
 		if errors.Is(removed, h.errs.Removed) {
-			h.cleanupRemoved(ctx, staged, stagedWrote, written)
-			return removed
+			return errors.Join(removed, h.cleanupRemoved(ctx, staged, stagedWrote, paths[:written]))
 		}
 		h.Forget()
 		if putErr != nil {
@@ -909,31 +915,35 @@ func (h *History[ID, M]) Advance(ctx context.Context, expected string, id ID, ma
 	return nil
 }
 
-func (h *History[ID, M]) publishManifests(ctx context.Context, id ID, expected string, data []byte, paths []string) ([]string, error) {
-	written := make([]string, 0, len(paths))
-	for _, p := range paths {
+func (h *History[ID, M]) publishManifests(ctx context.Context, id ID, expected string, data []byte, paths []string) (int, error) {
+	for i, p := range paths {
 		if err := h.store.Put(ctx, p, bytes.NewReader(data)); err != nil {
 			// The pointer now names id, so the remembered head and pointer
 			// are stale: the next Resolve consults storage and adopts id.
 			h.Forget()
-			return written, manifestUncertain{fmt.Errorf("failed to write %s: %w", h.noun, err)}
+			return i, manifestUncertain{fmt.Errorf("failed to write %s: %w", h.noun, err)}
 		}
-		written = append(written, p)
 		if h.adopted != "" && p == h.kind.ManifestPath(id) {
 			h.releaseAdopted(ctx, expected)
 		}
 	}
-	return written, nil
+	return len(paths), nil
 }
 
-func (h *History[ID, M]) cleanupRemoved(ctx context.Context, staged string, stagedWrote bool, written []string) {
+func (h *History[ID, M]) cleanupRemoved(ctx context.Context, staged string, stagedWrote bool, written []string) error {
 	cleanupCtx := context.WithoutCancel(ctx)
+	var errs []error
 	for _, p := range written {
-		_ = h.store.Delete(cleanupCtx, p)
+		if err := h.store.Delete(cleanupCtx, p); err != nil && !errors.Is(err, h.errs.NotFound) {
+			errs = append(errs, fmt.Errorf("failed to delete %s %s after removal: %w", h.noun, p, err))
+		}
 	}
-	if stagedWrote {
-		h.unstage(cleanupCtx, staged)
+	if stagedWrote && staged != "" {
+		if err := h.store.Delete(cleanupCtx, staged); err != nil && !errors.Is(err, h.errs.NotFound) {
+			errs = append(errs, fmt.Errorf("failed to delete staged %s %s after removal: %w", h.noun, staged, err))
+		}
 	}
+	return errors.Join(errs...)
 }
 
 // releaseAdopted removes the staged copy of the pending commit that this
