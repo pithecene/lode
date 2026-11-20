@@ -190,4 +190,18 @@ func TestAudit_ParquetNilByteSliceParity(t *testing.T) {
 			t.Fatalf("required []byte(nil) = %v, want ErrSchemaViolation", err)
 		}
 	})
+
+	t.Run("nil byte slice on nullable non-bytes column still fails with ErrSchemaViolation", func(t *testing.T) {
+		t.Parallel()
+		nonBytesSchema := lode.ParquetSchema{
+			Fields: []lode.ParquetField{
+				{Name: "count", Type: lode.ParquetInt64, Nullable: true},
+			},
+		}
+		nonBytesMap := lode.Parquet[lode.D](nonBytesSchema)
+		var buf bytes.Buffer
+		if err := nonBytesMap.Encode(&buf, []lode.D{{"count": []byte(nil)}}); !errors.Is(err, lode.ErrSchemaViolation) {
+			t.Fatalf("nullable int64 with []byte(nil) = %v, want ErrSchemaViolation", err)
+		}
+	})
 }

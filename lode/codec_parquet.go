@@ -344,8 +344,10 @@ func (c *parquetCodec[T]) recordToRow(record T, index int, accumulators []column
 	for i, fieldName := range c.fieldOrder {
 		field := c.fieldsByName[fieldName]
 		val, exists := c.binder.extractField(record, i)
-		if b, ok := val.([]byte); ok && b == nil {
-			val = nil
+		if field.Type == ParquetBytes {
+			if b, ok := val.([]byte); ok && b == nil {
+				val = nil
+			}
 		}
 		if !exists || val == nil {
 			if !field.Nullable {
