@@ -171,8 +171,13 @@ that prevents open handles or later calls from resurrecting or appending to
 the removed dataset.
 
 After attempting manifest publication, commits and `Sweep` repairs check the
-fence and delete any manifests they may have persisted if fenced. The check
-and deletes share a ten-second timeout independent of caller cancellation.
+fence and delete any manifests they may have persisted if fenced. A commit
+that publishes successfully checks the fence with the caller's context. A
+failed publication, a check prevented or interrupted by caller cancellation,
+or a detected fence triggers reconciliation with a ten-second timeout
+independent of caller cancellation. For `Sweep` repairs, reconciliation
+always starts with the fence check. Any fence check and deletes during
+reconciliation share that timeout.
 When publication also failed, the error preserves both `ErrRemoved` and
 the publication error, plus any cleanup error.
 

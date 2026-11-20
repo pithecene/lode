@@ -207,12 +207,15 @@ volumes/<volume_id>/data/<offset>-<length>-<nonce>.bin
   4. Deletes all manifests, staged manifests, and blocks under
      `volumes/<id>/`, leaving `volumes/<id>/latest` in place as the permanent
      fence so `Latest`, `Head`, and `Commit` return `ErrRemoved`.
-- After advancing the head and attempting canonical manifest publication,
-  a commit checks the removal fence and deletes its attempted manifest and
-  staged copy if fenced. The check and deletes share a ten-second timeout
-  independent of caller cancellation. When publication also failed, the
-  error preserves both `ErrRemoved` and the publication error, plus any
-  cleanup error.
+- After attempting canonical manifest publication, including pending-commit
+  completion, a commit checks the removal fence and deletes any manifest it
+  may have persisted and its staged copy if fenced. A successful publication
+  checks the fence with the caller's context. A failed publication, a check
+  prevented or interrupted by caller cancellation, or a detected fence
+  triggers reconciliation with a ten-second timeout independent of caller
+  cancellation. Any fence check and deletes during reconciliation share that
+  timeout. When publication also failed, the error preserves both
+  `ErrRemoved` and the publication error, plus any cleanup error.
 - If a referenced block returns `lode.ErrNotFound`, `ReadAt` and
   `SnapshotReaderAt.ReadAt` check the removal fence and return `ErrRemoved`
   if the volume was removed.

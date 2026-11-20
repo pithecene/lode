@@ -276,6 +276,53 @@ func assertRemovedPublicationError(t *testing.T, err, putErr error) {
 	}
 }
 
+func TestAudit_SweepReportsRetainedCopyAfterPutError(t *testing.T) {
+	t.Parallel()
+	for _, persist := range []bool{false, true} {
+		name := "write failed before persistence"
+		if persist {
+			name = "write persisted before failure"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			ctx := t.Context()
+			h := openGatedHarness(t, lode.WithLayout(lode.Hive("run_id")))
+			snap := mustWriteDoc(t, h.ds, lode.D{"run_id": "a", "k": "v"})
+			partManifest := "datasets/events/partitions/run_id=a/segments/" + string(snap.ID) + "/manifest.json"
+			if err := h.mem.Delete(ctx, partManifest); err != nil {
+				t.Fatal(err)
+			}
+			putErr := errors.New("repaired manifest Put failed")
+			h.gs.setOnPut(func(ctx context.Context, key string, r io.Reader) error {
+				if key != partManifest {
+					t.Fatalf("repair Put path = %q, want %q", key, partManifest)
+				}
+				if persist {
+					if err := h.mem.Put(ctx, key, r); err != nil {
+						t.Fatal(err)
+					}
+				}
+				return putErr
+			})
+
+			report, err := h.ds.Sweep(ctx, lode.SweepRequest{Grace: time.Nanosecond})
+			if !errors.Is(err, putErr) {
+				t.Fatalf("Sweep = %v, want %v", err, putErr)
+			}
+			if exists, err := h.mem.Exists(ctx, partManifest); err != nil || exists != persist {
+				t.Errorf("Exists(%s) = %t, %v, want %t, nil", partManifest, exists, err, persist)
+			}
+			var want []lode.SnapshotID
+			if persist {
+				want = []lode.SnapshotID{snap.ID}
+			}
+			if !slices.Equal(report.Reindexed, want) {
+				t.Errorf("Reindexed = %v, want %v", report.Reindexed, want)
+			}
+		})
+	}
+}
+
 type headerStreamCodec struct {
 	headerBytes int
 	initErr     error

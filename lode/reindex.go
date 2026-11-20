@@ -95,34 +95,50 @@ func (r sweepRun) reindexOne(ctx context.Context, id SnapshotID) (bool, error) {
 	// Only the snapshot's own data objects name its partitions: an ObjectRef
 	// outside them (§Mixed Snapshots) never places a copy in this dataset.
 	owned := r.ds.splitObjects(id, m.Objects).owned
-	persisted, reindexed, putErr := r.persistMissing(ctx, id, r.ds.allManifestPaths(id, nil, owned), data)
+	persisted, uncertain, putErr := r.persistMissing(ctx, id, r.ds.allManifestPaths(id, nil, owned), data)
+	reindexed := len(persisted) > 0
+	if uncertain != "" {
+		persisted = append(persisted, uncertain)
+	}
 	if len(persisted) == 0 || r.dryRun {
 		return reindexed, putErr
 	}
-	kept, err := r.keepUnlessExpired(ctx, id, persisted)
-	return reindexed && kept, errors.Join(putErr, err)
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), reindexCleanupTimeout)
+	defer cancel()
+	kept, err := r.keepUnlessExpired(cleanupCtx, id, persisted)
+	if !kept || reindexed {
+		return kept, errors.Join(putErr, err)
+	}
+	// An ambiguous Put alone does not establish that the repair wrote a copy.
+	present, existsErr := r.ds.store.Exists(cleanupCtx, uncertain)
+	if existsErr != nil {
+		existsErr = fmt.Errorf("failed to verify repaired manifest %s: %w", uncertain, existsErr)
+	}
+	return present, errors.Join(putErr, err, existsErr)
 }
 
 // persistMissing creates a copy of data at each partition path of snapshot
-// id that the listing does not show. It returns every path it may have
-// created and whether it confirmed at least one new copy, or would create
-// one in a dry run.
-func (r sweepRun) persistMissing(ctx context.Context, id SnapshotID, paths []string, data []byte) (persisted []string, reindexed bool, err error) {
+// id that the listing does not show. It returns confirmed copies (hypothetical
+// in a dry run) and the path of a failed Put that may have reached storage.
+func (r sweepRun) persistMissing(ctx context.Context, id SnapshotID, paths []string, data []byte) ([]string, string, error) {
 	canonical := r.ds.layout.manifestPath(r.ds.id, id)
+	var persisted []string
 	for _, p := range paths {
 		if p == canonical || slices.Contains(r.inv.manifests[id], p) {
 			continue
 		}
 		mayHavePersisted, putErr := r.persistCopy(ctx, p, data)
+		if putErr != nil {
+			if mayHavePersisted {
+				return persisted, p, putErr
+			}
+			return persisted, "", putErr
+		}
 		if mayHavePersisted {
 			persisted = append(persisted, p)
 		}
-		if putErr != nil {
-			return persisted, reindexed, putErr
-		}
-		reindexed = reindexed || mayHavePersisted
 	}
-	return persisted, reindexed, nil
+	return persisted, "", nil
 }
 
 // persistCopy creates the manifest copy at p and reports whether this run
@@ -152,22 +168,20 @@ func (r sweepRun) persistCopy(ctx context.Context, p string, data []byte) (bool,
 // after their deletion pass is seen here and deleted. It reports whether copies
 // may remain, including after a failed check or deletion.
 func (r sweepRun) keepUnlessExpired(ctx context.Context, id SnapshotID, persisted []string) (bool, error) {
-	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), reindexCleanupTimeout)
-	defer cancel()
-	if err := r.ds.history.CheckLive(cleanupCtx); err != nil {
+	if err := r.ds.history.CheckLive(ctx); err != nil {
 		if errors.Is(err, ErrRemoved) {
-			if delErr := deleteObjects(cleanupCtx, r.ds.store, persisted); delErr != nil {
+			if delErr := deleteObjects(ctx, r.ds.store, persisted); delErr != nil {
 				return true, errors.Join(err, delErr)
 			}
 			return false, err
 		}
 		return true, err
 	}
-	absent, err := r.ds.tombstones().absent(cleanupCtx, id)
+	absent, err := r.ds.tombstones().absent(ctx, id)
 	if err != nil || absent {
 		return true, err
 	}
-	if err := deleteObjects(cleanupCtx, r.ds.store, persisted); err != nil {
+	if err := deleteObjects(ctx, r.ds.store, persisted); err != nil {
 		return true, err
 	}
 	return false, nil

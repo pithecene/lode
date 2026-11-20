@@ -160,6 +160,55 @@ func TestAudit_VolumeCommit_PostPublicationFence(t *testing.T) {
 	}
 }
 
+func TestAudit_VolumePendingCompletion_PostPublicationFence(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	mem := lode.NewMemory()
+	gs := &gatedRangeStore{RangeStore: mem}
+	factory := lode.Use[lode.RangeStore](gs)
+	vol := openTestVol(t, "vol-pending", factory)
+	blk := mustStageBlock(t, vol, 0, "hello")
+	putErr := errors.New("volume manifest Put failed")
+	var canonical string
+	gs.setOnPut(func(ctx context.Context, key string, r io.Reader) error {
+		if strings.HasPrefix(key, "volumes/vol-pending/snapshots/") && strings.HasSuffix(key, "/manifest.json") {
+			canonical = key
+			return putErr
+		}
+		return mem.Put(ctx, key, r)
+	})
+	if _, err := vol.Commit(ctx, []volume.BlockRef{blk}, nil); !errors.Is(err, history.ErrManifestUncertain) || !errors.Is(err, putErr) {
+		t.Fatalf("initial Commit = %v, want a failed canonical Put", err)
+	}
+
+	lostResponse := errors.New("pending completion Put response lost")
+	gs.setOnPut(func(ctx context.Context, key string, r io.Reader) error {
+		if key != canonical {
+			t.Fatalf("pending completion Put path = %q, want %q", key, canonical)
+		}
+		// Finish removal's deletion pass before the pending completion lands.
+		if err := volume.Remove(ctx, vol.ID(), factory); !errors.Is(err, lode.ErrHeadUncommitted) {
+			t.Fatalf("first Remove = %v, want ErrHeadUncommitted", err)
+		}
+		if err := volume.Remove(ctx, vol.ID(), factory); err != nil {
+			t.Fatalf("second Remove = %v, want nil", err)
+		}
+		if err := mem.Put(ctx, key, r); err != nil {
+			t.Fatal(err)
+		}
+		return lostResponse
+	})
+	_, err := vol.Commit(ctx, []volume.BlockRef{blk}, nil)
+	for _, want := range []error{volume.ErrRemoved, history.ErrManifestUncertain, lostResponse} {
+		if !errors.Is(err, want) {
+			t.Errorf("pending completion Commit = %v, want it to match %v", err, want)
+		}
+	}
+	if keys, err := mem.List(ctx, "volumes/vol-pending/"); err != nil || !slices.Equal(keys, []string{"volumes/vol-pending/latest"}) {
+		t.Fatalf("remaining keys = %v (err=%v), want only volumes/vol-pending/latest", keys, err)
+	}
+}
+
 func TestAudit_VolumeReadAt_RemovedBlock(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
