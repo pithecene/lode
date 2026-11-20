@@ -33,7 +33,7 @@ and Lode adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
-- **Manifest cleanup after removal**. Dataset and Volume commits and Hive `Sweep` repairs reconcile manifest writes that may have persisted despite a storage error. They preserve the storage error alongside `ErrRemoved` and check the fence and clean up within a bounded context after caller cancellation. Volume reads report `ErrRemoved` when removal deleted a referenced block.
+- **Manifest cleanup after removal**: Dataset and Volume commits and Hive `Sweep` repairs reconcile manifest writes that may have persisted despite a storage error. They preserve the storage error alongside `ErrRemoved` and check the fence and clean up within a bounded context after caller cancellation. Volume reads report `ErrRemoved` when removal deleted a referenced block.
 
 - **Parquet timestamp bounds and nil byte slices**: `Parquet` rejects timestamps outside the signed `int64` nanosecond range with `ErrSchemaViolation`. Map records encode nil byte slices as null and increment `NullCount`.
 
