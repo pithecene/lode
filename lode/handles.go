@@ -301,6 +301,7 @@ func (r *ReadRoot) openView(ctx context.Context, id DatasetID, opts []ViewOption
 		if err != nil {
 			return nil, err
 		}
+		d.anchorLegacyPaths = opened.legacyPaths
 	}
 	return d, nil
 }
