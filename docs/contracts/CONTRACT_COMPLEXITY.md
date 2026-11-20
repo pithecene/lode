@@ -183,6 +183,9 @@ ancestry reads.
 | `Head` | Hot | 1 `Get` (+1 `List` only when pointer absent) | O(1) | O(1) |
 | `Remove` | Cold | 1 `Get` + 1 `CompareAndSwap` + at most 1 `Exists` + 1 `List` + `N` `Delete` calls | O(N) | O(N) |
 
+`ReadAt` and `SnapshotReaderAt.ReadAt` make one additional `Get` to check the
+removal fence if a block read returns `lode.ErrNotFound`.
+
 ---
 
 ## Design Invariant

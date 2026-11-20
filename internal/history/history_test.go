@@ -1236,6 +1236,90 @@ func TestCompletePending(t *testing.T) {
 	})
 }
 
+type publicationCleanupStore struct {
+	*memStore
+	afterPut       func(string)
+	fenceDeadline  time.Time
+	deleteDeadline time.Time
+}
+
+func (s *publicationCleanupStore) Put(ctx context.Context, path string, r io.Reader) error {
+	if err := s.memStore.Put(ctx, path, r); err != nil {
+		return err
+	}
+	s.afterPut(path)
+	return nil
+}
+
+func (s *publicationCleanupStore) Get(ctx context.Context, path string) (io.ReadCloser, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if path == pointer {
+		s.fenceDeadline, _ = ctx.Deadline()
+	}
+	return s.memStore.Get(ctx, path)
+}
+
+func (s *publicationCleanupStore) Delete(ctx context.Context, path string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.deleteDeadline, _ = ctx.Deadline()
+	return s.memStore.Delete(ctx, path)
+}
+
+func TestPublication_CanceledCallerDeletesStagedManifest(t *testing.T) {
+	const snapshot id = "5"
+	canonical := testKind{}.ManifestPath(snapshot)
+	staged := stagingKind{}.StagedPath(snapshot)
+	for _, tc := range []struct {
+		name     string
+		complete bool
+	}{
+		{name: "advance"},
+		{name: "complete pending", complete: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			s := &publicationCleanupStore{
+				memStore: newMemStore(),
+				afterPut: func(path string) {
+					if path == canonical {
+						cancel()
+					}
+				},
+			}
+			errs := testErrors
+			errs.Removed = errors.New("removed")
+			h := New(s, stagingKind{}, pointer, "test manifest", errs)
+			if tc.complete {
+				s.objects[pointer] = []byte(snapshot)
+				putAt(t, s.memStore, staged, "five")
+				if err := h.CompletePending(ctx, snapshot); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := h.Advance(ctx, "", snapshot, &manifest{Tag: "five"}, []string{canonical}); err != nil {
+				t.Fatal(err)
+			}
+
+			if got := string(s.objects[pointer]); got != string(snapshot) {
+				t.Errorf("pointer = %q, want %q", got, snapshot)
+			}
+			if _, exists := s.objects[canonical]; !exists {
+				t.Error("canonical manifest is missing")
+			}
+			if _, exists := s.objects[staged]; exists {
+				t.Error("staged manifest remains after successful publication")
+			}
+			if s.fenceDeadline.IsZero() || !s.fenceDeadline.Equal(s.deleteDeadline) {
+				t.Errorf("fence deadline = %v, delete deadline = %v, want a shared deadline", s.fenceDeadline, s.deleteDeadline)
+			}
+		})
+	}
+}
+
 // TestCompletePending_Removal verifies that a completion never leaves a
 // manifest in a removed history, whenever the removal lands.
 func TestCompletePending_Removal(t *testing.T) {
