@@ -202,10 +202,10 @@ func (r *recordStream[T]) encode(records iter.Seq2[T, error]) error {
 			r.abort(iterErr)
 			return fmt.Errorf("record iterator error: %w", iterErr)
 		}
-		if err := r.write(record); err != nil {
+		if err := r.write(record); err != nil { //nolint:errjoin // reason: each record is written only after the upload is known to be live
 			return err
 		}
-		if err := r.putFailed(); err != nil {
+		if err := r.putFailed(); err != nil { //nolint:errjoin // reason: an upload failure stops the iteration before the next record
 			return err
 		}
 	}

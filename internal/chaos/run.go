@@ -39,7 +39,7 @@ type Config struct {
 // the run and by the final checks.
 func Run(ctx context.Context, cfg Config, store lode.RangeStore) Report {
 	r := &run{cfg: cfg, store: store, ledger: &Ledger{}, until: time.Now().Add(cfg.Duration)}
-	return r.drive(ctx, r.workload())
+	return r.runActors(ctx, r.workload())
 }
 
 // run is one execution of the harness: what every actor and check of it
@@ -77,9 +77,9 @@ var workloads = map[bool]workload{
 
 func (r *run) workload() workload { return workloads[r.cfg.Volume] }
 
-// drive runs the workload's actors to the deadline, waits for every one,
+// runActors runs the workload's actors to the deadline, waits for every one,
 // and then verifies the history they left.
-func (r *run) drive(ctx context.Context, w workload) Report {
+func (r *run) runActors(ctx context.Context, w workload) Report {
 	observing, stop := context.WithDeadline(ctx, r.until)
 	defer stop()
 
