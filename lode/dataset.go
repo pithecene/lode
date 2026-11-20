@@ -232,7 +232,10 @@ type dataset struct {
 	components     components
 	anchorID       SnapshotID
 	anchorManifest []byte // private copy of the validated manifest
-	history        history.History[SnapshotID, Manifest]
+	// anchorLegacyPaths is the 1.1.0 paths object of the anchor manifest,
+	// which the JSON copy omits because the field is unexported.
+	anchorLegacyPaths *legacyManifestPaths
+	history           history.History[SnapshotID, Manifest]
 }
 
 type writer struct {
@@ -369,6 +372,10 @@ func (d *dataset) Snapshot(ctx context.Context, id SnapshotID) (*Snapshot, error
 			var manifest Manifest
 			if err := json.Unmarshal(d.anchorManifest, &manifest); err != nil {
 				return nil, err
+			}
+			if d.anchorLegacyPaths != nil {
+				paths := *d.anchorLegacyPaths
+				manifest.legacyPaths = &paths
 			}
 			return &Snapshot{ID: id, Manifest: &manifest}, nil
 		}

@@ -110,6 +110,32 @@ func putFormat11Manifest(t *testing.T, store Store, manifestKey string, snapID S
 	}
 }
 
+// readAnchoredFormat11 reads a format 1.1.0 snapshot through a view anchored
+// at it. The anchored Snapshot returns the manifest that opening retained,
+// which must keep the 1.1.0 paths object, or OpenDecompressed rejects it.
+func readAnchoredFormat11(t *testing.T, store Store, opts []RootOption, snapID SnapshotID) {
+	t.Helper()
+	ctx := t.Context()
+	view, err := OpenReadOnly(Use(store), opts...).Records(ctx, "events", jsonl, WithAnchor(snapID))
+	if err != nil {
+		t.Fatalf("anchored ReadRoot.Records: %v", err)
+	}
+	if rows, err := view.Read(ctx, snapID); err != nil || len(rows) != 1 {
+		t.Fatalf("anchored Read = %v, %v", rows, err)
+	}
+	snap, err := view.Snapshot(ctx, snapID)
+	if err != nil {
+		t.Fatalf("anchored Snapshot: %v", err)
+	}
+	rc, err := view.OpenDecompressed(ctx, snap.Manifest, snap.Objects[0])
+	if err != nil {
+		t.Fatalf("anchored OpenDecompressed: %v", err)
+	}
+	if err := rc.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRootPaths_ManifestFormat11Compat(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
@@ -157,6 +183,7 @@ func TestRootPaths_ManifestFormat11Compat(t *testing.T) {
 			if _, err := Open(Use(store), tc.opts...).Records(t.Context(), "events", jsonl); err != nil {
 				t.Fatalf("Root.Records: %v", err)
 			}
+			readAnchoredFormat11(t, store, tc.opts, snapID)
 		})
 	}
 

@@ -9,6 +9,10 @@ and Lode adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Anchored views keep the paths of a format 1.1.0 manifest**: Lode v0.12.0 through v0.17.1 wrote format 1.1.0 manifests. A view that `WithAnchor` opens at such a snapshot now keeps the manifest's `paths` object, so `OpenDecompressed` accepts the manifest that `Snapshot` returns. The view's private copy dropped that object, and `OpenDecompressed` returned an invalid manifest error.
+
 ---
 
 ## [0.18.0] - 2026-11-20
