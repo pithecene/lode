@@ -201,6 +201,9 @@ func (h *History[ID, M]) CompletePending(ctx context.Context, id ID) error {
 	if mayHavePersisted {
 		attempted = []string{canonical}
 		putErr = err
+	} else if err != nil {
+		// A failed load did not establish that the commit is complete.
+		staged = ""
 	}
 	if fenceErr := h.reconcilePublication(ctx, "after completing a commit", putErr, staged, mayHavePersisted, attempted); fenceErr != nil {
 		return fenceErr
@@ -208,7 +211,6 @@ func (h *History[ID, M]) CompletePending(ctx context.Context, id ID) error {
 	if err != nil {
 		return err
 	}
-	h.unstage(ctx, staged)
 	if pointed == id {
 		h.remember(id, string(id))
 	}
@@ -905,7 +907,6 @@ func (h *History[ID, M]) Advance(ctx context.Context, expected string, id ID, ma
 	if putErr != nil {
 		return putErr
 	}
-	h.unstage(ctx, staged)
 	if head == id {
 		h.remember(id, string(id))
 	}
@@ -928,21 +929,23 @@ func (h *History[ID, M]) publishManifests(ctx context.Context, id ID, expected s
 	return len(paths), nil
 }
 
-// Removal fences before listing, so a successful fence read after publication
-// either leaves the manifest to removal's later listing or observes the fence.
-// Only a failed publication, caller cancellation, or removal needs a detached
-// timeout. Once observed, the permanent fence is enough to authorize cleanup.
+// reconcilePublication checks the removal fence and removes the staged copy
+// after successful publication. Once observed, the permanent fence is enough
+// to authorize deleting any manifests that the attempt may have persisted.
 func (h *History[ID, M]) reconcilePublication(ctx context.Context, phase string, putErr error, staged string, cleanupStaged bool, attempted []string) error {
-	if h.errs.Removed == nil {
-		return nil
-	}
-
 	var fenceErr error
-	if putErr == nil && ctx.Err() == nil {
+	if putErr == nil && (ctx.Err() == nil || h.errs.Removed == nil) {
 		fenceErr = h.checkRemoval(ctx, phase)
-		if fenceErr == nil || (!errors.Is(fenceErr, h.errs.Removed) && ctx.Err() == nil) {
+		if fenceErr == nil {
+			h.unstagePublished(ctx, staged)
+			return nil
+		}
+		if !errors.Is(fenceErr, h.errs.Removed) && ctx.Err() == nil {
 			return fenceErr
 		}
+	}
+	if h.errs.Removed == nil {
+		return nil
 	}
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), removalCleanupTimeout)
 	defer cancel()
@@ -951,6 +954,9 @@ func (h *History[ID, M]) reconcilePublication(ctx context.Context, phase string,
 	}
 	if errors.Is(fenceErr, h.errs.Removed) {
 		return errors.Join(fenceErr, putErr, h.cleanupRemoved(cleanupCtx, staged, cleanupStaged, attempted))
+	}
+	if fenceErr == nil && putErr == nil {
+		h.unstage(cleanupCtx, staged)
 	}
 	return fenceErr
 }
@@ -1040,9 +1046,19 @@ func (h *History[ID, M]) stage(ctx context.Context, staged string, data []byte) 
 	return true, nil
 }
 
-// unstage removes the staged copy once the canonical manifest is persisted.
-// Best-effort: a copy that remains is never listed, and it duplicates a
-// persisted manifest.
+// unstagePublished allows staged cleanup to finish even if the caller
+// cancels after a successful fence check.
+func (h *History[ID, M]) unstagePublished(ctx context.Context, staged string) {
+	if staged == "" {
+		return
+	}
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), removalCleanupTimeout)
+	defer cancel()
+	h.unstage(cleanupCtx, staged)
+}
+
+// unstage removes a staged copy whose contents are dispensable.
+// Best-effort: a copy that remains is never listed.
 func (h *History[ID, M]) unstage(ctx context.Context, staged string) {
 	if staged != "" {
 		_ = h.store.Delete(ctx, staged)
