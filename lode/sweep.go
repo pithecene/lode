@@ -29,7 +29,7 @@ func (d *writer) Sweep(ctx context.Context, req SweepRequest) (*SweepReport, err
 	}
 	run := sweepRun{
 		ds: d.dataset, inv: inv, dryRun: req.DryRun, cutoff: time.Now().Add(-req.Grace),
-		settled: make(map[SnapshotID]tombstone), cleared: make(map[SnapshotID]bool),
+		settled: make(map[SnapshotID]tombstone), cleared: make(map[SnapshotID]struct{}),
 		held: d.rejectedTombstoneIDs(inv.invalidTombstones),
 	}
 	if err := run.settle(ctx, report); err != nil {
@@ -105,11 +105,11 @@ func (d *dataset) inventoryTombstones(ctx context.Context) (valid []tombstone, i
 // rejectedTombstoneIDs is the snapshots whose tombstone failed validation,
 // named by key. They are held: a tombstone Lode cannot trust says nothing
 // about whether the snapshot's objects are garbage.
-func (d *dataset) rejectedTombstoneIDs(keys []string) map[SnapshotID]bool {
+func (d *dataset) rejectedTombstoneIDs(keys []string) map[SnapshotID]struct{} {
 	prefix := d.layout.tombstonesPrefix(d.id)
-	held := make(map[SnapshotID]bool, len(keys))
+	held := make(map[SnapshotID]struct{}, len(keys))
 	for _, k := range keys {
-		held[SnapshotID(strings.TrimPrefix(k, prefix))] = true
+		held[SnapshotID(strings.TrimPrefix(k, prefix))] = struct{}{}
 	}
 	return held
 }
@@ -173,8 +173,8 @@ type sweepRun struct {
 	dryRun  bool
 	cutoff  time.Time                // an orphan whose write began before this is reclaimed
 	settled map[SnapshotID]tombstone // settled this run or earlier, with its inventory
-	cleared map[SnapshotID]bool      // settled from what this run found, unlisted objects included
-	held    map[SnapshotID]bool      // protected, or its tombstone rejected: never touched
+	cleared map[SnapshotID]struct{}  // settled from what this run found, unlisted objects included
+	held    map[SnapshotID]struct{}  // protected, or its tombstone rejected: never touched
 }
 
 // settle removes the remaining manifests of every tombstoned snapshot,
@@ -209,11 +209,11 @@ func (r sweepRun) settleOne(ctx context.Context, t tombstone, report *SweepRepor
 	}
 	if slices.ContainsFunc(copies, func(m *Manifest) bool { return !t.describes(m) }) {
 		report.Unparseable = append(report.Unparseable, r.ds.layout.tombstonePath(r.ds.id, id))
-		r.held[id] = true
+		r.held[id] = struct{}{}
 		return nil
 	}
 	if r.inv.guard.holdsTombstone(id) {
-		r.held[id] = true
+		r.held[id] = struct{}{}
 		return nil
 	}
 	if len(copies) > 0 && !r.dryRun {
@@ -221,7 +221,7 @@ func (r sweepRun) settleOne(ctx context.Context, t tombstone, report *SweepRepor
 			return err
 		}
 	}
-	r.settled[id], r.cleared[id] = t, true
+	r.settled[id], r.cleared[id] = t, struct{}{}
 	if len(copies) > 0 {
 		report.Settled = append(report.Settled, id)
 	}
@@ -288,7 +288,7 @@ var objectActions = map[objectClass]objectAction{
 // objects; otherwise the guard is not consulted, so a crashed commit's
 // data, which the pointer may still name, ages out like any other orphan.
 func (r sweepRun) classify(id SnapshotID) objectClass {
-	if r.held[id] {
+	if _, held := r.held[id]; held {
 		return classKept
 	}
 	if _, settled := r.settled[id]; settled {

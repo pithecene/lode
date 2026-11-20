@@ -132,7 +132,7 @@ type report struct {
 func check(t *testing.T, packages []string) report {
 	t.Helper()
 	var r report
-	seen := map[string]bool{}
+	seen := map[string]struct{}{}
 	for _, goos := range platforms {
 		l := newLoader(goos)
 		for _, rel := range packages {
@@ -145,8 +145,9 @@ func check(t *testing.T, packages []string) report {
 			a.run()
 			r.constructions += a.constructions
 			for _, v := range a.found {
-				if key := v.String(); !seen[key] {
-					seen[key] = true
+				key := v.String()
+				if _, dup := seen[key]; !dup {
+					seen[key] = struct{}{}
 					r.found = append(r.found, v)
 					r.violations = append(r.violations, key)
 				}
@@ -314,7 +315,7 @@ type analysis struct {
 	// supplied holds the parameters of function literals passed to code
 	// outside Lode, such as a filepath.WalkDir callback: that code supplies
 	// their values, so an error among them comes from outside Lode.
-	supplied      map[*types.Var]bool
+	supplied      map[*types.Var]struct{}
 	found         []violation
 	constructions int
 }
@@ -326,7 +327,7 @@ func newAnalysis(fset *token.FileSet, u unit) *analysis {
 	}
 	return &analysis{
 		fset: fset, unit: u, allowed: allowed,
-		last: map[*types.Var]ast.Expr{}, supplied: map[*types.Var]bool{},
+		last: map[*types.Var]ast.Expr{}, supplied: map[*types.Var]struct{}{},
 	}
 }
 
@@ -403,7 +404,7 @@ func (a *analysis) callbacks(call *ast.CallExpr) {
 		for _, field := range lit.Type.Params.List {
 			for _, name := range field.Names {
 				if v, ok := a.unit.info.Defs[name].(*types.Var); ok {
-					a.supplied[v] = true
+					a.supplied[v] = struct{}{}
 				}
 			}
 		}
@@ -546,21 +547,25 @@ func (a *analysis) origin(e ast.Expr) origin {
 }
 
 func (a *analysis) varOrigin(obj types.Object) origin {
-	return a.traceVar(obj, map[*types.Var]bool{})
+	return a.traceVar(obj, map[*types.Var]struct{}{})
 }
 
 // traceVar follows a variable to the value last assigned to it; seen ends
 // a chain of copies that returns to a variable already followed.
-func (a *analysis) traceVar(obj types.Object, seen map[*types.Var]bool) origin {
+func (a *analysis) traceVar(obj types.Object, seen map[*types.Var]struct{}) origin {
 	v, ok := obj.(*types.Var)
-	if !ok || seen[v] {
+	if !ok {
 		return fromLode
 	}
-	seen[v] = true
+	if _, followed := seen[v]; followed {
+		return fromLode
+	}
+	seen[v] = struct{}{}
+	_, supplied := a.supplied[v]
 	switch {
 	case v.Pkg() != nil && v.Parent() == v.Pkg().Scope():
 		return fromSentinel
-	case a.supplied[v]:
+	case supplied:
 		return fromOutside
 	}
 	switch value := ast.Unparen(a.last[v]).(type) {

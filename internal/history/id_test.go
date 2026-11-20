@@ -57,13 +57,13 @@ func TestSnapshotID(t *testing.T) {
 	// A repeated clock must not repeat an ID (CONTRACT_CORE §Snapshot ID).
 	t.Run("unique within one instant", func(t *testing.T) {
 		const n = 1000
-		seen := make(map[string]bool, n)
+		seen := make(map[string]struct{}, n)
 		for range n {
 			id := NewID()
-			if seen[id] {
+			if _, repeated := seen[id]; repeated {
 				t.Fatalf("NewID repeated %q", id)
 			}
-			seen[id] = true
+			seen[id] = struct{}{}
 			if _, ok := Instant(id); !ok {
 				t.Fatalf("NewID returned %q, not in the generated form", id)
 			}

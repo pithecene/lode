@@ -68,9 +68,9 @@ func FirstInvalid(checks []Check) error {
 
 // nilableKinds are the kinds whose values may be nil inside a non-nil
 // interface value.
-var nilableKinds = map[reflect.Kind]bool{
-	reflect.Pointer: true, reflect.Map: true, reflect.Slice: true,
-	reflect.Func: true, reflect.Chan: true, reflect.Interface: true,
+var nilableKinds = map[reflect.Kind]struct{}{
+	reflect.Pointer: {}, reflect.Map: {}, reflect.Slice: {},
+	reflect.Func: {}, reflect.Chan: {}, reflect.Interface: {},
 }
 
 // Nil reports whether v is nil or holds a nil pointer, map, slice,
@@ -81,5 +81,6 @@ func Nil(v any) bool {
 		return true
 	}
 	rv := reflect.ValueOf(v)
-	return nilableKinds[rv.Kind()] && rv.IsNil()
+	_, nilable := nilableKinds[rv.Kind()]
+	return nilable && rv.IsNil()
 }

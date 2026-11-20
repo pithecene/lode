@@ -51,7 +51,8 @@ func (r sweepRun) reindex(ctx context.Context, report *SweepReport) error {
 // ErrPathExists (CONTRACT_RETENTION §Grace Period).
 func (r sweepRun) mayReindex(id SnapshotID) bool {
 	_, settled := r.settled[id]
-	if settled || r.held[id] {
+	_, held := r.held[id]
+	if settled || held {
 		return false
 	}
 	if !slices.Contains(r.inv.manifests[id], r.ds.layout.manifestPath(r.ds.id, id)) {
@@ -65,13 +66,17 @@ func (r sweepRun) mayReindex(id SnapshotID) bool {
 // partition without a listed manifest of the snapshot. It decides from the
 // listing alone, so a complete index costs no store call.
 func (r sweepRun) indexGap(id SnapshotID) bool {
-	indexed := make(map[string]bool, len(r.inv.manifests[id]))
+	indexed := make(map[string]struct{}, len(r.inv.manifests[id]))
 	for _, p := range r.inv.manifests[id] {
-		indexed[r.ds.layout.extractPartitionPath(p)] = true
+		indexed[r.ds.layout.extractPartitionPath(p)] = struct{}{}
 	}
 	return slices.ContainsFunc(r.inv.dataOf[id], func(p string) bool {
 		partition := r.ds.layout.extractPartitionPath(p)
-		return partition != "" && !indexed[partition]
+		if partition == "" {
+			return false
+		}
+		_, ok := indexed[partition]
+		return !ok
 	})
 }
 

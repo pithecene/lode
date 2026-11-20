@@ -63,7 +63,7 @@ func SingleProcess(store ObjectStore) Store {
 		ObjectStore: store,
 		mu:          newSingleProcessLock(),
 		busy:        make(map[string]chan struct{}),
-		journaled:   make(map[string]bool),
+		journaled:   make(map[string]struct{}),
 	}
 	ranges, hasRanges := store.(RangeReader)
 	prefixes, hasPrefixes := store.(PrefixLister)
@@ -91,7 +91,7 @@ type singleProcessStore struct {
 	mu        singleProcessLock
 	stateMu   sync.Mutex
 	busy      map[string]chan struct{}
-	journaled map[string]bool
+	journaled map[string]struct{}
 }
 
 // singleProcessLock admits one writer at a time. An admitted writer blocks
@@ -206,7 +206,7 @@ func (s *singleProcessStore) releaseKey(key string, ch chan struct{}) {
 func (s *singleProcessStore) setJournaled(key string, v bool) {
 	s.stateMu.Lock()
 	if v {
-		s.journaled[key] = true
+		s.journaled[key] = struct{}{}
 	} else {
 		delete(s.journaled, key)
 	}
@@ -216,7 +216,8 @@ func (s *singleProcessStore) setJournaled(key string, v bool) {
 func (s *singleProcessStore) isJournaled(key string) bool {
 	s.stateMu.Lock()
 	defer s.stateMu.Unlock()
-	return s.journaled[key]
+	_, ok := s.journaled[key]
+	return ok
 }
 
 func (s *singleProcessStore) checkPutPreconditions(ctx context.Context, key string) error {

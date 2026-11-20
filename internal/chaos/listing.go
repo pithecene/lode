@@ -24,7 +24,7 @@ func (v *verifier) listingsCover(ctx context.Context) []string {
 	}
 	var bad []string
 	for _, id := range v.chain.ids() {
-		if !listed[id] {
+		if _, ok := listed[id]; !ok {
 			bad = append(bad, fmt.Sprintf("committed %s is missing from unfiltered Manifests", id))
 		}
 	}
@@ -36,14 +36,14 @@ func (v *verifier) partitionsCover(ctx context.Context) []string {
 	if err != nil {
 		return []string{fmt.Sprintf("ListPartitions: %v", err)}
 	}
-	have := make(map[string]bool, len(parts))
+	have := make(map[string]struct{}, len(parts))
 	for _, p := range parts {
-		have[p.String()] = true
+		have[p.String()] = struct{}{}
 	}
 	var bad []string
 	for _, id := range v.chain.ids() {
 		for _, p := range partitionsOf(v.snapshots[id].Objects) {
-			if !have[p] {
+			if _, ok := have[p]; !ok {
 				bad = append(bad, fmt.Sprintf("partition %s of committed %s is missing from ListPartitions", p, id))
 			}
 		}
@@ -56,7 +56,7 @@ func (v *verifier) partitionsCover(ctx context.Context) []string {
 // an index that a fault left incomplete (CONTRACT_RETENTION §Definition,
 // step 3).
 func (v *verifier) indexRestored(ctx context.Context) []string {
-	byPartition := make(map[string]map[lode.SnapshotID]bool)
+	byPartition := make(map[string]map[lode.SnapshotID]struct{})
 	var bad []string
 	for _, id := range v.chain.ids() {
 		for _, partition := range partitionsOf(v.snapshots[id].Objects) {
@@ -68,7 +68,7 @@ func (v *verifier) indexRestored(ctx context.Context) []string {
 				}
 				byPartition[partition] = listed
 			}
-			if !listed[id] {
+			if _, ok := listed[id]; !ok {
 				bad = append(bad, fmt.Sprintf("after the final sweep, committed %s is missing from Manifests(%s)", id, partition))
 			}
 		}
@@ -77,7 +77,7 @@ func (v *verifier) indexRestored(ctx context.Context) []string {
 }
 
 // listedIn lists the snapshots under one partition, given as stored.
-func (v *verifier) listedIn(ctx context.Context, partition string) (map[lode.SnapshotID]bool, error) {
+func (v *verifier) listedIn(ctx context.Context, partition string) (map[lode.SnapshotID]struct{}, error) {
 	path, err := lode.ParsePartitionPath(partition)
 	if err != nil {
 		return nil, err
@@ -87,13 +87,13 @@ func (v *verifier) listedIn(ctx context.Context, partition string) (map[lode.Sna
 
 // listed returns the snapshot IDs that Manifests yields under partition, the
 // zero value for the whole dataset.
-func (v *verifier) listed(ctx context.Context, partition lode.PartitionPath) (map[lode.SnapshotID]bool, error) {
-	ids := make(map[lode.SnapshotID]bool)
+func (v *verifier) listed(ctx context.Context, partition lode.PartitionPath) (map[lode.SnapshotID]struct{}, error) {
+	ids := make(map[lode.SnapshotID]struct{})
 	for lm, err := range v.ds.Manifests(ctx, partition, lode.ManifestListOptions{}) {
 		if err != nil {
 			return nil, err
 		}
-		ids[lm.Ref.ID] = true
+		ids[lm.Ref.ID] = struct{}{}
 	}
 	return ids, nil
 }
@@ -103,7 +103,7 @@ func (v *verifier) listed(ctx context.Context, partition lode.PartitionPath) (ma
 // "partitions/" and "/segments/". An object of an unpartitioned layout has
 // none.
 func partitionsOf(objects []lode.ObjectRef) []string {
-	seen := make(map[string]bool)
+	seen := make(map[string]struct{})
 	var partitions []string
 	for _, obj := range objects {
 		_, rest, ok := strings.Cut(obj.Path, "/partitions/")
@@ -111,8 +111,11 @@ func partitionsOf(objects []lode.ObjectRef) []string {
 			continue
 		}
 		partition, _, ok := strings.Cut(rest, "/segments/")
-		if ok && !seen[partition] {
-			seen[partition] = true
+		if !ok {
+			continue
+		}
+		if _, dup := seen[partition]; !dup {
+			seen[partition] = struct{}{}
 			partitions = append(partitions, partition)
 		}
 	}
