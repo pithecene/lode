@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/pithecene/lode/internal/history"
+	"github.com/pithecene/lode/internal/testutil"
 	"github.com/pithecene/lode/lode"
 )
 
@@ -228,6 +229,7 @@ func TestAudit_AdvancePostPublicationFence_DatasetAndHive(t *testing.T) {
 		t.Parallel()
 		h := openGatedHarness(t, lode.WithLayout(lode.Hive("run_id")))
 		snap := mustWriteDoc(t, h.ds, lode.D{"run_id": "a", "n": 1})
+		testutil.AwaitClockPast(t, string(snap.ID))
 		partManifest := "datasets/events/partitions/run_id=a/segments/" + string(snap.ID) + "/manifest.json"
 		if err := h.mem.Delete(t.Context(), partManifest); err != nil {
 			t.Fatal(err)
@@ -288,6 +290,7 @@ func TestAudit_SweepReportsRetainedCopyAfterPutError(t *testing.T) {
 			ctx := t.Context()
 			h := openGatedHarness(t, lode.WithLayout(lode.Hive("run_id")))
 			snap := mustWriteDoc(t, h.ds, lode.D{"run_id": "a", "k": "v"})
+			testutil.AwaitClockPast(t, string(snap.ID))
 			partManifest := "datasets/events/partitions/run_id=a/segments/" + string(snap.ID) + "/manifest.json"
 			if err := h.mem.Delete(ctx, partManifest); err != nil {
 				t.Fatal(err)
