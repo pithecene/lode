@@ -344,6 +344,11 @@ func (c *parquetCodec[T]) recordToRow(record T, index int, accumulators []column
 	for i, fieldName := range c.fieldOrder {
 		field := c.fieldsByName[fieldName]
 		val, exists := c.binder.extractField(record, i)
+		if field.Type == ParquetBytes {
+			if b, ok := val.([]byte); ok && b == nil {
+				val = nil
+			}
+		}
 		if !exists || val == nil {
 			if !field.Nullable {
 				return nil, fmt.Errorf("parquet: %w: record %d missing required field %q", ErrSchemaViolation, index, fieldName)
@@ -936,13 +941,13 @@ func convertToParquetValue(val any, field ParquetField, index int) (parquet.Valu
 	case ParquetTimestamp:
 		switch v := val.(type) {
 		case time.Time:
-			return parquet.Int64Value(v.UnixNano()), nil
+			return parquetTimestampValue(v, field, index)
 		case string:
 			t, err := time.Parse(time.RFC3339Nano, v)
 			if err != nil {
 				return parquet.Value{}, fmt.Errorf("parquet: %w: record %d field %q: invalid timestamp: %w", ErrSchemaViolation, index, field.Name, err)
 			}
-			return parquet.Int64Value(t.UnixNano()), nil
+			return parquetTimestampValue(t, field, index)
 		default:
 			return parquet.Value{}, fmt.Errorf("parquet: %w: record %d field %q: expected time.Time, got %T", ErrSchemaViolation, index, field.Name, val)
 		}
@@ -950,6 +955,24 @@ func convertToParquetValue(val any, field ParquetField, index int) (parquet.Valu
 	default:
 		return parquet.Value{}, fmt.Errorf("parquet: %w: record %d field %q: unknown type %d", ErrSchemaViolation, index, field.Name, field.Type)
 	}
+}
+
+var (
+	minParquetTimestamp = time.Unix(0, math.MinInt64).UTC()
+	maxParquetTimestamp = time.Unix(0, math.MaxInt64).UTC()
+)
+
+func parquetTimestampValue(t time.Time, field ParquetField, index int) (parquet.Value, error) {
+	if t.Before(minParquetTimestamp) || t.After(maxParquetTimestamp) {
+		return parquet.Value{}, fmt.Errorf(
+			"parquet: %w: record %d field %q: timestamp %s outside int64 nanosecond range [%s, %s]",
+			ErrSchemaViolation, index, field.Name,
+			t.UTC().Format(time.RFC3339Nano),
+			minParquetTimestamp.Format(time.RFC3339Nano),
+			maxParquetTimestamp.Format(time.RFC3339Nano),
+		)
+	}
+	return parquet.Int64Value(t.UnixNano()), nil
 }
 
 func convertFromParquetValue(val parquet.Value, col decodeColumn) any {

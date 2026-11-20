@@ -128,7 +128,11 @@ fails with `ErrSchemaViolation`).
 
 #### Map (`lode.D`) Binding Rules
 - Required (`Nullable: false`) fields MUST be present with a non-nil value on
-  every record (`ErrSchemaViolation` otherwise).
+  every record (`ErrSchemaViolation` otherwise). For `ParquetBytes`, a typed
+  `[]byte(nil)` value in a map record is treated identically to `nil` (encoding
+  as null with `NullCount` incremented when `Nullable: true`, and failing with
+  `ErrSchemaViolation` when `Nullable: false`), matching struct `[]byte`
+  fields.
 - Extra map keys not present in `schema.Fields` are ignored without error.
 - `Decode` returns `[]T` where each map contains every field in
   `schema.Fields` (with `nil` for null values, including nullable columns
@@ -163,6 +167,12 @@ Explicit coercions and overflow checks:
   UTC instant. Other annotations and bare integers yield `ErrInvalidFormat`.
 - RFC 3339 / RFC 3339Nano strings convert to `ParquetTimestamp`; invalid
   timestamp strings fail with `ErrSchemaViolation`.
+- Because `ParquetTimestamp` is stored physically as a signed `int64` UTC
+  nanosecond count since the Unix epoch, `time.Time` values (including the Go
+  zero `time.Time{}`) and RFC 3339 timestamp strings outside
+  `[1677-09-21T00:12:43.145224192Z, 2262-04-11T23:47:16.854775807Z]`
+  (`[time.Unix(0, math.MinInt64), time.Unix(0, math.MaxInt64)]`) MUST fail
+  with `ErrSchemaViolation` before conversion or statistics collection.
 
 ---
 
