@@ -162,7 +162,7 @@ validated as a single canonical path segment (non-empty, not `.` or `..`, no
 
 ### `SingleProcess(store)`
 - Wraps an `ObjectStore` that lacks conditional writes with a process-local
-  `sync.RWMutex` implementing `CompareAndSwap`. Before deleting `<path>`,
+  reader-writer lock implementing `CompareAndSwap`. Before deleting `<path>`,
   `CompareAndSwap` writes the verified prior content to `<path>.lode-cas`,
   restores `<path>` on replacement `Put` failure, and serves `<path>.lode-cas`
   across `Get`, `Exists`, `List`, `ReadRange`, `ReaderAt`, and subsequent
@@ -172,7 +172,21 @@ validated as a single canonical path segment (non-empty, not `.` or `..`, no
   `ErrInvalidPath`.
 - `Get`, `Exists`, `List`, `ReadRange`, `ListPrefixes`, and every `ReadAt` call
   on a returned `ReaderAt` hold the read lock so in-process readers never
-  observe the transient replacement gap.
+  observe the transient replacement gap. A reader opened on the journal
+  resolves the logical key on every `ReadAt` call, checking `<path>` first
+  and then `<path>.lode-cas`. A reader opened on the target resolves the key
+  again if its underlying `ReadAt` returns `ErrNotFound`. Temporary readers
+  that implement `io.Closer` are closed after use. Other read errors pass
+  through unchanged.
+- `Delete` removes the journal before an existing target. `ErrNotFound` counts
+  as successful journal cleanup in this case. Any other journal deletion
+  error leaves the target intact. A journal without a target is the logical
+  object, and `Delete` returns the result of deleting it. When both keys are
+  absent, `Delete` returns the underlying result for the target key.
+- `CompareAndSwap` and `Delete` return `ctx.Err()` if canceled while waiting
+  for the exclusive lock. When `CompareAndSwap` observes cancellation before
+  a replacement `Put`, it returns `ctx.Err()` and preserves the verified
+  prior content at the target or in the journal.
 - Returns stores that already satisfy `Store` unchanged, and returns `nil`
   for `nil` and typed-nil stores. Preserves `RangeReader` and `PrefixLister`.
 
@@ -226,3 +240,6 @@ type ConditionalWriter interface {
 | `ReaderAt` | 1 to open + 1 per `ReadAt` | O(L) per read |
 | `List` | `⌈N/page⌉` | O(N) materialized |
 | `ListPrefixes` | `⌈P_child/page⌉` | O(P_child) |
+
+See [Store Interface](CONTRACT_COMPLEXITY.md#store-interface) for the
+`SingleProcess` bounds for `Delete` and `ReaderAt`.

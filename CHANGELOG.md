@@ -43,6 +43,8 @@ and Lode adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - **Single-process CAS recovery and store path checks**: `SingleProcess` journals the prior value before replacement, holds the read lock during `ReadAt`, and rejects typed-nil stores. `FS` honors context deadlines during lock waits, ignores directories on object reads, lists intermediate `.lode-tmp-` prefixes, and resolves root paths. All adapters reject rooted, empty, and dot-segment keys and prefixes.
 
+- **Single-process journal recovery and cancellation**: Journal-backed readers follow the target after CAS recovery. A failed journal deletion leaves the current target readable. CAS and Delete honor cancellation while waiting for the lock, and CAS preserves the prior value if canceled before writing the replacement.
+
 - **Commit ancestry after a lost CAS response**: Writers follow persisted parent links when a concurrent writer has advanced the head. A confirmed ancestor keeps its original parent. An incomplete or cyclic chain leaves the attempt uncertain and preserves its staged data.
 
 - **Parquet projection and timestamps**: External files can contain extra nested columns. The decoder maps requested fields to physical leaves and honors UTC timestamp units.
