@@ -193,8 +193,8 @@ holds the same documents:
 
 ## Status
 
-The latest tagged release of Lode is **v0.17.1**, with the unified v1.0 API
-surface on `main` ahead of **v1.0.0**.
+The latest tagged release of Lode is **v0.18.0**, which carries the unified
+v1.0 API surface ahead of **v1.0.0**.
 [`docs/plans/V1_API_DECISIONS.md`](docs/plans/V1_API_DECISIONS.md) records the
 API decisions settled for v1.0, and [`CHANGELOG.md`](CHANGELOG.md) describes
 each release.

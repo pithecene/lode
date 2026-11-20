@@ -9,6 +9,10 @@ and Lode adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+---
+
+## [0.18.0] - 2026-11-20
+
 ### Added
 
 - **`OpenDecompressed` on dataset handles and views**: `*Records[T]`, `*RecordView[T]`, `*Blobs`, and `*BlobView` now expose `OpenDecompressed(ctx, manifest, obj)` to stream decompressed object bytes in constant memory while verifying any recorded checksum at `io.EOF`.
@@ -580,7 +584,8 @@ and Lode adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 <!-- jscpd:ignore-start -->
 
-[Unreleased]: https://github.com/pithecene/lode/compare/v0.17.1...HEAD
+[Unreleased]: https://github.com/pithecene/lode/compare/v0.18.0...HEAD
+[0.18.0]: https://github.com/pithecene/lode/compare/v0.17.1...v0.18.0
 [0.17.1]: https://github.com/pithecene/lode/compare/v0.17.0...v0.17.1
 [0.17.0]: https://github.com/pithecene/lode/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/pithecene/lode/compare/v0.15.0...v0.16.0
