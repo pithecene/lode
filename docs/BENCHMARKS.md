@@ -87,18 +87,20 @@ count does not; each byte ceiling is the measured figure rounded up to the
 next 64 bytes, because map growth in the in-memory store varies it by a few
 bytes. The Read gate's allocation count also depends on the snapshot it
 reads. `encoding/json/v2` caches decoded strings in 256 slots chosen by a hash
-of each string's first and last 8 bytes. A snapshot's ID and `created_at`
-change with every write, so either can share a slot with a string that every
-Read decodes. The two strings then evict each other, and each costs one more
-allocation per Read. The gate measures 60, and its ceiling of 64 holds the
-worst case of both varying strings colliding. The ceilings below were measured
+of each string's first and last 8 bytes. Of the strings that a Read decodes,
+only the snapshot ID changes in those bytes from write to write; the object
+path changes only in its middle, and `created_at` decodes as a time without
+the cache. When the ID shares a slot with a string that every Read decodes,
+the two evict each other, and each costs one more allocation per Read. The
+gate measures 60, and its ceiling of 62 holds that one collision. The
+ceilings below were measured
 with Go 1.27.3; the benchmark
 figures in the other sections were measured with Go 1.25.
 
 | Gate | Allocations | Bytes |
 |------|------------:|------:|
 | Write of three records | 53 | 6,656 |
-| Read of three records | 64 | 10,368 |
+| Read of three records | 62 | 10,368 |
 | Blob StreamWrite of one kibibyte | 31 | 7,232 |
 | Record StreamWrite of three records | 63 | 7,296 |
 | JSONL Decode of three records | 33 | 5,504 |
