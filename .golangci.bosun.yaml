@@ -10,8 +10,11 @@ linters:
     - osexitscope
     - spawnscope
     - testtable
+    - unused
     - useany
   settings:
+    unused:
+      field-writes-are-uses: false
     custom:
       errjoin:
         type: module
