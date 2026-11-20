@@ -87,11 +87,11 @@ Opening a handle or view writes nothing to storage.
 
 | Operation | Store Calls (warm) | Store Calls (cold) | Memory |
 |-----------|-------------------|--------------------|--------|
-| `Records.Write` (unpartitioned) | 3–4 fixed (`Put` data + CAS + `Put` manifest) | scan fallback | O(R + encoded) |
-| `Records.Write` (`P` partitions) | `2P + 2` to `2P + 3` (`P` data `Put` + CAS + `1 + P` manifest `Put`) | scan fallback | O(R + encoded) |
-| `Blobs.Write` | 3–4 fixed | scan fallback | O(payload) |
-| `Blobs.StreamWrite` | 3–4 fixed | scan fallback | O(1) streaming |
-| `Records.StreamWrite` | 3–4 fixed | scan fallback | O(1) streaming |
+| `Records.Write` (unpartitioned) | 4–5 fixed (`Put` data + CAS + `Put` manifest + `Get` pointer) | scan fallback | O(R + encoded) |
+| `Records.Write` (`P` partitions) | `2P + 3` to `2P + 4` (`P` data `Put` + CAS + `1 + P` manifest `Put` + `Get` pointer) | scan fallback | O(R + encoded) |
+| `Blobs.Write` | 4–5 fixed | scan fallback | O(payload) |
+| `Blobs.StreamWrite` | 4–5 fixed | scan fallback | O(1) streaming |
+| `Records.StreamWrite` | 4–5 fixed | scan fallback | O(1) streaming |
 
 One-time cold/first-commit additions:
 - A dataset's first commit (or commits on a writer that adopted a pending
@@ -127,9 +127,9 @@ ancestry reads.
 |-----------|------|-------------|--------|
 | `ListDatasets` (with `PrefixLister`) | Cold | 1 `ListPrefixes` + `D` pointer `Get` calls + at most `2D` `Exists` calls (per-dataset `List` only when pointerless or pending) | O(D) |
 | `ListDatasets` (without `PrefixLister`) | Cold | 1 `List` + `D` pointer `Get` calls | O(N) |
-| `ListPartitions` (Hive, fully indexed) | Cold | 1 `List` + 1 pointer `Get` | O(N) |
-| `ListPartitions` (Hive, `C` canonical-only) | Cold | 1 `List` + `1 + C` `Get` calls | O(N + manifest) |
-| `Manifests` (`M` yielded) | Cold | 1 `List` + `1 + M` `Get` calls | O(N + manifest) |
+| `ListPartitions` (Hive, fully indexed) | Cold | 1 `List` + 1 pointer `Get` (+1 `expired/` `List` when `Prefix` set) | O(N) |
+| `ListPartitions` (Hive, `C` canonical-only) | Cold | 1 `List` + `1 + C` `Get` calls (+1 `expired/` `List` when `Prefix` set) | O(N + manifest) |
+| `Manifests` (`M` yielded) | Cold | 1 `List` + `1 + M` `Get` calls (+1 `expired/` `List` when `partition` set) | O(N + manifest) |
 | `Root.RemoveDataset` | Cold | 1 `Get` + 1 `CompareAndSwap` + at most 2 `Exists` + 1 `List` + `N` `Delete` calls | O(N) |
 
 - `ListPartitions` derives partition paths directly from listed
@@ -137,6 +137,9 @@ ancestry reads.
   snapshots (`C = 0` in steady state).
 - `Manifests` loads and validates only the `M` manifests yielded within the
   `(StartAfter, Limit)` window.
+- When tombstones exist, `Snapshots`, `ListPartitions`, and `Manifests` check
+  tombstone validity and canonical manifest presence only for tombstoned
+  snapshot IDs lacking a loaded canonical manifest.
 
 ---
 
@@ -155,7 +158,7 @@ ancestry reads.
 | Operation | Path | Store Calls | Memory | CPU |
 |-----------|------|-------------|--------|-----|
 | `StageWriteAt` | Hot | 1 `Put` | O(block) | O(block) |
-| `Commit` (warm) | Hot | 5 fixed (`Get` parent + `Put` staged + CAS + `Put` canonical + `Delete` staged) | O(B) | O(B + K log K) |
+| `Commit` (warm) | Hot | 6 fixed (`Get` parent + `Put` staged + CAS + `Put` canonical + `Get` pointer + `Delete` staged) | O(B) | O(B + K log K) |
 | `Commit` (cold) | Degraded | +1 `List` | +O(N) | +O(N) |
 | `ReadAt` | Hot | 1 `Get` + `R` `ReadRange` | O(L) | O(log B + R) |
 | `ReaderAt` | Hot | 1 `Get` | O(B) | O(B) |

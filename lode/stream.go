@@ -63,48 +63,39 @@ type dataStream struct {
 	reader *io.PipeReader
 	pipe   *io.PipeWriter
 	comp   io.WriteCloser
-	count  *countingWriter
+	count  countingWriter
 	hasher HashWriter
-	put    *putResult
-}
-
-func (d *writer) newStream(id SnapshotID, role string) (*dataStream, error) {
-	pr, pw := io.Pipe()
-	count := &countingWriter{w: pw}
-
-	var sink io.Writer = count
-	var hasher HashWriter
-	if d.components.checksum != nil {
-		hasher = d.components.checksum.NewHasher()
-		sink = io.MultiWriter(count, hasher)
-	}
-
-	comp, err := d.components.compressor.Compress(sink)
-	if err != nil {
-		_ = pw.Close()
-		return nil, fmt.Errorf("failed to create compressor: %w", err)
-	}
-	return &dataStream{
-		path:   d.filePath(id, "", role),
-		reader: pr,
-		pipe:   pw,
-		comp:   comp,
-		count:  count,
-		hasher: hasher,
-	}, nil
+	put    putResult
 }
 
 func (d *writer) openStream(ctx context.Context, id SnapshotID, role string) (*dataStream, error) {
-	s, err := d.newStream(id, role)
-	if err != nil {
-		return nil, err
+	pr, pw := io.Pipe()
+	path := d.filePath(id, "", role)
+	s := &dataStream{
+		path:   path,
+		reader: pr,
+		pipe:   pw,
+		count:  countingWriter{w: pw},
 	}
-	s.start(ctx, d.store)
-	return s, nil
-}
 
-func (s *dataStream) start(ctx context.Context, store Store) {
-	s.put = startPut(ctx, store, s.path, s.reader)
+	var sink io.Writer = &s.count
+	if d.components.checksum != nil {
+		s.hasher = d.components.checksum.NewHasher()
+		sink = io.MultiWriter(&s.count, s.hasher)
+	}
+
+	s.put.start(ctx, d.store, path, pr)
+	comp, err := d.components.compressor.Compress(sink)
+	if err != nil {
+		fromPut, cause := s.put.rootCause(err)
+		s.abort(cause)
+		if fromPut {
+			return nil, fmt.Errorf("failed to write data: %w", cause)
+		}
+		return nil, fmt.Errorf("failed to create compressor: %w", cause)
+	}
+	s.comp = comp
+	return s, nil
 }
 
 func (s *dataStream) Write(p []byte) (int, error) {
@@ -115,9 +106,6 @@ func (s *dataStream) Write(p []byte) (int, error) {
 }
 
 func (s *dataStream) failed() error {
-	if s.put == nil {
-		return nil
-	}
 	if finished, err := s.put.poll(); finished {
 		return err
 	}
@@ -144,18 +132,30 @@ func (s *dataStream) finish() (ObjectRef, error) {
 
 func (s *dataStream) fail(step string, err error, upstream ...io.Closer) error {
 	fromPut, cause := s.put.rootCause(err)
+	s.closePipe(cause)
 	for _, c := range upstream {
 		_ = c.Close()
 	}
-	s.abort(cause)
+	_ = s.put.wait()
 	if fromPut {
 		return fmt.Errorf("failed to write data: %w", cause)
 	}
 	return fmt.Errorf("failed to close %s: %w", step, cause)
 }
 
-func (s *dataStream) abort(cause error) {
+func (s *dataStream) closePipe(cause error) {
+	if cause == nil {
+		cause = io.ErrClosedPipe
+	}
+	_ = s.reader.CloseWithError(cause)
 	_ = s.pipe.CloseWithError(cause)
+}
+
+func (s *dataStream) abort(cause error) {
+	s.closePipe(cause)
+	if s.comp != nil {
+		_ = s.comp.Close()
+	}
 	_ = s.put.wait()
 }
 
@@ -168,17 +168,19 @@ type recordStream[T any] struct {
 }
 
 func openRecordStream[T any](ctx context.Context, d *writer, id SnapshotID, codec StreamingCodec[T], timestamped bool) (*recordStream[T], error) {
-	s, err := d.newStream(id, dataFile)
+	s, err := d.openStream(ctx, id, dataFile)
 	if err != nil {
 		return nil, err
 	}
 	encoder, err := codec.NewStreamEncoder(s.comp)
 	if err != nil {
-		_ = s.comp.Close()
-		_ = s.pipe.Close()
-		return nil, fmt.Errorf("failed to create stream encoder: %w", err)
+		fromPut, cause := s.put.rootCause(err)
+		s.abort(cause)
+		if fromPut {
+			return nil, fmt.Errorf("failed to write data: %w", cause)
+		}
+		return nil, fmt.Errorf("failed to create stream encoder: %w", cause)
 	}
-	s.start(ctx, d.store)
 	return &recordStream[T]{dataStream: s, encoder: encoder, timestamped: timestamped}, nil
 }
 
@@ -238,9 +240,12 @@ func (r *recordStream[T]) finish() (ObjectRef, error) {
 }
 
 func (r *recordStream[T]) abort(cause error) {
+	r.closePipe(cause)
 	_ = r.encoder.Close()
-	_ = r.comp.Close()
-	r.dataStream.abort(cause)
+	if r.comp != nil {
+		_ = r.comp.Close()
+	}
+	_ = r.put.wait()
 }
 
 type putResult struct {
@@ -250,17 +255,25 @@ type putResult struct {
 	err      error
 }
 
-func startPut(ctx context.Context, store Store, path string, pr *io.PipeReader) *putResult {
-	r := &putResult{done: make(chan struct{})}
+func (r *putResult) start(ctx context.Context, store Store, path string, pr *io.PipeReader) {
+	r.done = make(chan struct{})
+	var stopCancel func() bool
+	if ctx.Done() != nil {
+		stopCancel = context.AfterFunc(ctx, func() {
+			_ = pr.CloseWithError(ctx.Err())
+		})
+	}
 	go func() {
 		err := store.Put(ctx, path, pr)
+		if stopCancel != nil {
+			stopCancel()
+		}
 		r.mu.Lock()
 		r.err, r.finished = err, true
 		r.mu.Unlock()
 		_ = pr.CloseWithError(err)
 		close(r.done)
 	}()
-	return r
 }
 
 func (r *putResult) wait() error {

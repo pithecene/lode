@@ -374,7 +374,7 @@ func (h *History[ID, M]) Snapshots(ctx context.Context) ([]*Snapshot[ID, M], err
 	for _, e := range entries {
 		// A manifest an expiry deleted after the listing is skipped, not
 		// reported (CONTRACT_RETENTION §Lineage).
-		s, err := h.loadEntry(ctx, e)
+		s, err := h.loadSnapshotEntry(ctx, e)
 		if errors.Is(err, h.errs.NotFound) {
 			continue
 		}
@@ -384,6 +384,13 @@ func (h *History[ID, M]) Snapshots(ctx context.Context) ([]*Snapshot[ID, M], err
 		out = append(out, s)
 	}
 	return out, nil
+}
+
+func (h *History[ID, M]) loadSnapshotEntry(ctx context.Context, e manifestEntry[ID]) (*Snapshot[ID, M], error) {
+	if !slices.Contains(e.paths, h.kind.ManifestPath(e.id)) {
+		return h.loadUnexpired(ctx, e)
+	}
+	return h.loadEntry(ctx, e)
 }
 
 // ListByCreation returns the container's public snapshots in creation order.
@@ -879,29 +886,64 @@ func (h *History[ID, M]) Advance(ctx context.Context, expected string, id ID, ma
 		return fmt.Errorf("lode: failed to marshal %s: %w", h.noun, err)
 	}
 	staged := h.stagedPath(id, expected)
-	if err := h.stage(ctx, staged, data); err != nil {
+	stagedWrote, err := h.stage(ctx, staged, data)
+	if err != nil {
 		return fmt.Errorf("failed to stage %s: %w", h.noun, err)
 	}
-	head, err := h.advancePointer(ctx, expected, id, staged)
+	head, err := h.advancePointer(ctx, expected, id, staged, stagedWrote)
 	if err != nil {
 		return err
 	}
-	for _, p := range paths {
-		if err := h.store.Put(ctx, p, bytes.NewReader(data)); err != nil {
-			// The pointer now names id, so the remembered head and pointer
-			// are stale: the next Resolve consults storage and adopts id.
-			h.Forget()
-			return manifestUncertain{fmt.Errorf("failed to write %s: %w", h.noun, err)}
+	written, putErr := h.publishManifests(ctx, id, expected, data, paths)
+	if removed := h.checkRemoval(ctx, "after writing "+h.noun); removed != nil {
+		if errors.Is(removed, h.errs.Removed) {
+			return errors.Join(removed, h.cleanupRemoved(ctx, staged, stagedWrote, paths[:written]))
 		}
-		if h.adopted != "" && p == h.kind.ManifestPath(id) {
-			h.releaseAdopted(ctx, expected)
+		h.Forget()
+		if putErr != nil {
+			return putErr
 		}
+		return manifestUncertain{removed}
+	}
+	if putErr != nil {
+		return putErr
 	}
 	h.unstage(ctx, staged)
 	if head == id {
 		h.remember(id, string(id))
 	}
 	return nil
+}
+
+func (h *History[ID, M]) publishManifests(ctx context.Context, id ID, expected string, data []byte, paths []string) (int, error) {
+	for i, p := range paths {
+		if err := h.store.Put(ctx, p, bytes.NewReader(data)); err != nil {
+			// The pointer now names id, so the remembered head and pointer
+			// are stale: the next Resolve consults storage and adopts id.
+			h.Forget()
+			return i, manifestUncertain{fmt.Errorf("failed to write %s: %w", h.noun, err)}
+		}
+		if h.adopted != "" && p == h.kind.ManifestPath(id) {
+			h.releaseAdopted(ctx, expected)
+		}
+	}
+	return len(paths), nil
+}
+
+func (h *History[ID, M]) cleanupRemoved(ctx context.Context, staged string, stagedWrote bool, written []string) error {
+	cleanupCtx := context.WithoutCancel(ctx)
+	var errs []error
+	for _, p := range written {
+		if err := h.store.Delete(cleanupCtx, p); err != nil && !errors.Is(err, h.errs.NotFound) {
+			errs = append(errs, fmt.Errorf("failed to delete %s %s after removal: %w", h.noun, p, err))
+		}
+	}
+	if stagedWrote && staged != "" {
+		if err := h.store.Delete(cleanupCtx, staged); err != nil && !errors.Is(err, h.errs.NotFound) {
+			errs = append(errs, fmt.Errorf("failed to delete staged %s %s after removal: %w", h.noun, staged, err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // releaseAdopted removes the staged copy of the pending commit that this
@@ -960,15 +1002,18 @@ func (h *History[ID, M]) Newest(ctx context.Context) (*Snapshot[ID, M], error) {
 // settings, which every attempt records alike. Replacing it would open a
 // window in which the earlier attempt, if its pointer update was applied,
 // has no manifest at all. A Volume never retries under one ID.
-func (h *History[ID, M]) stage(ctx context.Context, staged string, data []byte) error {
+func (h *History[ID, M]) stage(ctx context.Context, staged string, data []byte) (bool, error) {
 	if staged == "" {
-		return nil
+		return false, nil
 	}
 	err := h.store.Put(ctx, staged, bytes.NewReader(data))
 	if h.errs.PathExists != nil && errors.Is(err, h.errs.PathExists) {
-		return nil
+		return false, nil
 	}
-	return err
+	if err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // unstage removes the staged copy once the canonical manifest is persisted.
@@ -982,7 +1027,7 @@ func (h *History[ID, M]) unstage(ctx context.Context, staged string) {
 
 // advancePointer returns the observed head. A descendant proves that the CAS
 // took effect even after another writer advanced the pointer again.
-func (h *History[ID, M]) advancePointer(ctx context.Context, expected string, id ID, staged string) (ID, error) {
+func (h *History[ID, M]) advancePointer(ctx context.Context, expected string, id ID, staged string, stagedWrote bool) (ID, error) {
 	writeErr := h.writePointer(ctx, expected, id)
 	if writeErr == nil {
 		return id, nil
@@ -990,6 +1035,9 @@ func (h *History[ID, M]) advancePointer(ctx context.Context, expected string, id
 	h.Forget()
 	head, err := h.ReadPointer(ctx)
 	if h.errs.Removed != nil && errors.Is(err, h.errs.Removed) {
+		if stagedWrote {
+			h.unstage(context.WithoutCancel(ctx), staged)
+		}
 		return "", err
 	}
 	if err == nil {
@@ -1062,7 +1110,7 @@ func (h *History[ID, M]) Refresh(ctx context.Context) error {
 // With maxAttempts 0 the attempt runs exactly once.
 func (h *History[ID, M]) CommitLoop(ctx context.Context, cfg *retry.Config, attempt func() error) error {
 	var lastErr error
-	for n := range cfg.MaxAttempts() + 1 {
+	for n := 0; ; n++ {
 		if n > 0 {
 			if err := cfg.Backoff(ctx, n); err != nil {
 				return err
@@ -1082,6 +1130,8 @@ func (h *History[ID, M]) CommitLoop(ctx context.Context, cfg *retry.Config, atte
 			return err
 		}
 		lastErr = err
+		if n >= cfg.MaxAttempts() {
+			return lastErr
+		}
 	}
-	return lastErr
 }

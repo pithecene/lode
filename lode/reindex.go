@@ -142,13 +142,22 @@ func (r sweepRun) persistCopy(ctx context.Context, p string, data []byte) (bool,
 	return true, nil
 }
 
-// keepUnlessExpired keeps the copies persisted for snapshot id unless a
-// tombstone now records the snapshot. An expiry writes its tombstone before
-// it deletes any manifest (CONTRACT_RETENTION §Order of Operations), so a
-// copy persisted after the expiry deleted the partition manifests is seen
-// here and deleted. It reports whether copies may remain: when the check
-// or a deletion fails, they are reported with the error.
+// keepUnlessExpired keeps the copies persisted for snapshot id unless the
+// dataset was removed or a tombstone now records the snapshot. Both RemoveDataset
+// and Expire record their marker before deleting manifests, so a copy persisted
+// after their deletion pass is seen here and deleted. It reports whether copies
+// may remain: when a check or deletion fails, they are reported with the error.
 func (r sweepRun) keepUnlessExpired(ctx context.Context, id SnapshotID, persisted []string) (bool, error) {
+	if err := r.ds.history.CheckLive(ctx); err != nil {
+		if errors.Is(err, ErrRemoved) {
+			cleanupCtx := context.WithoutCancel(ctx)
+			if delErr := deleteObjects(cleanupCtx, r.ds.store, persisted); delErr != nil {
+				return true, errors.Join(err, delErr)
+			}
+			return false, err
+		}
+		return true, err
+	}
 	absent, err := r.ds.tombstones().absent(ctx, id)
 	if err != nil || absent {
 		return true, err

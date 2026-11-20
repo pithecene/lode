@@ -144,8 +144,9 @@ volumes/<volume_id>/data/<offset>-<length>-<nonce>.bin
 
 ## Write and Commit Semantics
 
-- `StageWriteAt(ctx, offset, r)` validates `offset >= 0`, non-empty payload,
-  and `offset + length <= totalLength` (`lode.ErrInvalidArgument` otherwise),
+- `StageWriteAt(ctx, offset, r)` validates `offset >= 0`, non-nil `r`
+  (including typed-nil readers), non-empty payload, and
+  `offset + length <= totalLength` (`lode.ErrInvalidArgument` otherwise),
   stages the block via `Store.Put`, and returns its `BlockRef`. Staged blocks
   are invisible to readers until committed.
 - `Commit(ctx, blocks, metadata)` validates `metadata` via
@@ -153,10 +154,14 @@ volumes/<volume_id>/data/<offset>-<length>-<nonce>.bin
   return `lode.ErrInvalidArgument` before any store call), validates non-empty
   `blocks` within `[0, totalLength)`, resolves the parent (adopting a staged
   manifest at `volumes/<id>/staged/<parent>.json` if the parent commit is
-  pending), merges `blocks` with the parent's cumulative blocks, rejects any
-  overlap with `ErrOverlappingBlocks`, stages its own manifest, advances
-  `latest` via `CompareAndSwap`, writes the canonical manifest, and deletes
-  the staged manifest ([`CONTRACT_CORE.md`](CONTRACT_CORE.md) §Head Pointer).
+  pending), verifies the writer's checksum algorithm matches the parent
+  manifest's `ChecksumAlgorithm` (`lode.ErrSettingsMismatch` otherwise),
+  merges `blocks` with the parent's cumulative blocks, rejects any overlap
+  with `ErrOverlappingBlocks`, stages its own manifest, advances `latest` via
+  `CompareAndSwap`, writes the canonical manifest, re-checks `latest` for
+  `lode:removed` (deleting its newly written manifest and staged copy and
+  returning `ErrRemoved` if fenced), and deletes the staged manifest
+  ([`CONTRACT_CORE.md`](CONTRACT_CORE.md) §Head Pointer).
 - Pending-commit completion: if `Commit` is retried with blocks that are
   already all present in a pending parent snapshot (whose pointer advanced
   before its canonical manifest write failed), `Commit` completes that
@@ -164,8 +169,9 @@ volumes/<volume_id>/data/<offset>-<length>-<nonce>.bin
   for `lode:removed` afterward). Once the parent's canonical manifest exists,
   committing with zero new blocks returns `lode.ErrInvalidArgument`.
 - On CAS conflict with `WithRetry(n)`, `Commit` backs off, refreshes parent
-  blocks, re-merges, re-validates non-overlap (`ErrOverlappingBlocks` aborts
-  immediately), and retries with a newly generated `SnapshotID`.
+  blocks, re-validates parent checksum compatibility and non-overlap
+  (`lode.ErrSettingsMismatch` and `ErrOverlappingBlocks` abort immediately),
+  and retries with a newly generated `SnapshotID`.
 
 ---
 
@@ -214,7 +220,7 @@ volumes/<volume_id>/data/<offset>-<length>-<nonce>.bin
 | Operation | Store Calls (warm) | Memory | CPU |
 |-----------|-------------------|--------|-----|
 | `StageWriteAt` | 1 `Put` | O(block) | O(block) |
-| `Commit` | 5 fixed (`Get` parent + `Put` staged + CAS + `Put` canonical + `Delete` staged) | O(B) | O(B + K log K) |
+| `Commit` | 6 fixed (`Get` parent + `Put` staged + CAS + `Put` canonical + `Get` pointer + `Delete` staged) | O(B) | O(B + K log K) |
 | `ReadAt` | 1 `Get` + `R` `ReadRange` | O(L) | O(log B + R) |
 | `ReaderAt` | 1 `Get` | O(B) | O(B) validation |
 | `SnapshotReaderAt.ReadAt` | `R` `ReadRange` | O(L) | O(log B + R) |
