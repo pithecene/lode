@@ -1112,10 +1112,10 @@ func (h *History[ID, M]) CommitLoop(ctx context.Context, cfg *retry.Config, atte
 	var lastErr error
 	for n := 0; ; n++ {
 		if n > 0 {
-			if err := cfg.Backoff(ctx, n); err != nil {
+			if err := cfg.Backoff(ctx, n); err != nil { //nolint:errjoin // reason: a canceled backoff must stop the retry before the head is read again
 				return err
 			}
-			if err := h.Refresh(ctx); err != nil {
+			if err := h.Refresh(ctx); err != nil { //nolint:errjoin // reason: the next attempt depends on the refreshed head
 				return err
 			}
 		}

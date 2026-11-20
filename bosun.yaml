@@ -9,3 +9,8 @@ prose:
     - CHANGELOG.md
 changelog:
   file: CHANGELOG.md
+# The check runs Bosun's Go analyzers that .golangci.bosun.yaml enables; the stock linters stay in .golangci.yaml.
+go:
+  modules:
+    - dir: .
+      config: .golangci.bosun.yaml

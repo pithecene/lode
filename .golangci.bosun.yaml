@@ -1,0 +1,29 @@
+version: "2"
+
+# Bosun's Go analyzers, which the internal check runs on this module
+# (bosun.yaml and CI's check job). The stock linters stay in .golangci.yaml,
+# which CI's lint job runs.
+linters:
+  default: none
+  enable:
+    - errjoin
+    - osexitscope
+    - spawnscope
+    - testtable
+    - useany
+  settings:
+    custom:
+      errjoin:
+        type: module
+      osexitscope:
+        type: module
+      spawnscope:
+        type: module
+      testtable:
+        type: module
+      useany:
+        type: module
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
