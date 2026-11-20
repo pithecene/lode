@@ -49,10 +49,10 @@ func TestRemove_LeavesOnlyTheFence(t *testing.T) {
 	store := lode.NewMemory()
 	factory := lode.Use(store)
 	vol := newTestVolume(t, "a", factory, 20)
-	snap := commitBlocks(t, vol, []BlockRef{stageBlock(t, vol, 0, bytes.Repeat([]byte("A"), 10))}, Metadata{})
-	commitBlocks(t, vol, []BlockRef{stageBlock(t, vol, 10, bytes.Repeat([]byte("B"), 10))}, Metadata{})
+	snap := commitBlocks(t, vol, []BlockRef{stageBlock(t, vol, 0, bytes.Repeat([]byte("A"), 10))}, nil)
+	commitBlocks(t, vol, []BlockRef{stageBlock(t, vol, 10, bytes.Repeat([]byte("B"), 10))}, nil)
 	sibling := newTestVolume(t, "ab", factory, 5)
-	commitBlocks(t, sibling, []BlockRef{stageBlock(t, sibling, 0, []byte("CCCCC"))}, Metadata{})
+	commitBlocks(t, sibling, []BlockRef{stageBlock(t, sibling, 0, []byte("CCCCC"))}, nil)
 
 	if err := Remove(ctx, "a", factory); err != nil {
 		t.Fatalf("Remove: %v", err)
@@ -64,15 +64,15 @@ func TestRemove_LeavesOnlyTheFence(t *testing.T) {
 	if got := pointerContent(t, store, "a"); got != history.RemovedPointer {
 		t.Fatalf("pointer holds %q, want the removal marker", got)
 	}
-	if _, err := vol.Latest(ctx); !errors.Is(err, ErrRemoved) {
-		t.Errorf("Latest on the open handle = %v, want ErrRemoved", err)
+	if _, err := vol.Latest(ctx); !errors.Is(err, ErrRemoved) || !errors.Is(err, lode.ErrRemoved) {
+		t.Errorf("Latest on the open handle = %v, want ErrRemoved / lode.ErrRemoved", err)
 	}
 	reopened := newTestVolume(t, "a", factory, 20)
 	if _, err := reopened.Latest(ctx); !errors.Is(err, ErrRemoved) {
 		t.Errorf("Latest on a new handle = %v, want ErrRemoved", err)
 	}
 	blk := stageBlock(t, reopened, 0, []byte("x"))
-	if _, err := reopened.Commit(ctx, []BlockRef{blk}, Metadata{}); !errors.Is(err, ErrRemoved) {
+	if _, err := reopened.Commit(ctx, []BlockRef{blk}, nil); !errors.Is(err, ErrRemoved) {
 		t.Errorf("Commit on a new handle = %v, want ErrRemoved", err)
 	}
 	if _, err := reopened.Snapshot(ctx, snap.ID); !errors.Is(err, lode.ErrNotFound) {
@@ -93,7 +93,7 @@ func TestRemove_FencesAVolumeNeverWritten(t *testing.T) {
 	}
 	vol := newTestVolume(t, "fresh", lode.Use(store), 4)
 	blk := stageBlock(t, vol, 0, []byte("data"))
-	if _, err := vol.Commit(ctx, []BlockRef{blk}, Metadata{}); !errors.Is(err, ErrRemoved) {
+	if _, err := vol.Commit(ctx, []BlockRef{blk}, nil); !errors.Is(err, ErrRemoved) {
 		t.Fatalf("Commit after removal = %v, want ErrRemoved", err)
 	}
 }
@@ -105,7 +105,7 @@ func TestRemove_CompletesAnInterruptedRemoval(t *testing.T) {
 	fs := testutil.NewFaultStore(lode.NewMemory())
 	factory := newFaultStoreFactory(fs)
 	vol := newTestVolume(t, "v", factory, 10)
-	commitBlocks(t, vol, []BlockRef{stageBlock(t, vol, 0, bytes.Repeat([]byte("A"), 5))}, Metadata{})
+	commitBlocks(t, vol, []BlockRef{stageBlock(t, vol, 0, bytes.Repeat([]byte("A"), 5))}, nil)
 
 	fs.SetDeleteError(testutil.ErrInjectedDelete)
 	if err := Remove(ctx, "v", factory); !errors.Is(err, testutil.ErrInjectedDelete) {
@@ -118,7 +118,7 @@ func TestRemove_CompletesAnInterruptedRemoval(t *testing.T) {
 	// its head commits without reading the pointer, and meets the marker at
 	// its swap: it reports the removal, not a conflict, with no retries.
 	blk := stageBlock(t, vol, 5, bytes.Repeat([]byte("B"), 5))
-	if _, err := vol.Commit(ctx, []BlockRef{blk}, Metadata{}); !errors.Is(err, ErrRemoved) {
+	if _, err := vol.Commit(ctx, []BlockRef{blk}, nil); !errors.Is(err, ErrRemoved) {
 		t.Fatalf("Commit by the handle that remembers its head = %v, want ErrRemoved", err)
 	}
 
@@ -144,7 +144,7 @@ func TestRemove_RefusesWhileACommitIsPending(t *testing.T) {
 	// The commit advances the pointer and then fails to persist its
 	// manifest, which leaves exactly a pending commit's state.
 	fs.SetPutError(testutil.ErrInjectedPut, "manifest.json")
-	if _, err := vol.Commit(ctx, []BlockRef{blk}, Metadata{}); !errors.Is(err, testutil.ErrInjectedPut) {
+	if _, err := vol.Commit(ctx, []BlockRef{blk}, nil); !errors.Is(err, testutil.ErrInjectedPut) {
 		t.Fatalf("the commit: %v, want the injected put error", err)
 	}
 	fs.SetPutError(nil)
@@ -196,7 +196,7 @@ func TestRemove_TreatsAMissingObjectAsDeleted(t *testing.T) {
 	fs := testutil.NewFaultStore(lode.NewMemory())
 	factory := newFaultStoreFactory(fs)
 	vol := newTestVolume(t, "v", factory, 10)
-	commitBlocks(t, vol, []BlockRef{stageBlock(t, vol, 0, bytes.Repeat([]byte("A"), 5))}, Metadata{})
+	commitBlocks(t, vol, []BlockRef{stageBlock(t, vol, 0, bytes.Repeat([]byte("A"), 5))}, nil)
 	fs.SetDeleteError(lode.ErrNotFound)
 	if err := Remove(ctx, "v", factory); err != nil {
 		t.Fatalf("Remove over a store that reports missing objects: %v", err)
@@ -213,8 +213,8 @@ func TestRemove_WritesTheFenceAtTheLargestRetryCount(t *testing.T) {
 	store := lode.NewMemory()
 	factory := lode.Use(store)
 	vol := newTestVolume(t, "v", factory, 10)
-	commitBlocks(t, vol, []BlockRef{stageBlock(t, vol, 0, bytes.Repeat([]byte("A"), 5))}, Metadata{})
-	if err := Remove(ctx, "v", factory, WithRetryCount(math.MaxInt)); err != nil {
+	commitBlocks(t, vol, []BlockRef{stageBlock(t, vol, 0, bytes.Repeat([]byte("A"), 5))}, nil)
+	if err := Remove(ctx, "v", factory, WithRetry(math.MaxInt)); err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
 	if got := pointerContent(t, store, "v"); got != history.RemovedPointer {
@@ -231,14 +231,14 @@ func TestRemove_FencesAWriterThatHeldTheVolume(t *testing.T) {
 	ctx := t.Context()
 	store := lode.NewMemory()
 	factory := lode.Use(store)
-	stale := newTestVolume(t, "v", factory, 10, WithRetryCount(2))
-	commitBlocks(t, stale, []BlockRef{stageBlock(t, stale, 0, bytes.Repeat([]byte("A"), 5))}, Metadata{})
+	stale := newTestVolume(t, "v", factory, 10, WithRetry(2))
+	commitBlocks(t, stale, []BlockRef{stageBlock(t, stale, 0, bytes.Repeat([]byte("A"), 5))}, nil)
 
 	if err := Remove(ctx, "v", factory); err != nil {
 		t.Fatal(err)
 	}
 	blk := stageBlock(t, stale, 5, bytes.Repeat([]byte("B"), 5))
-	if _, err := stale.Commit(ctx, []BlockRef{blk}, Metadata{}); !errors.Is(err, ErrRemoved) {
+	if _, err := stale.Commit(ctx, []BlockRef{blk}, nil); !errors.Is(err, ErrRemoved) {
 		t.Fatalf("Commit by the stale writer = %v, want ErrRemoved", err)
 	}
 	if got := pointerContent(t, store, "v"); got != history.RemovedPointer {
@@ -248,12 +248,12 @@ func TestRemove_FencesAWriterThatHeldTheVolume(t *testing.T) {
 	// Without retries too: the writer's remembered parent has no manifest
 	// left, so it reads the pointer again and finds the removal.
 	noRetry := newTestVolume(t, "w", factory, 10)
-	commitBlocks(t, noRetry, []BlockRef{stageBlock(t, noRetry, 0, bytes.Repeat([]byte("A"), 5))}, Metadata{})
+	commitBlocks(t, noRetry, []BlockRef{stageBlock(t, noRetry, 0, bytes.Repeat([]byte("A"), 5))}, nil)
 	if err := Remove(ctx, "w", factory); err != nil {
 		t.Fatal(err)
 	}
 	blk = stageBlock(t, noRetry, 5, bytes.Repeat([]byte("B"), 5))
-	if _, err := noRetry.Commit(ctx, []BlockRef{blk}, Metadata{}); !errors.Is(err, ErrRemoved) {
+	if _, err := noRetry.Commit(ctx, []BlockRef{blk}, nil); !errors.Is(err, ErrRemoved) {
 		t.Fatalf("Commit without retries = %v, want ErrRemoved", err)
 	}
 	if got := pointerContent(t, store, "w"); got != history.RemovedPointer {
@@ -272,14 +272,14 @@ func TestRemove_RetriesAConflictingCommit(t *testing.T) {
 		wantErr error
 	}{
 		{"without retries", nil, lode.ErrSnapshotConflict},
-		{"with retries", []Option{WithRetryCount(2), WithRetryBaseDelay(time.Millisecond)}, nil},
+		{"with retries", []Option{WithRetry(2), WithRetryBaseDelay(time.Millisecond)}, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := t.Context()
 			fs := testutil.NewFaultStore(lode.NewMemory())
 			factory := newFaultStoreFactory(fs)
 			writer := newTestVolume(t, "v", factory, 10)
-			commitBlocks(t, writer, []BlockRef{stageBlock(t, writer, 0, bytes.Repeat([]byte("A"), 5))}, Metadata{})
+			commitBlocks(t, writer, []BlockRef{stageBlock(t, writer, 0, bytes.Repeat([]byte("A"), 5))}, nil)
 			blk := stageBlock(t, writer, 5, bytes.Repeat([]byte("B"), 5))
 
 			raced := false
@@ -289,7 +289,7 @@ func TestRemove_RetriesAConflictingCommit(t *testing.T) {
 				}
 				raced = true
 				fs.SetBeforeCAS(nil)
-				commitBlocks(t, writer, []BlockRef{blk}, Metadata{})
+				commitBlocks(t, writer, []BlockRef{blk}, nil)
 			})
 			err := Remove(ctx, "v", factory, tc.opts...)
 			if tc.wantErr != nil {
@@ -323,7 +323,7 @@ func TestRemove_ChecksItsArguments(t *testing.T) {
 		{"nil factory", Remove(ctx, "v", nil)},
 		{"an ID that is not one segment", Remove(ctx, "../datasets/x", factory)},
 		{"an empty ID", Remove(ctx, "", factory)},
-		{"a negative retry count", Remove(ctx, "v", factory, WithRetryCount(-1))},
+		{"a negative retry count", Remove(ctx, "v", factory, WithRetry(-1))},
 	} {
 		if !errors.Is(tc.err, lode.ErrInvalidArgument) {
 			t.Errorf("%s: %v, want ErrInvalidArgument", tc.name, tc.err)

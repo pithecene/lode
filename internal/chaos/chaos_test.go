@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/pithecene/lode/lode"
 )
 
 var (
@@ -17,9 +19,9 @@ var (
 	flagDuration = flag.Duration("chaos.duration", 10*time.Second, "how long each configuration runs before the checks")
 	flagWriters  = flag.Int("chaos.writers", 8, "concurrent writers, each with its own Dataset handle")
 	flagReaders  = flag.Int("chaos.readers", 2, "concurrent readers")
-	flagRetries  = flag.Int("chaos.retries", 5, "WithRetryCount for every handle")
+	flagRetries  = flag.Int("chaos.retries", 5, "WithRetry for every handle")
 	flagBackends = flag.String("chaos.backends", "memory,fs", "comma-separated backends: "+strings.Join(BackendNames(), ", "))
-	flagLayouts  = flag.String("chaos.layouts", "default,hive", "comma-separated layouts: "+strings.Join(LayoutNames(), ", "))
+	flagLayouts  = flag.String("chaos.layouts", "default,hive,parquet,parquet-hive,blobs", "comma-separated layouts: "+strings.Join(LayoutNames(), ", "))
 	flagFaults   = flag.String("chaos.faults", "none", "comma-separated fault levels: "+strings.Join(FaultLevelNames(), ", "))
 	flagRetain   = flag.Bool("chaos.retention", false, "run Expire and Sweep concurrently with the writers")
 	flagVolume   = flag.Bool("chaos.volume", false, "also run the Volume workload once per backend and fault level")
@@ -188,4 +190,109 @@ func splitList(s string) []string {
 		}
 	}
 	return out
+}
+
+// TestChaos_Workloads exercises every chaos workload (JSONL, Hive multi-partition,
+// Parquet, Parquet+Hive, Blobs StreamWrite, CRC32C verification, WithAnchor
+// views, Retention, Faults, and Volume) in brief in-memory runs during the
+// regular test suite.
+func TestChaos_Workloads(t *testing.T) {
+	if *flagChaos {
+		t.Skip("skipping brief smoke runs when full -chaos suite is enabled")
+	}
+	for i, layout := range LayoutNames() {
+		seed := uint64(100 + i)
+		t.Run(layout, func(t *testing.T) {
+			runSmokePair(t, Config{
+				Seed:      seed,
+				Duration:  150 * time.Millisecond,
+				Writers:   3,
+				Readers:   2,
+				Layout:    layout,
+				Retries:   4,
+				Retention: true,
+			})
+		})
+	}
+	t.Run("volume", func(t *testing.T) {
+		runSmokePair(t, Config{
+			Seed:     42,
+			Duration: 150 * time.Millisecond,
+			Writers:  3,
+			Retries:  4,
+			Volume:   true,
+		})
+	})
+}
+
+func runSmokePair(t *testing.T, cfg Config) {
+	t.Helper()
+	report := Run(t.Context(), cfg, lode.NewMemory())
+	for _, v := range report.Violations {
+		t.Errorf("violation %s", v)
+	}
+	if report.Commits == 0 {
+		t.Error("expected at least one commit")
+	}
+
+	cfg.Faults = faultLevels["mild"]
+	faultReport := Run(t.Context(), cfg, lode.NewMemory())
+	for _, v := range faultReport.Violations {
+		t.Errorf("mild-fault violation %s", v)
+	}
+}
+
+func TestChaos_RemoveDatasetFence(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	store := lode.NewMemory()
+	root := lode.Open(lode.Use(store))
+
+	ds, err := root.Records(ctx, "fenced", lode.JSONL[lode.D](), lode.WithRetry(4))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ds.Write(ctx, lode.R(lode.D{"seq": 0}), nil); err != nil {
+		t.Fatal(err)
+	}
+
+	const writers = 3
+	var handles [writers]*lode.Records[lode.D]
+	for i := range handles {
+		handle, err := root.Records(ctx, "fenced", lode.JSONL[lode.D](), lode.WithRetry(4))
+		if err != nil {
+			t.Fatal(err)
+		}
+		handles[i] = handle
+	}
+	done := make(chan error, writers)
+	for worker, handle := range handles {
+		go func() {
+			done <- writeUntilRemoved(ctx, handle, worker)
+		}()
+	}
+	removeErr := root.RemoveDataset(ctx, "fenced", lode.WithRetry(8))
+	for range writers {
+		if err := <-done; err != nil && !errors.Is(err, lode.ErrRemoved) && !errors.Is(err, lode.ErrHeadUncommitted) {
+			t.Errorf("concurrent write: %v", err)
+		}
+	}
+	if removeErr != nil && !errors.Is(removeErr, lode.ErrHeadUncommitted) {
+		t.Fatalf("concurrent removal: %v", removeErr)
+	}
+	if _, err := root.Records(ctx, "fenced", lode.JSONL[lode.D]()); !errors.Is(err, lode.ErrRemoved) {
+		t.Fatalf("Records after concurrent removal = %v, want ErrRemoved", err)
+	}
+	if err := root.RemoveDataset(ctx, "fenced", lode.WithRetry(4)); err != nil {
+		t.Fatalf("final RemoveDataset = %v, want nil", err)
+	}
+}
+
+func writeUntilRemoved(ctx context.Context, h *lode.Records[lode.D], worker int) error {
+	for i := range 10 {
+		if _, err := h.Write(ctx, lode.R(lode.D{"w": worker, "i": i}), nil); err != nil && !errors.Is(err, lode.ErrSnapshotConflict) {
+			return err
+		}
+	}
+	return nil
 }

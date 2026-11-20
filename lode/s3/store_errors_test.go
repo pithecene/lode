@@ -6,6 +6,7 @@ import (
 	"errors"
 	"math"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 
@@ -35,29 +36,19 @@ type codeClient struct {
 	lastRange    string
 }
 
+type mockOption = func(*s3api.Options)
+
 func apiErr(code string) error { return &smithyAPIError{code: code, message: code} }
 
-func (c *codeClient) PutObject(ctx context.Context, p *s3api.PutObjectInput, o ...func(*s3api.Options)) (*s3api.PutObjectOutput, error) {
-	c.mu.Lock()
-	code := c.putCode
-	c.mu.Unlock()
-	if code != "" {
-		return nil, apiErr(code)
-	}
-	return c.MockS3Client.PutObject(ctx, p, o...)
+func (c *codeClient) PutObject(ctx context.Context, p *s3api.PutObjectInput, o ...mockOption) (*s3api.PutObjectOutput, error) {
+	return callUnlessInjected(ctx, c.injectedError(&c.putCode), c.MockS3Client.PutObject, p, o)
 }
 
-func (c *codeClient) CompleteMultipartUpload(ctx context.Context, p *s3api.CompleteMultipartUploadInput, o ...func(*s3api.Options)) (*s3api.CompleteMultipartUploadOutput, error) {
-	c.mu.Lock()
-	code := c.completeCode
-	c.mu.Unlock()
-	if code != "" {
-		return nil, apiErr(code)
-	}
-	return c.MockS3Client.CompleteMultipartUpload(ctx, p, o...)
+func (c *codeClient) CompleteMultipartUpload(ctx context.Context, p *s3api.CompleteMultipartUploadInput, o ...mockOption) (*s3api.CompleteMultipartUploadOutput, error) {
+	return callUnlessInjected(ctx, c.injectedError(&c.completeCode), c.MockS3Client.CompleteMultipartUpload, p, o)
 }
 
-func (c *codeClient) GetObject(ctx context.Context, p *s3api.GetObjectInput, o ...func(*s3api.Options)) (*s3api.GetObjectOutput, error) {
+func (c *codeClient) GetObject(ctx context.Context, p *s3api.GetObjectInput, o ...mockOption) (*s3api.GetObjectOutput, error) {
 	c.mu.Lock()
 	c.lastRange = aws.ToString(p.Range)
 	c.mu.Unlock()
@@ -79,21 +70,16 @@ func (c *codeClient) rangeSeen() string {
 var conditionalCodes = []string{"PreconditionFailed", "412", "ConditionalRequestConflict", "409"}
 
 func TestStore_MapsPreconditionCodes(t *testing.T) {
-	t.Run("put maps precondition codes", func(t *testing.T) {
+	t.Run("put maps precondition and conflict codes", func(t *testing.T) {
 		ctx := t.Context()
-		for _, code := range []string{"PreconditionFailed", "412"} {
+		for _, code := range append(conditionalCodes, "SlowDown") {
 			client := &codeClient{MockS3Client: NewMockS3Client(), putCode: code}
-			store, _ := New(client, Config{Bucket: "test"})
-			if err := store.Put(ctx, "k", bytes.NewReader([]byte("x"))); !errors.Is(err, lode.ErrPathExists) {
-				t.Errorf("code %s: got %v, want ErrPathExists", code, err)
+			store, _ := New(client, "test")
+			err := store.Put(ctx, "k", bytes.NewReader([]byte("x")))
+			wantExists := code == "PreconditionFailed" || code == "412"
+			if errors.Is(err, lode.ErrPathExists) != wantExists || err == nil {
+				t.Errorf("code %s: got %v, want ErrPathExists=%v", code, err, wantExists)
 			}
-		}
-		// Atomic PutObject only treats the 412 spellings as "exists"; a bare
-		// conflict code is surfaced as a plain error.
-		client := &codeClient{MockS3Client: NewMockS3Client(), putCode: "409"}
-		store, _ := New(client, Config{Bucket: "test"})
-		if err := store.Put(ctx, "k", bytes.NewReader([]byte("x"))); err == nil || errors.Is(err, lode.ErrPathExists) {
-			t.Errorf("code 409: got %v, want a non-ErrPathExists error", err)
 		}
 	})
 
@@ -102,7 +88,7 @@ func TestStore_MapsPreconditionCodes(t *testing.T) {
 		data := make([]byte, 6*1024*1024) // two parts
 		for _, code := range append(conditionalCodes, "SlowDown") {
 			client := &codeClient{MockS3Client: NewMockS3Client(), completeCode: code}
-			store, _ := New(client, Config{Bucket: "test"})
+			store, _ := New(client, "test")
 			tmp, err := os.CreateTemp(t.TempDir(), "mp-*")
 			if err != nil {
 				t.Fatal(err)
@@ -110,7 +96,7 @@ func TestStore_MapsPreconditionCodes(t *testing.T) {
 			_, _ = tmp.Write(data)
 			err = store.putMultipartFromFile(ctx, "large.bin", tmp, int64(len(data)))
 			_ = tmp.Close()
-			wantExists := code != "SlowDown"
+			wantExists := code == "PreconditionFailed" || code == "412"
 			if errors.Is(err, lode.ErrPathExists) != wantExists || err == nil {
 				t.Errorf("code %s: got %v, want ErrPathExists=%v", code, err, wantExists)
 			}
@@ -124,7 +110,7 @@ func TestStore_MapsPreconditionCodes(t *testing.T) {
 
 			// Create path (object absent, If-None-Match).
 			client := &codeClient{MockS3Client: NewMockS3Client(), putCode: code}
-			store, _ := New(client, Config{Bucket: "test"})
+			store, _ := New(client, "test")
 			err := store.CompareAndSwap(ctx, "ptr/latest", "", "snap-1")
 			if errors.Is(err, lode.ErrSnapshotConflict) != wantConflict || err == nil {
 				t.Errorf("create, code %s: got %v, want conflict=%v", code, err, wantConflict)
@@ -132,7 +118,7 @@ func TestStore_MapsPreconditionCodes(t *testing.T) {
 
 			// Update path (object present, If-Match).
 			client = &codeClient{MockS3Client: NewMockS3Client()}
-			store, _ = New(client, Config{Bucket: "test"})
+			store, _ = New(client, "test")
 			if err := store.CompareAndSwap(ctx, "ptr/latest", "", "snap-1"); err != nil {
 				t.Fatal(err)
 			}
@@ -149,7 +135,7 @@ func TestStore_ReadRange_Headers(t *testing.T) {
 	t.Run("exact range header", func(t *testing.T) {
 		ctx := t.Context()
 		client := &codeClient{MockS3Client: NewMockS3Client()}
-		store, _ := New(client, Config{Bucket: "test"})
+		store, _ := New(client, "test")
 		if err := store.Put(ctx, "k", bytes.NewReader([]byte("hello"))); err != nil {
 			t.Fatal(err)
 		}
@@ -178,7 +164,7 @@ func TestStore_ReadRange_Headers(t *testing.T) {
 
 	t.Run("exact overflow bound", func(t *testing.T) {
 		ctx := t.Context()
-		store, _ := New(NewMockS3Client(), Config{Bucket: "test"})
+		store, _ := New(NewMockS3Client(), "test")
 		if err := store.Put(ctx, "k", bytes.NewReader([]byte("hello"))); err != nil {
 			t.Fatal(err)
 		}
@@ -195,4 +181,47 @@ func TestStore_ReadRange_Headers(t *testing.T) {
 			t.Fatalf("one past bound: got %v, want ErrInvalidPath", err)
 		}
 	})
+}
+
+func (c *codeClient) injectedError(code *string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if *code == "" {
+		return nil
+	}
+	return apiErr(*code)
+}
+
+func callUnlessInjected[I, O any](ctx context.Context, err error, call func(context.Context, *I, ...mockOption) (*O, error), in *I, opts []mockOption) (*O, error) {
+	if err != nil {
+		return nil, err
+	}
+	return call(ctx, in, opts...)
+}
+
+type conflictingStageClient struct{ *MockS3Client }
+
+func (c conflictingStageClient) PutObject(ctx context.Context, p *s3api.PutObjectInput, opts ...mockOption) (*s3api.PutObjectOutput, error) {
+	if strings.Contains(aws.ToString(p.Key), "/staged/") {
+		return nil, apiErr("ConditionalRequestConflict")
+	}
+	return c.MockS3Client.PutObject(ctx, p, opts...)
+}
+
+func TestStageConflictDoesNotAdvanceDatasetHead(t *testing.T) {
+	ctx := t.Context()
+	store, err := New(conflictingStageClient{NewMockS3Client()}, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ds, err := lode.Open(lode.Use(store)).Records(ctx, "ds", lode.JSONL[lode.D]())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ds.Write(ctx, lode.R(lode.D{"n": 1}), nil); !hasErrorCode(err, "ConditionalRequestConflict") {
+		t.Fatalf("Write returned %v, want the unconfirmed staging conflict", err)
+	}
+	if _, err := ds.Latest(ctx); !errors.Is(err, lode.ErrNoSnapshots) {
+		t.Fatalf("Latest after failed staging returned %v, want ErrNoSnapshots", err)
+	}
 }

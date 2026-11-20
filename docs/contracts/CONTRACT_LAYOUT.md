@@ -1,149 +1,130 @@
 # Lode Layouts and Components Contract
 
-This document defines layout ownership and the behavior of the components
-that layouts govern: partitioners, compressors, and codecs.
+This document defines dataset path topology, layout ownership, and the
+normative behavior of partitioners, compressors, checksums, and codecs.
 
 ---
 
 ## Goals
 
-1. A portable layout, independent of the backend.
-2. Explicit records of component choices in manifests.
-3. No implicit defaults or inference.
+1. A portable, deterministic path grammar independent of the storage backend.
+2. Explicit persistence of every dataset-wide component setting in manifests.
+3. Zero implicit inference of schemas, partition keys, or metadata.
 
 ---
 
 ## Scope
 
-Path names and layouts are **specific to datasets**. They do not apply to
-Volume, which uses a fixed internal path scheme defined in
-[`CONTRACT_VOLUME.md`](CONTRACT_VOLUME.md). The root's path options and `WithLayout` apply
-exclusively to dataset handles and views.
+Layouts and `WithFlatPaths()` apply **exclusively to datasets**. Volumes use
+their own fixed internal path grammar defined in
+[`CONTRACT_VOLUME.md`](CONTRACT_VOLUME.md).
 
 ---
 
-## Layout Ownership
+## Path Topology and Layout Ownership
 
-A dataset's paths have two sources (V1_API_DECISIONS D11).
-- The root's **path names** govern the topology of datasets, snapshots,
-  partitions, segments, manifests, and data objects. A root option, with a
-  documented default, names each of the datasets, snapshots, partitions,
-  segments, data, expired, and staged directories and the manifest file.
-  `WithFlatPaths` omits the datasets and snapshots directories.
-- The dataset's **Layout** governs whether and how paths encode partition
-  semantics: `Unpartitioned()` or `Hive(keys...)`.
+A dataset's object keys are determined by two orthogonal choices:
 
-### Path Names
+1. **Root path topology (`RootOption`)**: internal segment names are fixed
+   constants (`datasets`, `snapshots`, `partitions`, `segments`,
+   `manifest.json`, `data`, `expired`, `staged`, and `latest`). By default,
+   datasets live under `datasets/<id>/...`. Passing `WithFlatPaths()` to
+   `Open` or `OpenReadOnly` omits `datasets/` and, on unpartitioned layouts,
+   `snapshots/`. To place a root beneath an arbitrary bucket or directory
+   prefix, callers wrap the store factory with `lode.Prefixed(factory,
+   prefix)` ([`CONTRACT_STORAGE.md`](CONTRACT_STORAGE.md) §Prefixed Stores).
+2. **Dataset partitioning (`Layout` via `WithLayout`)**: `Unpartitioned()`
+   (the default) or `Hive(keys...)` (optionally bound to typed records via
+   `HiveLayout.By`).
 
-- Each name MUST be one canonical path segment (CONTRACT_STORAGE §Put):
-  not empty, `.`, or `..`, without `/` or a backslash, and not beginning
-  with `.lode-tmp-`. A name MUST NOT contain `=`, which marks a partition
-  segment.
-- The names a root uses MUST be distinct, and each name MUST differ from
-  `latest`, the pointer's name. The pointer's name is not configurable. The writers of a
-  dataset coordinate at the pointer, and a second pointer name would let
-  two roots commit independent histories over shared snapshot paths.
-- Flat paths omit the datasets and snapshots directories, so a root MUST
-  NOT combine flat paths with options that name those directories.
-- The default names and the flat-path structure are part of the persisted
-  format: a later release MUST NOT change them (V1_API_DECISIONS
-  D8). A later release likewise MUST NOT change the order, placement, or
-  parsing of path segments for any set of names.
-- The names, like the store, are part of a dataset's address. Each manifest
-  records them (CONTRACT_CORE §Manifest Requirements). Lode MUST reject
-  with `ErrSettingsMismatch` any writer or view whose names differ from
-  those that the dataset's head manifest records. A manifest of format
-  version 1.0.0 records no names. Lode reads such a manifest as persisted
-  under the default names, in the flat or the default structure according
-  to its location, and MUST reject any root whose names differ.
-- A root whose datasets directory differs addresses another prefix and sees
-  another dataset. A root whose other names differ shares the pointer.
-  When that root finds the pointer's manifest, Lode compares the names
-  that the manifest records and rejects the root. If the root does not find
-  that manifest, a writer returns `ErrSnapshotConflict`, as for a
-  pending commit, and never appends.
-- Lode recognizes another history's manifest by its file name, from a
-  listing alone. That name is either the root's manifest name or the
-  default name. Every manifest persisted before the names became root
-  options bears the default name (CONTRACT_WRITE_API §Settings).
+### Canonical Path Grammars
 
-The following rules also apply:
-- The persistence layer defines the logical layout of keys.
-- Storage adapters MUST NOT introduce their own persistence structure.
-- Adapters MAY rewrite keys, but they MUST return the canonical keys that
-  Lode persists.
+- **Default unpartitioned**:
+  - Canonical manifest: `datasets/<id>/snapshots/<snapshot>/manifest.json`
+  - Data objects: `datasets/<id>/snapshots/<snapshot>/data/<file>`
+  - Head pointer: `datasets/<id>/latest`
+- **Default Hive-partitioned**:
+  - Canonical manifest: `datasets/<id>/segments/<snapshot>/manifest.json`
+  - Partition manifests: `datasets/<id>/partitions/<k=v>.../segments/<snapshot>/manifest.json`
+  - Data objects: `datasets/<id>/partitions/<k=v>.../segments/<snapshot>/data/<file>`
+  - Head pointer: `datasets/<id>/latest`
+- **Flat unpartitioned (`WithFlatPaths()`)**:
+  - Canonical manifest: `<id>/<snapshot>/manifest.json`
+  - Data objects: `<id>/<snapshot>/data/<file>`
+  - Head pointer: `<id>/latest`
+- **Flat Hive-partitioned (`WithFlatPaths()`)**:
+  - Canonical manifest: `<id>/segments/<snapshot>/manifest.json`
+  - Partition manifests: `<id>/partitions/<k=v>.../segments/<snapshot>/manifest.json`
+  - Data objects: `<id>/partitions/<k=v>.../segments/<snapshot>/data/<file>`
+  - Head pointer: `<id>/latest`
 
-### Layout-Specific Requirements
+Auxiliary control paths on every dataset layout (`<dataset dir>` is
+`datasets/<id>` by default and `<id>` when flat):
+- Staged first-commit manifest: `<dataset dir>/staged/<snapshot>.json`
+- Expiry tombstones: `<dataset dir>/expired/<snapshot>`
 
-- **Flat layouts** (without partitions encoded in paths) MUST pair with
-  `partitioner = "noop"`. Lode MUST reject any other partitioner at
-  configuration time, to prevent colliding paths.
-- **Hive-style layouts** MUST anchor paths at partitions and MUST enable
-  prefix pruning when a caller supplies a partition filter. A layout that claims
-  partition-first semantics but requires scans of every manifest is
-  invalid.
-- **Hive-style layouts** MUST place a copy of each manifest under every
-  partition prefix that holds its files. A listing filtered by partition
-  then finds the snapshot without scanning every manifest. These copies are an index of the canonical manifest, persisted
-  after the commit is complete (CONTRACT_CORE §Head Pointer). A listing
-  filtered by partition reflects the copies that exist: it omits a
-  committed snapshot whose writer terminated before persisting the copy for
-  that partition.
-- Every layout MUST place a dataset's staged first manifest
-  (CONTRACT_CORE §Head Pointer) at `<dataset dir>/staged/<snapshot_id>.json`,
-  beside the tombstones in `<dataset dir>/expired/`. No layout parses a
-  manifest or a data object there, so no listing reports the staged
-  manifest as a snapshot, and retention never treats it as data. The dataset directory is
-  `datasets/<id>` in the default and Hive layouts and `<id>` in the flat
-  layout.
+### Topology Persistence and Compatibility
+
+- These path grammars are part of Lode's stable persisted format: no release
+  may alter segment names, order, or parsing for existing layouts.
+- Format `1.2.0` manifests record `flat: true` when written under
+  `WithFlatPaths()` (omitting `flat` when `false`). Writers and views MUST
+  reject a `flat` mismatch with `ErrSettingsMismatch`.
+- Format `1.0.0` manifests predate `flat` and `paths`; Lode determines
+  whether they are flat from their storage location.
+- Format `1.1.0` manifests carry a `paths` object: Lode accepts `1.1.0`
+  manifests whose `paths` match the standard segment names above and MUST
+  reject with `ErrSettingsMismatch` any `1.1.0` manifest that recorded custom
+  segment names.
+- Storage adapters MUST NOT invent persistence structure of their own; key
+  scoping belongs exclusively in wrappers such as `Prefixed`.
+
+### Hive Partition Index Requirements
+
+- Hive layouts MUST anchor partition paths under `partitions/<k1=v1>/<k2=v2>...`
+  so prefix listings prune non-matching partitions at the store level.
+- Each Hive commit MUST write its canonical manifest first and then write an
+  identical manifest copy under each touched partition's `segments/<snapshot>/manifest.json`
+  ([`CONTRACT_CORE.md`](CONTRACT_CORE.md) §Head Pointer).
+- Each Hive key MUST be a single canonical path segment without `=`.
+  Partition values format `time.Time` as `2006-01-02` and strings/scalars via
+  URL path escaping so partition segments never contain `/` or `.` / `..`
+  traversal.
 
 ---
 
-## Partitioner (Logical Semantics)
+## Components
 
-- The partitioner defines the logical semantics of partitions (keys,
-  values, normalization).
-- The layout determines whether and how paths encode those semantics.
-- Manifests MUST record the partitioner by name and MUST record a Hive
-  partitioner's keys, in order, as `partition_keys`.
-- Unpartitioned layouts MUST accept any **semantically inert** partitioner
-  (not only one named `"noop"`) and MUST reject any partitioner that emits
-  non-empty partition keys.
+### Partitioner
+- Manifests MUST record `partitioner` (`"noop"` or `"hive"`) and, when
+  `"hive"`, `partition_keys` in declared key order.
+- Blob datasets (`Root.Blobs`) MUST reject partitioned layouts with
+  `ErrInvalidArgument`.
 
----
+### Compressor
+- Bundled constructors: `Uncompressed()` (`"noop"`, extension `""`), `Gzip()`
+  (`"gzip"`, extension `".gz"`), and `Zstd()` (`"zstd"`, extension `".zst"`).
+- Custom `Compressor` implementations MUST return a non-empty `Name()` and an
+  `Extension()` that keeps `data<ext>` a single canonical path segment
+  (`ErrInvalidArgument` otherwise).
+- Manifests MUST record `compressor` explicitly (`"noop"` when uncompressed,
+  never empty).
 
-## Compressor
+### Checksum
+- Bundled constructors: `SHA256()` (`"sha256"`), `CRC32C()` (`"crc32c"`), and
+  `MD5()` (`"md5"`).
+- Custom `Checksum` implementations provide `Name()` and `NewHasher()
+  HashWriter`.
+- When configured via `WithChecksum`, manifests record `checksum_algorithm`
+  and per-object hex digests over stored bytes; when omitted, no checksum
+  fields are written.
 
-- The compressor defines the compression format and the file extension.
-- Manifests MUST record the compressor by name.
-- The absence of compression is explicit (the `noop` compressor), not
-  implicit.
-
----
-
-## Codec
-
-- The codec defines the serialization format of structured data.
-- Configuring a codec is optional.
-- When a dataset configures a codec, manifests MUST record it by name and
-  by description (`Codec.Describe`), a deterministic, canonical form of its
-  configuration. Equal configurations MUST yield equal descriptions. A
-  description omits settings that affect neither the records in a file nor
-  their decoding, such as a Parquet file's internal compression.
-
----
-
-## NoOp Components
-
-- Canonical NoOp implementations MUST exist.
-- A Dataset configuration MUST NOT use a `nil` partitioner or compressor.
-- Manifests MUST record `partitioner = "noop"` and `compression = "noop"`
-  when the dataset uses the corresponding NoOp partitioner or compressor.
-- When a dataset configures no codec, manifests MUST omit codec fields.
-
----
-
-## Key Persistence
-
-- Lode persists only the canonical object keys that adapters return.
-- Lode MUST NOT persist transient metadata or hints.
+### Codec
+- Bundled constructors: `JSONL[T]()` (`"jsonl"`) and `Parquet[T](schema,
+  opts...)` (`"parquet"`).
+- Custom `Codec[T]` implementations MUST return a non-empty `Name()` (empty
+  names are reserved for codeless blob datasets and rejected with
+  `ErrInvalidArgument`) and a deterministic canonical `Describe()` string
+  (`""` when unparameterized).
+- Manifests of record datasets MUST record `codec` and, when non-empty,
+  `codec_description`; blob manifests MUST omit both fields.

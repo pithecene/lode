@@ -2,7 +2,6 @@ package lode
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -11,6 +10,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/pithecene/lode/internal/history"
+	"github.com/pithecene/lode/internal/storepath"
 	"github.com/pithecene/lode/internal/validate"
 )
 
@@ -18,72 +19,252 @@ import (
 // Listing (CONTRACT_READ_API.md)
 // -----------------------------------------------------------------------------
 
-// listDatasets returns the IDs of the datasets under a root's datasets
-// directory: those with a manifest of either grammar, unpartitioned or
-// partitioned, under the root's names.
-func listDatasets(ctx context.Context, store ObjectStore, names ManifestPaths, opts DatasetListOptions) ([]DatasetID, error) {
-	if names.Flat {
+// listDatasets returns the IDs of committed datasets under datasets/. When the
+// store implements PrefixLister, discovery uses shallow prefix enumeration plus
+// per-dataset pointer/manifest checks (O(D) instead of scanning every object).
+// Uncommitted and removed datasets are invisible, and an empty store returns an
+// empty slice.
+func listDatasets(ctx context.Context, store ObjectStore, flat bool, opts DatasetListOptions) ([]DatasetID, error) {
+	if flat {
 		return nil, ErrDatasetsNotModeled
 	}
-	paths, err := store.List(ctx, names.Datasets+"/")
+	if lister, ok := store.(PrefixLister); ok {
+		return listDatasetsByPrefix(ctx, store, lister, opts)
+	}
+	return listDatasetsByScan(ctx, store, opts)
+}
+
+func listDatasetsByPrefix(ctx context.Context, store ObjectStore, lister PrefixLister, opts DatasetListOptions) ([]DatasetID, error) {
+	prefixes, err := lister.ListPrefixes(ctx, datasetsDir+"/")
 	if err != nil {
 		return nil, err
 	}
-
-	grammars := []pathGrammar{names.grammar(false), names.grammar(true)}
-	seen := make(map[DatasetID]bool)
-	var datasets []DatasetID
-	for _, p := range paths {
-		for _, g := range grammars {
-			if sp, ok := g.parse(p); ok && sp.kind == manifestLeaf && !seen[sp.dataset] {
-				seen[sp.dataset] = true
-				datasets = append(datasets, sp.dataset)
-			}
+	unpart := newPathGrammar(false, false)
+	hive := newPathGrammar(false, true)
+	datasets := make([]DatasetID, 0, len(prefixes))
+	for _, p := range prefixes {
+		rel, ok := strings.CutPrefix(p, datasetsDir+"/")
+		if !ok {
+			continue
+		}
+		seg, ok := strings.CutSuffix(rel, "/")
+		if !ok || !storepath.Segment(seg) {
+			continue
+		}
+		id := DatasetID(seg)
+		committed, err := datasetHasCommittedManifest(ctx, store, id, unpart, hive)
+		if err != nil {
+			return nil, err
+		}
+		if committed {
+			datasets = append(datasets, id)
 		}
 	}
-
-	// Contract: empty list means storage truly empty, not "no manifests"
-	if len(datasets) == 0 && len(paths) > 0 {
-		return nil, ErrNoManifests
-	}
-
 	sort.Slice(datasets, func(i, j int) bool { return datasets[i] < datasets[j] })
 	return cursorWindow(datasets, func(id DatasetID) bool { return id > opts.StartAfter }, opts.Limit), nil
 }
 
-// ListPartitions returns the partition paths that the dataset's committed
-// manifests name.
-func (d *dataset) ListPartitions(ctx context.Context, opts PartitionListOptions) ([]PartitionRef, error) {
-	// Malformed before unsupported: a prefix that could escape the dataset is
-	// rejected as such regardless of layout (CONTRACT_READ_API §Partition Prefix).
+func datasetHasCommittedManifest(ctx context.Context, store ObjectStore, id DatasetID, unpart, hive pathGrammar) (bool, error) {
+	pointer := join(datasetsDir, string(id), latestFile)
+	rc, err := store.Get(ctx, pointer)
+	if err == nil {
+		data, readErr := io.ReadAll(rc)
+		_ = rc.Close()
+		if readErr != nil {
+			return false, fmt.Errorf("lode: failed to read latest pointer: %w", readErr)
+		}
+		target := strings.TrimSpace(string(data))
+		if target == history.RemovedPointer {
+			return false, nil
+		}
+		snapID := SnapshotID(target)
+		if history.IsGeneratedID(snapID) {
+			for _, g := range []pathGrammar{unpart, hive} {
+				ok, exErr := store.Exists(ctx, g.objectPath(id, "", snapID, "", manifestFile))
+				if exErr != nil {
+					return false, exErr
+				}
+				if ok {
+					return true, nil
+				}
+			}
+		}
+	} else if !errors.Is(err, ErrNotFound) {
+		return false, err
+	}
+
+	// Fallback for pointerless pre-v0.10 datasets or datasets with a pending
+	// commit on top of an already-committed history.
+	keys, err := store.List(ctx, datasetsDir+"/"+string(id)+"/")
+	if err != nil {
+		return false, err
+	}
+	for _, k := range keys {
+		for _, g := range []pathGrammar{unpart, hive} {
+			if sp, ok := g.parse(k); ok && sp.kind == manifestLeaf && sp.dataset == id {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
+func listDatasetsByScan(ctx context.Context, store ObjectStore, opts DatasetListOptions) ([]DatasetID, error) {
+	paths, err := store.List(ctx, datasetsDir+"/")
+	if err != nil {
+		return nil, err
+	}
+	grammars := []pathGrammar{newPathGrammar(false, false), newPathGrammar(false, true)}
+	seen := make(map[DatasetID]bool)
+	datasets := []DatasetID{}
+	for _, p := range paths {
+		for _, g := range grammars {
+			if sp, ok := g.parse(p); ok && sp.kind == manifestLeaf && !seen[sp.dataset] {
+				removed, err := isPointerRemoved(ctx, store, join(datasetsDir, string(sp.dataset), latestFile))
+				if err != nil {
+					return nil, err
+				}
+				seen[sp.dataset] = true
+				if !removed {
+					datasets = append(datasets, sp.dataset)
+				}
+			}
+		}
+	}
+	sort.Slice(datasets, func(i, j int) bool { return datasets[i] < datasets[j] })
+	return cursorWindow(datasets, func(id DatasetID) bool { return id > opts.StartAfter }, opts.Limit), nil
+}
+
+func isPointerRemoved(ctx context.Context, store ObjectStore, pointer string) (bool, error) {
+	rc, err := store.Get(ctx, pointer)
+	if errors.Is(err, ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	defer closer(rc)()
+	data, err := io.ReadAll(rc)
+	if err != nil {
+		return false, fmt.Errorf("lode: failed to read latest pointer: %w", err)
+	}
+	return strings.TrimSpace(string(data)) == history.RemovedPointer, nil
+}
+
+// ListPartitions returns the canonical partition paths present in the dataset's
+// committed snapshots, sorted lexicographically. On Hive layouts, partition
+// paths are derived directly from listed partition-manifest keys (0 manifest Gets when
+// all snapshots are indexed); canonical-only snapshots whose partition index
+// was not yet persisted are loaded individually.
+func (d *dataset) ListPartitions(ctx context.Context, opts PartitionListOptions) ([]PartitionPath, error) {
 	if !validPartitionPrefix(opts.Prefix) {
 		return nil, ErrInvalidPath
 	}
 	if opts.Prefix != "" && !d.layout.supportsPartitions() {
-		return nil, ErrPartitionPrefixNotSupported
+		return nil, ErrNotPartitioned
 	}
 
-	// Partition-first layouts put every segment under its partition, so a
-	// partition prefix is a storage prefix (CONTRACT_LAYOUT §Layout-Specific Requirements).
+	if err := d.history.CheckLive(ctx); err != nil {
+		return nil, err
+	}
 	prefix := d.layout.snapshotsPrefixForPartition(d.id, "")
 	if opts.Prefix != "" {
 		prefix = d.layout.partitionsPrefix(d.id, opts.Prefix)
 	}
-	listing, err := d.listManifests(ctx, prefix)
+	paths, err := d.store.List(ctx, prefix)
 	if err != nil {
 		return nil, err
 	}
-	// With a prefix, an empty subtree is a valid answer, not a missing dataset.
-	if !listing.any && opts.Prefix == "" {
-		return nil, ErrNotFound
+
+	anyManifest := false
+	seenPartitions := make(map[string]bool)
+	indexedSnapshots := make(map[SnapshotID]bool)
+	type snapPart struct {
+		id   SnapshotID
+		part string
+	}
+	indexedParts := make(map[SnapshotID]map[string]bool)
+	var dataPairs []snapPart
+	var canonical []listedManifest
+	partitions := []PartitionPath{}
+
+	for _, p := range paths {
+		sp, ok := d.layout.parse(p)
+		if !ok {
+			continue
+		}
+		if sp.kind == dataLeaf {
+			if sp.snapshot != "" && sp.partition != "" {
+				dataPairs = append(dataPairs, snapPart{id: sp.snapshot, part: sp.partition})
+			}
+			continue
+		}
+		if sp.kind != manifestLeaf {
+			continue
+		}
+		anyManifest = true
+		if sp.snapshot == "" || !d.layout.supportsPartitions() {
+			continue
+		}
+		if sp.partition == "" {
+			canonical = append(canonical, listedManifest{id: sp.snapshot, path: p})
+			continue
+		}
+		indexedSnapshots[sp.snapshot] = true
+		if indexedParts[sp.snapshot] == nil {
+			indexedParts[sp.snapshot] = make(map[string]bool)
+		}
+		indexedParts[sp.snapshot][sp.partition] = true
+		if !seenPartitions[sp.partition] && strings.HasPrefix(sp.partition, opts.Prefix) {
+			partPath, err := listedPartitionPath(sp.partition, p)
+			if err != nil {
+				return nil, err
+			}
+			seenPartitions[sp.partition] = true
+			partitions = append(partitions, partPath)
+		}
 	}
 
-	// Each snapshot's manifest is loaded once; its files name the partitions.
-	// A snapshot found under the prefix may also carry files for partitions
-	// outside it; those are not part of this listing.
-	seen := make(map[string]bool)
-	var partitions []PartitionRef
-	for _, m := range listing.manifests {
+	if !anyManifest {
+		if opts.Prefix == "" {
+			return nil, ErrNotFound
+		}
+		return partitions, nil
+	}
+	if !d.layout.supportsPartitions() {
+		return partitions, nil
+	}
+
+	partialSnapshots := make(map[SnapshotID]bool)
+	for _, dp := range dataPairs {
+		if !indexedParts[dp.id][dp.part] {
+			partialSnapshots[dp.id] = true
+		}
+	}
+
+	partitions, err = d.collectUnindexedPartitions(ctx, canonical, indexedSnapshots, partialSnapshots, seenPartitions, opts.Prefix, partitions)
+	if err != nil {
+		return nil, err
+	}
+
+	sort.Slice(partitions, func(i, j int) bool { return partitions[i].path < partitions[j].path })
+	return cursorWindow(partitions, func(p PartitionPath) bool { return p.path > opts.StartAfter.path }, opts.Limit), nil
+}
+
+// collectUnindexedPartitions loads only canonical manifests whose partition
+// index is absent or incomplete in the store listing.
+func (d *dataset) collectUnindexedPartitions(
+	ctx context.Context,
+	canonical []listedManifest,
+	indexed, partial map[SnapshotID]bool,
+	seen map[string]bool,
+	prefix string,
+	partitions []PartitionPath,
+) ([]PartitionPath, error) {
+	for _, m := range canonical {
+		if indexed[m.id] && !partial[m.id] {
+			continue
+		}
 		manifest, err := d.loadListed(ctx, m)
 		if errors.Is(err, ErrNotFound) {
 			continue
@@ -91,72 +272,32 @@ func (d *dataset) ListPartitions(ctx context.Context, opts PartitionListOptions)
 		if err != nil {
 			return nil, err
 		}
-		for _, f := range manifest.Files {
-			p := d.layout.extractPartitionPath(f.Path)
-			if p == "" || seen[p] || !strings.HasPrefix(p, opts.Prefix) {
+		for _, obj := range manifest.Objects {
+			part := d.layout.extractPartitionPath(obj.Path)
+			if part == "" || seen[part] || !strings.HasPrefix(part, prefix) {
 				continue
 			}
-			seen[p] = true
-			path, err := listedPartitionPath(p, m.path)
+			partPath, err := listedPartitionPath(part, m.path)
 			if err != nil {
 				return nil, err
 			}
-			partitions = append(partitions, PartitionRef{Path: path})
+			seen[part] = true
+			partitions = append(partitions, partPath)
 		}
 	}
-
-	sort.Slice(partitions, func(i, j int) bool { return partitions[i].Path.path < partitions[j].Path.path })
-	return cursorWindow(partitions, func(p PartitionRef) bool { return p.Path.path > opts.StartAfter.path }, opts.Limit), nil
+	return partitions, nil
 }
 
-// ListManifests returns the dataset's committed manifests, within a
-// partition when one is given.
-func (d *dataset) ListManifests(ctx context.Context, partition PartitionPath, opts ManifestListOptions) ([]ManifestRef, error) {
-	listing, err := d.listManifests(ctx, d.layout.snapshotsPrefixForPartition(d.id, partition.path))
-	if err != nil {
-		return nil, err
-	}
-	if !listing.any {
-		return nil, ErrNotFound
-	}
-
-	// Validate each snapshot's manifest once (CONTRACT_READ_API) — the
-	// smallest-partition one, which the listing order guarantees comes first.
-	refs := make([]ManifestRef, 0, len(listing.manifests))
-	for _, m := range listing.manifests {
-		_, err := d.loadListed(ctx, m)
-		if errors.Is(err, ErrNotFound) {
-			continue
-		}
-		if err != nil {
-			return nil, err
-		}
-		path, err := listedPartitionPath(m.partition, m.path)
-		if err != nil {
-			return nil, err
-		}
-		refs = append(refs, ManifestRef{ID: m.id, Partition: path})
-	}
-	// A layout without partitions has no snapshot in any named partition: the
-	// selector matches nothing (the dataset itself was found and validated).
-	if partition.path != "" && !d.layout.supportsPartitions() {
-		refs = refs[:0]
-	}
-
-	sort.Slice(refs, func(i, j int) bool { return manifestRefLess(refs[i], refs[j]) })
-	return cursorWindow(refs, func(ref ManifestRef) bool { return manifestRefLess(opts.StartAfter, ref) }, opts.Limit), nil
-}
-
-// Manifests yields the dataset's committed manifests, within a partition
-// when one is given, in (Partition, ID) order after the cursor and up to
-// the limit. It loads and validates each manifest it yields, once, and no
-// other: unlike ListManifests, it does not validate a manifest outside the
-// window. A snapshot's manifest is its smallest-partition copy under the
-// prefix, or its canonical manifest when the prefix holds no copy of it. A
-// manifest that is gone by the time it is loaded, as when retention
-// removes a snapshot between the listing and the load, is skipped.
+// Manifests yields the dataset's committed manifests, within partition when
+// non-zero, in (Partition, ID) order after opts.StartAfter and up to
+// opts.Limit. Each manifest in the window is loaded and validated once on
+// demand. Yields ErrNotFound if the dataset holds no manifests.
 func (d *dataset) Manifests(ctx context.Context, partition PartitionPath, opts ManifestListOptions) iter.Seq2[LoadedManifest, error] {
 	return func(yield func(LoadedManifest, error) bool) {
+		if err := d.history.CheckLive(ctx); err != nil {
+			yield(LoadedManifest{}, err)
+			return
+		}
 		listing, err := d.listManifests(ctx, d.layout.snapshotsPrefixForPartition(d.id, partition.path))
 		if err != nil {
 			yield(LoadedManifest{}, err)
@@ -166,8 +307,6 @@ func (d *dataset) Manifests(ctx context.Context, partition PartitionPath, opts M
 			yield(LoadedManifest{}, ErrNotFound)
 			return
 		}
-		// A layout without partitions has no snapshot in any named partition:
-		// the selector matches nothing, so nothing is loaded.
 		if partition.path != "" && !d.layout.supportsPartitions() {
 			return
 		}
@@ -175,9 +314,6 @@ func (d *dataset) Manifests(ctx context.Context, partition PartitionPath, opts M
 	}
 }
 
-// yieldLoaded loads each listed manifest after the cursor, in order, and
-// yields it until the limit is reached, an error is yielded, or the caller
-// stops.
 func (d *dataset) yieldLoaded(ctx context.Context, listed []listedManifest, opts ManifestListOptions, yield func(LoadedManifest, error) bool) {
 	yielded := 0
 	for _, m := range listed {
@@ -198,8 +334,6 @@ func (d *dataset) yieldLoaded(ctx context.Context, listed []listedManifest, opts
 	}
 }
 
-// loadRef loads and validates a listed manifest, with the reference that
-// names it.
 func (d *dataset) loadRef(ctx context.Context, m listedManifest) (LoadedManifest, error) {
 	manifest, err := d.loadListed(ctx, m)
 	if err != nil {
@@ -212,9 +346,6 @@ func (d *dataset) loadRef(ctx context.Context, m listedManifest) (LoadedManifest
 	return LoadedManifest{Ref: ManifestRef{ID: m.id, Partition: path}, Manifest: manifest}, nil
 }
 
-// inRefOrder returns the listed manifests in the order of their
-// ManifestRefs, (Partition, ID), so they are loaded and yielded in that
-// order.
 func inRefOrder(listed []listedManifest) []listedManifest {
 	ordered := slices.Clone(listed)
 	sort.SliceStable(ordered, func(i, j int) bool {
@@ -226,38 +357,17 @@ func inRefOrder(listed []listedManifest) []listedManifest {
 	return ordered
 }
 
-// listedManifest is one snapshot's manifest as found by listing.
 type listedManifest struct {
-	id        DatasetSnapshotID
+	id        SnapshotID
 	partition string
 	path      string
 }
 
-// manifestListing is the result of enumerating manifests under a prefix.
 type manifestListing struct {
-	// manifests holds one entry per snapshot, in (partition, path) order. On
-	// a partitioned layout the entry is the snapshot's lexicographically
-	// smallest partition manifest, or its canonical manifest, under the empty
-	// partition, when the prefix holds no partition manifest of it.
 	manifests []listedManifest
-	// any reports whether the prefix held any manifest at all; it
-	// distinguishes an empty dataset from a missing one.
-	any bool
+	any       bool
 }
 
-// listManifests enumerates manifests under prefix. Store.List order is
-// unspecified (CONTRACT_STORAGE §List), so entries are sorted by (partition,
-// path): path order alone is not partition order when one partition name
-// prefixes another ("day=a-b/…" sorts before "day=a/…").
-//
-// On a partitioned layout the canonical manifest is the commit, and the
-// partition manifests are an index of it (CONTRACT_CORE §Head Pointer). A
-// snapshot is reported through its partition manifests whenever the prefix
-// holds one, so its reference does not depend on the listing order. A
-// snapshot whose index the prefix does not hold, because its writer
-// terminated before persisting it or because it has no files, is reported
-// through its canonical manifest, which lies only under the unfiltered
-// prefix.
 func (d *dataset) listManifests(ctx context.Context, prefix string) (manifestListing, error) {
 	paths, err := d.store.List(ctx, prefix)
 	if err != nil {
@@ -284,9 +394,7 @@ func (d *dataset) listManifests(ctx context.Context, prefix string) (manifestLis
 	}
 	sortListed(indexed)
 
-	// Partition manifests come first, so a canonical manifest is kept only for
-	// a snapshot that has none here.
-	seen := make(map[DatasetSnapshotID]bool, len(indexed)+len(canonical))
+	seen := make(map[SnapshotID]bool, len(indexed)+len(canonical))
 	for _, m := range slices.Concat(indexed, canonical) {
 		if !seen[m.id] {
 			seen[m.id] = true
@@ -297,7 +405,6 @@ func (d *dataset) listManifests(ctx context.Context, prefix string) (manifestLis
 	return listing, nil
 }
 
-// sortListed orders listed manifests by (partition, path).
 func sortListed(ms []listedManifest) {
 	sort.Slice(ms, func(i, j int) bool {
 		if ms[i].partition != ms[j].partition {
@@ -307,20 +414,12 @@ func sortListed(ms []listedManifest) {
 	})
 }
 
-// validPartitionPrefix reports whether a PartitionListOptions.Prefix is a
-// canonical relative partition path fragment: no leading "/", no empty, "."
-// or ".." segments. The prefix is concatenated under the dataset's partitions
-// directory, so anything else could escape to another dataset's subtree.
-// Empty is valid (no filter); a trailing "/" is valid (names a partition
-// boundary).
 func validPartitionPrefix(prefix string) bool {
 	return !strings.HasPrefix(prefix, "/") && validPartitionPath(strings.TrimSuffix(prefix, "/"))
 }
 
 // ParsePartitionPath parses a canonical relative partition path. The empty
-// string parses to the zero value. It returns ErrInvalidPath when the path
-// begins with "/", contains a backslash, or has an empty, "." or ".."
-// segment, which includes a trailing "/".
+// string parses to the zero value.
 func ParsePartitionPath(s string) (PartitionPath, error) {
 	if !validPartitionPath(s) {
 		return PartitionPath{}, fmt.Errorf("lode: partition path %q: %w", s, ErrInvalidPath)
@@ -332,8 +431,7 @@ func ParsePartitionPath(s string) (PartitionPath, error) {
 // value.
 func (p PartitionPath) String() string { return p.path }
 
-// MarshalText encodes the path as its string, so that listing results and
-// cursors keep their partition when encoded, for example as JSON.
+// MarshalText encodes the path as its string.
 func (p PartitionPath) MarshalText() ([]byte, error) { return []byte(p.path), nil }
 
 // UnmarshalText parses text as ParsePartitionPath does.
@@ -346,10 +444,6 @@ func (p *PartitionPath) UnmarshalText(text []byte) error {
 	return nil
 }
 
-// listedPartitionPath returns a partition path that a listing read from
-// storage, under the manifest at source. A listing returns only canonical
-// paths, so a manifest that names another is reported as invalid rather
-// than returned or omitted.
 func listedPartitionPath(p, source string) (PartitionPath, error) {
 	if !validPartitionPath(p) {
 		return PartitionPath{}, fmt.Errorf("lode: manifest %s names partition %q, which is not a canonical path: %w", source, p, ErrManifestInvalid)
@@ -357,14 +451,10 @@ func listedPartitionPath(p, source string) (PartitionPath, error) {
 	return PartitionPath{path: p}, nil
 }
 
-// validPartitionPath reports whether path is a canonical relative partition
-// path (ParsePartitionPath); the empty path is the dataset root.
 func validPartitionPath(path string) bool {
 	if path == "" {
 		return true
 	}
-	// Backslash is a separator for the filesystem store on Windows, so it
-	// could smuggle ".." past a "/"-only split; partition paths never contain it.
 	if strings.ContainsRune(path, '\\') {
 		return false
 	}
@@ -376,8 +466,6 @@ func validPartitionPath(path string) bool {
 	return true
 }
 
-// manifestRefLess orders ManifestRefs by (Partition, ID), the order
-// ManifestListOptions promises and ManifestListOptions.StartAfter resumes in.
 func manifestRefLess(a, b ManifestRef) bool {
 	if a.Partition != b.Partition {
 		return a.Partition.path < b.Partition.path
@@ -385,10 +473,6 @@ func manifestRefLess(a, b ManifestRef) bool {
 	return a.ID < b.ID
 }
 
-// cursorWindow returns the items strictly after a cursor, capped at limit
-// (zero means no cap). items must already be sorted in the order that
-// after() tests against; the cursor position is the first item for which
-// after() holds.
 func cursorWindow[T any](items []T, after func(T) bool, limit int) []T {
 	start := 0
 	for start < len(items) && !after(items[start]) {
@@ -401,15 +485,9 @@ func cursorWindow[T any](items []T, after func(T) bool, limit int) []T {
 	return items
 }
 
-// GetManifest loads and validates the manifest a reference names.
-func (d *dataset) GetManifest(ctx context.Context, ref ManifestRef) (*Manifest, error) {
-	if err := validateSnapshotID(ref.ID); err != nil {
-		return nil, err
-	}
-	return d.loadManifest(ctx, d.layout.manifestPathInPartition(d.id, ref.ID, ref.Partition.path))
-}
-
-// OpenObject returns a reader for a data object of this dataset.
+// OpenObject returns a reader for the raw stored bytes of a data object in this
+// dataset without decompressing or verifying checksums. The caller closes the
+// returned reader.
 func (d *dataset) OpenObject(ctx context.Context, obj ObjectRef) (io.ReadCloser, error) {
 	if err := d.checkObject(obj); err != nil {
 		return nil, err
@@ -417,8 +495,37 @@ func (d *dataset) OpenObject(ctx context.Context, obj ObjectRef) (io.ReadCloser,
 	return d.store.Get(ctx, obj.Path)
 }
 
-// ReaderAt returns an io.ReaderAt for random access to a data object of
-// this dataset.
+// OpenDecompressed returns a streaming reader for the decompressed payload of
+// obj using m's recorded compressor and checksum settings. When m records a
+// checksum algorithm, reading to io.EOF verifies the stored digest and returns
+// ErrChecksumMismatch on corruption. The caller closes the returned reader.
+func (d *dataset) OpenDecompressed(ctx context.Context, m *Manifest, obj ObjectRef) (io.ReadCloser, error) {
+	if err := validateManifest(m); err != nil {
+		return nil, err
+	}
+	if m.DatasetID != d.id {
+		return nil, &validate.ManifestError{
+			Field:   "dataset_id",
+			Message: fmt.Sprintf("got %q, want %q", m.DatasetID, d.id),
+		}
+	}
+	if err := d.checkObject(obj); err != nil {
+		return nil, err
+	}
+	if !d.layout.isObjectOf(d.id, m.SnapshotID, dataLeaf, obj.Path) {
+		return nil, validate.Argument("object %q does not belong to snapshot %s of dataset %s", obj.Path, m.SnapshotID, d.id)
+	}
+	for _, recorded := range m.Objects {
+		if recorded.Path == obj.Path {
+			return d.openObjectStream(ctx, m, recorded)
+		}
+	}
+	return nil, validate.Argument("object %q is absent from the inventory of snapshot %s", obj.Path, m.SnapshotID)
+}
+
+// ReaderAt returns an io.ReaderAt for random access to the raw stored bytes of
+// a data object in this dataset. Returns ErrRangeReadNotSupported if the store
+// does not implement RangeReader.
 func (d *dataset) ReaderAt(ctx context.Context, obj ObjectRef) (io.ReaderAt, error) {
 	if err := d.checkObject(obj); err != nil {
 		return nil, err
@@ -430,92 +537,79 @@ func (d *dataset) ReaderAt(ctx context.Context, obj ObjectRef) (io.ReaderAt, err
 	return ranges.ReaderAt(ctx, obj.Path)
 }
 
-// checkObject requires obj to name a data object of this dataset and, when
-// it names a snapshot, of that snapshot, so that a handle reads only within
-// its own dataset: ObjectRef carries no dataset, and every dataset of a
-// root shares one store.
 func (d *dataset) checkObject(obj ObjectRef) error {
-	sp, ok := d.layout.parse(obj.Path)
-	if !ok || sp.dataset != d.id || sp.kind != dataLeaf {
-		return validate.Argument("object %q is not a data object of dataset %s", obj.Path, d.id)
+	if key, ok := storepath.Key(obj.Path); !ok || key != obj.Path {
+		return validate.Argument("object %q is not a canonical data object key of dataset %s", obj.Path, d.id)
 	}
-	if obj.Manifest.ID != "" && sp.snapshot != obj.Manifest.ID {
-		return validate.Argument("object %q is not a data object of snapshot %s", obj.Path, obj.Manifest.ID)
+	sp, ok := d.layout.parse(obj.Path)
+	if !ok || sp.dataset != d.id || sp.kind != dataLeaf || sp.snapshot == "" || !validPartitionPath(sp.partition) {
+		return validate.Argument("object %q is not a data object of dataset %s", obj.Path, d.id)
 	}
 	return nil
 }
 
-// loadListed loads and validates a manifest a listing returned. ErrNotFound
-// means it was deleted after the listing: an expiry removed it, which
-// enumeration skips rather than reports (CONTRACT_RETENTION §Lineage).
 func (d *dataset) loadListed(ctx context.Context, m listedManifest) (*Manifest, error) {
-	manifest, err := d.loadManifest(ctx, m.path)
+	s, err := d.history.LoadAt(ctx, m.id, m.path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load manifest %s: %w", m.path, err)
 	}
-	return manifest, nil
-}
-
-func (d *dataset) loadManifest(ctx context.Context, manifestPath string) (*Manifest, error) {
-	rc, err := d.store.Get(ctx, manifestPath)
-	if err != nil {
-		return nil, err
-	}
-	defer closer(rc)()
-
-	var manifest Manifest
-	if err := json.NewDecoder(rc).Decode(&manifest); err != nil {
-		return nil, fmt.Errorf("lode: failed to decode manifest: %w", err)
-	}
-
-	if err := validateManifest(&manifest); err != nil {
-		return nil, err
-	}
-
-	return &manifest, nil
+	return s.Manifest, nil
 }
 
 // -----------------------------------------------------------------------------
 // Manifest Validation
 // -----------------------------------------------------------------------------
 
-// validateManifest checks that a manifest contains all required fields
-// per CONTRACT_CORE.md and CONTRACT_READ_API.md.
 func validateManifest(m *Manifest) error {
 	if m == nil {
 		return &validate.ManifestError{Field: "manifest", Message: "is nil"}
 	}
-
-	// Codec is optional: empty is valid for raw blob storage.
-	if err := validate.FirstInvalid([]validate.Check{
-		{Invalid: m.SchemaName == "", Field: "schema_name", Message: "is required"},
-		{Invalid: m.FormatVersion == "", Field: "format_version", Message: "is required"},
-		{Invalid: m.DatasetID == "", Field: "dataset_id", Message: "is required"},
-		{Invalid: m.SnapshotID == "", Field: "snapshot_id", Message: "is required"},
-		{Invalid: m.CreatedAt.IsZero(), Field: "created_at", Message: "is required"},
-		{Invalid: !m.Metadata.valid(), Field: "metadata", Message: "must be a JSON object (use {} for no metadata)"},
-		{Invalid: m.Files == nil, Field: "files", Message: "must not be nil (use empty slice for no files)"},
-		{Invalid: m.RowCount < 0, Field: "row_count", Message: "must be non-negative"},
-		{Invalid: m.Compressor == "", Field: "compressor", Message: "is required"},
-		{Invalid: m.Partitioner == "", Field: "partitioner", Message: "is required"},
-	}); err != nil {
+	if m.SchemaName == "" {
+		return &validate.ManifestError{Field: "schema_name", Message: "is required"}
+	}
+	if m.FormatVersion == "" {
+		return &validate.ManifestError{Field: "format_version", Message: "is required"}
+	}
+	if m.DatasetID == "" {
+		return &validate.ManifestError{Field: "dataset_id", Message: "is required"}
+	}
+	if m.SnapshotID == "" {
+		return &validate.ManifestError{Field: "snapshot_id", Message: "is required"}
+	}
+	if m.ParentSnapshotID == m.SnapshotID {
+		return &validate.ManifestError{Field: "parent_snapshot_id", Message: "must differ from snapshot_id"}
+	}
+	if m.CreatedAt.IsZero() {
+		return &validate.ManifestError{Field: "created_at", Message: "is required"}
+	}
+	if !m.Metadata.Valid() {
+		return &validate.ManifestError{Field: "metadata", Message: "must be a JSON object (use {} for no metadata)"}
+	}
+	if m.Objects == nil {
+		return &validate.ManifestError{Field: "objects", Message: "must not be nil (use empty slice for no objects)"}
+	}
+	if m.RowCount < 0 {
+		return &validate.ManifestError{Field: "row_count", Message: "must be non-negative"}
+	}
+	if m.Compressor == "" {
+		return &validate.ManifestError{Field: "compressor", Message: "is required"}
+	}
+	if m.Partitioner == "" {
+		return &validate.ManifestError{Field: "partitioner", Message: "is required"}
+	}
+	if err := checkLegacyPaths(m); err != nil {
 		return err
 	}
-	if err := missingPaths(m); err != nil {
-		return err
-	}
-	return validateFiles(m.Files)
+	return validateObjects(m.Objects)
 }
 
-// validateFiles checks every FileRef of an inventory: a manifest's, or the
-// copy a retention tombstone records (CONTRACT_ERRORS §File Validation).
-func validateFiles(files []FileRef) error {
-	for i, f := range files {
-		if err := validate.FirstInvalid([]validate.Check{
-			{Invalid: f.Path == "", Field: fmt.Sprintf("files[%d].path", i), Message: "is required"},
-			{Invalid: f.SizeBytes < 0, Field: fmt.Sprintf("files[%d].size_bytes", i), Message: "must be non-negative"},
-		}); err != nil {
-			return err
+func validateObjects(objects []ObjectRef) error {
+	for i, obj := range objects {
+		if obj.Path == "" {
+			return &validate.ManifestError{Field: fmt.Sprintf("objects[%d].path", i), Message: "is required"}
+		}
+		if obj.SizeBytes < 0 {
+			return &validate.ManifestError{Field: fmt.Sprintf("objects[%d].size_bytes", i), Message: "must be non-negative"}
 		}
 	}
 	return nil

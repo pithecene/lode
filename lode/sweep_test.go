@@ -47,7 +47,7 @@ func TestSweep_Request(t *testing.T) {
 	})
 
 	t.Run("dry run reports the real run", func(t *testing.T) {
-		setup := func(t *testing.T) (Store, Records[D]) {
+		setup := func(t *testing.T) (Store, *Records[D]) {
 			store := NewMemory()
 			ds := newDefaultRetention(t, store)
 			first := writeRecord(t, ds, 1)
@@ -96,13 +96,7 @@ func TestSweep_Request(t *testing.T) {
 		}
 		lister.failPrefix = "datasets/events/snapshots/"
 
-		report, err := ds.Sweep(t.Context(), SweepRequest{Grace: sweepGrace})
-		if !errors.Is(err, errListFailed) {
-			t.Fatalf("Sweep = %v, want the listing failure", err)
-		}
-		if !slices.Equal(report.Unparseable, []string{tomb}) {
-			t.Errorf("Unparseable = %v, want the invalid tombstone examined before the failure", report.Unparseable)
-		}
+		assertSweepReportsInvalid(t, ds, errListFailed, tomb)
 	})
 
 	t.Run("a tombstone read failure still reports earlier invalid ones", func(t *testing.T) {
@@ -119,13 +113,7 @@ func TestSweep_Request(t *testing.T) {
 		putTombstone(t, mem, second.ID, newTombstone(second.ID, second.Manifest))
 		lister.failGet = "datasets/events/expired/" + string(second.ID)
 
-		report, err := ds.Sweep(t.Context(), SweepRequest{Grace: sweepGrace})
-		if !errors.Is(err, errGetFailed) {
-			t.Fatalf("Sweep = %v, want the read failure", err)
-		}
-		if !slices.Equal(report.Unparseable, []string{invalid}) {
-			t.Errorf("Unparseable = %v, want the invalid tombstone examined first", report.Unparseable)
-		}
+		assertSweepReportsInvalid(t, ds, errGetFailed, invalid)
 	})
 
 	t.Run("a delete failure reports completed work", func(t *testing.T) {
@@ -162,12 +150,7 @@ func TestSweep_Request(t *testing.T) {
 
 func TestSweep_Settle(t *testing.T) {
 	t.Run("a manifest the listing omits is still removed", func(t *testing.T) {
-		mem := NewMemory()
-		lister := &listInjector{Store: mem}
-		ds := newDefaultRetention(t, lister)
-		first := writeRecord(t, ds, 1)
-		writeRecord(t, ds, 2)
-		putTombstone(t, mem, first.ID, newTombstone(first.ID, first.Manifest))
+		mem, lister, ds, first := newTombstonedListFixture(t)
 		manifest := "datasets/events/snapshots/" + string(first.ID) + "/manifest.json"
 		lister.hidden = []string{manifest}
 
@@ -175,19 +158,14 @@ func TestSweep_Settle(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !slices.Equal(report.Settled, []DatasetSnapshotID{first.ID}) || exists(t, mem, manifest) {
+		if !slices.Equal(report.Settled, []SnapshotID{first.ID}) || exists(t, mem, manifest) {
 			t.Errorf("report = %+v, manifest present %v; want the hidden manifest removed and the snapshot settled", report, exists(t, mem, manifest))
 		}
 	})
 
 	t.Run("an inventory object the listing omits is still removed", func(t *testing.T) {
-		mem := NewMemory()
-		lister := &listInjector{Store: mem}
-		ds := newDefaultRetention(t, lister)
-		first := writeRecord(t, ds, 1)
-		writeRecord(t, ds, 2)
-		putTombstone(t, mem, first.ID, newTombstone(first.ID, first.Manifest))
-		data := first.Manifest.Files[0].Path
+		mem, lister, ds, first := newTombstonedListFixture(t)
+		data := first.Manifest.Objects[0].Path
 		lister.hidden = []string{data}
 
 		report, err := ds.Sweep(t.Context(), SweepRequest{Grace: sweepGrace})
@@ -200,12 +178,7 @@ func TestSweep_Settle(t *testing.T) {
 	})
 
 	t.Run("a snapshot the listing shows nothing of is left alone", func(t *testing.T) {
-		mem := NewMemory()
-		lister := &listInjector{Store: mem}
-		ds := newDefaultRetention(t, lister)
-		first := writeRecord(t, ds, 1)
-		writeRecord(t, ds, 2)
-		putTombstone(t, mem, first.ID, newTombstone(first.ID, first.Manifest)) // misplaced
+		mem, lister, ds, first := newTombstonedListFixture(t) // misplaced
 		// A lagging listing omits every manifest and object of the snapshot.
 		for _, k := range storeKeys(t, mem) {
 			if strings.Contains(k, string(first.ID)) && !strings.Contains(k, "expired/") {
@@ -233,28 +206,16 @@ func TestSweep_Settle(t *testing.T) {
 		stray := "datasets/events/partitions/run_id=a/event_type=x/segments/" + string(run.ID) + "/data/partial.bin"
 		putObject(t, mem, stray)
 
-		hs.onDelete = func(p string) error {
-			if strings.Contains(p, "partitions/") && strings.HasSuffix(p, "manifest.json") {
-				return errors.New("injected")
-			}
-			return nil
-		}
-		if _, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{run.ID}}); err == nil {
-			t.Fatal("Expire succeeded despite the injected failure")
-		}
-		hs.onDelete = nil
-
-		report, err := ds.Sweep(t.Context(), SweepRequest{Grace: 1000 * time.Hour})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !slices.Equal(report.Settled, []DatasetSnapshotID{run.ID}) {
+		report := interruptExpireAndSweep(t, hs, ds, run.ID, func(p string) bool {
+			return strings.Contains(p, "partitions/") && strings.HasSuffix(p, "manifest.json")
+		})
+		if !slices.Equal(report.Settled, []SnapshotID{run.ID}) {
 			t.Errorf("Settled = %v, want [%s]", report.Settled, run.ID)
 		}
 		// Two recorded data files plus the stray the inventory never listed, all
 		// regardless of grace: the recorded ones are sized, the stray is not.
-		if report.Objects != 3 || report.Bytes != totalBytes(run.Files) || report.Unsized != 1 || report.Orphans != 0 {
-			t.Errorf("report = %+v, want 3 objects, %d bytes, 1 unsized, 0 orphans", report, totalBytes(run.Files))
+		if report.Objects != 3 || report.Bytes != totalBytes(run.Objects) || report.Unsized != 1 || report.Orphans != 0 {
+			t.Errorf("report = %+v, want 3 objects, %d bytes, 1 unsized, 0 orphans", report, totalBytes(run.Objects))
 		}
 		assertGone(t, mem, ds, run)
 	})
@@ -265,25 +226,11 @@ func TestSweep_Settle(t *testing.T) {
 		ds := newDefaultRetention(t, hs)
 		first := writeRecord(t, ds, 1)
 		writeRecord(t, ds, 2)
-		hs.onDelete = func(p string) error {
-			if strings.Contains(p, "/data/") {
-				return errors.New("injected")
-			}
-			return nil
-		}
-		if _, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{first.ID}}); err == nil {
-			t.Fatal("Expire succeeded despite the injected failure")
-		}
-		hs.onDelete = nil
-
-		report, err := ds.Sweep(t.Context(), SweepRequest{Grace: 1000 * time.Hour})
-		if err != nil {
-			t.Fatal(err)
-		}
+		report := interruptExpireAndSweep(t, hs, ds, first.ID, func(p string) bool { return strings.Contains(p, "/data/") })
 		// Expire already removed every manifest, so nothing is settled this
 		// run; the tombstone still marks the data as reclaimable.
-		if len(report.Settled) != 0 || report.Objects != len(first.Files) ||
-			report.Bytes != totalBytes(first.Files) || report.Unsized != 0 {
+		if len(report.Settled) != 0 || report.Objects != len(first.Objects) ||
+			report.Bytes != totalBytes(first.Objects) || report.Unsized != 0 {
 			t.Errorf("report = %+v, want %s's data reclaimed with its recorded sizes", report, first.ID)
 		}
 		assertGone(t, mem, ds, first)
@@ -415,7 +362,7 @@ func TestSweep_Reclaim(t *testing.T) {
 		}
 		first := writeRecord(t, ds, 1)
 		writeRecord(t, ds, 2)
-		if _, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{first.ID}}); err != nil {
+		if _, err := ds.Expire(t.Context(), ExpireRequest{IDs: []SnapshotID{first.ID}}); err != nil {
 			t.Fatal(err)
 		}
 		// The filesystem store's CAS leaves a .lock companion next to the
@@ -517,7 +464,7 @@ func TestSweep_HeadResolution(t *testing.T) {
 				copies = append(copies, k)
 			}
 		}
-		for _, f := range head.Files {
+		for _, f := range head.Objects {
 			lister.hidden = append(lister.hidden, f.Path) // the stray alone is listed
 		}
 		for _, k := range copies {
@@ -660,7 +607,7 @@ func TestSweep_RejectedTombstone(t *testing.T) {
 		live := writeRecord(t, ds, 1)
 		writeRecord(t, ds, 2)
 		// A tombstone left by an earlier snapshot with the live one's ID.
-		putTombstone(t, store, live.ID, foreignTombstone(live.ID, []FileRef{{Path: "datasets/events/snapshots/" + string(live.ID) + "/data/old", SizeBytes: 1}}))
+		putTombstone(t, store, live.ID, foreignTombstone(live.ID, []ObjectRef{{Path: "datasets/events/snapshots/" + string(live.ID) + "/data/old", SizeBytes: 1}}))
 
 		for _, dryRun := range []bool{true, false} {
 			report, err := ds.Sweep(t.Context(), SweepRequest{Grace: sweepGrace, DryRun: dryRun})
@@ -685,7 +632,7 @@ func TestSweep_RejectedTombstone(t *testing.T) {
 		putTombstone(t, store, run.ID, newTombstone(run.ID, run.Manifest))
 		stray := "datasets/events/partitions/run_id=a/event_type=y/segments/" + string(run.ID) + "/manifest.json"
 		other := *run.Manifest
-		other.Files = []FileRef{{Path: "datasets/events/partitions/run_id=a/event_type=y/segments/" + string(run.ID) + "/data/old", SizeBytes: 1}}
+		other.Objects = []ObjectRef{{Path: "datasets/events/partitions/run_id=a/event_type=y/segments/" + string(run.ID) + "/data/old", SizeBytes: 1}}
 		rewriteManifest(t, store, stray, &other)
 
 		report, err := ds.Sweep(t.Context(), SweepRequest{Grace: sweepGrace})
@@ -726,7 +673,7 @@ func TestSweep_RejectedTombstone(t *testing.T) {
 		ds := newDefaultRetention(t, store)
 		head := writeRecord(t, ds, 1)
 		tomb := "datasets/events/expired/" + string(head.ID)
-		putTombstone(t, store, head.ID, foreignTombstone(head.ID, []FileRef{{Path: "datasets/events/snapshots/" + string(head.ID) + "/data/old", SizeBytes: 1}}))
+		putTombstone(t, store, head.ID, foreignTombstone(head.ID, []ObjectRef{{Path: "datasets/events/snapshots/" + string(head.ID) + "/data/old", SizeBytes: 1}}))
 
 		report, err := ds.Sweep(t.Context(), SweepRequest{Grace: sweepGrace})
 		if err != nil {
@@ -745,14 +692,14 @@ func TestSweep_RejectedTombstone(t *testing.T) {
 
 // partitionManifest is where a Hive snapshot of newHiveRetention keeps its
 // manifest copy for one run and event type.
-func partitionManifest(id DatasetSnapshotID, run, eventType string) string {
+func partitionManifest(id SnapshotID, run, eventType string) string {
 	return "datasets/events/partitions/run_id=" + run + "/event_type=" + eventType + "/segments/" + string(id) + "/manifest.json"
 }
 
 // unindexed commits a snapshot of run r1 across event types a and b, behind
 // a later head, and deletes its partition manifests, as a writer that
 // terminates after its canonical manifest leaves it.
-func unindexed(t *testing.T, store Store, ds Records[D]) (*DatasetSnapshot, []string) {
+func unindexed(t *testing.T, store Store, ds *Records[D]) (*Snapshot, []string) {
 	t.Helper()
 	snap := writeRun(t, ds, "r1", "a", "b")
 	writeRun(t, ds, "r2", "a")
@@ -794,7 +741,7 @@ func TestSweep_Reindex(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !slices.Equal(report.Reindexed, []DatasetSnapshotID{snap.ID}) {
+		if !slices.Equal(report.Reindexed, []SnapshotID{snap.ID}) {
 			t.Errorf("Reindexed = %v, want [%s]", report.Reindexed, snap.ID)
 		}
 		canonical := readObject(t, store, "datasets/events/segments/"+string(snap.ID)+"/manifest.json")
@@ -807,9 +754,16 @@ func TestSweep_Reindex(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		refs, err := ds.ListManifests(t.Context(), partition, ManifestListOptions{})
+		var refs []ManifestRef
+		for m, iterErr := range ds.Manifests(t.Context(), partition, ManifestListOptions{}) {
+			if iterErr != nil {
+				err = iterErr
+				break
+			}
+			refs = append(refs, m.Ref)
+		}
 		if err != nil || len(refs) != 1 || refs[0].ID != snap.ID {
-			t.Errorf("ListManifests(%s) = %v, %v; want the reindexed snapshot", partition, refs, err)
+			t.Errorf("Manifests(%s) = %v, %v; want the reindexed snapshot", partition, refs, err)
 		}
 	})
 
@@ -853,7 +807,7 @@ func TestSweep_Reindex(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !slices.Equal(report.Reindexed, []DatasetSnapshotID{snap.ID}) || exists(t, store, copies[0]) || exists(t, store, copies[1]) {
+		if !slices.Equal(report.Reindexed, []SnapshotID{snap.ID}) || exists(t, store, copies[0]) || exists(t, store, copies[1]) {
 			t.Errorf("report = %+v; want the snapshot reported and nothing persisted", report)
 		}
 	})
@@ -874,7 +828,7 @@ func TestSweep_ReindexExistingCopies(t *testing.T) {
 			if err := json.Unmarshal([]byte(s), &m); err != nil {
 				t.Fatal(err)
 			}
-			m["files"] = append(m["files"].([]any), map[string]any{"path": foreign, "size_bytes": 1})
+			m["objects"] = append(m["objects"].([]any), map[string]any{"path": foreign, "size_bytes": 1})
 			out, err := json.Marshal(m)
 			if err != nil {
 				t.Fatal(err)
@@ -920,7 +874,7 @@ func TestSweep_ReindexExistingCopies(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !slices.Equal(report.Reindexed, []DatasetSnapshotID{snap.ID}) || !slices.Equal(fault.PutCalls(), copies[1:]) {
+		if !slices.Equal(report.Reindexed, []SnapshotID{snap.ID}) || !slices.Equal(fault.PutCalls(), copies[1:]) {
 			t.Errorf("report = %+v, Puts %v; want only the missing copy %s written", report, fault.PutCalls(), copies[1])
 		}
 	})
@@ -941,7 +895,7 @@ func TestSweep_ReindexFailures(t *testing.T) {
 		if !errors.Is(err, errBoom) {
 			t.Fatalf("Sweep = %v, want the injected failure", err)
 		}
-		if !slices.Equal(report.Reindexed, []DatasetSnapshotID{snap.ID}) || !exists(t, fault, copies[0]) {
+		if !slices.Equal(report.Reindexed, []SnapshotID{snap.ID}) || !exists(t, fault, copies[0]) {
 			t.Errorf("report = %+v; want the snapshot reported for the copy %s it created", report, copies[0])
 		}
 	})
@@ -958,7 +912,7 @@ func TestSweep_ReindexFailures(t *testing.T) {
 				return
 			}
 			expired = true
-			if _, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{snap.ID}}); err != nil {
+			if _, err := ds.Expire(t.Context(), ExpireRequest{IDs: []SnapshotID{snap.ID}}); err != nil {
 				t.Errorf("Expire: %v", err)
 			}
 		})
@@ -983,7 +937,7 @@ func TestSweep_ReindexFailures(t *testing.T) {
 				return
 			}
 			expired = true
-			if _, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{snap.ID}}); err != nil {
+			if _, err := ds.Expire(t.Context(), ExpireRequest{IDs: []SnapshotID{snap.ID}}); err != nil {
 				t.Errorf("Expire: %v", err)
 			}
 			fault.SetDeleteError(errBoom)
@@ -993,7 +947,7 @@ func TestSweep_ReindexFailures(t *testing.T) {
 		if !errors.Is(err, errBoom) {
 			t.Fatalf("Sweep = %v, want the injected failure", err)
 		}
-		if !expired || !slices.Equal(report.Reindexed, []DatasetSnapshotID{snap.ID}) {
+		if !expired || !slices.Equal(report.Reindexed, []SnapshotID{snap.ID}) {
 			t.Errorf("expired %v, report = %+v; want the snapshot reported for the copies left behind", expired, report)
 		}
 	})
@@ -1008,7 +962,7 @@ func TestSweep_ReindexFailures(t *testing.T) {
 				return
 			}
 			expired = true
-			if _, err := ds.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{snap.ID}}); err != nil {
+			if _, err := ds.Expire(t.Context(), ExpireRequest{IDs: []SnapshotID{snap.ID}}); err != nil {
 				t.Errorf("Expire: %v", err)
 			}
 		})
@@ -1039,20 +993,20 @@ func TestSweep_LeavesAVolumeInTheDatasetDirectory(t *testing.T) {
 	old := string(idAt(time.Now().Add(-48 * time.Hour)))
 	cases := []struct {
 		name   string
-		open   func(t *testing.T, store Store) Records[D]
-		write  func(t *testing.T, ds Records[D])
+		open   func(t *testing.T, store Store) *Records[D]
+		write  func(t *testing.T, ds *Records[D])
 		orphan string
 	}{
 		{
 			name:   "default layout",
 			open:   newDefaultRetention,
-			write:  func(t *testing.T, ds Records[D]) { writeRecord(t, ds, 1) },
+			write:  func(t *testing.T, ds *Records[D]) { writeRecord(t, ds, 1) },
 			orphan: "datasets/events/snapshots/" + old + "/data/x",
 		},
 		{
 			name:   "hive layout",
 			open:   newHiveRetention,
-			write:  func(t *testing.T, ds Records[D]) { writeRun(t, ds, "a", "x") },
+			write:  func(t *testing.T, ds *Records[D]) { writeRun(t, ds, "a", "x") },
 			orphan: "datasets/events/partitions/run_id=a/event_type=x/segments/" + old + "/data/part.jsonl",
 		},
 	}
@@ -1116,4 +1070,45 @@ func putVolumeFixture(t *testing.T, store Store, prefix string) []string {
 		t.Fatal("the volume fixture holds no objects")
 	}
 	return paths
+}
+
+func newTombstonedListFixture(t *testing.T) (RangeStore, *listInjector, *Records[D], *Snapshot) {
+	t.Helper()
+	mem := NewMemory()
+	lister := &listInjector{Store: mem}
+	ds := newDefaultRetention(t, lister)
+	first := writeRecord(t, ds, 1)
+	writeRecord(t, ds, 2)
+	putTombstone(t, mem, first.ID, newTombstone(first.ID, first.Manifest))
+	return mem, lister, ds, first
+}
+
+func interruptExpireAndSweep(t *testing.T, hs *hookStore, ds *Records[D], id SnapshotID, failPath func(string) bool) *SweepReport {
+	t.Helper()
+	hs.onDelete = func(p string) error {
+		if failPath(p) {
+			return errors.New("injected")
+		}
+		return nil
+	}
+	if _, err := ds.Expire(t.Context(), ExpireRequest{IDs: []SnapshotID{id}}); err == nil {
+		t.Fatal("Expire succeeded despite the injected failure")
+	}
+	hs.onDelete = nil
+	report, err := ds.Sweep(t.Context(), SweepRequest{Grace: 1000 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return report
+}
+
+func assertSweepReportsInvalid(t *testing.T, ds *Records[D], wantErr error, tomb string) {
+	t.Helper()
+	report, err := ds.Sweep(t.Context(), SweepRequest{Grace: sweepGrace})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("Sweep = %v, want %v", err, wantErr)
+	}
+	if !slices.Equal(report.Unparseable, []string{tomb}) {
+		t.Errorf("Unparseable = %v, want [%s]", report.Unparseable, tomb)
+	}
 }

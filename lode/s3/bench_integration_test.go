@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/smithy-go/middleware"
 
 	"github.com/pithecene/lode/lode"
 )
@@ -31,35 +31,7 @@ func setupBenchBucket(b *testing.B, newClient func(context.Context) (*s3.Client,
 		b.Fatalf("failed to create S3 client: %v", err)
 	}
 
-	bucket := fmt.Sprintf("lode-bench-%d", time.Now().UnixNano())
-
-	_, err = client.CreateBucket(ctx, &s3.CreateBucketInput{
-		Bucket: aws.String(bucket),
-	})
-	if err != nil {
-		b.Fatalf("failed to create bucket: %v", err)
-	}
-
-	b.Cleanup(func() {
-		// Intentional: b.Context() is canceled before b.Cleanup runs,
-		// so cleanup operations need an independent context.
-		cleanupCtx := context.Background()
-		out, _ := client.ListObjectsV2(cleanupCtx, &s3.ListObjectsV2Input{Bucket: aws.String(bucket)})
-		for _, obj := range out.Contents {
-			_, _ = client.DeleteObject(cleanupCtx, &s3.DeleteObjectInput{
-				Bucket: aws.String(bucket),
-				Key:    obj.Key,
-			})
-		}
-		_, _ = client.DeleteBucket(cleanupCtx, &s3.DeleteBucketInput{Bucket: aws.String(bucket)})
-	})
-
-	store, err := New(client, Config{Bucket: bucket})
-	if err != nil {
-		b.Fatalf("failed to create store: %v", err)
-	}
-
-	return store
+	return newEphemeralBucketStore(ctx, b, client, "lode-bench")
 }
 
 // benchRecords are the records that each benchmark iteration writes.
@@ -133,7 +105,7 @@ func BenchmarkS3_SteadyWrite(b *testing.B) {
 	}
 }
 
-func writeAndRead(b *testing.B, ds lode.Records[lode.D], i int) {
+func writeAndRead(b *testing.B, ds *lode.Records[lode.D], i int) {
 	b.Helper()
 	snap, err := ds.Write(b.Context(), benchRecords, lode.D{"iter": fmt.Sprintf("%d", i)})
 	if err != nil {
@@ -151,26 +123,34 @@ func writeAndRead(b *testing.B, ds lode.Records[lode.D], i int) {
 // countedRoot opens a root over a new bucket whose S3 requests are counted.
 func countedRoot(b *testing.B, newClient func(context.Context) (*s3.Client, error)) (*lode.Root, *requestCounter) {
 	b.Helper()
-	base := setupBenchBucket(b, newClient)
-	requests := &requestCounter{API: base.client, calls: map[string]int{}}
-	store, err := New(requests, Config{Bucket: base.bucket})
-	if err != nil {
-		b.Fatal(err)
-	}
+	requests := &requestCounter{calls: map[string]int{}}
+	store := setupBenchBucket(b, func(ctx context.Context) (*s3.Client, error) {
+		client, err := newClient(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return s3.New(client.Options(), func(o *s3.Options) {
+			o.APIOptions = append(o.APIOptions, requests.countOperation)
+		}), nil
+	})
 	return lode.Open(lode.Use(store)), requests
 }
 
 // requestCounter counts the S3 requests of a store by operation.
 type requestCounter struct {
-	API
 	mu    sync.Mutex
 	calls map[string]int
 }
 
-func (c *requestCounter) count(op string) {
-	c.mu.Lock()
-	c.calls[op]++
-	c.mu.Unlock()
+func (c *requestCounter) countOperation(stack *middleware.Stack) error {
+	// Count a logical SDK call once, before any transport retries.
+	metric := map[string]string{"PutObject": "put", "GetObject": "get", "HeadObject": "head", "DeleteObject": "delete", "ListObjectsV2": "list"}
+	if op, ok := metric[stack.ID()]; ok {
+		c.mu.Lock()
+		c.calls[op]++
+		c.mu.Unlock()
+	}
+	return nil
 }
 
 func (c *requestCounter) reset() {
@@ -190,29 +170,4 @@ func (c *requestCounter) report(b *testing.B) {
 		b.ReportMetric(float64(n)/float64(b.N), op+"/op")
 	}
 	b.ReportMetric(float64(total)/float64(b.N), "requests/op")
-}
-
-func (c *requestCounter) PutObject(ctx context.Context, in *s3.PutObjectInput, opts ...func(*s3.Options)) (*s3.PutObjectOutput, error) {
-	c.count("put")
-	return c.API.PutObject(ctx, in, opts...)
-}
-
-func (c *requestCounter) GetObject(ctx context.Context, in *s3.GetObjectInput, opts ...func(*s3.Options)) (*s3.GetObjectOutput, error) {
-	c.count("get")
-	return c.API.GetObject(ctx, in, opts...)
-}
-
-func (c *requestCounter) HeadObject(ctx context.Context, in *s3.HeadObjectInput, opts ...func(*s3.Options)) (*s3.HeadObjectOutput, error) {
-	c.count("head")
-	return c.API.HeadObject(ctx, in, opts...)
-}
-
-func (c *requestCounter) DeleteObject(ctx context.Context, in *s3.DeleteObjectInput, opts ...func(*s3.Options)) (*s3.DeleteObjectOutput, error) {
-	c.count("delete")
-	return c.API.DeleteObject(ctx, in, opts...)
-}
-
-func (c *requestCounter) ListObjectsV2(ctx context.Context, in *s3.ListObjectsV2Input, opts ...func(*s3.Options)) (*s3.ListObjectsV2Output, error) {
-	c.count("list")
-	return c.API.ListObjectsV2(ctx, in, opts...)
 }

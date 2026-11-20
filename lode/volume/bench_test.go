@@ -32,7 +32,7 @@ func BenchmarkVolume_ReadAt(b *testing.B) {
 		blocks[i] = blk
 	}
 
-	snap, err := vol.Commit(b.Context(), blocks, Metadata{})
+	snap, err := vol.Commit(b.Context(), blocks, nil)
 	if err != nil {
 		b.Fatalf("Commit: %v", err)
 	}

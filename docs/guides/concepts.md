@@ -1,7 +1,8 @@
 # Lode Storage and Commit Model
 
 This guide describes Lode's purpose, the dataset layout in storage, the
-sequence that makes a commit visible, and write API selection. The guide explains the design, and the contracts under
+sequence that makes a commit visible, and write API selection. The guide
+explains the design, and the contracts under
 [`docs/contracts/`](../contracts/) define the normative rules, principally
 [`CONTRACT_CORE.md`](../contracts/CONTRACT_CORE.md) and
 [`CONTRACT_WRITE_API.md`](../contracts/CONTRACT_WRITE_API.md).
@@ -10,9 +11,10 @@ sequence that makes a commit visible, and write API selection. The guide explain
 
 Lode has the following characteristics:
 - an embeddable Go library
-- a persistence framework for structured data and sparse byte ranges
-- a provider of snapshots, atomic commits, and metadata guarantees that
-  callers would otherwise implement by hand on raw storage APIs
+- a persistence framework for structured datasets, binary blobs, and sparse
+  byte ranges
+- a provider of snapshots, atomic commits, checksums, and metadata guarantees
+  that callers would otherwise implement by hand on raw storage APIs
 - a library with explicit and predictable behavior by design
 
 Lode excludes the following roles:
@@ -20,8 +22,8 @@ Lode excludes the following roles:
 - a query planner or execution runtime
 - a distributed system or background service
 
-Lode governs *data structure and lifecycle*, not query execution, so
-callers supply their own query engines and process scheduling.
+Lode governs *data structure and lifecycle*, not query execution, so callers
+supply their own query engines and process scheduling.
 
 ## Undisciplined Object Storage
 
@@ -49,9 +51,9 @@ The following diagram shows a dataset in storage under the default layout:
 flowchart LR
     P["latest<br/>(pointer)"] -->|names the head| S3
     subgraph snapshots
-        S1["snapshot 1<br/>manifest.json"] --> D1[data files]
-        S2["snapshot 2<br/>manifest.json"] --> D2[data files]
-        S3["snapshot 3<br/>manifest.json"] --> D3[data files]
+        S1["snapshot 1<br/>manifest.json"] --> D1[data objects]
+        S2["snapshot 2<br/>manifest.json"] --> D2[data objects]
+        S3["snapshot 3<br/>manifest.json"] --> D3[data objects]
     end
     S3 -.->|parent| S2 -.->|parent| S1
 ```
@@ -63,40 +65,41 @@ becomes visible in a fixed sequence:
 sequenceDiagram
     participant W as writer
     participant S as store
-    W->>S: write data files under the new snapshot ID
+    W->>S: write data objects under the new snapshot ID
     W->>S: advance the latest pointer (CAS from the parent it read)
-    W->>S: write the manifest
+    W->>S: write the canonical manifest
     Note over W,S: readers see the snapshot once its manifest exists
 ```
 
 If another writer advanced the pointer first, the compare-and-swap (CAS)
-fails with `ErrSnapshotConflict`. When the caller enables `WithRetry`, Lode
-reads the head again, retries the commit with the same staged data, and
-publishes the snapshot if the retry succeeds. If the commit fails
-permanently, a buffered write's staged data files remain as orphaned
-objects until `Sweep` reclaims them. A stream write deletes its object on a best-effort basis if the
-commit fails before any manifest write. Otherwise, the stream write retains
-the object, because the store may have persisted a manifest even when its
-write reported an error.
+fails with `ErrSnapshotConflict`. When the caller configures `WithRetry`,
+Lode reads the head again, retries the commit with the same staged data
+objects, and publishes the snapshot if the retry succeeds. If the commit
+fails permanently, buffered staged data objects remain as orphaned objects
+until `Sweep` reclaims them. A streaming write deletes its object on a
+best-effort basis if the commit fails before any manifest write; otherwise,
+it retains the object because the store may have persisted the manifest even
+when the network lost the response.
 
 ## Choosing a Write API
 
 | Handle | API | Use Case | Codec | Partitioning |
-|----------|-----|----------|-------|--------------|
-| `Records[T]` | `Write` | Records in memory, batches | ✅ Set by `T` | ✅ Supported |
-| `Records[T]` | `StreamWrite` | Large streams of records (`iter.Seq2[T, error]`) | ✅ Streaming codec required | ❌ Not supported |
-| `Blobs` | `Write` | One blob in memory | ❌ Raw bytes | ❌ Not applicable |
-| `Blobs` | `StreamWrite` | Large binary payloads (gigabytes or more) | ❌ Raw bytes | ❌ Not applicable |
-| Volume (experimental) | `StageWriteAt` + `Commit` | Sparse, resumable byte ranges | ❌ Raw bytes | ❌ Not applicable |
+|--------|-----|----------|-------|--------------|
+| `*Records[T]` | `Write` | Records in memory, batches, or Parquet | ✅ Set by `T` | ✅ Supported |
+| `*Records[T]` | `StreamWrite` | Large streams of records (`iter.Seq2[T, error]`) | ✅ Streaming codec required | ❌ Not supported |
+| `*Blobs` | `Write` | One blob in memory (`[]byte`) | ❌ Raw bytes | ❌ Not applicable |
+| `*Blobs` | `StreamWrite` | Large binary streams (`io.Reader`) | ❌ Raw bytes | ❌ Not applicable |
+| `volume.Volume` (experimental) | `StageWriteAt` + `Commit` | Sparse, resumable byte ranges | ❌ Raw bytes | ❌ Not applicable |
 
 The following procedure selects a write API:
-1. If the data is records already in memory, use `Records.Write`.
-2. If the data is a large, unstructured binary object, use
-   `Blobs.StreamWrite` (or `Blobs.Write` for an object held in memory).
-3. If the data is a large stream of records, use `Records.StreamWrite` with a
-   streaming codec.
-4. If the data is a sparse, resumable byte address space, use `volume.Volume`
-   (experimental).
+1. If the data consists of records in memory (or requires Hive partitioning or
+   Parquet encoding), use `Records.Write`.
+2. If the data is a large, unstructured binary stream, use
+   `Blobs.StreamWrite` (or `Blobs.Write` for a byte slice in memory).
+3. If the data is a large unpartitioned stream of records, use
+   `Records.StreamWrite` with a streaming codec (`JSONL[T]()`).
+4. If the data is a sparse, resumable byte address space, use
+   `volume.Volume` (experimental).
 
 ```mermaid
 flowchart TD
@@ -111,19 +114,20 @@ flowchart TD
 
 A typical Lode workflow has the following configuration:
 
-- Root: `lode.Open(lode.FS(dir))` or `lode.Open(s3.Factory(client, cfg))`
-- Dataset: `events`, opened as `Records[Event]` with `lode.JSONL[Event]()`
+- Root: `lode.Open(lode.FS(dir))` or
+  `lode.Open(lode.Prefixed(s3.Bucket(client, "my-bucket"), "prod"))`
+- Dataset: `events`, opened as `*Records[Event]` with `lode.JSONL[Event]()`
+  or `lode.Parquet[Event](schema)`
 - Rows: events with timestamps (`Event` implements `Timestamped`)
 - Partitioning: Hive style, by day (`dt=YYYY-MM-DD`), with
   `lode.Hive("dt").By(...)`
-- Format: JSON Lines
-- Compression: gzip
+- Compression and integrity: `lode.Gzip()` or `lode.Zstd()`, and
+  `lode.SHA256()` or `lode.CRC32C()`
 - Backend: filesystem or S3
 
-Each write produces a new snapshot, and every read targets a snapshot
-explicitly. A reader opens a view, which reads the layout, codec name, and
-compressor from the dataset's manifests, so the caller need not specify
-them again.
+Each write produces a new `*Snapshot`, and every read targets a `SnapshotID`
+explicitly. A reader opens a `*RecordView[Event]`, which reads the layout,
+compressor, and checksum algorithm from the dataset's manifests automatically.
 
 ## Guarantees and Non-Goals
 
@@ -131,10 +135,11 @@ Lode guarantees the following:
 
 | Guarantee | Detail |
 |-----------|--------|
-| **Immutable snapshots** | Once written, data files and manifests never change |
-| **Atomic commits** | The presence of a manifest signifies a commit, and nothing is partially visible |
+| **Immutable snapshots** | Once written, data objects and manifests never change |
+| **Atomic commits** | The presence of a canonical manifest signifies a commit, and nothing is partially visible |
 | **Explicit metadata** | Every snapshot carries metadata that the caller supplies, and Lode never infers metadata |
-| **Safe writes** | Lode prevents overwrites atomically for standard writes on every built-in adapter. Large uploads (above 5 GB) are atomic when the backend supports conditional multipart-upload completion, and best-effort otherwise ([details](../../PUBLIC_API.md#large-upload-guarantees)). |
+| **End-to-end integrity** | When configured with `WithChecksum`, `Read` verifies stored bytes against the manifest's digest and returns `ErrChecksumMismatch` on corruption |
+| **Safe writes** | Lode prevents overwrites atomically for standard writes on every built-in adapter. Large uploads (above 5 GiB) are atomic when the backend supports conditional multipart-upload completion, and best-effort otherwise ([details](../../PUBLIC_API.md#large-upload-guarantees)). |
 | **Backend independence** | The same semantics on the filesystem, in memory, or on S3 |
 
 Lode explicitly does **not** provide the following:
@@ -144,6 +149,6 @@ Lode explicitly does **not** provide the following:
 | Distributed coordination | Lode detects conflicts (CAS) but provides no locks, consensus, or leader election |
 | Query execution | Lode structures data, and query engines consume it |
 | Background compaction | Lode performs no implicit mutation, and callers control the lifecycle |
-| Automatic removal | Lode removes nothing implicitly, and `Expire` and `Sweep` remove snapshots and residual data when the caller invokes them (see [the retention guide](retention.md)) |
+| Automatic removal | Lode removes nothing implicitly; `Expire`, `Sweep`, and `RemoveDataset` remove data only when the caller invokes them (see [the retention guide](retention.md)) |
 
 The complete contracts are in [`docs/contracts/`](../contracts/).

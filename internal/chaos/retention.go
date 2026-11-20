@@ -20,13 +20,13 @@ import (
 func (c Config) sweepGrace() time.Duration { return c.Duration + time.Minute }
 
 // janitor runs retention concurrently with the writers until the deadline:
-// expiries by instant and by ID, and sweeps. It records every snapshot that
-// a report lists as expired. Like a writer, it holds one handle, which an
-// injected kill discards and the next step reopens.
+// expiries by instant, by ID, and (on Hive layouts) by partition, plus sweeps.
+// It records every snapshot that a report lists as expired. Like a writer, it
+// holds one handle, which an injected kill discards and the next step reopens.
 type janitor struct {
 	*run
 	rng *rand.Rand
-	ds  handle[lode.Records[any]]
+	ds  handle[chaosDataset]
 }
 
 // newJanitor returns the run's janitor, seeded so that a run's retention
@@ -53,10 +53,13 @@ func (j *janitor) act(ctx context.Context) {
 }
 
 // retentionOp is one retention call the janitor can make through a handle.
-type retentionOp func(ctx context.Context, ds lode.Records[any]) error
+type retentionOp func(ctx context.Context, ds chaosDataset) error
 
 // ops are the retention calls the janitor chooses among.
 func (j *janitor) ops() []retentionOp {
+	if layouts[j.cfg.Layout].partitioned {
+		return []retentionOp{j.expireBefore, j.expireOne, j.expirePartition, j.sweep}
+	}
 	return []retentionOp{j.expireBefore, j.expireOne, j.sweep}
 }
 
@@ -86,36 +89,44 @@ func pause(ctx context.Context, d time.Duration) {
 
 // expireBefore expires snapshots whose writes began in the first part of
 // the run.
-func (j *janitor) expireBefore(ctx context.Context, ds lode.Records[any]) error {
+func (j *janitor) expireBefore(ctx context.Context, ds chaosDataset) error {
 	return j.expire(ctx, ds, lode.ExpireRequest{Before: time.Now().Add(-j.cfg.Duration / 4)})
 }
 
 // expireOne expires one acknowledged snapshot by ID.
-func (j *janitor) expireOne(ctx context.Context, ds lode.Records[any]) error {
+func (j *janitor) expireOne(ctx context.Context, ds chaosDataset) error {
 	c, ok := j.ledger.randomCommit(j.rng)
 	if !ok {
 		return nil
 	}
-	return j.expire(ctx, ds, lode.ExpireRequest{IDs: []lode.DatasetSnapshotID{c.ID}})
+	return j.expire(ctx, ds, lode.ExpireRequest{IDs: []lode.SnapshotID{c.ID}})
+}
+
+// expirePartition expires single-partition snapshots under a randomly chosen
+// Hive day partition while retaining multi-partition snapshots as Mixed.
+func (j *janitor) expirePartition(ctx context.Context, ds chaosDataset) error {
+	day := days[j.rng.IntN(len(days))]
+	return j.expire(ctx, ds, lode.ExpireRequest{Partition: "day=" + day})
 }
 
 // sweep reclaims what expiries and abandoned writes left, with a grace
 // period that spares every write in progress.
-func (j *janitor) sweep(ctx context.Context, ds lode.Records[any]) error {
+func (j *janitor) sweep(ctx context.Context, ds chaosDataset) error {
 	_, err := ds.Sweep(ctx, lode.SweepRequest{Grace: j.cfg.sweepGrace()})
 	return err
 }
 
 // expire runs one expiry and records its report, which an expiry returns
 // even when it fails partway.
-func (j *janitor) expire(ctx context.Context, ds lode.Records[any], req lode.ExpireRequest) error {
+func (j *janitor) expire(ctx context.Context, ds chaosDataset, req lode.ExpireRequest) error {
 	report, err := ds.Expire(ctx, req)
 	j.record(report)
 	return err
 }
 
-// record notes what a report expired and checks the one promise a report
-// makes on its own: the head it retained is not among the expired.
+// record notes what a report expired and checks the promises a report makes on
+// its own: neither the retained head nor any mixed snapshot is among the
+// expired.
 func (j *janitor) record(report *lode.ExpireReport) {
 	if report == nil {
 		return
@@ -123,6 +134,11 @@ func (j *janitor) record(report *lode.ExpireReport) {
 	j.ledger.expire(report.Expired...)
 	if report.RetainedHead != "" && slices.Contains(report.Expired, report.RetainedHead) {
 		j.ledger.violate("head-retained", "Expire reported %s both as the retained head and as expired", report.RetainedHead)
+	}
+	for _, m := range report.Mixed {
+		if slices.Contains(report.Expired, m) {
+			j.ledger.violate("mixed-retained", "Expire reported %s both as mixed and as expired", m)
+		}
 	}
 }
 
@@ -154,7 +170,7 @@ func (v *verifier) failedReadsWereExpired(ctx context.Context) []string {
 
 // notExpired describes, with format, every one of ids that does not read as
 // expired.
-func (v *verifier) notExpired(ctx context.Context, ids []lode.DatasetSnapshotID, format string) []string {
+func (v *verifier) notExpired(ctx context.Context, ids []lode.SnapshotID, format string) []string {
 	var bad []string
 	for _, id := range ids {
 		if !v.isExpired(ctx, id) {

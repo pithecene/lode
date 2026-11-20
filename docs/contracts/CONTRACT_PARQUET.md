@@ -1,376 +1,81 @@
 # Lode Parquet Codec Contract
 
-This document defines the required semantics of Parquet codec integration.
-It is authoritative for any Parquet codec implementation within Lode.
+This document defines the required semantics of Apache Parquet codec
+integration in Lode (`lode.Parquet[T]`).
 
 ---
 
 ## Goals
 
-1. A columnar storage format for efficient analytical queries.
-2. Interoperability with common external readers (tested with primitive
-   types).
-3. Encoding with an explicit schema (the codec infers no schema from data).
-4. Conformance of the codec interface to Lode's existing abstractions.
+1. Columnar storage interoperable with standard external Parquet readers
+   (Apache Arrow/PyArrow, DuckDB, Spark, Polars).
+2. Explicit schema declaration (`ParquetSchema`)—never inferred from Go types
+   or record payloads.
+3. Support for both map records (`lode.D` / `map[string]any`) and flat typed
+   Go structs under one generic constructor.
+4. Stateless, concurrency-safe encoding with per-object column statistics.
 
 ---
 
 ## Non-Goals
 
-- Query execution or predicate pushdown.
-- Automatic schema evolution or merging.
-- Partitioning by row group within Lode (external readers perform it).
+- Query execution or predicate pushdown inside Lode.
+- Automatic schema evolution or schema inference from Go struct tags alone.
+- Nested types (nested structs, lists, or map columns)—schemas are flat.
 - Encryption or column-level access control.
-- Nested types (structs, lists, and maps). Schemas are flat.
 
 ---
 
 ## Parquet Codec Interface
 
-The Parquet codec MUST implement `Codec[D]` for map records
-(`D = map[string]any`):
+`Parquet[T](schema, opts...)` returns a stateless `Codec[T]` that also
+implements `StatisticalCodec[T]`:
 
 ```go
 type Codec[T any] interface {
-    Name() string                          // Returns "parquet"
-    Describe() string                      // The schema, canonical JSON
-    Encode(w io.Writer, records []T) error // Batch encoding
-    Decode(r io.Reader) ([]T, error)       // Batch decoding
+    Name() string
+    Describe() string
+    Encode(w io.Writer, records []T) error
+    Decode(r io.Reader) ([]T, error)
+}
+
+type StatisticalCodec[T any] interface {
+    Codec[T]
+    EncodeWithStats(w io.Writer, records []T) (*ObjectStats, error)
 }
 ```
 
-The Parquet codec MUST NOT implement `StreamingCodec`. Because Parquet
-requires a footer, genuine streaming is impossible without buffering the
-entire file. `Records.StreamWrite` with a Parquet codec MUST return
-`ErrCodecNotStreamable`.
-
-### Describe
-
-- `Describe()` MUST return the schema as canonical JSON, its fields in
-  schema order with their names, types, and nullability, so that equal
-  schemas yield equal descriptions (CONTRACT_LAYOUT §Codec).
-- The internal compression MUST NOT be part of the description: it does not
-  affect which records a file holds or how they decode.
-
-### Name
-
-- `Name()` MUST return `"parquet"`.
-- Manifests record this name.
-
-### Encode
-
-- `Encode(w, records)` MUST write a valid Parquet file to `w`.
-- The Parquet file MUST include the footer, which requires buffering all
-  data.
-- The codec MUST encode records according to the configured schema.
-- An empty set of records (`len(records) == 0`) MUST produce a valid Parquet
-  file with zero rows.
-- The codec MUST return encoding errors and never ignore them.
-
-### Decode
-
-- `Decode(r)` MUST read a complete Parquet file from `r`.
-- `Decode` returns records as `[]D`, each a `map[string]any`.
-- The codec maps field types according to the table in §Type Mapping.
-- `Decode` MUST support files written by this codec and by standard Parquet
-  writers.
-
----
-
-## Schema Requirements
-
-Parquet requires a schema. The Lode Parquet codec MUST support explicit
-schema configuration.
-
-### Schema Definition
-
-The caller defines the schema when constructing the codec:
-
-```go
-codec := lode.Parquet(lode.ParquetSchema{
-    Fields: []lode.ParquetField{
-        {Name: "id", Type: lode.ParquetInt64},
-        {Name: "name", Type: lode.ParquetString},
-        {Name: "timestamp", Type: lode.ParquetTimestamp},
-    },
-})
-ds, err := root.Records(ctx, "events", codec) // returns a schema error
-```
-
-### Schema Construction Validation
-
-`Parquet` validates the schema and, when validation fails, records an error that matches
-`ErrSchemaViolation`. `Root.Records` and `ReadRoot.Records` return that
-error, and so do `Encode` and `Decode` when a caller invokes them directly.
-Validation fails for:
-
-- invalid `ParquetType` values (out of range),
-- empty field names, and
-- duplicate field names (which would cause the codec to drop columns
-  without notice).
-
-All schema validation errors wrap `ErrSchemaViolation`.
-
-### Record Validation
-
-- Records MUST contain every required (non-nullable) field defined in the
-  schema.
-- **Additional fields**: the codec MUST ignore, without error, record
-  fields that are absent from the schema. This rule preserves forward compatibility
-  when record producers add fields.
-- A missing required field MUST produce `ErrSchemaViolation`.
-- A type mismatch that remains after attempted coercion MUST produce
-  `ErrSchemaViolation`.
-
-### No Schema Inference
-
-- The codec MUST NOT infer a schema from record data.
-- Predictable, portable output requires an explicit schema.
-- This rule accords with Lode's principle that it "stores facts, not
-  interpretations."
-
----
-
-## Type Mapping
-
-### Supported Types
-
-| Parquet Type         | Go Source Types (accepted)              | Decoded Go Type   |
-|---------------------|----------------------------------------|-------------------|
-| `ParquetInt32`      | `int`, `int32`, `int64`, `float64`     | `int32`           |
-| `ParquetInt64`      | `int`, `int32`, `int64`, `float64`     | `int64`           |
-| `ParquetFloat32`    | `float32`, `float64`                   | `float32`         |
-| `ParquetFloat64`    | `float32`, `float64`                   | `float64`         |
-| `ParquetString`     | `string`                               | `string`          |
-| `ParquetBool`       | `bool`                                 | `bool`            |
-| `ParquetBytes`      | `[]byte`, `string`                     | `[]byte`          |
-| `ParquetTimestamp`  | `time.Time`, `string` (RFC 3339)       | `time.Time`       |
-
-### Explicit Type Coercion
-
-The codec performs **explicit, documented type coercions** to accept input
-types that common decoders produce:
-
-1. **Conversion of JSON numbers**: the codec accepts `float64` for integer
-   fields, because `encoding/json` decodes every number as `float64`. This
-   coercion lets the codec encode records that a JSONL decoder produces.
-
-2. **Parsing of timestamp strings**: the codec accepts RFC 3339 and
-   RFC 3339 (nanosecond) strings for timestamp fields. An invalid timestamp
-   string produces `ErrSchemaViolation`.
-
-3. **Conversion of strings to bytes**: the codec accepts `string` for byte
-   fields and converts it with `[]byte(s)`.
-
-These coercions are **not inference**: the schema still determines the
-output type. Coercion affects only which input types the codec accepts.
-
-### Numeric Overflow Protection
-
-When coercing `float64` to integer types, the codec validates:
-
-- **Truncation check**: `float64` values MUST be whole numbers
-  (`math.Trunc(v) == v`). A non-integral value produces
-  `ErrSchemaViolation`.
-- **Int32 range check**: values MUST lie within `[-2147483648, 2147483647]`.
-  A value outside this range produces `ErrSchemaViolation`.
-- **Int64 safe-range check**: for a conversion from `float64` to `int64`,
-  values MUST lie within `[-2^53, 2^53]` (the range in which `float64`
-  represents integers exactly). A value outside this range produces
-  `ErrSchemaViolation`.
-
-These checks prevent undetected data corruption through numeric overflow
-or precision loss.
-
-### Nullable Fields
-
-- The schema MAY mark fields as nullable.
-- Nullable fields accept `nil` values and encode them as Parquet nulls.
-- A non-nullable field with a `nil` or missing value MUST produce
-  `ErrSchemaViolation`.
-
----
-
-## Streaming Limitations
-
-Each Parquet file requires a footer that references the metadata of every
-row group. This footer makes genuine streaming impossible.
-
-### Memory Behavior
-
-- `Encode` buffers **all** records in memory before writing the Parquet
-  file.
-- `Decode` reads the **entire** file into memory before returning records.
-- Memory use grows linearly with the size of the data.
-- For large datasets, callers MUST divide the data among several
-  snapshots.
-
-### Records.StreamWrite Behavior
-
-The Parquet codec MUST NOT implement `StreamingCodec`:
-
-- `Records.StreamWrite` with the Parquet codec returns
+- All state on the returned codec value MUST be immutable after construction
+  so a single codec value is safe for concurrent `Encode`, `EncodeWithStats`,
+  and `Decode` calls across goroutines.
+- `Parquet[T]` MUST NOT implement `StreamingCodec[T]`, because every Parquet
+  file requires a footer referencing all row groups. Calling
+  `Records.StreamWrite` with a Parquet codec MUST return
   `ErrCodecNotStreamable`.
-- Callers MUST use `Records.Write` for Parquet encoding.
-- The restriction is explicit: Parquet's format precludes streaming without
-  buffering.
+- `Name()` MUST return `"parquet"`.
+- `Describe()` MUST return canonical JSON listing `fields` in declared
+  `schema.Fields` order (`name`, `type`, `nullable`). `Describe()` MUST NOT
+  depend on `T` or internal compression: `Parquet[User](schema)` and
+  `Parquet[lode.D](schema)` produce identical descriptions so readers and
+  writers can freely use either representation.
 
 ---
 
-## Row Group Configuration
-
-Row groups affect read performance and memory use.
-
-### Defaults
-
-- The implementation defines the row-group size (typically the library's
-  default).
-- A single row group is acceptable for small datasets.
-
-Row-group configuration is an implementation detail, and the public API
-does not expose it.
-
----
-
-## Compression
-
-Parquet supports internal column-chunk compression.
-
-### Supported Compression Options
+## Schema and Record Type Binding
 
 ```go
-const (
-    ParquetCompressionNone ParquetCompression = iota
-    ParquetCompressionSnappy  // Default; balances ratio and speed
-    ParquetCompressionGzip    // Higher ratio; slower
-)
-```
+func Parquet[T any](schema ParquetSchema, opts ...ParquetOption) Codec[T]
 
-The codec offers no Zstandard compression.
-
-### Compression Layering
-
-Parquet's internal compression is separate from Lode's `Compressor`.
-
-- A caller that uses the Parquet codec sets Lode's compressor to `"noop"`.
-- Compressing twice (with Parquet and with Lode's compressor) consumes CPU
-  for minimal benefit.
-- The manifest records Lode's compressor (`"noop"`), not Parquet's internal
-  compression.
-
-### Manifest Recording
-
-- Lode's `Compressor` field records the external compressor (this contract
-  recommends `"noop"`).
-- Parquet's internal compression is part of the file format, and the
-  manifest does not record it.
-
----
-
-## Statistics and Metadata
-
-Parquet files contain statistics (minimum and maximum values, null counts,
-and row counts).
-
-### Manifest Integration
-
-The implementation MAY extract the following statistics and record them in
-manifests:
-
-- `RowCount`: the total number of rows in the file (from Parquet metadata).
-- `MinTimestamp` and `MaxTimestamp`: the earliest and latest values of the
-  timestamp column that the caller designates.
-
-### Per-File Statistics
-
-The Parquet codec implements `StatisticalCodec` and reports per-file
-statistics through `FileStats()` after each `Encode` call:
-
-- `RowCount`: the total number of rows encoded in the file.
-- `Min` and `Max` for each column of an ordered type: int32, int64, float32,
-  float64, string, and timestamp.
-- `NullCount` for each column: the number of null values, which only a
-  nullable column can hold.
-- `DistinctCount`: not computed. The codec reports zero, which the
-  manifest omits.
-- For Boolean and byte columns, the codec reports only `NullCount`, with no
-  minimum or maximum.
-- The codec computes statistics during `Encode` from the Go record values,
-  not from Parquet's internal metadata.
-- Minimum and maximum values use the same Go types as the input records.
-  JSON serialization renders a `time.Time` as an RFC 3339 string with
-  nanosecond precision, so consumers must interpret values according to the
-  schema.
-
----
-
-## Error Semantics
-
-### Error Sentinels
-
-The file `lode/api.go` MUST define the following errors so that callers can
-match them:
-
-```go
-// ErrSchemaViolation indicates a record does not conform to the Parquet schema.
-var ErrSchemaViolation = errSchemaViolation{}
-
-// ErrInvalidFormat indicates the Parquet file is malformed or corrupted.
-var ErrInvalidFormat = errInvalidFormat{}
-```
-
-### Encoding Errors
-
-| Condition                     | Error                           |
-|------------------------------|---------------------------------|
-| Missing required field       | `ErrSchemaViolation`            |
-| Type mismatch after coercion | `ErrSchemaViolation`            |
-| Nil value for a non-nullable field | `ErrSchemaViolation`            |
-| Invalid timestamp string     | `ErrSchemaViolation`            |
-| Float64 with fractional part | `ErrSchemaViolation`            |
-| Int32 overflow               | `ErrSchemaViolation`            |
-| Value outside the int64 safe range | `ErrSchemaViolation`            |
-| Write failure                | The underlying I/O error        |
-
-### Decoding Errors
-
-| Condition                     | Error                           |
-|------------------------------|---------------------------------|
-| Invalid Parquet file         | `ErrInvalidFormat`              |
-| Corrupted data               | `ErrInvalidFormat`              |
-| Empty file                   | `ErrInvalidFormat`              |
-| Row read failure             | `ErrInvalidFormat` (wrapped)    |
-
-The codec wraps row-read errors with `ErrInvalidFormat`, because such errors
-indicate a malformed file: corrupt row data, a truncated file, or a similar
-defect.
-
----
-
-## Construction API
-
-### Minimal API
-
-```go
-// Parquet returns a Parquet codec for map records with the given schema.
-// An invalid schema (bad types, empty names, duplicates) is recorded and
-// returned when a dataset opens with the codec, so that it can be passed
-// in a chain.
-func Parquet(schema ParquetSchema, opts ...ParquetOption) Codec[D]
-
-// ParquetSchema defines the record structure.
 type ParquetSchema struct {
     Fields []ParquetField
 }
 
-// ParquetField defines a single field.
 type ParquetField struct {
     Name     string
     Type     ParquetType
     Nullable bool
 }
 
-// ParquetType enumerates supported Parquet logical types.
 type ParquetType int
 
 const (
@@ -385,10 +90,107 @@ const (
 )
 ```
 
-### Options
+### Schema Validation at Construction
+
+`Parquet[T]` validates `schema` and record type `T` at construction time.
+When validation fails, `Parquet[T]` records an error matching
+`ErrSchemaViolation`, which `Root.Records`, `ReadRoot.Records`, `Encode`,
+`EncodeWithStats`, and `Decode` return:
+- `schema.Fields` MUST be non-empty.
+- Every `ParquetField.Name` MUST be non-empty and unique within `schema`.
+- Every `ParquetField.Type` MUST be one of the eight `ParquetType` constants.
+- Columns in the written Parquet file MUST preserve the exact declared order
+  of `schema.Fields`.
+
+### Supported Record Types (`T`)
+
+`T` MUST be either a string-keyed `any` map (`lode.D` / `map[string]any`) or
+a Go struct value (not a pointer to a struct, slice, or scalar; any other `T`
+fails with `ErrSchemaViolation`).
+
+#### Struct Binding Rules
+- Exported fields of `T` (including promoted fields of embedded structs) map
+  to column names by priority:
+  1. `parquet` struct tag (`parquet:"col_name"`; `parquet:"-"` skips the
+     field),
+  2. `json` struct tag (`json:"col_name"`; `json:"-"` skips the field),
+  3. exported Go field `Name`.
+- Duplicate column mappings on `T` MUST fail construction with
+  `ErrSchemaViolation`.
+- Every field in `schema.Fields` MUST have a matching field on `T`
+  (`ErrSchemaViolation` if missing). Additional exported fields on `T` not
+  named in `schema.Fields` are ignored without error.
+- Non-nullable schema fields MUST map to non-pointer Go scalar types;
+  nullable schema fields MUST map to pointer Go scalar types (except
+  `ParquetBytes`, where `[]byte` is valid for both nullable and non-nullable
+  fields, with `nil` encoding as null when nullable and failing with
+  `ErrSchemaViolation` when non-nullable).
+
+#### Map (`lode.D`) Binding Rules
+- Required (`Nullable: false`) fields MUST be present with a non-nil value on
+  every record (`ErrSchemaViolation` otherwise).
+- Extra map keys not present in `schema.Fields` are ignored without error.
+- `Decode` returns `[]T` where each map contains every field in
+  `schema.Fields` (with `nil` for null values, including nullable columns
+  absent from an external Parquet file).
+
+---
+
+## Type Mapping and Coercion
+
+| Parquet Type | Struct Field Type (Required / Nullable) | Map (`D`) Input Types | Decoded Go Type |
+|--------------|-----------------------------------------|-----------------------|-----------------|
+| `ParquetInt32` | `int32`, `int` / `*int32`, `*int` | `int`, `int32`, `int64`, `float64` | `int32` (or struct field type) |
+| `ParquetInt64` | `int64`, `int` / `*int64`, `*int` | `int`, `int32`, `int64`, `float64` | `int64` (or struct field type) |
+| `ParquetFloat32` | `float32` / `*float32` | `float32`, `float64` | `float32` |
+| `ParquetFloat64` | `float64` / `*float64` | `float32`, `float64` | `float64` |
+| `ParquetString` | `string` / `*string` | `string` | `string` |
+| `ParquetBool` | `bool` / `*bool` | `bool` | `bool` |
+| `ParquetBytes` | `[]byte` / `[]byte` | `[]byte`, `string` | `[]byte` |
+| `ParquetTimestamp` | `time.Time` / `*time.Time` | `time.Time`, `string` (RFC 3339) | UTC `time.Time` |
+
+Explicit coercions and overflow checks:
+- Whole-number `float64` values convert to `int32` (within
+  `[-2147483648, 2147483647]`) or `int64` (within `[-2^53, 2^53]`);
+  fractional or out-of-range values fail with `ErrSchemaViolation`.
+- `int` and `int64` inputs to `ParquetInt32` outside `int32` bounds fail with
+  `ErrSchemaViolation`. On 32-bit platforms, decoding a `ParquetInt64` value
+  that overflows a struct `int` field fails with `ErrInvalidFormat`.
+- Projection uses physical leaf-column indices. Extra nested columns do not
+  change the meaning of a requested scalar column.
+- A timestamp column must carry a UTC-adjusted timestamp annotation in
+  milliseconds, microseconds, or nanoseconds. Decode returns the corresponding
+  UTC instant. Other annotations and bare integers yield `ErrInvalidFormat`.
+- RFC 3339 / RFC 3339Nano strings convert to `ParquetTimestamp`; invalid
+  timestamp strings fail with `ErrSchemaViolation`.
+
+---
+
+## File Schema Validation on Decode
+
+`Decode` validates the physical Parquet file schema before reading rows and
+returns `ErrInvalidFormat` when:
+- the file is empty, truncated, or corrupt,
+- the file schema contains duplicate column names,
+- a matched column is repeated or not a scalar leaf,
+- a matched column's physical Parquet kind differs from the expected kind for
+  its `ParquetType`,
+- a required (`Nullable: false`) schema field is absent from the file schema,
+  or
+- a required (`Nullable: false`) column contains a null value in any row.
+
+Extra columns in the file not named in `schema.Fields` are ignored, and
+nullable columns absent from the file decode as null (`nil` in `D`, `nil`
+pointer/`[]byte` in structs). Zero-row Parquet files decode as an empty
+non-nil slice `[]T{}`.
+
+---
+
+## Internal Compression
 
 ```go
-// WithParquetCompression sets internal Parquet compression.
+type ParquetOption func(*parquetConfig)
+
 func WithParquetCompression(codec ParquetCompression) ParquetOption
 
 type ParquetCompression int
@@ -400,130 +202,35 @@ const (
 )
 ```
 
----
-
-## External Reader Compatibility
-
-### Scope
-
-The project tests this codec's Parquet files against the following
-readers and expects each of them to read the files:
-- Apache Arrow and PyArrow
-- DuckDB
-- Apache Spark
-- Polars
-
-### Compatibility Constraints
-
-- **Primitive types only**: flat schemas of primitive types (no nested
-  structs, lists, or maps).
-- **Standard logical types**: the codec uses standard Parquet logical types
-  and no custom extensions.
-- **No encryption**: files are unencrypted.
-
-### Features Without a Compatibility Guarantee
-
-- Complex nested schemas
-- Custom annotations of logical types
-- Parquet encryption features
-- Row-group statistics for partition pruning (which depend on the reader)
-
-### Standard Compliance
-
-- Output MUST conform to the Apache Parquet specification.
-- The codec uses standard logical types, not custom extensions.
+- `ParquetCompressionSnappy` is the default internal column-chunk
+  compression.
+- Callers SHOULD leave Lode's dataset compressor at `Uncompressed()`
+  (`"noop"`) to avoid compressing Parquet output twice.
 
 ---
 
-## Implementation Notes
+## Per-Object Statistics
 
-### Internal Invariants
-
-The implementation validates all schema constraints in `Parquet`.
-Internal functions that process validated schemas may panic on invalid
-types as a secondary safeguard. Such a panic indicates a programming error
-(circumvented validation), not an error in user input. This
-behavior is acceptable because:
-
-1. The panic is unreachable in normal use, since validation rejects every
-   invalid input.
-2. The panic halts execution visibly if code inadvertently circumvents
-   validation.
-3. Returning errors from internal functions would add unnecessary
-   complexity.
-
-### Recommended Library
-
-This contract recommends the `parquet-go` library
-(github.com/parquet-go/parquet-go):
-- It consists entirely of Go code.
-- It supports schema-based encoding.
-- Its maintainers continue active development.
-
-### Alternative Libraries
-
-- `github.com/xitongsys/parquet-go`: an older library with less active
-  maintenance.
-- `github.com/apache/arrow-go`: a heavier dependency with more features.
-
-Library selection is an implementation detail, and this contract does not
-govern it.
+`EncodeWithStats` computes `*ObjectStats` from the encoded Go values without
+mutating codec state:
+- `RowCount` equals `int64(len(records))`.
+- `Columns` contains one `ColumnStats` per field in `schema.Fields` order.
+- Ordered types (`ParquetInt32`, `ParquetInt64`, `ParquetFloat32`,
+  `ParquetFloat64`, `ParquetString`, `ParquetTimestamp`) record `Min` and
+  `Max` normalized to the canonical decoded Go type (`int32`, `int64`,
+  `float32`, `float64`, `string`, UTC `time.Time`).
+- Non-finite floating-point values (`NaN`, `+Inf`, `-Inf`) are excluded from
+  `Min` and `Max` so JSON manifest serialization never fails.
+- Every column records `NullCount`; `ParquetBool` and `ParquetBytes` omit
+  `Min` and `Max`; `DistinctCount` is `0` (omitted in JSON).
 
 ---
 
-## Testing Requirements
+## Error Summary
 
-### Unit Tests
-
-- Encoding and decoding round trips for all supported types.
-- Validation of schema construction (invalid types, empty names,
-  duplicates).
-- Record validation (missing fields, type mismatches, nullability).
-- Type coercion (JSON numbers, timestamp strings).
-- Protection against numeric overflow (int32 range, int64 safe range,
-  truncation).
-- Handling of additional fields (forward compatibility).
-- Handling of an empty set of records.
-- Large batches of records (to verify row-group behavior).
-
-### Dataset-Level Tests
-
-- `Records.StreamWrite` returns `ErrCodecNotStreamable` for the Parquet
-  codec.
-- `Records.Write` produces readable Parquet files.
-- The manifest records `codec: "parquet"`.
-
-### External Reader Tests (Optional)
-
-- Reading of the files with DuckDB, when the CI environment provides DuckDB.
-- Reading of the files with PyArrow, when the CI environment provides PyArrow.
-
-### Contract Compliance Tests
-
-- `Name()` returns `"parquet"`.
-- Manifests record the codec as `"parquet"`.
-- The codec returns the error sentinels for the documented conditions.
-
----
-
-## Scope Decisions
-
-Three decisions bound the codec.
-
-1. **Nested types:** the codec supports flat schemas only, without nested
-   structs, lists, or maps.
-2. **Schemas:** the caller declares a schema explicitly, and the codec does
-   not derive one from Go struct tags.
-3. **Compression:** the codec offers Snappy, gzip, or no internal
-   compression, and no Zstandard.
-
----
-
-## References
-
-- [Apache Parquet Specification](https://parquet.apache.org/docs/)
-- [parquet-go Library](https://github.com/parquet-go/parquet-go)
-- [CONTRACT_LAYOUT.md](CONTRACT_LAYOUT.md): recording of the codec in
-  manifests
-- [CONTRACT_CORE.md](CONTRACT_CORE.md): manifest requirements
-- [CONTRACT_ERRORS.md](CONTRACT_ERRORS.md): error taxonomy
+| Condition | Sentinel |
+|-----------|----------|
+| Empty schema, duplicate/empty field name, out-of-range `ParquetType`, unsupported `T`, missing/incompatible struct field | `ErrSchemaViolation` |
+| Missing required field, `nil` in non-nullable field, type mismatch, numeric overflow, invalid RFC 3339 timestamp on encode | `ErrSchemaViolation` |
+| Empty, truncated, corrupt, or physical-schema-mismatched Parquet file, or null in required column on decode | `ErrInvalidFormat` |
+| `Records.StreamWrite` called with `Parquet[T]` | `ErrCodecNotStreamable` |

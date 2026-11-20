@@ -40,118 +40,104 @@ var tileHex = [4]string{
 	"212428272524222020212122232425261c2023272a2927252422222323242526191b1f2226292c2a2827252324252626191a1b1e212326292b2a2a2827252627191a1b1b1a1c1e21252a2c2c2c2a28271a1b1b191817171a1e23282e302f2d2c1a1b1a1816151414171c22282e3332301a1b19171513121114171c22292f32351a1b19171513110f13171a1e242b2e311b1c1a181614121214171b1f23262a2d1b1c1b191716151517191d20242728291b1c1c1b191818181a1c1f22252728291b1c1d1d1c1b1b1c1d1f2124262728291c1d1d1e1f1e1e1f20222426262728291c1d1e1f2020212223242526272829291c1d1e1f20212222232425262728292a",
 }
 
+const (
+	gridBytes = 1024
+	tileSize  = 256
+)
+
 func main() {
-	dirFlag := flag.String("dir", "", "directory to retain store output (optional)")
+	dirPtr := flag.String("dir", "", "directory to retain store output (optional)")
 	flag.Parse()
 
-	if err := run(*dirFlag); err != nil {
+	if err := execDepthGrid(*dirPtr); err != nil {
 		log.Fatal(err)
 	}
 }
 
-func decodeTiles() ([4][]byte, error) {
+func execDepthGrid(storeDir string) error {
+	if storeDir != "" {
+		if err := os.MkdirAll(storeDir, 0o755); err != nil {
+			return err
+		}
+	} else {
+		tmp, err := os.MkdirTemp("", "lode-depth-grid-*")
+		if err != nil {
+			return err
+		}
+		defer func() { _ = os.RemoveAll(tmp) }()
+		storeDir = tmp
+	}
+
+	return runDepthGrid(context.Background(), lode.FS(storeDir))
+}
+
+func stageTiles(ctx context.Context, vol volume.Volume, tiles [4][]byte, indices ...int) ([]volume.BlockRef, error) {
+	refs := make([]volume.BlockRef, 0, len(indices))
+	for _, idx := range indices {
+		blk, err := vol.StageWriteAt(ctx, int64(idx*tileSize), bytes.NewReader(tiles[idx]))
+		if err != nil {
+			return nil, fmt.Errorf("stage tile %d: %w", idx, err)
+		}
+		refs = append(refs, blk)
+	}
+	return refs, nil
+}
+
+func commitTiles(ctx context.Context, vol volume.Volume, tiles [4][]byte, label string, indices ...int) (*volume.Snapshot, error) {
+	refs, err := stageTiles(ctx, vol, tiles, indices...)
+	if err != nil {
+		return nil, err
+	}
+	snap, err := vol.Commit(ctx, refs, lode.D{"tiles": label})
+	if err != nil {
+		return nil, fmt.Errorf("commit tiles %s: %w", label, err)
+	}
+	return snap, nil
+}
+
+func runDepthGrid(ctx context.Context, factory lode.Factory[lode.RangeStore]) error {
 	var tiles [4][]byte
 	for i, h := range tileHex {
 		b, err := hex.DecodeString(h)
 		if err != nil {
-			return tiles, fmt.Errorf("decode tile %d: %w", i, err)
+			return fmt.Errorf("decode tile %d: %w", i, err)
 		}
 		tiles[i] = b
 	}
-	return tiles, nil
-}
 
-func prepareStoreDir(dirFlag string) (string, func(), error) {
-	if dirFlag != "" {
-		if err := os.MkdirAll(dirFlag, 0o755); err != nil {
-			return "", nil, fmt.Errorf("create store dir: %w", err)
-		}
-		return dirFlag, func() {}, nil
-	}
-	tmpDir, err := os.MkdirTemp("", "lode-depth-grid-*")
-	if err != nil {
-		return "", nil, fmt.Errorf("create temp dir: %w", err)
-	}
-	return tmpDir, func() { _ = os.RemoveAll(tmpDir) }, nil
-}
-
-func stageTile(ctx context.Context, vol volume.Volume, index int, data []byte) (volume.BlockRef, error) {
-	offset := int64(index * 256)
-	blk, err := vol.StageWriteAt(ctx, offset, bytes.NewReader(data))
-	if err != nil {
-		return volume.BlockRef{}, fmt.Errorf("stage tile %d: %w", index, err)
-	}
-	return blk, nil
-}
-
-func run(dirFlag string) error {
-	ctx := context.Background()
-
-	tiles, err := decodeTiles()
-	if err != nil {
-		return err
-	}
-
-	storeDir, cleanup, err := prepareStoreDir(dirFlag)
-	if err != nil {
-		return err
-	}
-	defer cleanup()
-
-	factory := lode.FS(storeDir)
-	vol, err := volume.New("depth-grid", factory, 1024)
+	vol, err := volume.New("depth-grid", factory, gridBytes)
 	if err != nil {
 		return fmt.Errorf("open depth-grid volume: %w", err)
 	}
 
-	nw, err := stageTile(ctx, vol, 0, tiles[0])
+	snap1, err := commitTiles(ctx, vol, tiles, "nw,sw", 0, 2)
 	if err != nil {
 		return err
-	}
-	sw, err := stageTile(ctx, vol, 2, tiles[2])
-	if err != nil {
-		return err
-	}
-	snap1, err := vol.Commit(ctx, []volume.BlockRef{nw, sw}, volume.Metadata{"tiles": "nw,sw"})
-	if err != nil {
-		return fmt.Errorf("commit snapshot 1: %w", err)
 	}
 	fmt.Printf("Snapshot 1: %s (%d blocks)\n", snap1.ID, len(snap1.Manifest.Blocks))
 
-	_, err = vol.ReadAt(ctx, snap1.ID, 256, 256)
-	if err == nil {
-		return errors.New("expected ErrRangeMissing on Northeast gap, got nil")
-	}
-	if !errors.Is(err, volume.ErrRangeMissing) {
-		return fmt.Errorf("expected ErrRangeMissing on Northeast gap: %w", err)
+	if _, err := vol.ReadAt(ctx, snap1.ID, tileSize, tileSize); !errors.Is(err, volume.ErrRangeMissing) {
+		return fmt.Errorf("expected ErrRangeMissing on Northeast gap, got: %w", err)
 	}
 	fmt.Println("  ReadAt [256, 512) returned ErrRangeMissing as expected")
 
-	ne, err := stageTile(ctx, vol, 1, tiles[1])
+	snap2, err := commitTiles(ctx, vol, tiles, "ne", 1)
 	if err != nil {
 		return err
-	}
-	snap2, err := vol.Commit(ctx, []volume.BlockRef{ne}, volume.Metadata{"tiles": "ne"})
-	if err != nil {
-		return fmt.Errorf("commit snapshot 2: %w", err)
 	}
 	fmt.Printf("Snapshot 2: %s (%d blocks)\n", snap2.ID, len(snap2.Manifest.Blocks))
 
-	reopened, err := volume.New("depth-grid", factory, 1024)
+	reopened, err := volume.New("depth-grid", factory, gridBytes)
 	if err != nil {
 		return fmt.Errorf("reopen depth-grid volume: %w", err)
 	}
-	se, err := stageTile(ctx, reopened, 3, tiles[3])
+	snap3, err := commitTiles(ctx, reopened, tiles, "se", 3)
 	if err != nil {
 		return err
 	}
-	snap3, err := reopened.Commit(ctx, []volume.BlockRef{se}, volume.Metadata{"tiles": "se"})
-	if err != nil {
-		return fmt.Errorf("commit snapshot 3: %w", err)
-	}
 	fmt.Printf("Snapshot 3: %s (%d blocks)\n", snap3.ID, len(snap3.Manifest.Blocks))
 
-	all, err := reopened.ReadAt(ctx, snap3.ID, 0, 1024)
+	all, err := reopened.ReadAt(ctx, snap3.ID, 0, gridBytes)
 	if err != nil {
 		return fmt.Errorf("read full depth grid: %w", err)
 	}

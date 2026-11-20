@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"sort"
 	"time"
 
 	"github.com/pithecene/lode/internal/history"
@@ -17,17 +16,14 @@ import (
 )
 
 const (
-	manifestSchemaName = "lode-manifest"
-	// manifestFormatVersion 1.1.0 adds codec_description, partition_keys,
-	// and paths; a manifest without paths is 1.0.0 (legacy).
-	manifestFormatVersion = "1.1.0"
+	manifestSchemaName    = "lode-manifest"
+	manifestFormatVersion = "1.2.0"
 )
 
 // -----------------------------------------------------------------------------
 // Options
 // -----------------------------------------------------------------------------
 
-// datasetConfig holds a writer handle's configuration.
 type datasetConfig struct {
 	layout     Layout
 	compressor Compressor
@@ -35,72 +31,58 @@ type datasetConfig struct {
 	retry      retry.Config
 }
 
-// components are the compressor and checksum a handle supplies: a writer's
-// own, which it writes with, or a view's custom ones. Both read the
-// snapshots whose manifests name them (compressorFor, matchChecksum).
 type components struct {
 	compressor Compressor
 	checksum   Checksum
 }
 
-// DatasetOption configures a writer handle: Root.Records or Root.Blobs.
+// DatasetOption configures a writer handle: Root.Records or Root.Blobs, as
+// well as retry settings for Root.RemoveDataset.
 type DatasetOption interface {
 	applyDataset(cfg *datasetConfig) error
 }
 
-// ViewOption configures a view: ReadRoot.Records or ReadRoot.Blobs. A view
-// takes its layout and components from the dataset's manifests. Only a
-// custom compressor or checksum, which Lode cannot reconstruct from its
-// name, is passed to it. WithLayout states the layout that the view
-// expects, and WithPinnedSnapshot names the snapshot that the view opens
-// at in place of the head.
+// ViewOption configures a view: ReadRoot.Records or ReadRoot.Blobs.
 type ViewOption interface {
 	applyView(cfg *viewConfig) error
 }
 
-// viewConfig is what a view's options set: its components, the layout it
-// expects (nil when it takes the layout from the snapshot it opens at), and
-// the anchor it opens at, the head unless WithPinnedSnapshot names a
-// snapshot.
 type viewConfig struct {
 	components components
 	layout     *partitionScheme
 	anchor     viewAnchor
 }
 
-// viewOption adapts a function to ViewOption.
 type viewOption func(cfg *viewConfig) error
 
 func (o viewOption) applyView(cfg *viewConfig) error { return o(cfg) }
 
-// WithPinnedSnapshot opens a view at snapshot id in place of the head. Opening
-// reads that snapshot's canonical manifest and neither the pointer nor the
-// head, and it checks the view's codec and the root's path names against
-// that manifest. The view keeps no snapshot, and its methods behave as on
-// any view. Opening returns ErrSnapshotExpired for an expired snapshot and
-// ErrNotFound for an absent one.
-func WithPinnedSnapshot(id DatasetSnapshotID) ViewOption {
+// WithAnchor opens a view at snapshot id in place of the dataset's head.
+// Opening reads id's canonical manifest once (touching neither the head
+// pointer nor the head manifest), validates codec and layout settings against
+// it, and retains that immutable manifest so an immediate Snapshot(ctx, id) or
+// Read(ctx, id) issues zero additional manifest Gets. Other methods such as
+// Latest() still consult the dataset's live history.
+func WithAnchor(id SnapshotID) ViewOption {
 	return viewOption(func(cfg *viewConfig) error {
 		if !storepath.Segment(string(id)) {
-			return validate.Argument("WithPinnedSnapshot: snapshot ID %q is not %s", id, storepath.SegmentRule)
+			return validate.Argument("WithAnchor: snapshot ID %q is not %s", id, storepath.SegmentRule)
 		}
 		cfg.anchor = snapshotAnchor{id: id}
 		return nil
 	})
 }
 
-// ComponentOption configures a writer handle or a view.
+// ComponentOption configures either a writer handle or a view.
 type ComponentOption interface {
 	DatasetOption
 	ViewOption
 }
 
-// datasetOption adapts a function to DatasetOption.
 type datasetOption func(cfg *datasetConfig) error
 
 func (o datasetOption) applyDataset(cfg *datasetConfig) error { return o(cfg) }
 
-// componentOption sets a setting on a writer handle and on a view.
 type componentOption struct {
 	dataset func(cfg *datasetConfig) error
 	view    func(cfg *viewConfig) error
@@ -109,11 +91,8 @@ type componentOption struct {
 func (o componentOption) applyDataset(cfg *datasetConfig) error { return o.dataset(cfg) }
 func (o componentOption) applyView(cfg *viewConfig) error       { return o.view(cfg) }
 
-// WithLayout sets how a dataset is partitioned: Unpartitioned (the default)
-// or Hive. For a view it states the layout the view expects. The view then
-// looks for manifests only where that layout persists them, and opening
-// returns ErrSettingsMismatch when the snapshot it opens at records another
-// layout, as a writer's settings check does.
+// WithLayout sets how a dataset is partitioned: Unpartitioned (the default) or
+// Hive. On a view it states the expected layout, avoiding dual-grammar probes.
 func WithLayout(l Layout) ComponentOption {
 	return componentOption{
 		dataset: func(cfg *datasetConfig) error {
@@ -138,17 +117,13 @@ func WithLayout(l Layout) ComponentOption {
 }
 
 // WithCompressor sets the compressor of a writer handle (default:
-// NewNoOpCompressor). For a view it supplies a custom compressor, used for
-// the snapshots whose manifests name it; Lode reconstructs the bundled
-// compressors by name.
+// Uncompressed) or supplies a custom compressor to a view.
 func WithCompressor(c Compressor) ComponentOption {
 	return componentOption{
 		dataset: func(cfg *datasetConfig) error {
 			if validate.Nil(c) {
 				return validate.Argument("compressor must not be nil")
 			}
-			// A writer names each data file by its role and this extension
-			// (CONTRACT_STORAGE §Names in Keys).
 			if ext := c.Extension(); !storepath.Segment(dataFile + ext) {
 				return validate.Argument("WithCompressor: extension %q must keep a data file name %s", ext, storepath.SegmentRule)
 			}
@@ -165,11 +140,9 @@ func WithCompressor(c Compressor) ComponentOption {
 	}
 }
 
-// WithChecksum sets the checksum algorithm of a writer handle (default:
-// none), whose checksums are computed during writes and recorded in the
-// manifest. For a view it supplies a custom checksum, matched by name. A
-// nil checksum is none; a non-nil interface that holds a nil value is
-// rejected.
+// WithChecksum sets the checksum algorithm of a writer handle (default: none)
+// or supplies a custom checksum algorithm to a view. Bundled algorithms
+// (SHA256, CRC32C, MD5) are reconstructed automatically by name on read.
 func WithChecksum(c Checksum) ComponentOption {
 	set := func(dst *Checksum) error {
 		if c != nil && validate.Nil(c) {
@@ -184,8 +157,6 @@ func WithChecksum(c Checksum) ComponentOption {
 	}
 }
 
-// retryOption builds a retry option whose validation failure is an invalid
-// argument named after the option, as package lode/volume's options are.
 func retryOption(name string, set func(r *retry.Config) error) DatasetOption {
 	return datasetOption(func(cfg *datasetConfig) error {
 		if err := set(&cfg.retry); err != nil {
@@ -195,48 +166,33 @@ func retryOption(name string, set func(r *retry.Config) error) DatasetOption {
 	})
 }
 
-// WithRetry enables automatic retry of a commit on snapshot conflict: up
-// to n retries on ErrSnapshotConflict, refreshing the parent between
-// attempts. Default: 0 (ErrSnapshotConflict is returned at once).
+// WithRetry enables automatic retry on ErrSnapshotConflict up to n retries.
 func WithRetry(n int) DatasetOption {
 	return retryOption("WithRetry", func(r *retry.Config) error { return r.SetMaxAttempts(n) })
 }
 
 // WithRetryBaseDelay sets the base delay for exponential backoff on CAS retry.
-// The actual delay doubles with each attempt and is jittered.
-// Default: 10ms.
 func WithRetryBaseDelay(d time.Duration) DatasetOption {
 	return retryOption("WithRetryBaseDelay", func(r *retry.Config) error { return r.SetBaseDelay(d) })
 }
 
 // WithRetryMaxDelay sets the maximum delay for exponential backoff on CAS retry.
-// Default: 2s.
 func WithRetryMaxDelay(d time.Duration) DatasetOption {
 	return retryOption("WithRetryMaxDelay", func(r *retry.Config) error { return r.SetMaxDelay(d) })
 }
 
-// WithRetryJitter sets the jitter factor for CAS retry backoff.
-// 0.0 means no jitter (deterministic delay), 1.0 means full jitter.
-// Default: 1.0 (full jitter).
+// WithRetryJitter sets the jitter factor [0, 1] for CAS retry backoff.
 func WithRetryJitter(j float64) DatasetOption {
 	return retryOption("WithRetryJitter", func(r *retry.Config) error { return r.SetJitter(j) })
 }
 
-// WithRetryObserver registers a callback invoked once per CAS retry attempt.
-// The callback receives the 1-indexed retry attempt number and is called
-// synchronously on the committing goroutine after a snapshot conflict is
-// detected, before the backoff sleep. It is never called for the initial
-// attempt, so the number of calls equals the number of retries performed.
-// The callback must be fast and must not block; it is intended for
-// observability (e.g. incrementing a retry counter metric).
-// Has no effect unless WithRetry(n) is configured with n > 0.
+// WithRetryObserver registers a synchronous callback invoked on each CAS retry.
 func WithRetryObserver(fn func(attempt int)) DatasetOption {
 	return retryOption("WithRetryObserver", func(r *retry.Config) error { return r.SetObserver(fn) })
 }
 
-// resolveDatasetConfig applies opts over the defaults.
 func resolveDatasetConfig(opts []DatasetOption) (*datasetConfig, error) {
-	cfg := &datasetConfig{layout: Unpartitioned(), compressor: NewNoOpCompressor(), retry: retry.Default()}
+	cfg := &datasetConfig{layout: Unpartitioned(), compressor: Uncompressed(), retry: retry.Default()}
 	for _, opt := range opts {
 		if opt == nil {
 			return nil, validate.Argument("option must not be nil")
@@ -251,7 +207,6 @@ func resolveDatasetConfig(opts []DatasetOption) (*datasetConfig, error) {
 	return cfg, nil
 }
 
-// resolveViewConfig applies opts.
 func resolveViewConfig(opts []ViewOption) (*viewConfig, error) {
 	cfg := &viewConfig{anchor: headAnchor{}}
 	for _, opt := range opts {
@@ -269,88 +224,73 @@ func resolveViewConfig(opts []ViewOption) (*viewConfig, error) {
 // The dataset core
 // -----------------------------------------------------------------------------
 
-// dataset is what every handle of one dataset shares, a view's and a
-// writer's: its paths, its history, its codec, and its components. A view
-// holds a dataset only; a writer holds one inside a writer, so the methods
-// that write are not in a view's method set. A view's store also refuses
-// writes (readOnlyStore).
 type dataset struct {
-	id         DatasetID
-	store      Store
-	layout     *pathLayout
-	codec      codecIdentity
-	components components
-
-	// history owns the snapshot sequence and its head pointer (internal/history).
-	history history.History[DatasetSnapshotID, Manifest]
+	id             DatasetID
+	store          Store
+	layout         *pathLayout
+	codec          codecIdentity
+	components     components
+	anchorID       SnapshotID
+	anchorManifest []byte // private copy of the validated manifest
+	history        history.History[SnapshotID, Manifest]
 }
 
-// writer is the core of a writer handle: its dataset, its retry policy,
-// and its state across commits.
 type writer struct {
 	*dataset
-	retry retry.Config
-
-	// settled is true once this writer's settings were verified against
-	// the dataset's (checkSettings) or recorded by its own commit.
+	retry   retry.Config
 	settled bool
 }
 
-// codecIdentity is the codec a dataset's manifests record: its name and
-// its description. A blob dataset has no codec (blobCodec), which a
-// manifest records as the empty name; a record codec's name is never empty
-// (checkCodec).
 type codecIdentity struct {
 	name, description string
 }
 
-// blobCodec is a blob dataset's codec identity: none.
 var blobCodec = codecIdentity{}
 
-// codecOf is the identity of a record codec.
 func codecOf[T any](c Codec[T]) codecIdentity {
 	return codecIdentity{name: c.Name(), description: c.Describe()}
 }
 
-// datasetKind is the dataset's snapshot grammar for history: paths come from
-// the layout, manifests are read without validation (the reader validates).
 type datasetKind struct {
 	id      DatasetID
 	paths   *pathLayout
-	store   Store      // checks canonical manifests of tombstoned snapshots
-	expired tombstones // retention's expiries hide snapshots from the scan
+	store   Store
+	expired tombstones
 }
 
 func newDatasetKind(id DatasetID, l *pathLayout, store Store) datasetKind {
 	return datasetKind{id: id, paths: l, store: store, expired: tombstones{store: store, paths: l, dataset: id}}
 }
 
-// StagedPath makes a dataset a history.Stager, so that a writer can check
-// its settings against a pending first commit (CONTRACT_CORE §Head Pointer).
-func (k datasetKind) StagedPath(id DatasetSnapshotID) string {
+func (k datasetKind) StagedPath(id SnapshotID) string {
 	return k.paths.stagedManifestPath(k.id, id)
 }
 
-// StagesCommit is true only for a commit that expects no pointer, a
-// dataset's first: a later commit has a manifest to check against, unless
-// its writer adopted a pending first commit, whose commits the history
-// stages as well (history.LoadStaged).
 func (datasetKind) StagesCommit(expected string) bool { return expected == "" }
 
 func (k datasetKind) SnapshotsPrefix() string { return k.paths.snapshotsPrefix(k.id) }
-func (k datasetKind) ManifestPath(id DatasetSnapshotID) string {
+func (k datasetKind) ManifestPath(id SnapshotID) string {
 	return k.paths.manifestPath(k.id, id)
 }
 
-func (k datasetKind) ParseManifest(p string) (DatasetSnapshotID, bool) {
+func (k datasetKind) ParseManifest(p string) (SnapshotID, bool) {
 	sp, ok := k.paths.manifest(p)
 	return sp.snapshot, ok && sp.snapshot != ""
 }
 
-// NotExpired is false only for an expired snapshot: one with a tombstone
-// and no canonical manifest (CONTRACT_RETENTION §Expired Snapshot). An
-// expiring snapshot, its canonical manifest still present, is readable.
-func (k datasetKind) NotExpired(ctx context.Context, id DatasetSnapshotID) (bool, error) {
+// Concurrent first writers can choose different layouts under one pointer.
+// Only a canonical Dataset manifest fixes its parent across commit retries.
+func (k datasetKind) AlternateAncestorPath(id SnapshotID) string {
+	other := hiveGrammar
+	if k.paths.supportsPartitions() {
+		other = noopScheme
+	}
+	return newPathLayout(k.paths.isFlat(), other).manifestPath(k.id, id)
+}
+
+func (datasetKind) ParentID(m *Manifest) SnapshotID { return m.ParentSnapshotID }
+
+func (k datasetKind) NotExpired(ctx context.Context, id SnapshotID) (bool, error) {
 	absent, err := k.expired.absent(ctx, id)
 	if err != nil || absent {
 		return absent, err
@@ -362,34 +302,43 @@ func (k datasetKind) NotExpired(ctx context.Context, id DatasetSnapshotID) (bool
 	return present, nil
 }
 
-func (k datasetKind) Decode(r io.Reader) (*Manifest, error) {
+func (k datasetKind) Decode(id SnapshotID, r io.Reader) (*Manifest, error) {
 	var m Manifest
 	if err := json.NewDecoder(r).Decode(&m); err != nil {
 		return nil, fmt.Errorf("lode: failed to decode manifest: %w", err)
 	}
+	if err := validateManifest(&m); err != nil {
+		return nil, err
+	}
+	if m.DatasetID != k.id || m.SnapshotID != id {
+		return nil, manifestIdentityErr(&m, k.id, id)
+	}
 	return &m, nil
 }
 
-// datasetKind is a history.Kind and Stager; stated so the methods are
-// visibly used.
-var (
-	_ history.Kind[DatasetSnapshotID, Manifest] = datasetKind{}
-	_ history.Stager[DatasetSnapshotID]         = datasetKind{}
-)
-
-func toDatasetSnapshot(s *history.Snapshot[DatasetSnapshotID, Manifest]) *DatasetSnapshot {
-	return &DatasetSnapshot{ID: s.ID, Manifest: s.Manifest}
+func manifestIdentityErr(m *Manifest, wantDataset DatasetID, wantSnap SnapshotID) error {
+	if m.DatasetID != wantDataset {
+		return &validate.ManifestError{Field: "dataset_id", Message: fmt.Sprintf("got %q, want %q", m.DatasetID, wantDataset)}
+	}
+	return &validate.ManifestError{Field: "snapshot_id", Message: fmt.Sprintf("got %q, want %q", m.SnapshotID, wantSnap)}
 }
 
-// fromHistory converts a history load result, passing its error through.
-func fromHistory(s *history.Snapshot[DatasetSnapshotID, Manifest], err error) (*DatasetSnapshot, error) {
+var (
+	_ history.Kind[SnapshotID, Manifest] = datasetKind{}
+	_ history.Stager[SnapshotID]         = datasetKind{}
+)
+
+func toSnapshot(s *history.Snapshot[SnapshotID, Manifest]) *Snapshot {
+	return &Snapshot{ID: s.ID, Manifest: s.Manifest}
+}
+
+func fromHistory(s *history.Snapshot[SnapshotID, Manifest], err error) (*Snapshot, error) {
 	if err != nil {
 		return nil, err
 	}
-	return toDatasetSnapshot(s), nil
+	return toSnapshot(s), nil
 }
 
-// newDataset assembles the core of a dataset handle over store.
 func newDataset(id DatasetID, store Store, l *pathLayout) *dataset {
 	return &dataset{
 		id:      id,
@@ -400,29 +349,36 @@ func newDataset(id DatasetID, store Store, l *pathLayout) *dataset {
 }
 
 // ID returns the dataset's identifier.
-func (d *dataset) ID() DatasetID {
-	return d.id
-}
+func (d *dataset) ID() DatasetID { return d.id }
 
-// Snapshot loads a snapshot by ID, in the order of findSnapshot.
-func (d *dataset) Snapshot(ctx context.Context, id DatasetSnapshotID) (*DatasetSnapshot, error) {
+// Snapshot loads a snapshot by ID. When opened with WithAnchor(id), the
+// already-loaded immutable anchor snapshot is returned without another Get.
+func (d *dataset) Snapshot(ctx context.Context, id SnapshotID) (*Snapshot, error) {
 	if err := validateSnapshotID(id); err != nil {
 		return nil, err
+	}
+	if err := d.history.CheckLive(ctx); err != nil {
+		return nil, err
+	}
+	if d.anchorID == id {
+		present, err := d.store.Exists(ctx, d.layout.manifestPath(d.id, id))
+		if err != nil {
+			return nil, err
+		}
+		if present {
+			var manifest Manifest
+			if err := json.Unmarshal(d.anchorManifest, &manifest); err != nil {
+				return nil, err
+			}
+			return &Snapshot{ID: id, Manifest: &manifest}, nil
+		}
 	}
 	return findSnapshot(ctx, []*dataset{d}, id)
 }
 
-// findSnapshot looks snapshot id up in candidates, in the order that every
-// reader follows: the canonical manifest; then the tombstone, so that an
-// expired snapshot whose partition manifests remain is not resurrected;
-// then a scan, for a dataset written before canonical manifests. A handle
-// passes its own core, and a view that does not yet know its layout passes
-// one core per grammar (viewCandidates). It returns ErrSnapshotExpired for
-// an expired snapshot and ErrNotFound when no candidate holds a manifest of
-// id.
-func findSnapshot(ctx context.Context, candidates []*dataset, id DatasetSnapshotID) (*DatasetSnapshot, error) {
-	canonical := func(d *dataset) (*DatasetSnapshot, error) { return loadedManifest(d.history.Snapshot(ctx, id)) }
-	scanned := func(d *dataset) (*DatasetSnapshot, error) { return loadedManifest(d.history.Find(ctx, id)) }
+func findSnapshot(ctx context.Context, candidates []*dataset, id SnapshotID) (*Snapshot, error) {
+	canonical := func(d *dataset) (*Snapshot, error) { return loadedManifest(d.history.Snapshot(ctx, id)) }
+	scanned := func(d *dataset) (*Snapshot, error) { return loadedManifest(d.history.Find(ctx, id)) }
 	s, err := firstFound(candidates, canonical)
 	if !isAbsence(err) {
 		return s, err
@@ -433,22 +389,17 @@ func findSnapshot(ctx context.Context, candidates []*dataset, id DatasetSnapshot
 	return firstFound(candidates, scanned)
 }
 
-// loadedManifest converts the load of one snapshot's manifest, and gives a
-// failure other than absence its context.
-func loadedManifest(s *history.Snapshot[DatasetSnapshotID, Manifest], err error) (*DatasetSnapshot, error) {
+func loadedManifest(s *history.Snapshot[SnapshotID, Manifest], err error) (*Snapshot, error) {
 	if err != nil && !isAbsence(err) {
 		return nil, fmt.Errorf("failed to get manifest: %w", err)
 	}
 	return fromHistory(s, err)
 }
 
-// firstFound returns the first snapshot that load finds in a candidate. When
-// every candidate reports an absence, it returns the last one, and it stops
-// at any other error.
-func firstFound(candidates []*dataset, load func(*dataset) (*DatasetSnapshot, error)) (*DatasetSnapshot, error) {
+func firstFound(candidates []*dataset, load func(*dataset) (*Snapshot, error)) (*Snapshot, error) {
 	var err error
 	for _, d := range candidates {
-		var s *DatasetSnapshot
+		var s *Snapshot
 		if s, err = load(d); !isAbsence(err) {
 			return s, err
 		}
@@ -456,10 +407,6 @@ func firstFound(candidates []*dataset, load func(*dataset) (*DatasetSnapshot, er
 	return nil, err
 }
 
-// isAbsence reports whether err means that a candidate holds no such
-// snapshot: ErrNotFound for one snapshot, ErrNoSnapshots for the newest.
-// An expired snapshot is not absent, although ErrSnapshotExpired matches
-// ErrNotFound: its tombstone records it.
 func isAbsence(err error) bool {
 	if errors.Is(err, ErrSnapshotExpired) {
 		return false
@@ -467,65 +414,162 @@ func isAbsence(err error) bool {
 	return errors.Is(err, ErrNotFound) || errors.Is(err, ErrNoSnapshots)
 }
 
-// partitioning is the partition scheme that the snapshot's manifest
-// records, which a view adopts as its layout.
-func (s *DatasetSnapshot) partitioning() partitionScheme {
+func (s *Snapshot) partitioning() partitionScheme {
 	return partitionScheme{name: partitioner(s.Partitioner), keys: s.PartitionKeys}
 }
 
-// Snapshots lists every snapshot, oldest first.
-func (d *dataset) Snapshots(ctx context.Context) ([]*DatasetSnapshot, error) {
-	all, err := d.history.Snapshots(ctx)
-	if err != nil {
-		return nil, err
-	}
-	snapshots := make([]*DatasetSnapshot, len(all))
-	for i, s := range all {
-		snapshots[i] = toDatasetSnapshot(s)
-	}
-	sort.Slice(snapshots, func(i, j int) bool {
-		return snapshots[i].CreatedAt.Before(snapshots[j].CreatedAt)
-	})
-	return snapshots, nil
+// Snapshots lists every committed snapshot, oldest first.
+func (d *dataset) Snapshots(ctx context.Context) ([]*Snapshot, error) {
+	return history.ListByCreation(ctx, &d.history, toSnapshot, func(s *Snapshot) time.Time { return s.CreatedAt })
 }
 
-// Latest returns the head snapshot. A view never writes, so it never
-// creates a missing pointer.
-func (d *dataset) Latest(ctx context.Context) (*DatasetSnapshot, error) {
+// Latest returns the head snapshot without creating a missing pointer.
+func (d *dataset) Latest(ctx context.Context) (*Snapshot, error) {
 	return fromHistory(d.history.Head(ctx))
 }
 
-// Latest returns the head snapshot for a writer, which creates a missing
-// pointer from the scan result.
-func (d *writer) Latest(ctx context.Context) (*DatasetSnapshot, error) {
+// Latest returns the head snapshot for a writer, creating a missing pointer
+// from the scan result when absent.
+func (d *writer) Latest(ctx context.Context) (*Snapshot, error) {
 	return fromHistory(d.history.Latest(ctx))
 }
 
-// readFile reads one data file of a snapshot through the compressor its
-// manifest names, passing the decompressed stream to decode.
-func (d *dataset) readFile(ctx context.Context, m *Manifest, path string, decode func(io.Reader) error) error {
-	compressor, err := d.compressorFor(m)
-	if err != nil {
-		return err
-	}
-	if err := d.matchChecksum(m); err != nil {
-		return err
-	}
-	rc, err := d.store.Get(ctx, path)
+// readObject reads one data object of a snapshot, verifying its stored-byte
+// checksum when the manifest records a checksum algorithm and streaming the
+// decompressed bytes to decode.
+func (d *dataset) readObject(ctx context.Context, m *Manifest, obj ObjectRef, decode func(io.Reader) error) error {
+	rc, err := d.openObjectStream(ctx, m, obj)
 	if err != nil {
 		return err
 	}
 	defer closer(rc)()
-	decompressed, err := compressor.Decompress(rc)
-	if err != nil {
-		return err
+
+	if err := decode(rc); err != nil {
+		return rc.verifyOnError(err)
 	}
-	defer closer(decompressed)()
-	return decode(decompressed)
+	return rc.verifyComplete()
 }
 
-// readBlob reads the single blob of a blob snapshot.
-func (d *dataset) readBlob(ctx context.Context, id DatasetSnapshotID) ([]byte, error) {
+type verifiedObjectStream struct {
+	decompressed io.ReadCloser
+	source       io.ReadCloser
+	raw          io.Reader
+	hasher       HashWriter
+	obj          ObjectRef
+	verified     bool
+	verifyErr    error
+}
+
+func (v *verifiedObjectStream) Read(p []byte) (int, error) {
+	n, err := v.decompressed.Read(p)
+	if err == nil {
+		return n, nil
+	}
+	if errors.Is(err, io.EOF) {
+		if vErr := v.verifyComplete(); vErr != nil {
+			return n, vErr
+		}
+		return n, io.EOF
+	}
+	return n, v.verifyOnError(err)
+}
+
+func (v *verifiedObjectStream) verifyComplete() error {
+	if v.verified {
+		return v.verifyErr
+	}
+	v.verified = true
+	v.verifyErr = verifyStoredBytes(v.raw, v.hasher, v.obj)
+	return v.verifyErr
+}
+
+func (v *verifiedObjectStream) verifyOnError(cause error) error {
+	if v.verified {
+		if errors.Is(v.verifyErr, ErrChecksumMismatch) {
+			return v.verifyErr
+		}
+		return cause
+	}
+	v.verified = true
+	v.verifyErr = verifyStoredBytesOnError(v.raw, v.hasher, v.obj, cause)
+	return v.verifyErr
+}
+
+func (v *verifiedObjectStream) Close() error {
+	dErr := v.decompressed.Close()
+	sErr := v.source.Close()
+	if dErr != nil {
+		return dErr
+	}
+	return sErr
+}
+
+func (d *dataset) openObjectStream(ctx context.Context, m *Manifest, obj ObjectRef) (*verifiedObjectStream, error) {
+	compressor, err := d.compressorFor(m)
+	if err != nil {
+		return nil, err
+	}
+	var checksum Checksum
+	if m.ChecksumAlgorithm != "" {
+		checksum, err = d.checksumFor(m)
+		if err != nil {
+			return nil, err
+		}
+		if obj.Checksum == "" {
+			return nil, fmt.Errorf("lode: object %s in snapshot %s is missing %s checksum: %w", obj.Path, m.SnapshotID, m.ChecksumAlgorithm, ErrChecksumMismatch)
+		}
+	}
+
+	rc, err := d.store.Get(ctx, obj.Path)
+	if err != nil {
+		return nil, err
+	}
+
+	raw := io.Reader(rc)
+	var hasher HashWriter
+	if checksum != nil {
+		hasher = checksum.NewHasher()
+		raw = io.TeeReader(rc, hasher)
+	}
+
+	decompressed, err := compressor.Decompress(raw)
+	if err != nil {
+		vErr := verifyStoredBytesOnError(raw, hasher, obj, err)
+		_ = rc.Close()
+		return nil, vErr
+	}
+	return &verifiedObjectStream{
+		decompressed: decompressed,
+		source:       rc,
+		raw:          raw,
+		hasher:       hasher,
+		obj:          obj,
+	}, nil
+}
+
+func verifyStoredBytes(raw io.Reader, hasher HashWriter, obj ObjectRef) error {
+	if hasher == nil {
+		return nil
+	}
+	// Ensure any trailing framing bytes after the compressed payload are
+	// consumed so the digest covers the complete stored object.
+	if _, err := io.Copy(io.Discard, raw); err != nil {
+		return fmt.Errorf("lode: failed to read trailing object bytes: %w", err)
+	}
+	if got := hasher.Sum(); got != obj.Checksum {
+		return fmt.Errorf("lode: checksum mismatch for %s: got %s, want %s: %w", obj.Path, got, obj.Checksum, ErrChecksumMismatch)
+	}
+	return nil
+}
+
+func verifyStoredBytesOnError(raw io.Reader, hasher HashWriter, obj ObjectRef, cause error) error {
+	if err := verifyStoredBytes(raw, hasher, obj); errors.Is(err, ErrChecksumMismatch) {
+		return err
+	}
+	return cause
+}
+
+func (d *dataset) readBlob(ctx context.Context, id SnapshotID) ([]byte, error) {
 	snapshot, err := d.Snapshot(ctx, id)
 	if err != nil {
 		return nil, err
@@ -533,24 +577,28 @@ func (d *dataset) readBlob(ctx context.Context, id DatasetSnapshotID) ([]byte, e
 	if err := matchCodec(snapshot.Manifest, blobCodec); err != nil {
 		return nil, err
 	}
-	if len(snapshot.Files) != 1 {
-		return nil, fmt.Errorf("lode: blob snapshot must have exactly one file, got %d", len(snapshot.Files))
+	if len(snapshot.Objects) != 1 {
+		return nil, fmt.Errorf("lode: blob snapshot must have exactly one object, got %d", len(snapshot.Objects))
 	}
-	path := snapshot.Files[0].Path
+	obj := snapshot.Objects[0]
+	if !d.layout.isObjectOf(d.id, snapshot.ID, dataLeaf, obj.Path) {
+		return nil, &validate.ManifestError{
+			Field:   "objects[0].path",
+			Message: fmt.Sprintf("path %q is outside snapshot %s of dataset %s", obj.Path, snapshot.ID, d.id),
+		}
+	}
 	var buf bytes.Buffer
-	err = d.readFile(ctx, snapshot.Manifest, path, func(r io.Reader) error {
+	err = d.readObject(ctx, snapshot.Manifest, obj, func(r io.Reader) error {
 		_, err := buf.ReadFrom(r)
 		return err
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to read blob %s: %w", path, err)
+		return nil, fmt.Errorf("failed to read blob %s: %w", obj.Path, err)
 	}
 	return buf.Bytes(), nil
 }
 
-// readRecords reads every record of a record snapshot with codec, which
-// must be the one the manifest names.
-func readRecords[T any](ctx context.Context, d *dataset, codec Codec[T], id DatasetSnapshotID) ([]T, error) {
+func readRecords[T any](ctx context.Context, d *dataset, codec Codec[T], id SnapshotID) ([]T, error) {
 	snapshot, err := d.Snapshot(ctx, id)
 	if err != nil {
 		return nil, err
@@ -559,23 +607,25 @@ func readRecords[T any](ctx context.Context, d *dataset, codec Codec[T], id Data
 		return nil, err
 	}
 	var all []T
-	for _, f := range snapshot.Files {
-		err := d.readFile(ctx, snapshot.Manifest, f.Path, func(r io.Reader) error {
+	for i, obj := range snapshot.Objects {
+		if !d.layout.isObjectOf(d.id, snapshot.ID, dataLeaf, obj.Path) {
+			return nil, &validate.ManifestError{
+				Field:   fmt.Sprintf("objects[%d].path", i),
+				Message: fmt.Sprintf("path %q is outside snapshot %s of dataset %s", obj.Path, snapshot.ID, d.id),
+			}
+		}
+		err := d.readObject(ctx, snapshot.Manifest, obj, func(r io.Reader) error {
 			records, err := codec.Decode(r)
 			all = append(all, records...)
 			return err
 		})
 		if err != nil {
-			return nil, fmt.Errorf("failed to read data file %s: %w", f.Path, err)
+			return nil, fmt.Errorf("failed to read data object %s: %w", obj.Path, err)
 		}
 	}
 	return all, nil
 }
 
-// matchCodec rejects a snapshot written with another codec, or, unless its
-// manifest is legacy, with another codec configuration. It reads the two
-// codec fields directly rather than through recordedSettings, because it
-// runs on every read and needs no other setting.
 func matchCodec(m *Manifest, codec codecIdentity) error {
 	if m.Codec != codec.name {
 		return fmt.Errorf("lode: codec mismatch: snapshot %s uses %q, handle has %q: %w", m.SnapshotID, m.Codec, codec.name, ErrSettingsMismatch)
@@ -586,17 +636,12 @@ func matchCodec(m *Manifest, codec codecIdentity) error {
 	return nil
 }
 
-// bundledCompressors are the compressors Lode reconstructs from the name a
-// manifest records.
 var bundledCompressors = map[string]func() Compressor{
-	"noop": NewNoOpCompressor,
-	"gzip": NewGzipCompressor,
-	"zstd": NewZstdCompressor,
+	"noop": Uncompressed,
+	"gzip": Gzip,
+	"zstd": Zstd,
 }
 
-// compressorFor returns the compressor a snapshot's manifest names: the
-// handle's own (a writer's) or custom one (a view's) when its name matches,
-// else the bundled one.
 func (d *dataset) compressorFor(m *Manifest) (Compressor, error) {
 	if c := d.components.compressor; c != nil && c.Name() == m.Compressor {
 		return c, nil
@@ -607,31 +652,23 @@ func (d *dataset) compressorFor(m *Manifest) (Compressor, error) {
 	return nil, fmt.Errorf("lode: snapshot %s uses compressor %q, which is not bundled; pass it with WithCompressor: %w", m.SnapshotID, m.Compressor, ErrSettingsMismatch)
 }
 
-// bundledChecksums are the checksums Lode reconstructs from the name a
-// manifest records.
 var bundledChecksums = map[string]func() Checksum{
-	"md5": NewMD5Checksum,
+	"sha256": SHA256,
+	"crc32c": CRC32C,
+	"md5":    MD5,
 }
 
-// matchChecksum returns ErrSettingsMismatch when a snapshot's manifest
-// names a checksum that is neither bundled nor this handle's, as
-// compressorFor does for compressors (V1_API_DECISIONS D11, Options).
-// Reads do not verify checksums; the name is matched so that a view states
-// every custom component of the snapshots it reads.
-func (d *dataset) matchChecksum(m *Manifest) error {
+func (d *dataset) checksumFor(m *Manifest) (Checksum, error) {
 	name := m.ChecksumAlgorithm
-	if _, bundled := bundledChecksums[name]; name == "" || bundled {
-		return nil
-	}
 	if c := d.components.checksum; c != nil && c.Name() == name {
-		return nil
+		return c, nil
 	}
-	return fmt.Errorf("lode: snapshot %s uses checksum %q, which is not bundled; pass it with WithChecksum: %w", m.SnapshotID, name, ErrSettingsMismatch)
+	if newChecksum, ok := bundledChecksums[name]; ok {
+		return newChecksum(), nil
+	}
+	return nil, fmt.Errorf("lode: snapshot %s uses checksum %q, which is not bundled; pass it with WithChecksum: %w", m.SnapshotID, name, ErrSettingsMismatch)
 }
 
-// validateDatasetID rejects an ID that is not one canonical path segment
-// (CONTRACT_STORAGE §Names in Keys): Lode cleans the paths it builds from an
-// ID, so that "a/../events" would otherwise address "events".
 func validateDatasetID(id DatasetID) error {
 	if !storepath.Segment(string(id)) {
 		return validate.Argument("dataset ID %q must be %s", id, storepath.SegmentRule)
@@ -639,23 +676,18 @@ func validateDatasetID(id DatasetID) error {
 	return nil
 }
 
-// validateSnapshotID reports ErrNotFound for a snapshot ID that is not one
-// canonical path segment (CONTRACT_STORAGE §Names in Keys): no snapshot has
-// such an ID, and a handle builds the paths of a snapshot from its ID, so
-// "../../b/snapshots/<id>" would otherwise read the dataset b.
-func validateSnapshotID(id DatasetSnapshotID) error {
+func validateSnapshotID(id SnapshotID) error {
 	if !storepath.Segment(string(id)) {
 		return fmt.Errorf("lode: snapshot %q: a snapshot ID is %s: %w", id, storepath.SegmentRule, ErrNotFound)
 	}
 	return nil
 }
 
-// historyErrors are the sentinels every history in this package returns, so
-// history errors keep lode's public identities.
 var historyErrors = history.Errors{
 	NotFound:         ErrNotFound,
 	NoSnapshots:      ErrNoSnapshots,
 	SnapshotConflict: ErrSnapshotConflict,
 	HeadUncommitted:  ErrHeadUncommitted,
+	Removed:          ErrRemoved,
 	PathExists:       ErrPathExists,
 }

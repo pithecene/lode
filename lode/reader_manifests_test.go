@@ -1,7 +1,9 @@
 package lode
 
 import (
+	"context"
 	"errors"
+	"iter"
 	"reflect"
 	"slices"
 	"strings"
@@ -10,20 +12,25 @@ import (
 	"github.com/pithecene/lode/internal/testutil"
 )
 
-// Tests of SnapshotReader.Manifests: it lists what ListManifests lists, in
-// the same order and window, with the manifests GetManifest would load, and
-// it loads each manifest once, as the caller consumes it.
+// Tests of Manifests: it yields manifests in (Partition, ID) order across every
+// window and partition, matches Snapshot(id) for each yielded manifest, and
+// loads each manifest once on demand as the caller consumes it.
+
+// manifestLister is the minimal surface needed by collect.
+type manifestLister interface {
+	Manifests(ctx context.Context, partition PartitionPath, opts ManifestListOptions) iter.Seq2[LoadedManifest, error]
+}
 
 // manifestFixture is a dataset to list, built in store.
 type manifestFixture struct {
 	name  string
-	build func(t *testing.T, store Store) SnapshotReader
+	build func(t *testing.T, store Store) *Records[D]
 }
 
 // writeEach writes each record as its own snapshot.
-func writeEach(t *testing.T, ds Records[D], records ...D) []DatasetSnapshotID {
+func writeEach(t *testing.T, ds *Records[D], records ...D) []SnapshotID {
 	t.Helper()
-	ids := make([]DatasetSnapshotID, 0, len(records))
+	ids := make([]SnapshotID, 0, len(records))
 	for _, r := range records {
 		snap, err := ds.Write(t.Context(), R(r), nil)
 		if err != nil {
@@ -34,7 +41,7 @@ func writeEach(t *testing.T, ds Records[D], records ...D) []DatasetSnapshotID {
 	return ids
 }
 
-func openHive(t *testing.T, store Store) Records[D] {
+func openHive(t *testing.T, store Store) *Records[D] {
 	t.Helper()
 	ds, err := Open(Use(store)).Records(t.Context(), "test-ds", JSONL[D](), hive("day"))
 	if err != nil {
@@ -44,7 +51,7 @@ func openHive(t *testing.T, store Store) Records[D] {
 }
 
 var manifestFixtures = []manifestFixture{
-	{"hive, one snapshot per partition and one across two", func(t *testing.T, store Store) SnapshotReader {
+	{"hive, one snapshot per partition and one across two", func(t *testing.T, store Store) *Records[D] {
 		ds := openHive(t, store)
 		writeEach(t, ds, D{"day": "c"}, D{"day": "a"}, D{"day": "b"})
 		if _, err := ds.Write(t.Context(), R(D{"day": "d"}, D{"day": "a"}), nil); err != nil {
@@ -52,7 +59,7 @@ var manifestFixtures = []manifestFixture{
 		}
 		return ds
 	}},
-	{"default layout", func(t *testing.T, store Store) SnapshotReader {
+	{"default layout", func(t *testing.T, store Store) *Records[D] {
 		ds, err := Open(Use(store)).Records(t.Context(), "test-ds", JSONL[D]())
 		if err != nil {
 			t.Fatal(err)
@@ -60,7 +67,7 @@ var manifestFixtures = []manifestFixture{
 		writeEach(t, ds, D{"id": 1}, D{"id": 2}, D{"id": 3})
 		return ds
 	}},
-	{"hive, a snapshot whose partition copies are missing", func(t *testing.T, store Store) SnapshotReader {
+	{"hive, a snapshot whose partition copies are missing", func(t *testing.T, store Store) *Records[D] {
 		ds := openHive(t, store)
 		ids := writeEach(t, ds, D{"day": "a"}, D{"day": "b"})
 		if err := store.Delete(t.Context(), "datasets/test-ds/partitions/day=b/segments/"+string(ids[1])+"/manifest.json"); err != nil {
@@ -68,7 +75,7 @@ var manifestFixtures = []manifestFixture{
 		}
 		return ds
 	}},
-	{"hive, a snapshot with no files", func(t *testing.T, store Store) SnapshotReader {
+	{"hive, a snapshot with no objects", func(t *testing.T, store Store) *Records[D] {
 		ds := openHive(t, store)
 		writeEach(t, ds, D{"day": "a"})
 		if _, err := ds.Write(t.Context(), nil, nil); err != nil {
@@ -79,7 +86,7 @@ var manifestFixtures = []manifestFixture{
 }
 
 // collect drains Manifests, failing on any error.
-func collect(t *testing.T, r SnapshotReader, partition PartitionPath, opts ManifestListOptions) []LoadedManifest {
+func collect(t *testing.T, r manifestLister, partition PartitionPath, opts ManifestListOptions) []LoadedManifest {
 	t.Helper()
 	var out []LoadedManifest
 	for loaded, err := range r.Manifests(t.Context(), partition, opts) {
@@ -89,6 +96,15 @@ func collect(t *testing.T, r SnapshotReader, partition PartitionPath, opts Manif
 		out = append(out, loaded)
 	}
 	return out
+}
+
+// refsOf extracts the ManifestRef slice from a LoadedManifest slice.
+func refsOf(ms []LoadedManifest) []ManifestRef {
+	refs := make([]ManifestRef, len(ms))
+	for i, m := range ms {
+		refs[i] = m.Ref
+	}
+	return refs
 }
 
 // listingWindows are the listing options each fixture is listed under: whole, by
@@ -113,38 +129,46 @@ func partitionsOf(refs []ManifestRef) []PartitionPath {
 	return parts
 }
 
-// Manifests yields exactly the references ListManifests returns, in every
-// window and partition, each with the manifest GetManifest loads for it.
+func verifyManifestWindow(t *testing.T, r *Records[D], partition PartitionPath, full []LoadedManifest, opts ManifestListOptions) {
+	t.Helper()
+	want := cursorWindow(full, func(m LoadedManifest) bool { return manifestRefLess(opts.StartAfter, m.Ref) }, opts.Limit)
+	got := collect(t, r, partition, opts)
+	if len(got) != len(want) {
+		t.Fatalf("partition %q %+v: Manifests yielded %d, want %d", partition, opts, len(got), len(want))
+	}
+	for i, loaded := range got {
+		if loaded.Ref != want[i].Ref {
+			t.Fatalf("partition %q %+v: ref %d = %v, want %v", partition, opts, i, loaded.Ref, want[i].Ref)
+		}
+		if !reflect.DeepEqual(loaded.Manifest, want[i].Manifest) {
+			t.Fatalf("partition %q %+v: manifest %d differs from full sequence", partition, opts, i)
+		}
+		snap, err := r.Snapshot(t.Context(), loaded.Ref.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(loaded.Manifest, snap.Manifest) {
+			t.Fatalf("partition %q: manifest of %v differs from Snapshot(%s)", partition, loaded.Ref, loaded.Ref.ID)
+		}
+	}
+}
+
+// Manifests yields ordered references in every window and partition, each
+// carrying the exact manifest Snapshot(id) loads.
 func TestManifests_EquivalentToListThenGet(t *testing.T) {
 	for _, f := range manifestFixtures {
 		t.Run(f.name, func(t *testing.T) {
 			r := f.build(t, NewMemory())
-			all, err := r.ListManifests(t.Context(), PartitionPath{}, ManifestListOptions{})
-			if err != nil {
-				t.Fatal(err)
-			}
-			for _, partition := range partitionsOf(all) {
-				for _, opts := range listingWindows(all) {
-					want, err := r.ListManifests(t.Context(), partition, opts)
-					if err != nil {
-						t.Fatal(err)
+			allRefs := refsOf(collect(t, r, PartitionPath{}, ManifestListOptions{}))
+			for _, partition := range partitionsOf(allRefs) {
+				full := collect(t, r, partition, ManifestListOptions{})
+				for i := 1; i < len(full); i++ {
+					if !manifestRefLess(full[i-1].Ref, full[i].Ref) {
+						t.Fatalf("partition %q not strictly ordered: %v before %v", partition, full[i-1].Ref, full[i].Ref)
 					}
-					got := collect(t, r, partition, opts)
-					if len(got) != len(want) {
-						t.Fatalf("partition %q %+v: Manifests yielded %d, ListManifests %d", partition, opts, len(got), len(want))
-					}
-					for i, loaded := range got {
-						if loaded.Ref != want[i] {
-							t.Fatalf("partition %q %+v: ref %d = %v, want %v", partition, opts, i, loaded.Ref, want[i])
-						}
-						m, err := r.GetManifest(t.Context(), loaded.Ref)
-						if err != nil {
-							t.Fatal(err)
-						}
-						if !reflect.DeepEqual(loaded.Manifest, m) {
-							t.Fatalf("partition %q: manifest of %v differs from GetManifest's", partition, loaded.Ref)
-						}
-					}
+				}
+				for _, opts := range listingWindows(allRefs) {
+					verifyManifestWindow(t, r, partition, full, opts)
 				}
 			}
 		})
@@ -162,8 +186,7 @@ func manifestGets(fs *testutil.FaultStore) int {
 	return n
 }
 
-// Reading a partition through Manifests loads each manifest once, where
-// ListManifests then GetManifest loads it twice.
+// Reading a partition through Manifests loads each manifest once.
 func TestManifests_LoadsEachManifestOnce(t *testing.T) {
 	const snapshots = 5
 	fs := testutil.NewFaultStore(NewMemory())
@@ -179,20 +202,6 @@ func TestManifests_LoadsEachManifestOnce(t *testing.T) {
 	}
 	if got := manifestGets(fs); got != snapshots {
 		t.Errorf("Manifests read %d manifests, want %d", got, snapshots)
-	}
-
-	fs.Reset()
-	refs, err := ds.ListManifests(t.Context(), day, ManifestListOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, ref := range refs {
-		if _, err := ds.GetManifest(t.Context(), ref); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if got := manifestGets(fs); got != 2*snapshots {
-		t.Errorf("ListManifests then GetManifest read %d manifests, want %d", got, 2*snapshots)
 	}
 }
 
@@ -258,24 +267,22 @@ func TestManifests_StopsAtAnInvalidManifest(t *testing.T) {
 	}
 }
 
-// The manifests are the listing's: a snapshot removed after it is yielded
-// surfaces when its data is read, as ErrNotFound, where ListManifests then
-// GetManifest would surface it at GetManifest. One removed before it is
-// loaded is skipped, as ListManifests skips it.
+// A snapshot removed after it is yielded surfaces when its data is read, as
+// ErrNotFound. One removed before it is loaded is skipped.
 func TestManifests_RemovalBetweenListingAndUse(t *testing.T) {
 	t.Run("after it is yielded", func(t *testing.T) {
 		store := NewMemory()
 		ds := openHive(t, store)
 		writeEach(t, ds, D{"day": "a"})
 		got := collect(t, ds, partitionPath(t, "day=a"), ManifestListOptions{})
-		if len(got) != 1 || len(got[0].Manifest.Files) == 0 {
+		if len(got) != 1 || len(got[0].Manifest.Objects) == 0 {
 			t.Fatalf("yielded %v", got)
 		}
-		file := got[0].Manifest.Files[0].Path
-		if err := store.Delete(t.Context(), file); err != nil {
+		obj := got[0].Manifest.Objects[0]
+		if err := store.Delete(t.Context(), obj.Path); err != nil {
 			t.Fatal(err)
 		}
-		_, err := ds.OpenObject(t.Context(), ObjectRef{Manifest: got[0].Ref, Path: file})
+		_, err := ds.OpenObject(t.Context(), obj)
 		if !errors.Is(err, ErrNotFound) {
 			t.Fatalf("OpenObject of a removed snapshot's data: %v, want ErrNotFound", err)
 		}
@@ -287,7 +294,7 @@ func TestManifests_RemovalBetweenListingAndUse(t *testing.T) {
 		ids := writeEach(t, ds, D{"day": "a"}, D{"day": "a"})
 		day := partitionPath(t, "day=a")
 		slices.Sort(ids)
-		var seen []DatasetSnapshotID
+		var seen []SnapshotID
 		for loaded, err := range ds.Manifests(t.Context(), day, ManifestListOptions{}) {
 			if err != nil {
 				t.Fatal(err)
@@ -307,9 +314,9 @@ func TestManifests_RemovalBetweenListingAndUse(t *testing.T) {
 	})
 }
 
-// ListManifests validates every listed manifest before it applies the
-// window, so an invalid manifest outside the window fails it. Manifests
-// loads only what it yields, so the same window succeeds.
+// Manifests loads only what it yields, so an invalid manifest outside the
+// requested window does not fail the window, while widening the window to
+// include it yields the validation error.
 func TestManifests_ValidatesOnlyTheWindow(t *testing.T) {
 	store := NewMemory()
 	ds := openHive(t, store)
@@ -323,13 +330,19 @@ func TestManifests_ValidatesOnlyTheWindow(t *testing.T) {
 		t.Fatal(err)
 	}
 	day := partitionPath(t, "day=a")
-	first := ManifestListOptions{Limit: 1}
 
-	if _, err := ds.ListManifests(t.Context(), day, first); err == nil {
-		t.Fatal("ListManifests succeeded with an invalid manifest outside its window")
-	}
-	got := collect(t, ds, day, first)
+	got := collect(t, ds, day, ManifestListOptions{Limit: 1})
 	if len(got) != 1 || got[0].Ref.ID != ids[0] {
-		t.Fatalf("Manifests yielded %v, want only %s", got, ids[0])
+		t.Fatalf("Manifests(Limit: 1) yielded %v, want only %s", got, ids[0])
+	}
+
+	var errs int
+	for _, err := range ds.Manifests(t.Context(), day, ManifestListOptions{Limit: 2}) {
+		if err != nil {
+			errs++
+		}
+	}
+	if errs != 1 {
+		t.Fatalf("Manifests(Limit: 2) yielded %d errors, want 1", errs)
 	}
 }

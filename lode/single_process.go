@@ -20,7 +20,8 @@ import (
 //
 // Reads through the returned store wait for a replacement in progress, so a
 // reader in this process observes the old or the new content of a path,
-// never its absence between the Delete and the Put.
+// never its absence between the Delete and the Put. Optional capabilities of
+// store (RangeReader, PrefixLister) are preserved on the returned value.
 //
 // A store that already implements ConditionalWriter is returned unchanged,
 // and a nil store is returned as nil, so that a constructor rejects it.
@@ -31,11 +32,22 @@ func SingleProcess(store ObjectStore) Store {
 	if s, ok := store.(Store); ok {
 		return s
 	}
-	s := &singleProcessStore{ObjectStore: store}
-	if ranges, ok := store.(RangeReader); ok {
-		return singleProcessRangeStore{singleProcessStore: s, ranges: ranges}
+	base := &singleProcessStore{ObjectStore: store}
+	ranges, hasRanges := store.(RangeReader)
+	prefixes, hasPrefixes := store.(PrefixLister)
+	switch {
+	case hasRanges && hasPrefixes:
+		return singleProcessFullStore{
+			singleProcessRangeStore: singleProcessRangeStore{singleProcessStore: base, ranges: ranges},
+			prefixes:                prefixes,
+		}
+	case hasRanges:
+		return singleProcessRangeStore{singleProcessStore: base, ranges: ranges}
+	case hasPrefixes:
+		return singleProcessPrefixStore{singleProcessStore: base, prefixes: prefixes}
+	default:
+		return base
 	}
-	return s
 }
 
 // singleProcessStore implements CompareAndSwap over a store without one.
@@ -45,51 +57,63 @@ type singleProcessStore struct {
 	mu sync.RWMutex
 }
 
-// Get reads path once no replacement is in progress.
 func (s *singleProcessStore) Get(ctx context.Context, path string) (io.ReadCloser, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.ObjectStore.Get(ctx, path)
 }
 
-// Exists reports whether path exists once no replacement is in progress.
 func (s *singleProcessStore) Exists(ctx context.Context, path string) (bool, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.ObjectStore.Exists(ctx, path)
 }
 
-// List lists prefix once no replacement is in progress.
 func (s *singleProcessStore) List(ctx context.Context, prefix string) ([]string, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.ObjectStore.List(ctx, prefix)
 }
 
-// singleProcessRangeStore is a singleProcessStore over a store that reads
-// ranges (RangeReader); its range reads wait like its other reads.
 type singleProcessRangeStore struct {
 	*singleProcessStore
 	ranges RangeReader
 }
 
-// ReadRange reads a range of path once no replacement is in progress.
 func (s singleProcessRangeStore) ReadRange(ctx context.Context, path string, offset, length int64) ([]byte, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.ranges.ReadRange(ctx, path, offset, length)
 }
 
-// ReaderAt opens path once no replacement is in progress.
 func (s singleProcessRangeStore) ReaderAt(ctx context.Context, path string) (io.ReaderAt, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.ranges.ReaderAt(ctx, path)
 }
 
-// CompareAndSwap applies the ConditionalWriter semantics under the process
-// lock. The replacement is a Delete followed by a Put: if the Put fails, the
-// path is left absent, and the next Latest recreates a missing pointer.
+type singleProcessPrefixStore struct {
+	*singleProcessStore
+	prefixes PrefixLister
+}
+
+func (s singleProcessPrefixStore) ListPrefixes(ctx context.Context, prefix string) ([]string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.prefixes.ListPrefixes(ctx, prefix)
+}
+
+type singleProcessFullStore struct {
+	singleProcessRangeStore
+	prefixes PrefixLister
+}
+
+func (s singleProcessFullStore) ListPrefixes(ctx context.Context, prefix string) ([]string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.prefixes.ListPrefixes(ctx, prefix)
+}
+
 func (s *singleProcessStore) CompareAndSwap(ctx context.Context, path, expected, replacement string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -112,8 +136,6 @@ func (s *singleProcessStore) CompareAndSwap(ctx context.Context, path, expected,
 	return nil
 }
 
-// read returns the content at path and whether it exists. The caller holds
-// mu exclusively, so it reads through the wrapped store.
 func (s *singleProcessStore) read(ctx context.Context, path string) (string, bool, error) {
 	rc, err := s.ObjectStore.Get(ctx, path)
 	if errors.Is(err, ErrNotFound) {

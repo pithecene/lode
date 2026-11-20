@@ -2,10 +2,9 @@ package lode
 
 import (
 	"bytes"
-	"os"
+	"context"
+	"errors"
 	"testing"
-
-	"github.com/pithecene/lode/internal/testutil"
 )
 
 // -----------------------------------------------------------------------------
@@ -21,24 +20,21 @@ import (
 // -----------------------------------------------------------------------------
 
 func TestFSStore_SafePath(t *testing.T) {
-	t.Run("for a file", func(t *testing.T) {
-		tmpDir, err := os.MkdirTemp("", "lode-test-*")
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer testutil.RemoveAll(tmpDir)
-
-		store, err := NewFS(tmpDir)
-		if err != nil {
-			t.Fatal(err)
-		}
-		fs := store.(*fsStore)
-
-		tests := []struct {
-			name    string
-			path    string
-			wantErr bool
-		}{
+	store, err := NewFS(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs := store.(*fsStore)
+	type pathCase struct {
+		name, path string
+		wantErr    bool
+	}
+	for _, group := range []struct {
+		name    string
+		resolve func(string) (string, error)
+		cases   []pathCase
+	}{
+		{"for a file", fs.safePathForFile, []pathCase{
 			{"empty path", "", true},
 			{"parent traversal", "..", true},
 			{"parent traversal prefix", "../secret", true},
@@ -47,59 +43,24 @@ func TestFSStore_SafePath(t *testing.T) {
 			{"double slash normalized", "a//b/c.txt", false},
 			{"valid nested", "datasets/test/file.txt", false},
 			{"valid single", "file.txt", false},
-		}
-
-		for _, tt := range tests {
-			t.Run(tt.name, func(t *testing.T) {
-				_, err := fs.safePathForFile(tt.path)
-				if tt.wantErr && err == nil {
-					t.Error("expected error, got nil")
-				}
-				if !tt.wantErr && err != nil {
-					t.Errorf("unexpected error: %v", err)
-				}
-			})
-		}
-	})
-
-	t.Run("for a prefix", func(t *testing.T) {
-		tmpDir, err := os.MkdirTemp("", "lode-test-*")
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer testutil.RemoveAll(tmpDir)
-
-		store, err := NewFS(tmpDir)
-		if err != nil {
-			t.Fatal(err)
-		}
-		fs := store.(*fsStore)
-
-		tests := []struct {
-			name    string
-			path    string
-			wantErr bool
-		}{
+		}},
+		{"for a prefix", fs.safePathForPrefix, []pathCase{
 			{"empty prefix", "", false},
 			{"parent traversal", "..", true},
 			{"parent traversal prefix", "../escape", true},
 			{"leading slash", "/absolute", true},
 			{"dot prefix", ".", false},
 			{"valid prefix", "datasets/test/", false},
-		}
-
-		for _, tt := range tests {
-			t.Run(tt.name, func(t *testing.T) {
-				_, err := fs.safePathForPrefix(tt.path)
-				if tt.wantErr && err == nil {
-					t.Error("expected error, got nil")
-				}
-				if !tt.wantErr && err != nil {
-					t.Errorf("unexpected error: %v", err)
+		}},
+	} {
+		for _, tc := range group.cases {
+			t.Run(group.name+"/"+tc.name, func(t *testing.T) {
+				if _, err := group.resolve(tc.path); (err != nil) != tc.wantErr {
+					t.Errorf("resolve(%q) = %v, want error %t", tc.path, err, tc.wantErr)
 				}
 			})
 		}
-	})
+	}
 }
 
 // -----------------------------------------------------------------------------
@@ -130,5 +91,13 @@ func TestMemoryStore_List_EmptyPrefix(t *testing.T) {
 	}
 	if len(paths) != 2 {
 		t.Errorf("expected 2 paths for empty prefix, got %d: %v", len(paths), paths)
+	}
+}
+
+func TestCanceledPrefixScanStopsBeforeOpeningChild(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := hasAnyObject(ctx, t.TempDir()); !errors.Is(err, context.Canceled) {
+		t.Fatalf("scanning child directory = %v, want context.Canceled", err)
 	}
 }

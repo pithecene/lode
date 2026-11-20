@@ -19,6 +19,7 @@ import (
 // refused.
 type lostResponseClient struct {
 	*MockS3Client
+	code    string
 	headErr error
 }
 
@@ -27,7 +28,11 @@ func (c *lostResponseClient) PutObject(ctx context.Context, params *s3.PutObject
 	if err != nil {
 		return out, err
 	}
-	return nil, &smithyAPIError{code: "PreconditionFailed", message: "object already exists"}
+	code := c.code
+	if code == "" {
+		code = "PreconditionFailed"
+	}
+	return nil, &smithyAPIError{code: code, message: "object already exists"}
 }
 
 func (c *lostResponseClient) HeadObject(ctx context.Context, params *s3.HeadObjectInput, optFns ...func(*s3.Options)) (*s3.HeadObjectOutput, error) {
@@ -42,7 +47,7 @@ func (c *lostResponseClient) HeadObject(ctx context.Context, params *s3.HeadObje
 func TestStore_Put_OwnUploadAfterLostResponse(t *testing.T) {
 	ctx := t.Context()
 	mock := &lostResponseClient{MockS3Client: NewMockS3Client()}
-	store, _ := New(mock, Config{Bucket: "test"})
+	store, _ := New(mock, "test")
 
 	payload := []byte("stored once, answered twice")
 	if err := store.Put(ctx, "obj", bytes.NewReader(payload)); err != nil {
@@ -63,7 +68,7 @@ func TestStore_Put_OwnUploadAfterLostResponse(t *testing.T) {
 func TestStore_Put_OtherWritersObjectStaysRefused(t *testing.T) {
 	ctx := t.Context()
 	mock := NewMockS3Client()
-	store, _ := New(mock, Config{Bucket: "test"})
+	store, _ := New(mock, "test")
 
 	if err := store.Put(ctx, "obj", bytes.NewReader([]byte("theirs"))); err != nil {
 		t.Fatal(err)
@@ -79,7 +84,7 @@ func TestStore_Put_OtherWritersObjectStaysRefused(t *testing.T) {
 func TestStore_Put_UnconfirmedRefusalStaysRefused(t *testing.T) {
 	ctx := t.Context()
 	mock := &lostResponseClient{MockS3Client: NewMockS3Client(), headErr: errors.New("head unavailable")}
-	store, _ := New(mock, Config{Bucket: "test"})
+	store, _ := New(mock, "test")
 
 	err := store.Put(ctx, "obj", bytes.NewReader([]byte("unconfirmed")))
 	if !errors.Is(err, lode.ErrPathExists) {
@@ -92,7 +97,7 @@ func TestStore_Put_UnconfirmedRefusalStaysRefused(t *testing.T) {
 func TestStore_Put_MultipartETagNeverMatches(t *testing.T) {
 	ctx := t.Context()
 	mock := &lostResponseClient{MockS3Client: NewMockS3Client()}
-	store, _ := New(mock, Config{Bucket: "test"})
+	store, _ := New(mock, "test")
 	mock.mu.Lock()
 	mock.objects["obj"] = []byte("x")
 	mock.mu.Unlock()
@@ -105,4 +110,25 @@ func TestStore_Put_MultipartETagNeverMatches(t *testing.T) {
 		t.Fatal("the stored object's own MD5 did not pass")
 	}
 	_ = aws.String
+}
+
+// AWS S3 returns 409 ConditionalRequestConflict when concurrent conditional
+// writes race on the same key. Only matching stored bytes confirm success.
+func TestStore_Put_ConditionalRequestConflictMapped(t *testing.T) {
+	ctx := t.Context()
+	for _, code := range []string{"ConditionalRequestConflict", "409"} {
+		t.Run(code, func(t *testing.T) {
+			own := &lostResponseClient{MockS3Client: NewMockS3Client(), code: code}
+			ownStore, _ := New(own, "test")
+			if err := ownStore.Put(ctx, "own", bytes.NewReader([]byte("mine"))); err != nil {
+				t.Fatalf("own upload after %s: got %v, want nil", code, err)
+			}
+
+			other := &lostResponseClient{MockS3Client: NewMockS3Client(), code: code, headErr: errors.New("other writer in flight")}
+			otherStore, _ := New(other, "test")
+			if err := otherStore.Put(ctx, "other", bytes.NewReader([]byte("theirs"))); !hasErrorCode(err, code) || errors.Is(err, lode.ErrPathExists) {
+				t.Fatalf("other writer %s: got %v, want the original conflict", code, err)
+			}
+		})
+	}
 }

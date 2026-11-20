@@ -8,8 +8,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/pithecene/lode/internal/testutil"
 )
 
 // TestSingleProcess_NilStore checks that a nil store is returned as nil, so
@@ -21,14 +19,29 @@ func TestSingleProcess_NilStore(t *testing.T) {
 }
 
 // pausedDelete deletes a path and then waits until release is closed,
-// holding a replacement between its Delete and its Put.
+// holding a replacement between its Delete and its Put. It exposes ObjectStore,
+// RangeReader, and PrefixLister without ConditionalWriter so SingleProcess
+// wraps it with singleProcessFullStore.
 type pausedDelete struct {
-	testutil.Store
+	ObjectStore
+	RangeReader
+	PrefixLister
 	deleted, release chan struct{}
 }
 
+func newPausedDelete() *pausedDelete {
+	mem := NewMemory()
+	return &pausedDelete{
+		ObjectStore:  mem,
+		RangeReader:  mem,
+		PrefixLister: mem.(PrefixLister),
+		deleted:      make(chan struct{}),
+		release:      make(chan struct{}),
+	}
+}
+
 func (p *pausedDelete) Delete(ctx context.Context, path string) error {
-	if err := p.Store.Delete(ctx, path); err != nil {
+	if err := p.ObjectStore.Delete(ctx, path); err != nil {
 		return err
 	}
 	close(p.deleted)
@@ -58,6 +71,14 @@ var replacementReads = []struct {
 	{"List", func(ctx context.Context, s Store) string {
 		paths, err := s.List(ctx, "ptr/")
 		return fmt.Sprintf("%s %v", strings.Join(paths, ","), err)
+	}},
+	{"ListPrefixes", func(ctx context.Context, s Store) string {
+		pl, ok := s.(PrefixLister)
+		if !ok {
+			return "the store does not list prefixes"
+		}
+		prefixes, err := pl.ListPrefixes(ctx, "")
+		return fmt.Sprintf("%s %v", strings.Join(prefixes, ","), err)
 	}},
 	{"ReadRange", func(ctx context.Context, s Store) string {
 		ranges, ok := s.(RangeReader)
@@ -93,15 +114,12 @@ var replacementReads = []struct {
 func TestSingleProcess_ReadsWaitForReplacement(t *testing.T) {
 	want := map[string]string{
 		"Get": "snap-2", "Exists": "true <nil>", "List": "ptr/latest <nil>",
-		"ReadRange": "snap-2", "ReaderAt": "snap-2",
+		"ListPrefixes": "ptr/ <nil>", "ReadRange": "snap-2", "ReaderAt": "snap-2",
 	}
 	for _, r := range replacementReads {
 		t.Run(r.name, func(t *testing.T) {
 			ctx := t.Context()
-			inner := &pausedDelete{
-				Store:   testutil.WithoutCAS(NewMemory()),
-				deleted: make(chan struct{}), release: make(chan struct{}),
-			}
+			inner := newPausedDelete()
 			store := SingleProcess(inner)
 			cw := store.(ConditionalWriter)
 			if err := cw.CompareAndSwap(ctx, "ptr/latest", "", "snap-1"); err != nil {

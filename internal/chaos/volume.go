@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"math/rand/v2"
 	"slices"
 
@@ -55,7 +56,10 @@ func (c Config) settleBlock() Block {
 // performs no I/O.
 func (r *run) openVolume(store lode.RangeStore) (volume.Volume, error) {
 	factory := func() (lode.RangeStore, error) { return store, nil }
-	return volume.New(volumeID, factory, r.cfg.volumeLength(), volume.WithRetryCount(r.cfg.Retries))
+	return volume.New(volumeID, factory, r.cfg.volumeLength(),
+		volume.WithChecksum(lode.CRC32C()),
+		volume.WithRetry(r.cfg.Retries),
+	)
 }
 
 // volumeHandle is the handle an actor holds on the run's volume: its own
@@ -150,7 +154,7 @@ func commitBlocks(ctx context.Context, vol volume.Volume, blocks []Block, writer
 		}
 		refs[i] = ref
 	}
-	return vol.Commit(ctx, refs, volume.Metadata{"writer": writer})
+	return vol.Commit(ctx, refs, lode.D{"writer": writer})
 }
 
 // volumeVerifier holds the evidence a finished Volume run left: the
@@ -257,23 +261,47 @@ func (v *volumeVerifier) blocksDisjoint(context.Context) []string {
 }
 
 // blocksReadBack requires every acknowledged block to be in the head's
-// manifest and to read back its pattern.
+// manifest with its CRC32C digest and to read back its pattern via both ReadAt
+// and SnapshotReaderAt.
 func (v *volumeVerifier) blocksReadBack(ctx context.Context) []string {
 	if v.head == nil {
 		return v.missingBlocks(v.blocks)
 	}
 	var bad []string
-	for _, b := range v.blocks {
-		if !v.committed(b) {
-			bad = append(bad, fmt.Sprintf("acknowledged block [%d, +%d) of writer %d is missing from the head %s", b.Offset, b.Length, b.Writer, v.head.ID))
-			continue
+	if v.head.Manifest.ChecksumAlgorithm != "crc32c" {
+		bad = append(bad, fmt.Sprintf("head %s records checksum_algorithm %q, want crc32c", v.head.ID, v.head.Manifest.ChecksumAlgorithm))
+	}
+	for _, ref := range v.refs {
+		if ref.Checksum == "" {
+			bad = append(bad, fmt.Sprintf("block at %d in head %s is missing its checksum", ref.Offset, v.head.ID))
 		}
-		got, err := v.vol.ReadAt(ctx, v.head.ID, b.Offset, b.Length)
-		if err != nil || !bytes.Equal(got, b.pattern()) {
-			bad = append(bad, fmt.Sprintf("block [%d, +%d) of writer %d reads back wrong (%v)", b.Offset, b.Length, b.Writer, err))
+	}
+	sr, err := v.vol.ReaderAt(ctx, v.head.ID)
+	if err != nil {
+		return append(bad, fmt.Sprintf("ReaderAt(%s): %v", v.head.ID, err))
+	}
+	for _, b := range v.blocks {
+		if problem := v.verifyBlock(ctx, sr, b); problem != "" {
+			bad = append(bad, problem)
 		}
 	}
 	return bad
+}
+
+func (v *volumeVerifier) verifyBlock(ctx context.Context, sr volume.SnapshotReaderAt, b Block) string {
+	if !v.committed(b) {
+		return fmt.Sprintf("acknowledged block [%d, +%d) of writer %d is missing from the head %s", b.Offset, b.Length, b.Writer, v.head.ID)
+	}
+	want := b.pattern()
+	got, err := v.vol.ReadAt(ctx, v.head.ID, b.Offset, b.Length)
+	if err != nil || !bytes.Equal(got, want) {
+		return fmt.Sprintf("block [%d, +%d) of writer %d reads back wrong (%v)", b.Offset, b.Length, b.Writer, err)
+	}
+	buf := make([]byte, b.Length)
+	if n, err := sr.ReadAt(buf, b.Offset); (err != nil && !errors.Is(err, io.EOF)) || int64(n) != b.Length || !bytes.Equal(buf, want) {
+		return fmt.Sprintf("SnapshotReaderAt block [%d, +%d) of writer %d reads back wrong (%v)", b.Offset, b.Length, b.Writer, err)
+	}
+	return ""
 }
 
 // committed reports whether the head's manifest holds block b.

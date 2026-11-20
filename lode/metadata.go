@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"reflect"
 
 	"github.com/pithecene/lode/internal/validate"
 )
@@ -19,16 +20,17 @@ type Metadata struct {
 // emptyObject is the metadata of a write that supplied none.
 var emptyObject = json.RawMessage("{}")
 
-// newMetadata encodes a caller's metadata value, which must encode as a JSON
-// object: a struct, a map, or nil, which persists as {}.
-func newMetadata(v any) (Metadata, error) {
-	if v == nil {
+// NewMetadata encodes a caller's metadata value, which must encode as a JSON
+// object: a struct, a map, or nil (including typed-nil string maps and struct
+// pointers), which persists as {}.
+func NewMetadata(v any) (Metadata, error) {
+	if isNilMetadata(v) {
 		return Metadata{raw: emptyObject}, nil
 	}
 	// A Metadata decoded from JSON holds whatever value it was given, so it
 	// is checked as an encoded value is.
 	if m, ok := v.(Metadata); ok {
-		if m = m.orEmpty(); !m.valid() {
+		if m = m.orEmpty(); !m.Valid() {
 			return Metadata{}, validate.Argument("metadata must be a JSON object, got %s", m.raw)
 		}
 		return m, nil
@@ -43,6 +45,28 @@ func newMetadata(v any) (Metadata, error) {
 	return Metadata{raw: data}, nil
 }
 
+// isNilMetadata reports whether v is untyped nil, a nil string-keyed map, or a
+// nil pointer to a struct or Metadata — the object-shaped nil values that
+// coalesce to {}.
+func isNilMetadata(v any) bool {
+	if v == nil {
+		return true
+	}
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.Map:
+		return rv.IsNil() && rv.Type().Key().Kind() == reflect.String
+	case reflect.Pointer:
+		if !rv.IsNil() {
+			return false
+		}
+		elem := rv.Type().Elem()
+		return elem.Kind() == reflect.Struct || elem == reflect.TypeFor[Metadata]()
+	default:
+		return false
+	}
+}
+
 // isObject reports whether data, valid JSON, is an object.
 func isObject(data []byte) bool {
 	trimmed := bytes.TrimLeft(data, " \t\r\n")
@@ -55,6 +79,11 @@ func (m Metadata) orEmpty() Metadata {
 		return Metadata{raw: emptyObject}
 	}
 	return m
+}
+
+// Valid reports whether m holds a JSON object, as a manifest requires.
+func (m Metadata) Valid() bool {
+	return isObject(m.raw)
 }
 
 // Decode unmarshals the metadata into v, as encoding/json does.
@@ -77,7 +106,7 @@ func (m Metadata) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON retains a copy of data. JSON null empties m, so a reused
 // value retains nothing it held before; a manifest whose metadata is absent or
-// not an object fails validation (valid).
+// not an object fails validation (Valid).
 func (m *Metadata) UnmarshalJSON(data []byte) error {
 	if string(data) == "null" {
 		m.raw = nil
@@ -86,6 +115,3 @@ func (m *Metadata) UnmarshalJSON(data []byte) error {
 	m.raw = bytes.Clone(data)
 	return nil
 }
-
-// valid reports whether m holds a JSON object, as a manifest requires.
-func (m Metadata) valid() bool { return isObject(m.raw) }

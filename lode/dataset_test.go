@@ -2,12 +2,15 @@ package lode
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"slices"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/pithecene/lode/internal/testutil"
@@ -25,18 +28,18 @@ func TestOpen(t *testing.T) {
 
 	// A root records its construction error, and every method returns it.
 	for name, root := range map[string]*Root{
-		"nil factory":           Open[Store](nil),
-		"factory returns nil":   Open(nilFactory),
-		"factory error":         Open(failing),
-		"invalid path option":   Open(Memory(), WithDataDir("")),
-		"conflicting flat path": Open(Memory(), WithFlatPaths(), WithDatasetsDir("t")),
+		"nil factory":         Open[Store](nil),
+		"factory returns nil": Open(nilFactory),
+		"factory error":       Open(failing),
+		"nil root option":     Open(Memory(), nil),
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, recordsErr := root.Records(t.Context(), "d", JSONL[D]())
 			_, blobsErr := root.Blobs(t.Context(), "d")
 			_, listErr := root.ListDatasets(t.Context(), DatasetListOptions{})
-			if recordsErr == nil || !errors.Is(blobsErr, recordsErr) || !errors.Is(listErr, recordsErr) {
-				t.Errorf("Records = %v, Blobs = %v, ListDatasets = %v; want one recorded error from each", recordsErr, blobsErr, listErr)
+			removeErr := root.RemoveDataset(t.Context(), "d")
+			if recordsErr == nil || !errors.Is(blobsErr, recordsErr) || !errors.Is(listErr, recordsErr) || !errors.Is(removeErr, recordsErr) {
+				t.Errorf("Records = %v, Blobs = %v, ListDatasets = %v, RemoveDataset = %v; want one recorded error from each", recordsErr, blobsErr, listErr, removeErr)
 			}
 		})
 	}
@@ -199,7 +202,7 @@ func TestRoot_Records_Typed(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(parts) != 2 || parts[0].Path.String() != "source=a/day=d1" || parts[1].Path.String() != "source=b/day=d2" {
+		if len(parts) != 2 || parts[0].String() != "source=a/day=d1" || parts[1].String() != "source=b/day=d2" {
 			t.Errorf("partitions = %v, want source=a/day=d1 and source=b/day=d2", parts)
 		}
 		if !slices.Equal(snap.PartitionKeys, []string{"source", "day"}) {
@@ -232,7 +235,7 @@ func TestRoot_Records_Typed(t *testing.T) {
 
 // recordsOnTyped opens dataset "events" of event records over store with
 // layout.
-func recordsOnTyped(t *testing.T, store Store, layout Layout) Records[event] {
+func recordsOnTyped(t *testing.T, store Store, layout Layout) *Records[event] {
 	t.Helper()
 	ds, err := Open(Use(store)).Records(t.Context(), "events", JSONL[event](), WithLayout(layout))
 	if err != nil {
@@ -267,7 +270,7 @@ func TestRecords_Read(t *testing.T) {
 
 	t.Run("each snapshot is read with the compressor its manifest names", func(t *testing.T) {
 		store := NewMemory()
-		snap, err := blobsOn(t, store, "test-ds", WithCompressor(NewGzipCompressor())).Write(t.Context(), []byte("data"), nil)
+		snap, err := blobsOn(t, store, "test-ds", WithCompressor(Gzip())).Write(t.Context(), []byte("data"), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -282,26 +285,7 @@ func TestRecords_Read(t *testing.T) {
 	})
 
 	t.Run("a custom compressor is passed to the view", func(t *testing.T) {
-		store := NewMemory()
-		custom := renamedCompressor{NewGzipCompressor()}
-		snap, err := blobsOn(t, store, "test-ds", WithCompressor(custom)).Write(t.Context(), []byte("data"), nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		bare, err := OpenReadOnly(Use(store)).Blobs(t.Context(), "test-ds")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := bare.Read(t.Context(), snap.ID); !errors.Is(err, ErrSettingsMismatch) || !strings.Contains(err.Error(), "custom-gzip") {
-			t.Errorf("without it: got %v, want an ErrSettingsMismatch naming the compressor", err)
-		}
-		view, err := OpenReadOnly(Use(store)).Blobs(t.Context(), "test-ds", WithCompressor(custom))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got, err := view.Read(t.Context(), snap.ID); err != nil || string(got) != "data" {
-			t.Errorf("with it: Read = %q, %v; want the blob", got, err)
-		}
+		assertCustomBlobComponentRequired(t, "custom-gzip", WithCompressor(renamedCompressor{Gzip()}))
 	})
 }
 
@@ -362,19 +346,9 @@ func TestBlobs_StreamWrite_Metadata(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		sw, err := ds.StreamWrite(t.Context(), nil)
+		snap, err := ds.StreamWrite(t.Context(), strings.NewReader("streaming data"), D{})
 		if err != nil {
 			t.Fatalf("expected empty metadata to be valid, got error: %v", err)
-		}
-
-		_, err = sw.Write([]byte("streaming data"))
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		snap, err := sw.Commit(t.Context())
-		if err != nil {
-			t.Fatal(err)
 		}
 
 		// Verify metadata is persisted as empty object
@@ -387,49 +361,31 @@ func TestBlobs_StreamWrite_Metadata(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		sw, err := ds.StreamWrite(t.Context(), nil)
+		snap, err := ds.StreamWrite(t.Context(), strings.NewReader("data"), nil)
 		if err != nil {
 			t.Fatalf("expected nil metadata to succeed, got: %v", err)
-		}
-		_, _ = sw.Write([]byte("data"))
-		snap, err := sw.Commit(t.Context())
-		if err != nil {
-			t.Fatal(err)
 		}
 		assertEmptyMetadata(t, snap.Metadata)
 	})
 }
 
 func TestRecords_StreamWrite_Metadata(t *testing.T) {
-	t.Run("empty metadata valid and persisted", func(t *testing.T) {
-		ds, err := Open(Memory()).Records(t.Context(), "test-ds", JSONL[D]())
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		iter := seqOf(D{"id": "1"})
-		snap, err := ds.StreamWrite(t.Context(), iter, nil)
-		if err != nil {
-			t.Fatalf("expected empty metadata to be valid, got error: %v", err)
-		}
-
-		// Verify metadata is persisted as empty object
-		assertEmptyMetadata(t, snap.Metadata)
-	})
-
-	t.Run("nil metadata coalesces to empty", func(t *testing.T) {
-		ds, err := Open(Memory()).Records(t.Context(), "test-ds", JSONL[D]())
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		iter := seqOf(D{"id": "1"})
-		snap, err := ds.StreamWrite(t.Context(), iter, nil)
-		if err != nil {
-			t.Fatalf("expected nil metadata to succeed, got: %v", err)
-		}
-		assertEmptyMetadata(t, snap.Metadata)
-	})
+	for _, tc := range []struct {
+		name     string
+		metadata any
+	}{
+		{"empty metadata valid and persisted", D{}},
+		{"nil metadata coalesces to empty", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ds := recordsOn(t, NewMemory(), "test-ds")
+			snap, err := ds.StreamWrite(t.Context(), seqOf(D{"id": "1"}), tc.metadata)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertEmptyMetadata(t, snap.Metadata)
+		})
+	}
 
 	t.Run("non timestamped records omits min max", func(t *testing.T) {
 		ds, err := Open(Memory()).Records(t.Context(), "test-ds", JSONL[D]())
@@ -448,12 +404,7 @@ func TestRecords_StreamWrite_Metadata(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		if snap.MinTimestamp != nil {
-			t.Errorf("expected MinTimestamp to be nil, got %v", snap.MinTimestamp)
-		}
-		if snap.MaxTimestamp != nil {
-			t.Errorf("expected MaxTimestamp to be nil, got %v", snap.MaxTimestamp)
-		}
+		assertNoTimestamps(t, snap)
 	})
 
 	t.Run("timestamped records computes min max", func(t *testing.T) {
@@ -462,15 +413,7 @@ func TestRecords_StreamWrite_Metadata(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		ts1 := time.Date(2024, 1, 1, 10, 0, 0, 0, time.UTC)
-		ts2 := time.Date(2024, 1, 15, 12, 0, 0, 0, time.UTC)
-		ts3 := time.Date(2024, 1, 10, 8, 0, 0, 0, time.UTC)
-
-		records := []*timestampedRecord{
-			{ID: "a", Time: ts1},
-			{ID: "b", Time: ts2},
-			{ID: "c", Time: ts3},
-		}
+		records, ts1, ts2 := timestampedFixture()
 		iter := seqOf(records...)
 
 		snap, err := ds.StreamWrite(t.Context(), iter, nil)
@@ -478,18 +421,7 @@ func TestRecords_StreamWrite_Metadata(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		if snap.MinTimestamp == nil {
-			t.Fatal("expected MinTimestamp to be set")
-		}
-		if snap.MaxTimestamp == nil {
-			t.Fatal("expected MaxTimestamp to be set")
-		}
-		if !snap.MinTimestamp.Equal(ts1) {
-			t.Errorf("expected MinTimestamp %v, got %v", ts1, *snap.MinTimestamp)
-		}
-		if !snap.MaxTimestamp.Equal(ts2) {
-			t.Errorf("expected MaxTimestamp %v, got %v", ts2, *snap.MaxTimestamp)
-		}
+		assertTimeRange(t, snap, ts1, ts2)
 	})
 
 	t.Run("stats nil", func(t *testing.T) {
@@ -504,15 +436,15 @@ func TestRecords_StreamWrite_Metadata(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		if snap.Manifest.Files[0].Stats != nil {
-			t.Errorf("expected nil Stats for JSONL stream, got %+v", snap.Manifest.Files[0].Stats)
+		if snap.Manifest.Objects[0].Stats != nil {
+			t.Errorf("expected nil Stats for JSONL stream, got %+v", snap.Manifest.Objects[0].Stats)
 		}
 	})
 }
 
 // -----------------------------------------------------------------------------
-// G3-1: Snapshot NOT visible before Commit
-// Per CONTRACT_WRITE_API.md: "A snapshot MUST NOT be visible before Commit writes the manifest."
+// G3-1: Snapshot NOT visible before StreamWrite finishes reading and commits
+// Per CONTRACT_WRITE_API.md: "A snapshot MUST NOT be visible before the manifest is written."
 // -----------------------------------------------------------------------------
 
 func TestBlobs_StreamWrite_Visibility(t *testing.T) {
@@ -522,45 +454,48 @@ func TestBlobs_StreamWrite_Visibility(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		// Start streaming write
-		sw, err := ds.StreamWrite(t.Context(), D{"test": "value"})
-		if err != nil {
+		pr, pw := io.Pipe()
+		type result struct {
+			snap *Snapshot
+			err  error
+		}
+		done := make(chan result, 1)
+		go func() {
+			snap, err := ds.StreamWrite(t.Context(), pr, D{"test": "value"})
+			done <- result{snap: snap, err: err}
+		}()
+
+		// Write data into the unbuffered pipe so StreamWrite is mid-flight,
+		// blocked awaiting EOF before writing the manifest.
+		if _, err := pw.Write([]byte("streaming data before commit")); err != nil {
 			t.Fatal(err)
 		}
 
-		// Write data but don't commit yet
-		_, err = sw.Write([]byte("streaming data before commit"))
-		if err != nil {
-			t.Fatal(err)
+		if _, err := ds.Latest(t.Context()); !errors.Is(err, ErrNoSnapshots) {
+			t.Errorf("expected ErrNoSnapshots before EOF, got: %v", err)
 		}
-
-		// Snapshot should NOT be visible before commit
-		_, err = ds.Latest(t.Context())
-		if !errors.Is(err, ErrNoSnapshots) {
-			t.Errorf("expected ErrNoSnapshots before commit, got: %v", err)
-		}
-
 		snapshots, err := ds.Snapshots(t.Context())
 		if err != nil {
 			t.Fatalf("Snapshots() failed: %v", err)
 		}
 		if len(snapshots) != 0 {
-			t.Errorf("expected 0 snapshots before commit, got %d", len(snapshots))
+			t.Errorf("expected 0 snapshots before EOF, got %d", len(snapshots))
 		}
 
-		// Now commit
-		snap, err := sw.Commit(t.Context())
-		if err != nil {
-			t.Fatalf("Commit failed: %v", err)
+		if err := pw.Close(); err != nil {
+			t.Fatal(err)
+		}
+		res := <-done
+		if res.err != nil {
+			t.Fatalf("StreamWrite failed: %v", res.err)
 		}
 
-		// Snapshot should now be visible
 		latest, err := ds.Latest(t.Context())
 		if err != nil {
 			t.Fatalf("Latest() failed after commit: %v", err)
 		}
-		if latest.ID != snap.ID {
-			t.Errorf("expected latest ID %s, got %s", snap.ID, latest.ID)
+		if latest.ID != res.snap.ID {
+			t.Errorf("expected latest ID %s, got %s", res.snap.ID, latest.ID)
 		}
 	})
 
@@ -570,24 +505,26 @@ func TestBlobs_StreamWrite_Visibility(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		// Create an existing snapshot first
 		existingSnap, err := ds.Write(t.Context(), []byte("existing data"), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 
-		// Start streaming write for second snapshot
-		sw, err := ds.StreamWrite(t.Context(), nil)
-		if err != nil {
+		pr, pw := io.Pipe()
+		type result struct {
+			snap *Snapshot
+			err  error
+		}
+		done := make(chan result, 1)
+		go func() {
+			snap, err := ds.StreamWrite(t.Context(), pr, nil)
+			done <- result{snap: snap, err: err}
+		}()
+
+		if _, err := pw.Write([]byte("new streaming data")); err != nil {
 			t.Fatal(err)
 		}
 
-		_, err = sw.Write([]byte("new streaming data"))
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		// Latest should still be the existing snapshot, not the uncommitted one
 		latest, err := ds.Latest(t.Context())
 		if err != nil {
 			t.Fatalf("Latest() failed: %v", err)
@@ -596,272 +533,114 @@ func TestBlobs_StreamWrite_Visibility(t *testing.T) {
 			t.Errorf("expected latest to be existing snapshot %s, got %s", existingSnap.ID, latest.ID)
 		}
 
-		// Snapshots list should only have one entry
 		snapshots, err := ds.Snapshots(t.Context())
 		if err != nil {
 			t.Fatalf("Snapshots() failed: %v", err)
 		}
 		if len(snapshots) != 1 {
-			t.Errorf("expected 1 snapshot before commit, got %d", len(snapshots))
+			t.Errorf("expected 1 snapshot before EOF, got %d", len(snapshots))
 		}
 
-		// Commit and verify new snapshot is visible
-		newSnap, err := sw.Commit(t.Context())
-		if err != nil {
+		if err := pw.Close(); err != nil {
 			t.Fatal(err)
+		}
+		res := <-done
+		if res.err != nil {
+			t.Fatal(res.err)
 		}
 
 		latest, err = ds.Latest(t.Context())
 		if err != nil {
 			t.Fatalf("Latest() failed after commit: %v", err)
 		}
-		if latest.ID != newSnap.ID {
-			t.Errorf("expected latest to be new snapshot %s, got %s", newSnap.ID, latest.ID)
+		if latest.ID != res.snap.ID {
+			t.Errorf("expected latest to be new snapshot %s, got %s", res.snap.ID, latest.ID)
 		}
 	})
 }
 
 // -----------------------------------------------------------------------------
-// G3-2, G3-3: Abort semantics tests
-// Per CONTRACT_WRITE_API.md:
-// - "StreamWriter.Abort(ctx) MUST ensure no manifest is written."
-// - "StreamWriter.Close() without Commit MUST behave as Abort."
-//
-// RISK NOTE: Context cancellation during streaming has nondeterministic outcomes.
-// If the background store.Put completes before cancellation takes effect, the
-// data object is written. However, no manifest is written unless Commit succeeds.
-// The Abort path is deterministic and is tested explicitly below.
+// G3-2, G3-3: Cancellation and reader failure semantics
+// Per CONTRACT_WRITE_API.md, a failed or canceled StreamWrite MUST NOT write a manifest.
 // -----------------------------------------------------------------------------
 
 func TestBlobs_StreamWrite_Abort(t *testing.T) {
-	t.Run("no manifest", func(t *testing.T) {
-		ds, err := Open(Memory()).Blobs(t.Context(), "test-ds")
+	t.Run("context canceled mid-stream leaves no manifest", func(t *testing.T) {
+		store := NewMemory()
+		ds, err := Open(Use(store)).Blobs(t.Context(), "test-ds")
 		if err != nil {
 			t.Fatal(err)
 		}
 
-		sw, err := ds.StreamWrite(t.Context(), nil)
-		if err != nil {
-			t.Fatal(err)
-		}
+		ctx, cancel := context.WithCancel(t.Context())
+		pr, pw := io.Pipe()
+		done := make(chan error, 1)
+		go func() {
+			_, err := ds.StreamWrite(ctx, pr, nil)
+			done <- err
+		}()
 
-		// Write some data
-		_, err = sw.Write([]byte("partial data"))
-		if err != nil {
+		if _, err := pw.Write([]byte("partial data")); err != nil {
 			t.Fatalf("Write failed: %v", err)
 		}
+		cancel()
+		_ = pw.CloseWithError(ctx.Err())
 
-		// Abort
-		err = sw.Abort(t.Context())
-		if err != nil {
-			t.Fatalf("Abort failed: %v", err)
+		if err := <-done; err == nil {
+			t.Fatal("expected error after context cancellation")
 		}
 
-		// Verify no snapshot visible
-		_, err = ds.Latest(t.Context())
-		if !errors.Is(err, ErrNoSnapshots) {
-			t.Errorf("expected ErrNoSnapshots after abort, got: %v", err)
+		if _, err := ds.Latest(t.Context()); !errors.Is(err, ErrNoSnapshots) {
+			t.Errorf("expected ErrNoSnapshots after cancellation, got: %v", err)
 		}
-
 		snapshots, err := ds.Snapshots(t.Context())
 		if err != nil {
 			t.Fatalf("Snapshots failed: %v", err)
 		}
 		if len(snapshots) != 0 {
-			t.Errorf("expected 0 snapshots after abort, got %d", len(snapshots))
+			t.Errorf("expected 0 snapshots after cancellation, got %d", len(snapshots))
 		}
-	})
-
-	t.Run("abort during write no manifest", func(t *testing.T) {
-		store := NewMemory()
-		ds, err := Open(Use(store)).Blobs(t.Context(), "test-ds")
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		sw, err := ds.StreamWrite(t.Context(), nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		// Write some data
-		_, err = sw.Write([]byte("data that will be aborted"))
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		// Abort explicitly
-		err = sw.Abort(t.Context())
-		if err != nil {
-			t.Fatalf("Abort failed: %v", err)
-		}
-
-		// Verify no snapshot is visible
-		_, latestErr := ds.Latest(t.Context())
-		if !errors.Is(latestErr, ErrNoSnapshots) {
-			t.Errorf("expected ErrNoSnapshots after abort, got: %v", latestErr)
-		}
-
-		// Verify no manifest in store
 		paths, err := store.List(t.Context(), "")
 		if err != nil {
 			t.Fatal(err)
 		}
 		for _, p := range paths {
 			if strings.Contains(p, "manifest.json") {
-				t.Errorf("manifest should not exist after abort, found: %s", p)
+				t.Errorf("manifest should not exist after cancellation, found: %s", p)
 			}
-		}
-	})
-
-	t.Run("abort after commit returns error", func(t *testing.T) {
-		ds, err := Open(Memory()).Blobs(t.Context(), "test-ds")
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		sw, err := ds.StreamWrite(t.Context(), nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		_, err = sw.Write([]byte("data"))
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		_, err = sw.Commit(t.Context())
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		// Abort after commit should fail
-		err = sw.Abort(t.Context())
-		if err == nil {
-			t.Fatal("expected error aborting after commit")
 		}
 	})
 }
 
 func TestBlobs_StreamWrite_Interrupted(t *testing.T) {
-	t.Run("close during write no manifest", func(t *testing.T) {
-		// Per CONTRACT_WRITE_API.md: "Close() without Commit MUST behave as Abort"
+	t.Run("reader error mid-stream writes no manifest", func(t *testing.T) {
 		store := NewMemory()
 		ds, err := Open(Use(store)).Blobs(t.Context(), "test-ds")
 		if err != nil {
 			t.Fatal(err)
 		}
 
-		sw, err := ds.StreamWrite(t.Context(), nil)
-		if err != nil {
-			t.Fatal(err)
+		readErr := errors.New("stream truncated")
+		r := io.MultiReader(strings.NewReader("data that will be abandoned"), iotest.ErrReader(readErr))
+		if _, err := ds.StreamWrite(t.Context(), r, nil); !errors.Is(err, readErr) {
+			t.Fatalf("got %v, want wrapped readErr", err)
 		}
 
-		_, err = sw.Write([]byte("data that will be abandoned"))
-		if err != nil {
-			t.Fatal(err)
+		if _, latestErr := ds.Latest(t.Context()); !errors.Is(latestErr, ErrNoSnapshots) {
+			t.Errorf("expected ErrNoSnapshots after reader error, got: %v", latestErr)
 		}
 
-		// Close without commit (should behave as abort)
-		err = sw.Close()
-		if err != nil {
-			t.Fatalf("Close failed: %v", err)
-		}
-
-		// Verify no snapshot is visible
-		_, latestErr := ds.Latest(t.Context())
-		if !errors.Is(latestErr, ErrNoSnapshots) {
-			t.Errorf("expected ErrNoSnapshots after close-without-commit, got: %v", latestErr)
-		}
-
-		// Verify no manifest in store
 		paths, err := store.List(t.Context(), "")
 		if err != nil {
 			t.Fatal(err)
 		}
 		for _, p := range paths {
 			if strings.Contains(p, "manifest.json") {
-				t.Errorf("manifest should not exist after close-without-commit, found: %s", p)
-			}
-		}
-	})
-
-	t.Run("close without commit behaves as abort", func(t *testing.T) {
-		ds, err := Open(Memory()).Blobs(t.Context(), "test-ds")
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		sw, err := ds.StreamWrite(t.Context(), nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		// Write some data
-		_, err = sw.Write([]byte("will be abandoned"))
-		if err != nil {
-			t.Fatalf("Write failed: %v", err)
-		}
-
-		// Close without commit
-		err = sw.Close()
-		if err != nil {
-			t.Fatalf("Close failed: %v", err)
-		}
-
-		// Verify no snapshot visible
-		_, err = ds.Latest(t.Context())
-		if !errors.Is(err, ErrNoSnapshots) {
-			t.Errorf("expected ErrNoSnapshots after close without commit, got: %v", err)
-		}
-	})
-
-	t.Run("write error no manifest", func(t *testing.T) {
-		// Test that write errors prevent manifest creation
-		store := NewMemory()
-		ds, err := Open(Use(store)).Blobs(t.Context(), "test-ds")
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		sw, err := ds.StreamWrite(t.Context(), nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		// Write data then abort to simulate failure path
-		_, err = sw.Write([]byte("data"))
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		// Simulate failure by aborting
-		_ = sw.Abort(t.Context())
-
-		// Verify no manifest exists
-		paths, _ := store.List(t.Context(), "")
-		for _, p := range paths {
-			if strings.Contains(p, "manifest.json") {
-				t.Errorf("manifest should not exist after simulated failure, found: %s", p)
+				t.Errorf("manifest should not exist after reader error, found: %s", p)
 			}
 		}
 	})
 }
-
-// RISK NOTE: Context cancellation during StreamWriteRecords
-//
-// StreamWriteRecords is an atomic operation from the caller's perspective.
-// If the context is cancelled mid-stream:
-// - The background store.Put may or may not have completed
-// - Partial data may remain in storage (best-effort cleanup attempted)
-// - No manifest will be written (the commit signal)
-//
-// The cleanup uses the caller's context for Delete, which may already be
-// cancelled. Per CONTRACT_STORAGE.md, cleanup SHOULD use an independent
-// context. Current implementation risk: cleanup may fail if context is
-// already cancelled.
-//
-// This is documented behavior, not a test failure condition.
 
 // -----------------------------------------------------------------------------
 // G3-4: Commit signal = manifest presence
@@ -875,30 +654,32 @@ func TestBlobs_StreamWrite_ManifestPresenceIsCommitSignal(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	sw, err := ds.StreamWrite(t.Context(), nil)
-	if err != nil {
+	pr, pw := io.Pipe()
+	done := make(chan error, 1)
+	go func() {
+		_, err := ds.StreamWrite(t.Context(), pr, nil)
+		done <- err
+	}()
+
+	if _, err := pw.Write([]byte("test data")); err != nil {
 		t.Fatal(err)
 	}
 
-	_, err = sw.Write([]byte("test data"))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Before commit: check that no manifest exists in store
+	// Before EOF: check that no manifest exists in store
 	paths, err := store.List(t.Context(), "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, p := range paths {
 		if strings.Contains(p, "manifest.json") {
-			t.Errorf("manifest should not exist before commit, found: %s", p)
+			t.Errorf("manifest should not exist before EOF, found: %s", p)
 		}
 	}
 
-	// Commit
-	_, err = sw.Commit(t.Context())
-	if err != nil {
+	if err := pw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
 
@@ -1064,8 +845,8 @@ func TestBlobs_Write_EmptyBlob(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(snap.Files) != 1 || snap.RowCount != 1 {
-		t.Fatalf("manifest = %+v, want one file and one row", snap.Manifest)
+	if len(snap.Objects) != 1 || snap.RowCount != 1 {
+		t.Fatalf("manifest = %+v, want one object and one row", snap.Manifest)
 	}
 	got, err := ds.Read(t.Context(), snap.ID)
 	if err != nil || len(got) != 0 {
@@ -1084,25 +865,10 @@ func TestBlobs_StreamWrite_Commit(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		sw, err := ds.StreamWrite(t.Context(), D{"source": "test"})
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		// Write some data
 		data := []byte("hello stream world")
-		n, err := sw.Write(data)
+		snap, err := ds.StreamWrite(t.Context(), bytes.NewReader(data), D{"source": "test"})
 		if err != nil {
-			t.Fatalf("Write failed: %v", err)
-		}
-		if n != len(data) {
-			t.Errorf("expected %d bytes written, got %d", len(data), n)
-		}
-
-		// Commit and verify snapshot
-		snap, err := sw.Commit(t.Context())
-		if err != nil {
-			t.Fatalf("Commit failed: %v", err)
+			t.Fatalf("StreamWrite failed: %v", err)
 		}
 
 		if snap == nil {
@@ -1111,157 +877,70 @@ func TestBlobs_StreamWrite_Commit(t *testing.T) {
 		if snap.RowCount != 1 {
 			t.Errorf("expected RowCount 1, got %d", snap.RowCount)
 		}
-		if len(snap.Files) != 1 {
-			t.Errorf("expected 1 file, got %d", len(snap.Files))
+		if len(snap.Objects) != 1 {
+			t.Errorf("expected 1 object, got %d", len(snap.Objects))
 		}
 		if metadataOf(t, snap.Metadata)["source"] != "test" {
 			t.Errorf("expected metadata source=test, got %v", snap.Metadata)
 		}
 
-		// Verify snapshot is visible via Latest
-		latest, err := ds.Latest(t.Context())
-		if err != nil {
-			t.Fatalf("Latest failed: %v", err)
-		}
-		if latest.ID != snap.ID {
-			t.Errorf("expected latest ID %s, got %s", snap.ID, latest.ID)
-		}
+		assertLatestIs(t, ds.dataset, snap.ID)
 
 		// Verify data can be read back
 		readData, err := ds.Read(t.Context(), snap.ID)
 		if err != nil {
 			t.Fatalf("Read failed: %v", err)
 		}
-		readBytes := readData
-		if string(readBytes) != string(data) {
-			t.Errorf("expected %q, got %q", data, readBytes)
+		if string(readData) != string(data) {
+			t.Errorf("expected %q, got %q", data, readData)
 		}
 	})
 
-	t.Run("multiple writes", func(t *testing.T) {
+	t.Run("multiple chunks", func(t *testing.T) {
 		ds, err := Open(Memory()).Blobs(t.Context(), "test-ds")
 		if err != nil {
 			t.Fatal(err)
 		}
 
-		sw, err := ds.StreamWrite(t.Context(), nil)
+		r := io.MultiReader(
+			strings.NewReader("chunk1"),
+			strings.NewReader("-chunk2"),
+			strings.NewReader("-chunk3"),
+		)
+		snap, err := ds.StreamWrite(t.Context(), r, nil)
 		if err != nil {
-			t.Fatal(err)
+			t.Fatalf("StreamWrite failed: %v", err)
 		}
 
-		// Write in chunks
-		chunks := [][]byte{
-			[]byte("chunk1"),
-			[]byte("-chunk2"),
-			[]byte("-chunk3"),
-		}
-		for _, chunk := range chunks {
-			_, err = sw.Write(chunk)
-			if err != nil {
-				t.Fatalf("Write failed: %v", err)
-			}
-		}
-
-		snap, err := sw.Commit(t.Context())
-		if err != nil {
-			t.Fatalf("Commit failed: %v", err)
-		}
-
-		// Verify data can be read back as concatenated
 		readData, err := ds.Read(t.Context(), snap.ID)
 		if err != nil {
 			t.Fatalf("Read failed: %v", err)
 		}
-		readBytes := readData
 		expected := "chunk1-chunk2-chunk3"
-		if string(readBytes) != expected {
-			t.Errorf("expected %q, got %q", expected, readBytes)
+		if string(readData) != expected {
+			t.Errorf("expected %q, got %q", expected, readData)
 		}
 	})
 }
 
 func TestBlobs_StreamWrite_Misuse(t *testing.T) {
-	t.Run("double commit returns error", func(t *testing.T) {
+	t.Run("nil reader returns ErrInvalidArgument", func(t *testing.T) {
 		ds, err := Open(Memory()).Blobs(t.Context(), "test-ds")
 		if err != nil {
 			t.Fatal(err)
 		}
-
-		sw, err := ds.StreamWrite(t.Context(), nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		_, err = sw.Write([]byte("data"))
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		_, err = sw.Commit(t.Context())
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		// Second commit should fail
-		_, err = sw.Commit(t.Context())
-		if err == nil {
-			t.Fatal("expected error on double commit")
+		if _, err := ds.StreamWrite(t.Context(), nil, nil); !errors.Is(err, ErrInvalidArgument) {
+			t.Fatalf("got %v, want ErrInvalidArgument", err)
 		}
 	})
 
-	t.Run("write after abort returns error", func(t *testing.T) {
+	t.Run("invalid metadata returns ErrInvalidArgument", func(t *testing.T) {
 		ds, err := Open(Memory()).Blobs(t.Context(), "test-ds")
 		if err != nil {
 			t.Fatal(err)
 		}
-
-		sw, err := ds.StreamWrite(t.Context(), nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		_, err = sw.Write([]byte("data"))
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		err = sw.Abort(t.Context())
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		// Write after abort should fail
-		_, err = sw.Write([]byte("more data"))
-		if err == nil {
-			t.Fatal("expected error writing after abort")
-		}
-	})
-
-	t.Run("write after commit returns error", func(t *testing.T) {
-		ds, err := Open(Memory()).Blobs(t.Context(), "test-ds")
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		sw, err := ds.StreamWrite(t.Context(), nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		_, err = sw.Write([]byte("data"))
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		_, err = sw.Commit(t.Context())
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		// Write after commit should fail
-		_, err = sw.Write([]byte("more data"))
-		if err == nil {
-			t.Fatal("expected error writing after commit")
+		if _, err := ds.StreamWrite(t.Context(), strings.NewReader("data"), "not-an-object"); !errors.Is(err, ErrInvalidArgument) {
+			t.Fatalf("got %v, want ErrInvalidArgument", err)
 		}
 	})
 }
@@ -1280,12 +959,7 @@ func TestBlobs_StreamWrite_Lineage(t *testing.T) {
 		}
 
 		// Second write (StreamWrite)
-		sw, err := ds.StreamWrite(t.Context(), nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		_, _ = sw.Write([]byte("second"))
-		secondSnap, err := sw.Commit(t.Context())
+		secondSnap, err := ds.StreamWrite(t.Context(), strings.NewReader("second"), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1296,7 +970,7 @@ func TestBlobs_StreamWrite_Lineage(t *testing.T) {
 	})
 
 	t.Run("latest pointer skips scan", func(t *testing.T) {
-		// StreamWrite → Commit must write the pointer so that a subsequent
+		// StreamWrite must write the pointer so that a subsequent
 		// Write uses O(1) parent resolution.
 		fs := testutil.NewFaultStore(NewMemory())
 		ds, err := Open(Use(fs)).Blobs(t.Context(), "test-ds")
@@ -1305,12 +979,7 @@ func TestBlobs_StreamWrite_Lineage(t *testing.T) {
 		}
 
 		// First write via StreamWrite
-		sw, err := ds.StreamWrite(t.Context(), nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		_, _ = sw.Write([]byte("payload-1"))
-		snap1, err := sw.Commit(t.Context())
+		snap1, err := ds.StreamWrite(t.Context(), strings.NewReader("payload-1"), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1321,149 +990,51 @@ func TestBlobs_StreamWrite_Lineage(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		listCallsAfterSecond := len(fs.ListCalls())
-		if listCallsAfterSecond != listCallsAfterFirst {
-			t.Errorf("expected no new List calls after StreamWrite wrote pointer, got %d new calls",
-				listCallsAfterSecond-listCallsAfterFirst)
-		}
-		if snap2.ParentSnapshotID != snap1.ID {
-			t.Errorf("expected parent %s, got %s", snap1.ID, snap2.ParentSnapshotID)
-		}
+		assertNoNewListsAndParent(t, fs, listCallsAfterFirst, snap2, snap1.ID)
 	})
 }
 
 func TestBlobs_StreamWrite_Encoding(t *testing.T) {
 	t.Run("with checksum records checksum", func(t *testing.T) {
-		ds, err := Open(Memory()).Blobs(t.Context(), "test-ds", WithChecksum(NewMD5Checksum()))
+		ds, err := Open(Memory()).Blobs(t.Context(), "test-ds", WithChecksum(MD5()))
 		if err != nil {
 			t.Fatal(err)
 		}
 
-		sw, err := ds.StreamWrite(t.Context(), nil)
+		snap, err := ds.StreamWrite(t.Context(), strings.NewReader("streaming data"), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 
-		_, err = sw.Write([]byte("streaming data"))
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		snap, err := sw.Commit(t.Context())
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		// Verify checksum algorithm recorded
-		if snap.ChecksumAlgorithm != "md5" {
-			t.Errorf("expected ChecksumAlgorithm 'md5', got %q", snap.ChecksumAlgorithm)
-		}
-
-		// Verify file has checksum
-		if snap.Manifest.Files[0].Checksum == "" {
-			t.Error("expected non-empty checksum")
-		}
-		if len(snap.Manifest.Files[0].Checksum) != 32 {
-			t.Errorf("expected 32 char MD5 checksum, got %d chars", len(snap.Manifest.Files[0].Checksum))
-		}
+		assertMD5ObjectChecksum(t, snap)
 	})
 
-	t.Run("with gzip compression", func(t *testing.T) {
-		ds, err := Open(Memory()).Blobs(t.Context(), "test-ds", WithCompressor(NewGzipCompressor()))
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		sw, err := ds.StreamWrite(t.Context(), nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		data := []byte("compressible data that should be gzipped")
-		_, err = sw.Write(data)
-		if err != nil {
-			t.Fatalf("Write failed: %v", err)
-		}
-
-		snap, err := sw.Commit(t.Context())
-		if err != nil {
-			t.Fatalf("Commit failed: %v", err)
-		}
-
-		// Verify manifest indicates gzip compression
-		if snap.Compressor != "gzip" {
-			t.Errorf("expected compressor 'gzip', got %q", snap.Compressor)
-		}
-
-		// Verify file path ends with .gz
-		if len(snap.Files) != 1 {
-			t.Fatalf("expected 1 file, got %d", len(snap.Files))
-		}
-		if !strings.HasSuffix(snap.Manifest.Files[0].Path, ".gz") {
-			t.Errorf("expected .gz extension, got %s", snap.Manifest.Files[0].Path)
-		}
-
-		// Verify data can be read back correctly
-		readData, err := ds.Read(t.Context(), snap.ID)
-		if err != nil {
-			t.Fatalf("Read failed: %v", err)
-		}
-		readBytes := readData
-		if string(readBytes) != string(data) {
-			t.Errorf("expected %q, got %q", data, readBytes)
-		}
-	})
-
-	t.Run("with zstd compression", func(t *testing.T) {
-		ds, err := Open(Memory()).Blobs(t.Context(), "test-ds", WithCompressor(NewZstdCompressor()))
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		sw, err := ds.StreamWrite(t.Context(), nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		data := []byte("compressible data that should be zstd compressed")
-		_, err = sw.Write(data)
-		if err != nil {
-			t.Fatalf("Write failed: %v", err)
-		}
-
-		snap, err := sw.Commit(t.Context())
-		if err != nil {
-			t.Fatalf("Commit failed: %v", err)
-		}
-
-		// Verify manifest indicates zstd compression
-		if snap.Compressor != "zstd" {
-			t.Errorf("expected compressor 'zstd', got %q", snap.Compressor)
-		}
-
-		// Verify file path ends with .zst
-		if len(snap.Files) != 1 {
-			t.Fatalf("expected 1 file, got %d", len(snap.Files))
-		}
-		if !strings.HasSuffix(snap.Manifest.Files[0].Path, ".zst") {
-			t.Errorf("expected .zst extension, got %s", snap.Manifest.Files[0].Path)
-		}
-
-		// Verify data can be read back correctly
-		readData, err := ds.Read(t.Context(), snap.ID)
-		if err != nil {
-			t.Fatalf("Read failed: %v", err)
-		}
-		readBytes := readData
-		if string(readBytes) != string(data) {
-			t.Errorf("expected %q, got %q", data, readBytes)
-		}
-	})
+	for _, tc := range []struct {
+		sub, name, ext string
+		comp           Compressor
+	}{
+		{"with gzip compression", "gzip", ".gz", Gzip()},
+		{"with zstd compression", "zstd", ".zst", Zstd()},
+	} {
+		t.Run(tc.sub, func(t *testing.T) {
+			ds := blobsOn(t, NewMemory(), "test-ds", WithCompressor(tc.comp))
+			data := []byte("compressible stream payload for " + tc.name)
+			snap, err := ds.StreamWrite(t.Context(), bytes.NewReader(data), nil)
+			if err != nil {
+				t.Fatalf("StreamWrite: %v", err)
+			}
+			assertCompressedSnapAndExt(t, snap, tc.name, tc.ext)
+			got, err := ds.Read(t.Context(), snap.ID)
+			if err != nil || !bytes.Equal(got, data) {
+				t.Fatalf("Read = %q, %v; want %q", got, err, data)
+			}
+		})
+	}
 }
 
 func TestDataset_Write_Encoding(t *testing.T) {
 	t.Run("with checksum records checksum", func(t *testing.T) {
-		ds, err := Open(Memory()).Blobs(t.Context(), "test-ds", WithChecksum(NewMD5Checksum()))
+		ds, err := Open(Memory()).Blobs(t.Context(), "test-ds", WithChecksum(MD5()))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1478,16 +1049,16 @@ func TestDataset_Write_Encoding(t *testing.T) {
 			t.Errorf("expected ChecksumAlgorithm 'md5', got %q", snap.ChecksumAlgorithm)
 		}
 
-		// Verify file has checksum
-		if len(snap.Files) != 1 {
-			t.Fatalf("expected 1 file, got %d", len(snap.Files))
+		// Verify object has checksum
+		if len(snap.Objects) != 1 {
+			t.Fatalf("expected 1 object, got %d", len(snap.Objects))
 		}
-		if snap.Manifest.Files[0].Checksum == "" {
+		if snap.Manifest.Objects[0].Checksum == "" {
 			t.Error("expected non-empty checksum")
 		}
 		// MD5 produces 32 hex characters
-		if len(snap.Manifest.Files[0].Checksum) != 32 {
-			t.Errorf("expected 32 char MD5 checksum, got %d chars", len(snap.Manifest.Files[0].Checksum))
+		if len(snap.Manifest.Objects[0].Checksum) != 32 {
+			t.Errorf("expected 32 char MD5 checksum, got %d chars", len(snap.Manifest.Objects[0].Checksum))
 		}
 	})
 
@@ -1507,14 +1078,14 @@ func TestDataset_Write_Encoding(t *testing.T) {
 			t.Errorf("expected empty ChecksumAlgorithm, got %q", snap.ChecksumAlgorithm)
 		}
 
-		// Verify file has no checksum
-		if snap.Manifest.Files[0].Checksum != "" {
-			t.Errorf("expected empty checksum, got %q", snap.Manifest.Files[0].Checksum)
+		// Verify object has no checksum
+		if snap.Manifest.Objects[0].Checksum != "" {
+			t.Errorf("expected empty checksum, got %q", snap.Manifest.Objects[0].Checksum)
 		}
 	})
 
 	t.Run("with zstd compression", func(t *testing.T) {
-		ds, err := Open(Memory()).Records(t.Context(), "test-ds", JSONL[D](), WithCompressor(NewZstdCompressor()))
+		ds, err := Open(Memory()).Records(t.Context(), "test-ds", JSONL[D](), WithCompressor(Zstd()))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1530,12 +1101,7 @@ func TestDataset_Write_Encoding(t *testing.T) {
 		}
 
 		// Verify manifest indicates zstd compression
-		if snap.Compressor != "zstd" {
-			t.Errorf("expected compressor 'zstd', got %q", snap.Compressor)
-		}
-		if !strings.HasSuffix(snap.Manifest.Files[0].Path, ".zst") {
-			t.Errorf("expected .zst extension, got %s", snap.Manifest.Files[0].Path)
-		}
+		assertCompressedSnapAndExt(t, snap, "zstd", ".zst")
 
 		// Verify data can be read back
 		readData, err := ds.Read(t.Context(), snap.ID)
@@ -1550,7 +1116,7 @@ func TestDataset_Write_Encoding(t *testing.T) {
 
 func TestRecords_StreamWrite_Encoding(t *testing.T) {
 	t.Run("with checksum records checksum", func(t *testing.T) {
-		ds, err := Open(Memory()).Records(t.Context(), "test-ds", JSONL[D](), WithChecksum(NewMD5Checksum()))
+		ds, err := Open(Memory()).Records(t.Context(), "test-ds", JSONL[D](), WithChecksum(MD5()))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1561,87 +1127,32 @@ func TestRecords_StreamWrite_Encoding(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		// Verify checksum algorithm recorded
-		if snap.ChecksumAlgorithm != "md5" {
-			t.Errorf("expected ChecksumAlgorithm 'md5', got %q", snap.ChecksumAlgorithm)
-		}
-
-		// Verify file has checksum
-		if snap.Manifest.Files[0].Checksum == "" {
-			t.Error("expected non-empty checksum")
-		}
-		if len(snap.Manifest.Files[0].Checksum) != 32 {
-			t.Errorf("expected 32 char MD5 checksum, got %d chars", len(snap.Manifest.Files[0].Checksum))
-		}
+		assertMD5ObjectChecksum(t, snap)
 	})
 
-	t.Run("with compression", func(t *testing.T) {
-		ds, err := Open(Memory()).Records(t.Context(), "test-ds", JSONL[D](), WithCompressor(NewGzipCompressor()))
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		records := []D{
-			{"id": "1", "data": "some compressible content"},
-			{"id": "2", "data": "more compressible content"},
-		}
-		iter := seqOf(records...)
-
-		snap, err := ds.StreamWrite(t.Context(), iter, nil)
-		if err != nil {
-			t.Fatalf("StreamWriteRecords failed: %v", err)
-		}
-
-		if snap.Compressor != "gzip" {
-			t.Errorf("expected compressor 'gzip', got %q", snap.Compressor)
-		}
-		if !strings.HasSuffix(snap.Manifest.Files[0].Path, ".gz") {
-			t.Errorf("expected .gz extension, got %s", snap.Manifest.Files[0].Path)
-		}
-
-		// Verify data can be read back
-		readData, err := ds.Read(t.Context(), snap.ID)
-		if err != nil {
-			t.Fatalf("Read failed: %v", err)
-		}
-		if len(readData) != 2 {
-			t.Errorf("expected 2 records, got %d", len(readData))
-		}
-	})
-
-	t.Run("with zstd compression", func(t *testing.T) {
-		ds, err := Open(Memory()).Records(t.Context(), "test-ds", JSONL[D](), WithCompressor(NewZstdCompressor()))
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		records := []D{
-			{"id": "1", "data": "some zstd compressible content"},
-			{"id": "2", "data": "more zstd compressible content"},
-		}
-		iter := seqOf(records...)
-
-		snap, err := ds.StreamWrite(t.Context(), iter, nil)
-		if err != nil {
-			t.Fatalf("StreamWriteRecords failed: %v", err)
-		}
-
-		if snap.Compressor != "zstd" {
-			t.Errorf("expected compressor 'zstd', got %q", snap.Compressor)
-		}
-		if !strings.HasSuffix(snap.Manifest.Files[0].Path, ".zst") {
-			t.Errorf("expected .zst extension, got %s", snap.Manifest.Files[0].Path)
-		}
-
-		// Verify data can be read back
-		readData, err := ds.Read(t.Context(), snap.ID)
-		if err != nil {
-			t.Fatalf("Read failed: %v", err)
-		}
-		if len(readData) != 2 {
-			t.Errorf("expected 2 records, got %d", len(readData))
-		}
-	})
+	for _, tc := range []struct {
+		sub, name, ext string
+		comp           Compressor
+	}{
+		{"with compression", "gzip", ".gz", Gzip()},
+		{"with zstd compression", "zstd", ".zst", Zstd()},
+	} {
+		t.Run(tc.sub, func(t *testing.T) {
+			ds, err := Open(Memory()).Records(t.Context(), "test-ds", JSONL[D](), WithCompressor(tc.comp))
+			if err != nil {
+				t.Fatal(err)
+			}
+			records := []D{{"id": "1", "data": "content"}, {"id": "2", "data": "more"}}
+			snap, err := ds.StreamWrite(t.Context(), seqOf(records...), nil)
+			if err != nil {
+				t.Fatalf("StreamWrite: %v", err)
+			}
+			assertCompressedSnapAndExt(t, snap, tc.name, tc.ext)
+			if got, err := ds.Read(t.Context(), snap.ID); err != nil || len(got) != 2 {
+				t.Fatalf("Read = %v, %v; want 2 records", got, err)
+			}
+		})
+	}
 }
 
 // -----------------------------------------------------------------------------
@@ -1680,14 +1191,7 @@ func TestRecords_StreamWrite_Commit(t *testing.T) {
 			t.Errorf("expected metadata source=stream, got %v", snap.Metadata)
 		}
 
-		// Verify snapshot is visible via Latest
-		latest, err := ds.Latest(t.Context())
-		if err != nil {
-			t.Fatalf("Latest failed: %v", err)
-		}
-		if latest.ID != snap.ID {
-			t.Errorf("expected latest ID %s, got %s", snap.ID, latest.ID)
-		}
+		assertLatestIs(t, ds.dataset, snap.ID)
 
 		// Verify data can be read back
 		readData, err := ds.Read(t.Context(), snap.ID)
@@ -1798,8 +1302,8 @@ func TestRecords_StreamWrite_Rejects(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected error for nil iterator, got nil")
 		}
-		if !errors.Is(err, ErrNilIterator) {
-			t.Errorf("expected ErrNilIterator, got: %v", err)
+		if !errors.Is(err, ErrInvalidArgument) {
+			t.Errorf("expected ErrInvalidArgument, got: %v", err)
 		}
 	})
 
@@ -1843,12 +1347,12 @@ func TestDataset_Checksum(t *testing.T) {
 	t.Run("computed on compressed data", func(t *testing.T) {
 		// Two datasets with same data but different compression
 		// should produce different checksums (since checksum is on stored bytes)
-		dsNoComp, err := Open(Memory()).Blobs(t.Context(), "test-no-comp", WithChecksum(NewMD5Checksum()))
+		dsNoComp, err := Open(Memory()).Blobs(t.Context(), "test-no-comp", WithChecksum(MD5()))
 		if err != nil {
 			t.Fatal(err)
 		}
 
-		dsGzip, err := Open(Memory()).Blobs(t.Context(), "test-gzip", WithCompressor(NewGzipCompressor()), WithChecksum(NewMD5Checksum()))
+		dsGzip, err := Open(Memory()).Blobs(t.Context(), "test-gzip", WithCompressor(Gzip()), WithChecksum(MD5()))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1866,21 +1370,21 @@ func TestDataset_Checksum(t *testing.T) {
 		}
 
 		// Both should have checksums
-		if snapNoComp.Manifest.Files[0].Checksum == "" {
+		if snapNoComp.Manifest.Objects[0].Checksum == "" {
 			t.Error("expected checksum for no-compression")
 		}
-		if snapGzip.Manifest.Files[0].Checksum == "" {
+		if snapGzip.Manifest.Objects[0].Checksum == "" {
 			t.Error("expected checksum for gzip")
 		}
 
 		// Checksums should be different (stored bytes differ)
-		if snapNoComp.Manifest.Files[0].Checksum == snapGzip.Manifest.Files[0].Checksum {
+		if snapNoComp.Manifest.Objects[0].Checksum == snapGzip.Manifest.Objects[0].Checksum {
 			t.Error("expected different checksums for different compression")
 		}
 	})
 
 	t.Run("same data produces same checksum", func(t *testing.T) {
-		ds, err := Open(Memory()).Blobs(t.Context(), "test-ds", WithChecksum(NewMD5Checksum()))
+		ds, err := Open(Memory()).Blobs(t.Context(), "test-ds", WithChecksum(MD5()))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1898,9 +1402,9 @@ func TestDataset_Checksum(t *testing.T) {
 		}
 
 		// Same data should produce same checksum
-		if snap1.Manifest.Files[0].Checksum != snap2.Manifest.Files[0].Checksum {
+		if snap1.Manifest.Objects[0].Checksum != snap2.Manifest.Objects[0].Checksum {
 			t.Errorf("expected same checksum for same data, got %s vs %s",
-				snap1.Manifest.Files[0].Checksum, snap2.Manifest.Files[0].Checksum)
+				snap1.Manifest.Objects[0].Checksum, snap2.Manifest.Objects[0].Checksum)
 		}
 	})
 }
@@ -1927,12 +1431,7 @@ func TestDataset_Write_Timestamps(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		if snap.MinTimestamp != nil {
-			t.Errorf("expected MinTimestamp to be nil, got %v", snap.MinTimestamp)
-		}
-		if snap.MaxTimestamp != nil {
-			t.Errorf("expected MaxTimestamp to be nil, got %v", snap.MaxTimestamp)
-		}
+		assertNoTimestamps(t, snap)
 	})
 
 	t.Run("timestamped records computes min max", func(t *testing.T) {
@@ -1941,34 +1440,14 @@ func TestDataset_Write_Timestamps(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		ts1 := time.Date(2024, 1, 1, 10, 0, 0, 0, time.UTC)
-		ts2 := time.Date(2024, 1, 15, 12, 0, 0, 0, time.UTC)
-		ts3 := time.Date(2024, 1, 10, 8, 0, 0, 0, time.UTC)
-
-		records := []*timestampedRecord{
-			{ID: "a", Time: ts1},
-			{ID: "b", Time: ts2},
-			{ID: "c", Time: ts3},
-		}
+		records, ts1, ts2 := timestampedFixture()
 
 		snap, err := ds.Write(t.Context(), records, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 
-		if snap.MinTimestamp == nil {
-			t.Fatal("expected MinTimestamp to be set")
-		}
-		if snap.MaxTimestamp == nil {
-			t.Fatal("expected MaxTimestamp to be set")
-		}
-
-		if !snap.MinTimestamp.Equal(ts1) {
-			t.Errorf("expected MinTimestamp %v, got %v", ts1, *snap.MinTimestamp)
-		}
-		if !snap.MaxTimestamp.Equal(ts2) {
-			t.Errorf("expected MaxTimestamp %v, got %v", ts2, *snap.MaxTimestamp)
-		}
+		assertTimeRange(t, snap, ts1, ts2)
 	})
 
 	t.Run("single timestamped record same min max", func(t *testing.T) {
@@ -2030,8 +1509,8 @@ func TestDataset_Write_Stats(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		if snap.Manifest.Files[0].Stats != nil {
-			t.Errorf("expected nil Stats for JSONL codec, got %+v", snap.Manifest.Files[0].Stats)
+		if snap.Manifest.Objects[0].Stats != nil {
+			t.Errorf("expected nil Stats for JSONL codec, got %+v", snap.Manifest.Objects[0].Stats)
 		}
 	})
 
@@ -2062,13 +1541,13 @@ func TestDataset_Write_Stats(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		if len(snap.Files) != 1 {
-			t.Fatalf("expected 1 file, got %d", len(snap.Files))
+		if len(snap.Objects) != 1 {
+			t.Fatalf("expected 1 object, got %d", len(snap.Objects))
 		}
 
-		stats := snap.Manifest.Files[0].Stats
+		stats := snap.Manifest.Objects[0].Stats
 		if stats == nil {
-			t.Fatal("expected Stats on FileRef, got nil")
+			t.Fatal("expected Stats on ObjectRef, got nil")
 		}
 		if stats.RowCount != 2 {
 			t.Errorf("RowCount = %d, want 2", stats.RowCount)
@@ -2092,22 +1571,22 @@ func TestDataset_Write_Stats(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		if snap.Manifest.Files[0].Stats != nil {
-			t.Errorf("expected nil Stats for raw blob, got %+v", snap.Manifest.Files[0].Stats)
+		if snap.Manifest.Objects[0].Stats != nil {
+			t.Errorf("expected nil Stats for raw blob, got %+v", snap.Manifest.Objects[0].Stats)
 		}
 	})
 }
 
 // -----------------------------------------------------------------------------
-// FileStats serialization tests
+// ObjectStats serialization tests
 // -----------------------------------------------------------------------------
 
 func TestFileRef_Stats(t *testing.T) {
 	t.Run("JSON round trip", func(t *testing.T) {
-		ref := FileRef{
+		ref := ObjectRef{
 			Path:      "data/test.parquet",
 			SizeBytes: 1024,
-			Stats: &FileStats{
+			Stats: &ObjectStats{
 				RowCount: 100,
 				Columns: []ColumnStats{
 					{Name: "id", Min: float64(1), Max: float64(100), NullCount: 0},
@@ -2121,7 +1600,7 @@ func TestFileRef_Stats(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		var decoded FileRef
+		var decoded ObjectRef
 		if err := json.Unmarshal(data, &decoded); err != nil {
 			t.Fatal(err)
 		}
@@ -2151,7 +1630,7 @@ func TestFileRef_Stats(t *testing.T) {
 		// JSON without stats field should decode cleanly
 		jsonData := `{"path":"data/test.gz","size_bytes":512}`
 
-		var ref FileRef
+		var ref ObjectRef
 		if err := json.Unmarshal([]byte(jsonData), &ref); err != nil {
 			t.Fatal(err)
 		}
@@ -2165,7 +1644,7 @@ func TestFileRef_Stats(t *testing.T) {
 	})
 
 	t.Run("omitted when nil", func(t *testing.T) {
-		ref := FileRef{
+		ref := ObjectRef{
 			Path:      "data/test.gz",
 			SizeBytes: 256,
 		}
@@ -2285,14 +1764,7 @@ func TestDataset_Write_Pointer(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		// Corrupt the pointer to reference a nonexistent snapshot.
-		pointerPath := "datasets/test-ds/latest"
-		if err := mem.Delete(t.Context(), pointerPath); err != nil {
-			t.Fatal(err)
-		}
-		if err := mem.Put(t.Context(), pointerPath, bytes.NewReader([]byte("nonexistent-snap-id"))); err != nil {
-			t.Fatal(err)
-		}
+		corruptDatasetPointer(t, mem)
 
 		// With CAS, the write detects external pointer modification as a conflict.
 		// The in-memory cache knows what it last wrote; the external change is detected.
@@ -2401,7 +1873,7 @@ func TestDataset_LatestPointer_PendingCommit(t *testing.T) {
 	// next commit must adopt the pending commit as parent once its manifest
 	// is persisted.
 	store := NewMemory()
-	open := func() Records[D] {
+	open := func() *Records[D] {
 		ds, err := Open(Use(store)).Records(t.Context(), "test-ds", JSONL[D]())
 		if err != nil {
 			t.Fatal(err)
@@ -2417,11 +1889,7 @@ func TestDataset_LatestPointer_PendingCommit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	manifestPath := "datasets/test-ds/snapshots/" + string(pending.ID) + "/manifest.json"
-	moveObject(t, store, manifestPath, "pending/manifest.json")
-	if err := store.Delete(t.Context(), manifestPath); err != nil {
-		t.Fatal(err)
-	}
+	manifestPath := hidePendingManifest(t, store, pending.ID)
 
 	latest, err := reader.Latest(t.Context())
 	if err != nil {
@@ -2456,7 +1924,7 @@ func TestDataset_LatestPointer_PendingCommit(t *testing.T) {
 // parent would fork the history (CONTRACT_CORE §Head Pointer).
 func TestDataset_Write_ParentsOnPendingCommit(t *testing.T) {
 	store := NewMemory()
-	open := func() Records[D] {
+	open := func() *Records[D] {
 		ds, err := Open(Use(store)).Records(t.Context(), "test-ds", JSONL[D]())
 		if err != nil {
 			t.Fatal(err)
@@ -2471,11 +1939,7 @@ func TestDataset_Write_ParentsOnPendingCommit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	manifestPath := "datasets/test-ds/snapshots/" + string(pending.ID) + "/manifest.json"
-	moveObject(t, store, manifestPath, "pending/manifest.json")
-	if err := store.Delete(t.Context(), manifestPath); err != nil {
-		t.Fatal(err)
-	}
+	hidePendingManifest(t, store, pending.ID)
 
 	next, err := open().Write(t.Context(), R(D{"c": 3}), nil)
 	if err != nil {
@@ -2490,11 +1954,11 @@ func TestDataset_Write_ParentsOnPendingCommit(t *testing.T) {
 // head's snapshot ID is smaller than its parent's, because the head's write
 // began first and committed second, so the largest ID names the parent. It
 // returns the head.
-func writeInvertedHead(t *testing.T, store Store) DatasetSnapshotID {
+func writeInvertedHead(t *testing.T, store Store) SnapshotID {
 	t.Helper()
 	base := time.Now().Add(-time.Hour)
 	parent, head := idAt(base.Add(2*time.Second)), idAt(base.Add(time.Second))
-	for _, link := range []struct{ id, parent DatasetSnapshotID }{{parent, ""}, {head, parent}} {
+	for _, link := range []struct{ id, parent SnapshotID }{{parent, ""}, {head, parent}} {
 		m := validTestManifest()
 		m.SnapshotID, m.ParentSnapshotID = link.id, link.parent
 		writeManifest(t.Context(), t, store, m)
@@ -2562,25 +2026,13 @@ func TestDataset_LatestPointer(t *testing.T) {
 
 		// Verify pointer file exists in store.
 		pointerPath := "datasets/test-ds/latest"
-		rc, err := store.Get(t.Context(), pointerPath)
-		if err != nil {
-			t.Fatalf("expected pointer file at %s, got error: %v", pointerPath, err)
-		}
-		data, _ := io.ReadAll(rc)
-		_ = rc.Close()
-		if string(data) != string(snap.ID) {
-			t.Errorf("pointer file content: expected %q, got %q", snap.ID, string(data))
+		if got := readObject(t, store, pointerPath); got != string(snap.ID) {
+			t.Errorf("pointer = %q, want %q", got, snap.ID)
 		}
 
 		// Reset call tracking to verify Latest() uses pointer, not List.
 		fs.Reset()
-		latest, err := ds.Latest(t.Context())
-		if err != nil {
-			t.Fatalf("Latest() failed: %v", err)
-		}
-		if latest.ID != snap.ID {
-			t.Errorf("Latest() returned %s, expected %s", latest.ID, snap.ID)
-		}
+		assertLatestIs(t, ds.dataset, snap.ID)
 		if len(fs.ListCalls()) != 0 {
 			t.Errorf("Latest() should not call List when pointer exists, got %d List calls",
 				len(fs.ListCalls()))
@@ -2603,14 +2055,8 @@ func TestDataset_LatestPointer(t *testing.T) {
 				t.Fatalf("write %d failed: %v", i, err)
 			}
 
-			rc, err := store.Get(t.Context(), pointerPath)
-			if err != nil {
-				t.Fatalf("write %d: pointer file missing: %v", i, err)
-			}
-			data, _ := io.ReadAll(rc)
-			_ = rc.Close()
-			if string(data) != string(snap.ID) {
-				t.Errorf("write %d: pointer %q, expected %q", i, string(data), snap.ID)
+			if got := readObject(t, store, pointerPath); got != string(snap.ID) {
+				t.Errorf("pointer = %q, want %q", got, snap.ID)
 			}
 		}
 	})
@@ -2716,7 +2162,7 @@ func TestDataset_LatestPointer(t *testing.T) {
 			})
 		}
 
-		hl := newPathLayout(defaultPaths(false), partitionScheme{name: "hive", keys: []string{"day"}})
+		hl := newPathLayout(false, partitionScheme{name: "hive", keys: []string{"day"}})
 		got := hl.latestPointerPath("my-ds")
 		if got != "datasets/my-ds/latest" {
 			t.Errorf("hive: expected %q, got %q", "datasets/my-ds/latest", got)
@@ -2729,23 +2175,7 @@ func TestDataset_HiveLayout(t *testing.T) {
 	// with HiveLayout does NOT require a List call. The canonical manifest is always
 	// written alongside partition manifests, so a single Get resolves the snapshot.
 	t.Run("snapshot by ID no list call", func(t *testing.T) {
-		fs := testutil.NewFaultStore(NewMemory())
-		factory := Use(fs)
-
-		ds, err := Open(factory).Records(t.Context(), "test-ds", JSONL[D](), hive("day"))
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		records := R(
-			D{"id": 1, "day": "2024-01-15"},
-			D{"id": 2, "day": "2024-01-16"},
-		)
-
-		snap, err := ds.Write(t.Context(), records, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
+		fs, ds, snap := twoDayHive(t)
 
 		// Reset counters after the write.
 		fs.Reset()
@@ -2768,23 +2198,7 @@ func TestDataset_HiveLayout(t *testing.T) {
 	// TestDataset_HiveLayout_CanonicalManifestWritten verifies that writeManifests
 	// writes the canonical manifest alongside partition manifests for HiveLayout.
 	t.Run("canonical manifest written", func(t *testing.T) {
-		fs := testutil.NewFaultStore(NewMemory())
-		factory := Use(fs)
-
-		ds, err := Open(factory).Records(t.Context(), "test-ds", JSONL[D](), hive("day"))
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		records := R(
-			D{"id": 1, "day": "2024-01-15"},
-			D{"id": 2, "day": "2024-01-16"},
-		)
-
-		snap, err := ds.Write(t.Context(), records, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
+		fs, _, snap := twoDayHive(t)
 
 		// Canonical path must exist.
 		canonicalPath := "datasets/test-ds/segments/" + string(snap.ID) + "/manifest.json"
@@ -2873,14 +2287,7 @@ func TestDataset_Write_ColdStart(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		// Corrupt the pointer to reference a nonexistent snapshot.
-		pointerPath := "datasets/test-ds/latest"
-		if err := mem.Delete(t.Context(), pointerPath); err != nil {
-			t.Fatal(err)
-		}
-		if err := mem.Put(t.Context(), pointerPath, bytes.NewReader([]byte("nonexistent-snap-id"))); err != nil {
-			t.Fatal(err)
-		}
+		corruptDatasetPointer(t, mem)
 
 		// Process B: cold start with corrupt pointer.
 		dsB, err := Open(Use(mem)).Records(t.Context(), "test-ds", JSONL[D]())
@@ -3052,11 +2459,11 @@ func TestDataset_Write_Conflict(t *testing.T) {
 			t.Error("expected non-empty parent snapshot ID after retry")
 		}
 
-		// Verify file paths are consistent with the committed snapshot ID.
-		// Data files must be co-located under the same snapshot directory.
-		for _, f := range snap.Files {
+		// Verify object paths are consistent with the committed snapshot ID.
+		// Data objects must be co-located under the same snapshot directory.
+		for _, f := range snap.Objects {
 			if !strings.Contains(f.Path, string(snap.ID)) {
-				t.Errorf("file path %q does not contain committed snapshot ID %q", f.Path, snap.ID)
+				t.Errorf("object path %q does not contain committed snapshot ID %q", f.Path, snap.ID)
 			}
 		}
 	})
@@ -3065,46 +2472,27 @@ func TestDataset_Write_Conflict(t *testing.T) {
 	// retries are exhausted, ErrSnapshotConflict is returned.
 	t.Run("with retry count exhausts retries", func(t *testing.T) {
 		mem := NewMemory()
-		factory := Use(mem)
 
-		ds1, err := Open(factory).Records(t.Context(), "shared", JSONL[D](), WithRetry(1), // only 1 retry
+		ds1 := recordsOn(t, mem, "shared", WithRetry(1), // only 1 retry
 			WithRetryJitter(0.0), WithRetryBaseDelay(time.Millisecond))
-		if err != nil {
-			t.Fatalf("NewDataset ds1: %v", err)
-		}
-		ds2, err := Open(factory).Records(t.Context(), "shared", JSONL[D]())
-		if err != nil {
-			t.Fatalf("NewDataset ds2: %v", err)
-		}
-		ds3, err := Open(factory).Records(t.Context(), "shared", JSONL[D]())
-		if err != nil {
-			t.Fatalf("NewDataset ds3: %v", err)
-		}
+		ds2 := recordsOn(t, mem, "shared")
+		ds3 := recordsOn(t, mem, "shared")
 
 		// ds1 writes first.
-		_, err = ds1.Write(t.Context(), R(D{"seq": 1}), nil)
-		if err != nil {
-			t.Fatalf("ds1 first write: %v", err)
-		}
+		writeSharedSequence(t, ds1, 1)
 
 		// ds2 writes, advancing pointer.
-		_, err = ds2.Write(t.Context(), R(D{"seq": 2}), nil)
-		if err != nil {
-			t.Fatalf("ds2 write: %v", err)
-		}
+		writeSharedSequence(t, ds2, 2)
 
 		// ds3 writes, advancing pointer again.
-		_, err = ds3.Write(t.Context(), R(D{"seq": 3}), nil)
-		if err != nil {
-			t.Fatalf("ds3 write: %v", err)
-		}
+		writeSharedSequence(t, ds3, 3)
 
 		// ds1 now has a stale cache pointing at snap1. The retry will refresh
 		// to snap3 and succeed on the first retry. But we need persistent
 		// contention to exhaust retries. Since we can't inject contention
 		// between retry attempts with the memory store, we verify the basic
 		// mechanics: a single retry is enough to resolve a one-hop conflict.
-		_, err = ds1.Write(t.Context(), R(D{"seq": 4}), nil)
+		_, err := ds1.Write(t.Context(), R(D{"seq": 4}), nil)
 		if err != nil {
 			t.Fatalf("expected success with 1 retry (conflict resolved after refresh), got: %v", err)
 		}
@@ -3114,31 +2502,18 @@ func TestDataset_Write_Conflict(t *testing.T) {
 	// WithRetry(0) preserves the default behavior (no retry).
 	t.Run("with retry count zero current behavior", func(t *testing.T) {
 		mem := NewMemory()
-		factory := Use(mem)
 
-		ds1, err := Open(factory).Records(t.Context(), "shared", JSONL[D](), WithRetry(0))
-		if err != nil {
-			t.Fatalf("NewDataset ds1: %v", err)
-		}
-		ds2, err := Open(factory).Records(t.Context(), "shared", JSONL[D]())
-		if err != nil {
-			t.Fatalf("NewDataset ds2: %v", err)
-		}
+		ds1 := recordsOn(t, mem, "shared", WithRetry(0))
+		ds2 := recordsOn(t, mem, "shared")
 
 		// ds1 writes first.
-		_, err = ds1.Write(t.Context(), R(D{"seq": 1}), nil)
-		if err != nil {
-			t.Fatalf("ds1 first write: %v", err)
-		}
+		writeSharedSequence(t, ds1, 1)
 
 		// ds2 writes, advancing pointer.
-		_, err = ds2.Write(t.Context(), R(D{"seq": 2}), nil)
-		if err != nil {
-			t.Fatalf("ds2 write: %v", err)
-		}
+		writeSharedSequence(t, ds2, 2)
 
 		// ds1 should fail immediately without retry.
-		_, err = ds1.Write(t.Context(), R(D{"seq": 3}), nil)
+		_, err := ds1.Write(t.Context(), R(D{"seq": 3}), nil)
 		if !errors.Is(err, ErrSnapshotConflict) {
 			t.Fatalf("expected ErrSnapshotConflict with retries=0, got: %v", err)
 		}
@@ -3252,7 +2627,7 @@ func TestDataset_Write_RetryOptions(t *testing.T) {
 }
 
 // TestDataset_Write_EmptyBatch verifies that a write of no records commits a
-// snapshot with no data file on every layout: the partitioner yields no
+// snapshot with no data object on every layout: the partitioner yields no
 // group for an empty batch.
 func TestDataset_Write_EmptyBatch(t *testing.T) {
 	for name, root := range map[string]struct {
@@ -3272,8 +2647,8 @@ func TestDataset_Write_EmptyBatch(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(snap.Files) != 0 || snap.RowCount != 0 {
-				t.Errorf("empty write: %d files and %d rows, want none", len(snap.Files), snap.RowCount)
+			if len(snap.Objects) != 0 || snap.RowCount != 0 {
+				t.Errorf("empty write: %d objects and %d rows, want none", len(snap.Objects), snap.RowCount)
 			}
 		})
 	}
@@ -3286,9 +2661,221 @@ type renamedChecksum struct{ Checksum }
 func (renamedChecksum) Name() string { return "custom-md5" }
 
 func TestBlobs_Read_CustomChecksumIsPassedToTheView(t *testing.T) {
+	assertCustomBlobComponentRequired(t, "custom-md5", WithChecksum(renamedChecksum{MD5()}))
+}
+
+func TestRoot_RemoveDataset(t *testing.T) {
+	t.Run("removes objects, writes tombstone, and blocks writers and views", func(t *testing.T) {
+		store := &hookStore{Store: NewMemory()}
+		root := Open(Use(store))
+		ds, err := root.Records(t.Context(), "events", JSONL[D](), hive("day"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		snap, err := ds.Write(t.Context(), R(D{"day": "2026-01-01", "v": 1}, D{"day": "2026-01-02", "v": 2}), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		view, err := OpenReadOnly(Use(store)).Records(t.Context(), "events", JSONL[D]())
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		stopCleanup := errors.New("interrupted cleanup")
+		store.onDelete = func(string) error { return stopCleanup }
+		if err := root.RemoveDataset(t.Context(), "events"); !errors.Is(err, stopCleanup) {
+			t.Fatalf("RemoveDataset returned %v, want injected deletion failure", err)
+		}
+
+		// Existing writer and view handles return ErrRemoved on every operation.
+		checks := map[string]func() error{
+			"writer Write": func() error { _, err := ds.Write(t.Context(), R(D{"day": "2026-01-03"}), nil); return err },
+			"writer Read":  func() error { _, err := ds.Read(t.Context(), snap.ID); return err },
+			"writer ListPartitions": func() error {
+				_, err := ds.ListPartitions(t.Context(), PartitionListOptions{})
+				return err
+			},
+			"writer Manifests": func() error {
+				for _, err := range ds.Manifests(t.Context(), PartitionPath{}, ManifestListOptions{}) {
+					return err
+				}
+				return nil
+			},
+			"writer Expire": func() error {
+				_, err := ds.Expire(t.Context(), ExpireRequest{IDs: []SnapshotID{snap.ID}})
+				return err
+			},
+			"writer Sweep": func() error {
+				_, err := ds.Sweep(t.Context(), SweepRequest{Grace: time.Minute})
+				return err
+			},
+			"view Read": func() error { _, err := view.Read(t.Context(), snap.ID); return err },
+			"open new writer": func() error {
+				_, err := root.Records(t.Context(), "events", JSONL[D](), hive("day"))
+				return err
+			},
+			"open new view": func() error {
+				_, err := OpenReadOnly(Use(store)).Records(t.Context(), "events", JSONL[D]())
+				return err
+			},
+			"open anchored view": func() error {
+				_, err := OpenReadOnly(Use(store)).Records(t.Context(), "events", JSONL[D](), WithAnchor(snap.ID))
+				return err
+			},
+		}
+		for label, d := range map[string]*dataset{"writer": ds.dataset, "view": view.dataset} {
+			checks[label+" Latest"] = errOnly(func() (*Snapshot, error) { return d.Latest(t.Context()) })
+			checks[label+" Snapshot"] = errOnly(func() (*Snapshot, error) { return d.Snapshot(t.Context(), snap.ID) })
+			checks[label+" Snapshots"] = errOnly(func() ([]*Snapshot, error) { return d.Snapshots(t.Context()) })
+		}
+		for name, fn := range checks {
+			if err := fn(); !errors.Is(err, ErrRemoved) {
+				t.Errorf("%s: got %v, want ErrRemoved", name, err)
+			}
+		}
+		store.onDelete = nil
+		if err := root.RemoveDataset(t.Context(), "events"); err != nil {
+			t.Fatalf("RemoveDataset: %v", err)
+		}
+		// Second call is idempotent.
+		if err := root.RemoveDataset(t.Context(), "events"); err != nil {
+			t.Fatalf("second RemoveDataset: %v", err)
+		}
+
+		// Only the latest tombstone object remains under datasets/events/.
+		keys := storeKeys(t, store)
+		if !slices.Equal(keys, []string{"datasets/events/latest"}) {
+			t.Fatalf("remaining keys = %v, want [datasets/events/latest]", keys)
+		}
+	})
+
+	t.Run("nonexistent dataset writes tombstone idempotently", func(t *testing.T) {
+		store := NewMemory()
+		root := Open(Use(store))
+		if err := root.RemoveDataset(t.Context(), "never-written"); err != nil {
+			t.Fatalf("RemoveDataset: %v", err)
+		}
+		if _, err := root.Blobs(t.Context(), "never-written"); !errors.Is(err, ErrRemoved) {
+			t.Fatalf("Blobs after RemoveDataset = %v, want ErrRemoved", err)
+		}
+	})
+
+	t.Run("pending commit returns ErrHeadUncommitted", func(t *testing.T) {
+		store := NewMemory()
+		if err := store.Put(t.Context(), "datasets/pending/latest", strings.NewReader(string(idAt(time.Now())))); err != nil {
+			t.Fatal(err)
+		}
+		if err := Open(Use(store)).RemoveDataset(t.Context(), "pending"); !errors.Is(err, ErrHeadUncommitted) {
+			t.Fatalf("RemoveDataset = %v, want ErrHeadUncommitted", err)
+		}
+	})
+}
+
+func TestChecksum_ReadVerification(t *testing.T) {
+	for _, alg := range []Checksum{SHA256(), CRC32C(), MD5()} {
+		t.Run(alg.Name(), func(t *testing.T) {
+			// Sequential read path (Blobs + JSONL) and random-access read path (Parquet).
+			store := NewMemory()
+			blobs := blobsOn(t, store, "blobs", WithChecksum(alg), WithCompressor(Gzip()))
+			bsnap, err := blobs.Write(t.Context(), []byte("verified payload"), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			gotBlob, err := blobs.Read(t.Context(), bsnap.ID)
+			if err != nil || string(gotBlob) != "verified payload" {
+				t.Fatalf("valid blob Read = %q, %v", gotBlob, err)
+			}
+
+			// Corrupt the stored blob object bytes and verify ErrChecksumMismatch.
+			blobKey := bsnap.Objects[0].Path
+			rc, err := store.Get(t.Context(), blobKey)
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, _ := io.ReadAll(rc)
+			_ = rc.Close()
+			raw[len(raw)-1] ^= 0xff
+			overwriteObjectAndExpectChecksumMismatch(t, store, blobKey, raw, func() ([]byte, error) {
+				return blobs.Read(t.Context(), bsnap.ID)
+			})
+
+			// Parquet ReaderAt path with checksum verification.
+			type row struct {
+				ID   int64  `parquet:"id"`
+				Name string `parquet:"name"`
+			}
+			rowSchema := ParquetSchema{Fields: []ParquetField{
+				{Name: "id", Type: ParquetInt64},
+				{Name: "name", Type: ParquetString},
+			}}
+			pstore := NewMemory()
+			pds, err := Open(Use(pstore)).Records(t.Context(), "rows", Parquet[row](rowSchema), WithChecksum(alg))
+			if err != nil {
+				t.Fatal(err)
+			}
+			psnap, err := pds.Write(t.Context(), []row{{ID: 1, Name: "alice"}}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			gotRows, err := pds.Read(t.Context(), psnap.ID)
+			if err != nil || len(gotRows) != 1 || gotRows[0] != (row{ID: 1, Name: "alice"}) {
+				t.Fatalf("valid parquet Read = %+v, %v", gotRows, err)
+			}
+			pqKey := psnap.Objects[0].Path
+			prc, err := pstore.Get(t.Context(), pqKey)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pqRaw, _ := io.ReadAll(prc)
+			_ = prc.Close()
+			pqRaw[0] ^= 0xff
+			overwriteObjectAndExpectChecksumMismatch(t, pstore, pqKey, pqRaw, func() ([]row, error) {
+				return pds.Read(t.Context(), psnap.ID)
+			})
+		})
+	}
+
+	t.Run("missing per-object checksum when algorithm declared returns ErrChecksumMismatch", func(t *testing.T) {
+		store := NewMemory()
+		blobs := blobsOn(t, store, "blobs", WithChecksum(SHA256()))
+		snap, err := blobs.Write(t.Context(), []byte("payload"), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		manifestKey := "datasets/blobs/snapshots/" + string(snap.ID) + "/manifest.json"
+		m := snap.Manifest
+		m.Objects[0].Checksum = ""
+		raw, err := json.Marshal(&m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		overwriteObjectAndExpectChecksumMismatch(t, store, manifestKey, raw, func() ([]byte, error) {
+			return blobs.Read(t.Context(), snap.ID)
+		})
+	})
+}
+
+func overwriteObjectAndExpectChecksumMismatch[R any](t *testing.T, store Store, key string, raw []byte, read func() (R, error)) {
+	t.Helper()
+	if err := store.Delete(t.Context(), key); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Put(t.Context(), key, bytes.NewReader(raw)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := read(); !errors.Is(err, ErrChecksumMismatch) {
+		t.Fatalf("Read(%s) = %v, want ErrChecksumMismatch", key, err)
+	}
+}
+
+func assertCustomBlobComponentRequired(t *testing.T, wantName string, opt interface {
+	DatasetOption
+	ViewOption
+},
+) {
+	t.Helper()
 	store := NewMemory()
-	custom := renamedChecksum{NewMD5Checksum()}
-	snap, err := blobsOn(t, store, "test-ds", WithChecksum(custom)).Write(t.Context(), []byte("data"), nil)
+	snap, err := blobsOn(t, store, "test-ds", opt).Write(t.Context(), []byte("data"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3296,14 +2883,234 @@ func TestBlobs_Read_CustomChecksumIsPassedToTheView(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := bare.Read(t.Context(), snap.ID); !errors.Is(err, ErrSettingsMismatch) || !strings.Contains(err.Error(), "custom-md5") {
-		t.Errorf("without it: got %v, want an ErrSettingsMismatch naming the checksum", err)
+	if _, err := bare.Read(t.Context(), snap.ID); !errors.Is(err, ErrSettingsMismatch) || !strings.Contains(err.Error(), wantName) {
+		t.Errorf("without custom option: got %v, want ErrSettingsMismatch naming %s", err, wantName)
 	}
-	view, err := OpenReadOnly(Use(store)).Blobs(t.Context(), "test-ds", WithChecksum(custom))
+	view, err := OpenReadOnly(Use(store)).Blobs(t.Context(), "test-ds", opt)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got, err := view.Read(t.Context(), snap.ID); err != nil || string(got) != "data" {
-		t.Errorf("with it: Read = %q, %v; want the blob", got, err)
+		t.Errorf("with custom option: Read = %q, %v; want data", got, err)
+	}
+}
+
+func assertMD5ObjectChecksum(t *testing.T, snap *Snapshot) {
+	t.Helper()
+	if snap.ChecksumAlgorithm != "md5" {
+		t.Errorf("ChecksumAlgorithm = %q, want md5", snap.ChecksumAlgorithm)
+	}
+	if len(snap.Manifest.Objects[0].Checksum) != 32 {
+		t.Errorf("MD5 checksum len = %d, want 32", len(snap.Manifest.Objects[0].Checksum))
+	}
+}
+
+func assertCompressedSnapAndExt(t *testing.T, snap *Snapshot, wantComp, wantExt string) {
+	t.Helper()
+	if snap.Compressor != wantComp {
+		t.Errorf("Compressor = %q, want %q", snap.Compressor, wantComp)
+	}
+	if len(snap.Objects) != 1 || !strings.HasSuffix(snap.Objects[0].Path, wantExt) {
+		t.Fatalf("Objects = %+v, want 1 object ending with %s", snap.Objects, wantExt)
+	}
+}
+
+func errOnly[T any](fn func() (T, error)) func() error {
+	return func() error { _, err := fn(); return err }
+}
+
+func assertLatestIs(t *testing.T, d *dataset, want SnapshotID) {
+	t.Helper()
+	latest, err := d.Latest(t.Context())
+	if err != nil {
+		t.Fatalf("Latest: %v", err)
+	}
+	if latest.ID != want {
+		t.Errorf("Latest.ID = %s, want %s", latest.ID, want)
+	}
+}
+
+func assertNoNewListsAndParent(t *testing.T, fs *testutil.FaultStore, before int, snap *Snapshot, wantParent SnapshotID) {
+	t.Helper()
+	if got := len(fs.ListCalls()); got != before {
+		t.Errorf("List calls = %d, want %d", got, before)
+	}
+	if snap.ParentSnapshotID != wantParent {
+		t.Errorf("ParentSnapshotID = %s, want %s", snap.ParentSnapshotID, wantParent)
+	}
+}
+
+func timestampedFixture() ([]*timestampedRecord, time.Time, time.Time) {
+	ts1 := time.Date(2024, 1, 1, 10, 0, 0, 0, time.UTC)
+	ts2 := time.Date(2024, 1, 15, 12, 0, 0, 0, time.UTC)
+	ts3 := time.Date(2024, 1, 10, 8, 0, 0, 0, time.UTC)
+
+	records := []*timestampedRecord{
+		{ID: "a", Time: ts1},
+		{ID: "b", Time: ts2},
+		{ID: "c", Time: ts3},
+	}
+	return records, ts1, ts2
+}
+
+func assertTimeRange(t *testing.T, snap *Snapshot, ts1, ts2 time.Time) {
+	t.Helper()
+	if snap.MinTimestamp == nil {
+		t.Fatal("expected MinTimestamp to be set")
+	}
+	if snap.MaxTimestamp == nil {
+		t.Fatal("expected MaxTimestamp to be set")
+	}
+	if !snap.MinTimestamp.Equal(ts1) {
+		t.Errorf("expected MinTimestamp %v, got %v", ts1, *snap.MinTimestamp)
+	}
+	if !snap.MaxTimestamp.Equal(ts2) {
+		t.Errorf("expected MaxTimestamp %v, got %v", ts2, *snap.MaxTimestamp)
+	}
+}
+
+func corruptDatasetPointer(t *testing.T, mem Store) {
+	t.Helper()
+	pointerPath := "datasets/test-ds/latest"
+	if err := mem.Delete(t.Context(), pointerPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := mem.Put(t.Context(), pointerPath, bytes.NewReader([]byte("nonexistent-snap-id"))); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func hidePendingManifest(t *testing.T, store Store, id SnapshotID) string {
+	t.Helper()
+	manifestPath := "datasets/test-ds/snapshots/" + string(id) + "/manifest.json"
+	moveObject(t, store, manifestPath, "pending/manifest.json")
+	if err := store.Delete(t.Context(), manifestPath); err != nil {
+		t.Fatal(err)
+	}
+	return manifestPath
+}
+
+func twoDayHive(t *testing.T) (*testutil.FaultStore, *Records[D], *Snapshot) {
+	t.Helper()
+	fs := testutil.NewFaultStore(NewMemory())
+	factory := Use(fs)
+
+	ds, err := Open(factory).Records(t.Context(), "test-ds", JSONL[D](), hive("day"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	records := R(
+		D{"id": 1, "day": "2024-01-15"},
+		D{"id": 2, "day": "2024-01-16"},
+	)
+
+	snap, err := ds.Write(t.Context(), records, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return fs, ds, snap
+}
+
+func writeSharedSequence(t *testing.T, ds *Records[D], seq int) {
+	t.Helper()
+	if _, err := ds.Write(t.Context(), R(D{"seq": seq}), nil); err != nil {
+		t.Fatalf("write sequence %d: %v", seq, err)
+	}
+}
+
+func assertNoTimestamps(t *testing.T, snap *Snapshot) {
+	t.Helper()
+	if snap.MinTimestamp != nil {
+		t.Errorf("expected MinTimestamp to be nil, got %v", snap.MinTimestamp)
+	}
+	if snap.MaxTimestamp != nil {
+		t.Errorf("expected MaxTimestamp to be nil, got %v", snap.MaxTimestamp)
+	}
+}
+
+type lostPointerResponse struct {
+	Store
+	afterCAS func(SnapshotID)
+}
+
+func (s *lostPointerResponse) CompareAndSwap(ctx context.Context, path, expected, replacement string) error {
+	if err := s.Store.CompareAndSwap(ctx, path, expected, replacement); err != nil {
+		return err
+	}
+	if after := s.afterCAS; after != nil {
+		s.afterCAS = nil
+		after(SnapshotID(replacement))
+		return ErrSnapshotConflict
+	}
+	return nil
+}
+
+func TestWriteReconcilesAppliedCAS(t *testing.T) {
+	ctx := t.Context()
+	store := &lostPointerResponse{Store: NewMemory()}
+	ds := recordsOn(t, store, "shared", WithRetry(1))
+	var previous SnapshotID
+	for range 2 {
+		store.afterCAS = func(SnapshotID) {}
+		snap, err := ds.Write(ctx, R(D{"key": "value"}), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		loaded, err := ds.Snapshot(ctx, snap.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if loaded.ParentSnapshotID != previous {
+			t.Fatalf("snapshot %s has parent %s, want %s", snap.ID, loaded.ParentSnapshotID, previous)
+		}
+		previous = snap.ID
+	}
+}
+
+func TestWriteReconcilesAppliedCASAfterDescendants(t *testing.T) {
+	for _, count := range []int{1, 3} {
+		t.Run(fmt.Sprintf("%d descendants", count), func(t *testing.T) {
+			ctx := t.Context()
+			store := &lostPointerResponse{Store: NewMemory()}
+			a := recordsOn(t, store, "shared", WithRetry(1))
+			b := recordsOn(t, store, "shared")
+			var lineage []SnapshotID
+			store.afterCAS = func(id SnapshotID) {
+				lineage = append(lineage, id)
+				for range count {
+					child, err := b.Write(ctx, R(D{"writer": "B"}), nil)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if child.ParentSnapshotID != lineage[len(lineage)-1] {
+						t.Fatalf("child has parent %s", child.ParentSnapshotID)
+					}
+					lineage = append(lineage, child.ID)
+				}
+			}
+			first, err := a.Write(ctx, R(D{"writer": "A"}), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if first.ID != lineage[0] || first.ParentSnapshotID != "" {
+				t.Fatalf("writer A returned %s with parent %s, want root %s", first.ID, first.ParentSnapshotID, lineage[0])
+			}
+			var parent SnapshotID
+			for _, id := range lineage {
+				stored, err := b.Snapshot(ctx, id)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if stored.ParentSnapshotID != parent {
+					t.Fatalf("stored %s has parent %s, want %s", id, stored.ParentSnapshotID, parent)
+				}
+				parent = id
+			}
+			head, err := b.Latest(ctx)
+			if err != nil || head.ID != parent {
+				t.Fatalf("head = %v, %v, want %s", head, err, parent)
+			}
+		})
 	}
 }

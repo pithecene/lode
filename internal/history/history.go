@@ -26,6 +26,7 @@ import (
 	"io"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/pithecene/lode/internal/retry"
 )
@@ -77,8 +78,13 @@ type Kind[ID ~string, M any] interface {
 	// ParseManifest returns the snapshot ID a manifest path names, or false
 	// for any other path.
 	ParseManifest(path string) (ID, bool)
-	// Decode reads and validates a manifest.
-	Decode(r io.Reader) (*M, error)
+	// Decode reads and validates a manifest for snapshot id.
+	Decode(id ID, r io.Reader) (*M, error)
+	// AlternateAncestorPath is a second authoritative source of the parent ID
+	// when the canonical manifest is absent, or "" when there is none.
+	AlternateAncestorPath(ID) string
+	// ParentID reads the parent recorded in a validated manifest.
+	ParentID(*M) ID
 	// NotExpired reports whether a pointer-less scan may take snapshot id as
 	// the head: false only for one retention has expired.
 	NotExpired(ctx context.Context, id ID) (bool, error)
@@ -160,7 +166,7 @@ func (h *History[ID, M]) LoadAt(ctx context.Context, id ID, path string) (*Snaps
 		return nil, err
 	}
 	defer func() { _ = rc.Close() }() // read-only stream
-	m, err := h.kind.Decode(rc)
+	m, err := h.kind.Decode(id, rc)
 	if err != nil {
 		return nil, err
 	}
@@ -191,7 +197,7 @@ func (h *History[ID, M]) CompletePending(ctx context.Context, id ID) error {
 	// A removal fences the pointer before it lists and deletes, so a pointer
 	// read after the write either precedes the fence, and the removal's
 	// listing deletes the manifest, or finds the marker.
-	if removed := h.removedSince(ctx); removed != nil {
+	if removed := h.checkRemoval(ctx, "after completing a commit"); removed != nil {
 		if wrote && errors.Is(removed, h.errs.Removed) {
 			_ = h.store.Delete(ctx, canonical) // best-effort: the next removal deletes it too
 		}
@@ -230,11 +236,24 @@ func (h *History[ID, M]) persistPending(ctx context.Context, id ID, staged, cano
 	return wrote, nil
 }
 
-// removedSince is errs.Removed when the pointer now holds the removal
+// CheckLive reads the removal fence. A history without a pointer can still
+// contain committed snapshots from before pointers existed.
+func (h *History[ID, M]) CheckLive(ctx context.Context) error {
+	if h.errs.Removed == nil {
+		return nil
+	}
+	_, err := h.ReadPointer(ctx)
+	if errors.Is(err, h.errs.NotFound) {
+		return nil
+	}
+	return err
+}
+
+// checkRemoval is errs.Removed when the pointer now holds the removal
 // marker, nil when it holds anything else or is absent, and the read's
 // error when the pointer cannot be read: the removal may then be the
 // reason (CONTRACT_CORE §Head Pointer).
-func (h *History[ID, M]) removedSince(ctx context.Context) error {
+func (h *History[ID, M]) checkRemoval(ctx context.Context, phase string) error {
 	if h.errs.Removed == nil {
 		return nil
 	}
@@ -246,7 +265,7 @@ func (h *History[ID, M]) removedSince(ctx context.Context) error {
 		h.Forget()
 		return err
 	default:
-		return fmt.Errorf("failed to resolve head after completing a commit: %w", err)
+		return fmt.Errorf("failed to resolve head %s: %w", phase, err)
 	}
 }
 
@@ -343,6 +362,9 @@ func (h *History[ID, M]) loadEntry(ctx context.Context, e manifestEntry[ID]) (*S
 // Snapshots loads every snapshot, ordered by ID so that callers sorting on
 // a manifest field get a deterministic tie-break.
 func (h *History[ID, M]) Snapshots(ctx context.Context) ([]*Snapshot[ID, M], error) {
+	if err := h.CheckLive(ctx); err != nil {
+		return nil, err
+	}
 	entries, err := h.manifests(ctx)
 	if err != nil {
 		return nil, err
@@ -361,6 +383,21 @@ func (h *History[ID, M]) Snapshots(ctx context.Context) ([]*Snapshot[ID, M], err
 		}
 		out = append(out, s)
 	}
+	return out, nil
+}
+
+// ListByCreation returns the container's public snapshots in creation order.
+// Snapshots supplies snapshot-ID order as the tie breaker.
+func ListByCreation[ID ~string, M, S any](ctx context.Context, h *History[ID, M], convert func(*Snapshot[ID, M]) *S, created func(*S) time.Time) ([]*S, error) {
+	all, err := h.Snapshots(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*S, len(all))
+	for i, snap := range all {
+		out[i] = convert(snap)
+	}
+	slices.SortStableFunc(out, func(a, b *S) int { return created(a).Compare(created(b)) })
 	return out, nil
 }
 
@@ -800,11 +837,9 @@ func (h *History[ID, M]) resolve(ctx context.Context) (id ID, scanned *Snapshot[
 	return s.ID, s, observed, nil
 }
 
-// ErrManifestUncertain marks a commit that failed after its pointer advanced,
-// while it was writing manifests. A failed Put does not say whether the
-// object was stored (a lost response stores it), so the snapshot may be
-// visible, and nothing it references may be deleted. Errors carrying it keep
-// the message of the underlying failure.
+// ErrManifestUncertain marks a commit whose pointer or manifests may have
+// reached storage. Retrying the same ID or deleting its data could corrupt
+// a snapshot already present in the history.
 var ErrManifestUncertain = errors.New("the commit's manifest may have been persisted")
 
 // manifestUncertain wraps a manifest write failure so that it matches
@@ -836,7 +871,8 @@ func (e pointerNotSnapshotID) Is(target error) bool { return target == ErrPointe
 // (CONTRACT_CORE §Head Pointer), never a committed manifest the pointer
 // skips; the staged copy precedes the pointer so that parent can be loaded
 // (stagedParent). A failure after the pointer advanced matches
-// ErrManifestUncertain. On success the new head is remembered.
+// ErrManifestUncertain. A commit confirmed beneath a descendant leaves the
+// remembered head empty so the next writer resolves the current head.
 func (h *History[ID, M]) Advance(ctx context.Context, expected string, id ID, manifest *M, paths []string) error {
 	data, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
@@ -846,9 +882,9 @@ func (h *History[ID, M]) Advance(ctx context.Context, expected string, id ID, ma
 	if err := h.stage(ctx, staged, data); err != nil {
 		return fmt.Errorf("failed to stage %s: %w", h.noun, err)
 	}
-	if err := h.writePointer(ctx, expected, id); err != nil {
-		h.discardStaged(ctx, id, staged)
-		return fmt.Errorf("failed to update latest pointer: %w", err)
+	head, err := h.advancePointer(ctx, expected, id, staged)
+	if err != nil {
+		return err
 	}
 	for _, p := range paths {
 		if err := h.store.Put(ctx, p, bytes.NewReader(data)); err != nil {
@@ -862,7 +898,9 @@ func (h *History[ID, M]) Advance(ctx context.Context, expected string, id ID, ma
 		}
 	}
 	h.unstage(ctx, staged)
-	h.remember(id, string(id))
+	if head == id {
+		h.remember(id, string(id))
+	}
 	return nil
 }
 
@@ -916,7 +954,7 @@ func (h *History[ID, M]) Newest(ctx context.Context) (*Snapshot[ID, M], error) {
 // stage persists the staged copy at staged, when the kind stages. A copy
 // that exists already belongs to an earlier attempt of the same commit: a
 // dataset retries a conflicted commit under its snapshot ID, and the
-// attempt's copy remains when discardStaged could not read the pointer.
+// attempt's copy can remain after a failed best-effort deletion.
 // That copy is kept. It differs from this attempt's only in the parent and
 // the creation time, and a dataset reads a staged copy only for the
 // settings, which every attempt records alike. Replacing it would open a
@@ -942,20 +980,71 @@ func (h *History[ID, M]) unstage(ctx context.Context, staged string) {
 	}
 }
 
-// discardStaged removes the staged copy (at staged) of a commit whose pointer update
-// failed, but only when the pointer names another snapshot. A failed update
-// may still have been applied (a store that retried a CAS whose response was
-// lost reports a conflict), and the staged copy is then the only manifest of
-// a committed snapshot. Once the pointer names another snapshot, every
-// commit that adopted id as parent has loaded the copy already. Best-effort:
-// a copy that remains is never listed.
-func (h *History[ID, M]) discardStaged(ctx context.Context, id ID, staged string) {
-	if staged == "" {
-		return
+// advancePointer returns the observed head. A descendant proves that the CAS
+// took effect even after another writer advanced the pointer again.
+func (h *History[ID, M]) advancePointer(ctx context.Context, expected string, id ID, staged string) (ID, error) {
+	writeErr := h.writePointer(ctx, expected, id)
+	if writeErr == nil {
+		return id, nil
 	}
-	if pointed, err := h.ReadPointer(ctx); err == nil && pointed != id {
-		_ = h.store.Delete(ctx, staged)
+	h.Forget()
+	head, err := h.ReadPointer(ctx)
+	if h.errs.Removed != nil && errors.Is(err, h.errs.Removed) {
+		return "", err
 	}
+	if err == nil {
+		var applied bool
+		applied, err = h.containsAttempt(ctx, head, id, ID(expected))
+		if applied {
+			return head, nil
+		}
+	} else if errors.Is(err, h.errs.NotFound) && expected == "" {
+		// A missing pointer still matches the first commit's precondition.
+		err = nil
+	}
+	if err != nil {
+		return "", manifestUncertain{fmt.Errorf("failed to reconcile latest pointer: %w", errors.Join(writeErr, err))}
+	}
+	h.unstage(ctx, staged)
+	return "", fmt.Errorf("failed to update latest pointer: %w", writeErr)
+}
+
+// containsAttempt follows persisted parent links to the attempted ID,
+// its expected predecessor, or the root. A gap or cycle leaves the outcome
+// uncertain. Each kind identifies the copies that reliably record its parent.
+func (h *History[ID, M]) containsAttempt(ctx context.Context, head, attempt, expected ID) (bool, error) {
+	seen := make(map[ID]bool)
+	for id := head; id != expected && id != ""; {
+		if id == attempt {
+			return true, nil
+		}
+		if !IsGeneratedID(id) {
+			return false, pointerNotSnapshotID{content: string(id)}
+		}
+		if seen[id] {
+			return false, fmt.Errorf("lode: snapshot ancestry repeats %s", id)
+		}
+		seen[id] = true
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+		snapshot, err := h.ancestor(ctx, id)
+		if err != nil {
+			return false, fmt.Errorf("failed to read ancestor %s: %w", id, err)
+		}
+		id = h.kind.ParentID(snapshot.Manifest)
+	}
+	return false, nil
+}
+
+func (h *History[ID, M]) ancestor(ctx context.Context, id ID) (*Snapshot[ID, M], error) {
+	s, err := h.Snapshot(ctx, id)
+	if errors.Is(err, h.errs.NotFound) {
+		if path := h.kind.AlternateAncestorPath(id); path != "" {
+			return h.LoadAt(ctx, id, path)
+		}
+	}
+	return s, err
 }
 
 // Refresh re-reads the head from storage between commit attempts so a retry
@@ -986,37 +1075,13 @@ func (h *History[ID, M]) CommitLoop(ctx context.Context, cfg *retry.Config, atte
 		if err == nil {
 			return nil
 		}
-		if !errors.Is(err, h.errs.SnapshotConflict) {
+		if errors.Is(err, ErrManifestUncertain) || !errors.Is(err, h.errs.SnapshotConflict) {
 			return err
 		}
-		if err := h.removed(ctx); err != nil {
+		if err := h.checkRemoval(ctx, "after a conflict"); err != nil {
 			return err
 		}
 		lastErr = err
 	}
 	return lastErr
-}
-
-// removed reports the removal of a removable history whose commit just
-// conflicted. A writer that remembers its head commits without reading the
-// pointer, so its swap is where it meets the marker: one read on the
-// conflict path tells a removal from a concurrent commit, and the writer
-// then returns errs.Removed whatever its retries. Nil for a history that
-// cannot be removed, or whose pointer holds anything else. A read that
-// fails otherwise is returned, as every read of the pointer is
-// (CONTRACT_CORE §Head Pointer): the conflict may be the removal's.
-func (h *History[ID, M]) removed(ctx context.Context) error {
-	if h.errs.Removed == nil {
-		return nil
-	}
-	_, err := h.ReadPointer(ctx)
-	switch {
-	case err == nil, errors.Is(err, h.errs.NotFound):
-		return nil
-	case errors.Is(err, h.errs.Removed):
-		h.Forget()
-		return err
-	default:
-		return fmt.Errorf("failed to resolve head after a conflict: %w", err)
-	}
 }

@@ -2,8 +2,10 @@ package lode
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"iter"
 	"reflect"
 
@@ -11,125 +13,42 @@ import (
 )
 
 // -----------------------------------------------------------------------------
-// Writer handles
+// Concrete Dataset Handles & Views
 // -----------------------------------------------------------------------------
 
-// Records opens the dataset id for writing records of type T, which the
-// codec fixes: Go infers T from it. Opening reads the dataset's head under
-// ctx and checks the handle's settings against the head's manifest
-// (CONTRACT_WRITE_API §Settings); it writes nothing. A writer whose
-// settings differ is rejected with ErrSettingsMismatch.
-func (r *Root) Records[T any](ctx context.Context, id DatasetID, codec Codec[T], opts ...DatasetOption) (Records[T], error) {
-	if r.err != nil {
-		return nil, r.err
-	}
-	if err := checkCodec(codec); err != nil {
-		return nil, err
-	}
-	d, cfg, err := r.newWriter(id, opts)
-	if err != nil {
-		return nil, err
-	}
-	partitionKey, err := partitionKeyFor[T](cfg.layout)
-	if err != nil {
-		return nil, err
-	}
-	d.codec = codecOf(codec)
-	if err := d.checkAtOpen(ctx); err != nil {
-		return nil, err
-	}
-	return &recordDataset[T]{writer: d, codec: codec, partitionKey: partitionKey, timestamped: timestampedRecords[T]()}, nil
+// RecordView reads a dataset of records of type T. ReadRoot.Records returns
+// a *RecordView[T].
+type RecordView[T any] struct {
+	*dataset
+	codec Codec[T]
 }
 
-// Blobs opens the dataset id for writing blobs, one per snapshot. A blob has
-// no fields to partition by, so its layout is Unpartitioned. Opening checks
-// settings as Records does.
-func (r *Root) Blobs(ctx context.Context, id DatasetID, opts ...DatasetOption) (Blobs, error) {
-	if r.err != nil {
-		return nil, r.err
-	}
-	d, _, err := r.newWriter(id, opts)
-	if err != nil {
-		return nil, err
-	}
-	if !d.layout.partitioning().isNoop() {
-		return nil, validate.Argument("a blob dataset cannot be partitioned: use Unpartitioned")
-	}
-	if err := d.checkAtOpen(ctx); err != nil {
-		return nil, err
-	}
-	return &blobDataset{writer: d}, nil
+// Read returns every record of snapshot id, decoded with the view's codec and
+// decompressed and checksum-verified according to the snapshot's manifest.
+func (v *RecordView[T]) Read(ctx context.Context, id SnapshotID) ([]T, error) {
+	return readRecords(ctx, v.dataset, v.codec, id)
 }
 
-// newWriter validates a writer's arguments and assembles its core.
-func (r *Root) newWriter(id DatasetID, opts []DatasetOption) (*writer, *datasetConfig, error) {
-	if err := validateDatasetID(id); err != nil {
-		return nil, nil, err
-	}
-	cfg, err := resolveDatasetConfig(opts)
-	if err != nil {
-		return nil, nil, err
-	}
-	scheme, err := cfg.layout.scheme()
-	if err != nil {
-		return nil, nil, err
-	}
-	d := &writer{dataset: newDataset(id, r.store, newPathLayout(r.names, scheme)), retry: cfg.retry}
-	d.components = components{compressor: cfg.compressor, checksum: cfg.checksum}
-	return d, cfg, nil
-}
-
-// checkAtOpen resolves the head and checks the writer's settings against
-// it, so that a misconfigured writer fails when it opens rather than at its
-// first commit. The commit checks again: the head may change in between.
-func (d *writer) checkAtOpen(ctx context.Context) error {
-	parent, _, err := d.history.Resolve(ctx)
-	if err != nil {
-		return err
-	}
-	return d.checkSettings(ctx, parent)
-}
-
-// checkCodec rejects a nil codec and reports a construction error that a
-// codec recorded (Parquet with an invalid schema).
-func checkCodec[T any](codec Codec[T]) error {
-	if validate.Nil(codec) {
-		return validate.Argument("codec is required")
-	}
-	// A manifest without a codec name records a blob dataset.
-	if codec.Name() == "" {
-		return validate.Argument("codec name must not be empty: an empty name denotes a blob dataset")
-	}
-	if c, ok := codec.(interface{ configError() error }); ok {
-		return c.configError()
-	}
-	return nil
-}
-
-// timestampedRecords reports whether records of type T may implement
-// Timestamped: the type does, or it is an interface a record may satisfy.
-// Other types are never observed, so a write converts no record to an
-// interface for the check.
-func timestampedRecords[T any]() bool {
-	t := reflect.TypeFor[T]()
-	return t.Kind() == reflect.Interface || t.Implements(reflect.TypeFor[Timestamped]())
-}
-
-// recordDataset implements Records[T].
-type recordDataset[T any] struct {
+// Records writes, reads, and maintains retention on a dataset of records of
+// type T. Root.Records returns a *Records[T]. A handle is not safe for
+// concurrent use by multiple goroutines; open separate handles for concurrent
+// writers (CONTRACT_WRITE_API §Concurrency).
+type Records[T any] struct {
 	*writer
 	codec        Codec[T]
 	partitionKey func(T) (string, error)
 	timestamped  bool
 }
 
-func (r *recordDataset[T]) Read(ctx context.Context, id DatasetSnapshotID) ([]T, error) {
+// Read returns every record of snapshot id, decoded with the handle's codec.
+func (r *Records[T]) Read(ctx context.Context, id SnapshotID) ([]T, error) {
 	return readRecords(ctx, r.dataset, r.codec, id)
 }
 
-func (r *recordDataset[T]) Write(ctx context.Context, records []T, metadata any) (*DatasetSnapshot, error) {
-	// Data files are written once; on a commit conflict only the manifest is
-	// re-parented, never the data re-uploaded.
+// Write commits records and metadata as an immutable snapshot. metadata is any
+// value that encodes as a JSON object (a struct, a map, or nil, which persists
+// as {}).
+func (r *Records[T]) Write(ctx context.Context, records []T, metadata any) (*Snapshot, error) {
 	pending, err := r.newPending(metadata)
 	if err != nil {
 		return nil, err
@@ -140,16 +59,18 @@ func (r *recordDataset[T]) Write(ctx context.Context, records []T, metadata any)
 	return r.commit(ctx, &pending)
 }
 
-func (r *recordDataset[T]) StreamWrite(ctx context.Context, records iter.Seq2[T, error], metadata any) (*DatasetSnapshot, error) {
+// StreamWrite consumes records from an iterator and streams them through the
+// codec, which must implement StreamingCodec[T], into one data object. An
+// error yielded by the iterator aborts the write without creating a snapshot.
+// Partitioned layouts are rejected with ErrPartitioningNotSupported.
+func (r *Records[T]) StreamWrite(ctx context.Context, records iter.Seq2[T, error], metadata any) (*Snapshot, error) {
 	if records == nil {
-		return nil, ErrNilIterator
+		return nil, validate.Argument("records iterator must not be nil")
 	}
 	streaming, ok := r.codec.(StreamingCodec[T])
 	if !ok {
 		return nil, ErrCodecNotStreamable
 	}
-	// A single streamed file cannot be partitioned: that would require
-	// buffering the records to determine their keys.
 	if !r.layout.partitioning().isNoop() {
 		return nil, ErrPartitioningNotSupported
 	}
@@ -175,16 +96,30 @@ func (r *recordDataset[T]) StreamWrite(ctx context.Context, records iter.Seq2[T,
 	return r.commit(ctx, &pending)
 }
 
-// blobDataset implements Blobs.
-type blobDataset struct {
+// BlobView reads a dataset whose snapshots each hold one raw binary object.
+// ReadRoot.Blobs returns a *BlobView.
+type BlobView struct {
+	*dataset
+}
+
+// Read returns the raw bytes of snapshot id's blob.
+func (v *BlobView) Read(ctx context.Context, id SnapshotID) ([]byte, error) {
+	return v.readBlob(ctx, id)
+}
+
+// Blobs writes, streams, reads, and maintains retention on a dataset whose
+// snapshots each hold one raw binary object. Root.Blobs returns a *Blobs.
+type Blobs struct {
 	*writer
 }
 
-func (b *blobDataset) Read(ctx context.Context, id DatasetSnapshotID) ([]byte, error) {
+// Read returns the raw bytes of snapshot id's blob.
+func (b *Blobs) Read(ctx context.Context, id SnapshotID) ([]byte, error) {
 	return b.readBlob(ctx, id)
 }
 
-func (b *blobDataset) Write(ctx context.Context, data []byte, metadata any) (*DatasetSnapshot, error) {
+// Write commits one in-memory blob and metadata as an immutable snapshot.
+func (b *Blobs) Write(ctx context.Context, data []byte, metadata any) (*Snapshot, error) {
 	pending, err := b.newPending(metadata)
 	if err != nil {
 		return nil, err
@@ -195,36 +130,124 @@ func (b *blobDataset) Write(ctx context.Context, data []byte, metadata any) (*Da
 	return b.commit(ctx, &pending)
 }
 
-func (b *blobDataset) StreamWrite(ctx context.Context, metadata any) (StreamWriter, error) {
+// StreamWrite streams bytes from r into a single immutable blob object and
+// commits the snapshot when r reaches io.EOF. If r fails or ctx is canceled,
+// no snapshot is committed.
+func (b *Blobs) StreamWrite(ctx context.Context, r io.Reader, metadata any) (*Snapshot, error) {
+	if validate.Nil(r) {
+		return nil, validate.Argument("blob reader must not be nil")
+	}
 	pending, err := b.newPending(metadata)
 	if err != nil {
 		return nil, err
 	}
-	// Surface an unreadable head now rather than at Commit.
 	if _, _, err := b.history.Resolve(ctx); err != nil {
 		return nil, err
 	}
-	stream, err := b.openStream(ctx, pending.id, blobFile)
+	ref, err := b.streamBlob(ctx, pending.id, r)
 	if err != nil {
 		return nil, err
 	}
-	return &streamWriter{ds: b.writer, ctx: ctx, pending: pending, stream: stream}, nil
+	pending.add(ref, "")
+	pending.rowCount = 1
+	pending.streamed = ref.Path
+	return b.commit(ctx, &pending)
+}
+
+// -----------------------------------------------------------------------------
+// Root handle constructors
+// -----------------------------------------------------------------------------
+
+// Records opens dataset id for writing records of type T, inferred from codec.
+func (r *Root) Records[T any](ctx context.Context, id DatasetID, codec Codec[T], opts ...DatasetOption) (*Records[T], error) {
+	if r.err != nil {
+		return nil, r.err
+	}
+	if err := checkCodec(codec); err != nil {
+		return nil, err
+	}
+	d, cfg, err := r.newWriter(id, opts)
+	if err != nil {
+		return nil, err
+	}
+	partitionKey, err := partitionKeyFor[T](cfg.layout)
+	if err != nil {
+		return nil, err
+	}
+	d.codec = codecOf(codec)
+	if err := d.checkAtOpen(ctx); err != nil {
+		return nil, err
+	}
+	return &Records[T]{writer: d, codec: codec, partitionKey: partitionKey, timestamped: timestampedRecords[T]()}, nil
+}
+
+// Blobs opens dataset id for writing blobs, one per snapshot.
+func (r *Root) Blobs(ctx context.Context, id DatasetID, opts ...DatasetOption) (*Blobs, error) {
+	if r.err != nil {
+		return nil, r.err
+	}
+	d, _, err := r.newWriter(id, opts)
+	if err != nil {
+		return nil, err
+	}
+	if !d.layout.partitioning().isNoop() {
+		return nil, validate.Argument("a blob dataset cannot be partitioned: use Unpartitioned")
+	}
+	if err := d.checkAtOpen(ctx); err != nil {
+		return nil, err
+	}
+	return &Blobs{writer: d}, nil
+}
+
+func (r *Root) newWriter(id DatasetID, opts []DatasetOption) (*writer, *datasetConfig, error) {
+	if err := validateDatasetID(id); err != nil {
+		return nil, nil, err
+	}
+	cfg, err := resolveDatasetConfig(opts)
+	if err != nil {
+		return nil, nil, err
+	}
+	scheme, err := cfg.layout.scheme()
+	if err != nil {
+		return nil, nil, err
+	}
+	d := &writer{dataset: newDataset(id, r.store, newPathLayout(r.flat, scheme)), retry: cfg.retry}
+	d.components = components{compressor: cfg.compressor, checksum: cfg.checksum}
+	return d, cfg, nil
+}
+
+func (d *writer) checkAtOpen(ctx context.Context) error {
+	parent, _, err := d.history.Resolve(ctx)
+	if err != nil {
+		return err
+	}
+	return d.checkSettings(ctx, parent)
+}
+
+func checkCodec[T any](codec Codec[T]) error {
+	if validate.Nil(codec) {
+		return validate.Argument("codec is required")
+	}
+	if codec.Name() == "" {
+		return validate.Argument("codec name must not be empty: an empty name denotes a blob dataset")
+	}
+	if c, ok := codec.(interface{ configError() error }); ok {
+		return c.configError()
+	}
+	return nil
+}
+
+func timestampedRecords[T any]() bool {
+	t := reflect.TypeFor[T]()
+	return t.Kind() == reflect.Interface || t.Implements(reflect.TypeFor[Timestamped]())
 }
 
 // -----------------------------------------------------------------------------
 // Views
 // -----------------------------------------------------------------------------
 
-// Records opens a view of the dataset id's records of type T. The view
-// takes the dataset's layout from its manifests, unless WithLayout states
-// the layout it expects, and reads each snapshot with the compressor its
-// manifest names: a bundled one by name, or the custom one passed with
-// WithCompressor. Opening reads the head (one Get of the pointer and at
-// most two of its manifest, or one with WithLayout) and writes nothing; it
-// returns ErrNotFound for a dataset without snapshots, and
-// ErrSettingsMismatch when the head was written with another codec, path
-// names, or layout than the view expects.
-func (r *ReadRoot) Records[T any](ctx context.Context, id DatasetID, codec Codec[T], opts ...ViewOption) (RecordView[T], error) {
+// Records opens a read-only view of dataset id's records of type T.
+func (r *ReadRoot) Records[T any](ctx context.Context, id DatasetID, codec Codec[T], opts ...ViewOption) (*RecordView[T], error) {
 	if r.err != nil {
 		return nil, r.err
 	}
@@ -235,11 +258,11 @@ func (r *ReadRoot) Records[T any](ctx context.Context, id DatasetID, codec Codec
 	if err != nil {
 		return nil, err
 	}
-	return &recordView[T]{dataset: d, codec: codec}, nil
+	return &RecordView[T]{dataset: d, codec: codec}, nil
 }
 
-// Blobs opens a view of the dataset id's blobs, as Records does.
-func (r *ReadRoot) Blobs(ctx context.Context, id DatasetID, opts ...ViewOption) (BlobView, error) {
+// Blobs opens a read-only view of dataset id's blobs.
+func (r *ReadRoot) Blobs(ctx context.Context, id DatasetID, opts ...ViewOption) (*BlobView, error) {
 	if r.err != nil {
 		return nil, r.err
 	}
@@ -247,13 +270,9 @@ func (r *ReadRoot) Blobs(ctx context.Context, id DatasetID, opts ...ViewOption) 
 	if err != nil {
 		return nil, err
 	}
-	return &blobView{dataset: d}, nil
+	return &BlobView{dataset: d}, nil
 }
 
-// openView resolves the snapshot at which the view opens (its anchor),
-// takes the view's layout from that snapshot or checks the layout the view
-// expects against it, and checks the snapshot against the view's codec and
-// the root's names.
 func (r *ReadRoot) openView(ctx context.Context, id DatasetID, opts []ViewOption, codec codecIdentity) (*dataset, error) {
 	if err := validateDatasetID(id); err != nil {
 		return nil, err
@@ -262,7 +281,7 @@ func (r *ReadRoot) openView(ctx context.Context, id DatasetID, opts []ViewOption
 	if err != nil {
 		return nil, err
 	}
-	opened, err := resolveAnchor(ctx, r.store, id, viewCandidates(r.store, r.names, id, cfg.layout), cfg.anchor)
+	opened, err := resolveAnchor(ctx, r.store, id, viewCandidates(r.store, r.flat, id, cfg.layout), cfg.anchor)
 	if err != nil {
 		return nil, err
 	}
@@ -270,18 +289,22 @@ func (r *ReadRoot) openView(ctx context.Context, id DatasetID, opts []ViewOption
 	if err != nil {
 		return nil, err
 	}
-	d := newDataset(id, r.store, newPathLayout(r.names, cfg.partitioning(opened)))
+	d := newDataset(id, r.store, newPathLayout(r.flat, cfg.partitioning(opened)))
 	if err := d.checkExpectedLayout(ctx, cfg.layout, opened.Manifest, recorded); err != nil {
 		return nil, err
 	}
 	d.components = cfg.components
 	d.codec = codec
+	if _, anchored := cfg.anchor.(snapshotAnchor); anchored {
+		d.anchorID = opened.ID
+		d.anchorManifest, err = json.Marshal(opened.Manifest)
+		if err != nil {
+			return nil, err
+		}
+	}
 	return d, nil
 }
 
-// checkOpened validates m, the manifest of the snapshot at which a view
-// opens, which a validation error names as at, and checks m against the
-// view's codec and the root's names. It returns the settings m records.
 func (r *ReadRoot) checkOpened(m *Manifest, codec codecIdentity, at string) (settings, error) {
 	if err := validateManifest(m); err != nil {
 		return settings{}, fmt.Errorf("%s: %w", at, err)
@@ -289,31 +312,27 @@ func (r *ReadRoot) checkOpened(m *Manifest, codec codecIdentity, at string) (set
 	if err := matchCodec(m, codec); err != nil {
 		return settings{}, err
 	}
-	recorded, err := recordedSettings(m, r.names.Flat)
+	recorded, err := recordedSettings(m, r.flat)
 	if err != nil {
 		return settings{}, err
 	}
-	if want, have := r.names, recorded.paths; have != want {
-		return settings{}, fmt.Errorf("lode: path names mismatch: dataset records %#v, root has %#v: %w", have, want, ErrSettingsMismatch)
+	if recorded.customV11Paths != nil {
+		return settings{}, fmt.Errorf("lode: path names mismatch: dataset records custom 1.1.0 paths %#v: %w", *recorded.customV11Paths, ErrSettingsMismatch)
+	}
+	if r.flat != recorded.flat {
+		return settings{}, fmt.Errorf("lode: flat paths mismatch: dataset records flat=%t, root has flat=%t: %w", recorded.flat, r.flat, ErrSettingsMismatch)
 	}
 	return recorded, nil
 }
 
-// partitioning is the view's partitioning: the layout it expects, or the
-// one the snapshot it opened at records.
-func (cfg *viewConfig) partitioning(opened *DatasetSnapshot) partitionScheme {
+func (cfg *viewConfig) partitioning(opened *Snapshot) partitionScheme {
 	if cfg.layout != nil {
 		return *cfg.layout
 	}
 	return opened.partitioning()
 }
 
-// resolveAnchor finds the anchor's snapshot of dataset id in the cores that
-// the view searches. When the anchor has no snapshot, it returns
-// ErrSettingsMismatch if the dataset's directory holds a manifest that no
-// searched core's layout persists, under other path names or another
-// layout, and the anchor's absence otherwise.
-func resolveAnchor(ctx context.Context, store Store, id DatasetID, cores viewCores, anchor viewAnchor) (*DatasetSnapshot, error) {
+func resolveAnchor(ctx context.Context, store Store, id DatasetID, cores viewCores, anchor viewAnchor) (*Snapshot, error) {
 	opened, err := anchor.resolve(ctx, cores)
 	if !isAbsence(err) {
 		return opened, err
@@ -328,41 +347,21 @@ func resolveAnchor(ctx context.Context, store Store, id DatasetID, cores viewCor
 	return nil, err
 }
 
-// viewAnchor is the snapshot at which a view opens: the dataset's head
-// (headAnchor) or the snapshot that WithPinnedSnapshot names (snapshotAnchor).
 type viewAnchor interface {
-	// resolve finds the anchor's snapshot in the cores that the view
-	// searches: one core per grammar, because a view without WithLayout does
-	// not know its layout until it reads a manifest, or the core of the
-	// layout it expects. It returns an absence (isAbsence) when the anchor
-	// has no snapshot.
-	resolve(ctx context.Context, cores viewCores) (*DatasetSnapshot, error)
-
-	// String names the anchor in error messages.
+	resolve(ctx context.Context, cores viewCores) (*Snapshot, error)
 	String() string
 }
 
-// headAnchor opens a view at the dataset's head.
 type headAnchor struct{}
 
-// resolve finds the head without knowing the layout. The pointer names the
-// head but not whether the dataset is partitioned, so the head's canonical
-// manifest is read under each searched grammar. Without a pointer, or when
-// the pointer names a snapshot whose manifest is not persisted, each
-// grammar's scan selects the head, as Latest does, without creating the
-// pointer. A view that expects a layout first rejects a head persisted
-// under another one (viewCores.rejectExcluded), which its scan would pass
-// over for an older snapshot.
-func (headAnchor) resolve(ctx context.Context, cores viewCores) (*DatasetSnapshot, error) {
+func (headAnchor) resolve(ctx context.Context, cores viewCores) (*Snapshot, error) {
 	id := cores.search[0].id
 	pointed, err := cores.search[0].history.ReadPointer(ctx)
 	if err != nil && !errors.Is(err, ErrNotFound) {
 		return nil, err
 	}
-	// If-chains, not tagless switches: gremlins reports switch case
-	// expressions as not covered (go-gremlins/gremlins#298).
 	if err == nil {
-		s, err := firstFound(cores.search, func(d *dataset) (*DatasetSnapshot, error) { return fromHistory(d.history.Snapshot(ctx, pointed)) })
+		s, err := firstFound(cores.search, func(d *dataset) (*Snapshot, error) { return fromHistory(d.history.Snapshot(ctx, pointed)) })
 		if err == nil {
 			return s, nil
 		}
@@ -373,7 +372,7 @@ func (headAnchor) resolve(ctx context.Context, cores viewCores) (*DatasetSnapsho
 			return nil, err
 		}
 	}
-	s, err := firstFound(cores.search, func(d *dataset) (*DatasetSnapshot, error) { return fromHistory(d.history.Newest(ctx)) })
+	s, err := firstFound(cores.search, func(d *dataset) (*Snapshot, error) { return fromHistory(d.history.Newest(ctx)) })
 	if err == nil {
 		return s, nil
 	}
@@ -385,18 +384,19 @@ func (headAnchor) resolve(ctx context.Context, cores viewCores) (*DatasetSnapsho
 
 func (headAnchor) String() string { return "head" }
 
-// snapshotAnchor opens a view at one named snapshot. The view keeps none of
-// it: like any view, it reads each snapshot from the store when asked.
+// snapshotAnchor opens a view at one named snapshot (WithAnchor) and retains
+// that single immutable manifest on the view so Snapshot(id)/Read(id) avoids a
+// redundant second Get.
 type snapshotAnchor struct {
-	id DatasetSnapshotID
+	id SnapshotID
 }
 
-// resolve finds the snapshot as Snapshot does (findSnapshot), with the
-// searched cores in place of the handle's own core.
-func (a snapshotAnchor) resolve(ctx context.Context, cores viewCores) (*DatasetSnapshot, error) {
+func (a snapshotAnchor) resolve(ctx context.Context, cores viewCores) (*Snapshot, error) {
 	id := cores.search[0].id
+	if err := cores.search[0].history.CheckLive(ctx); err != nil {
+		return nil, err
+	}
 	s, err := findSnapshot(ctx, cores.search, a.id)
-	// An if-chain, not a tagless switch, as in headAnchor.resolve.
 	if err == nil {
 		return s, nil
 	}
@@ -411,28 +411,15 @@ func (a snapshotAnchor) resolve(ctx context.Context, cores viewCores) (*DatasetS
 
 func (a snapshotAnchor) String() string { return "snapshot " + string(a.id) }
 
-// hiveGrammar stands for every Hive scheme while a view's layout is not yet
-// known: reading needs only the grammar, not the keys.
 var hiveGrammar = partitionScheme{name: hivePartitioner}
 
-// viewCores are the dataset cores of a view's search. A canonical manifest
-// lies under the snapshots directory or the segments directory; because
-// the names are distinct, at most one exists.
 type viewCores struct {
-	// search holds the cores in which the view looks for its snapshot: the
-	// core of the layout it expects, or one core of each grammar when it
-	// expects none.
-	search []*dataset
-
-	// excluded holds the core of the grammar that an expected layout rules
-	// out, empty when the view expects no layout.
+	search   []*dataset
 	excluded []*dataset
 }
 
-// viewCandidates returns the cores of a view of dataset id that expects
-// the layout expected (nil when it expects none).
-func viewCandidates(store Store, names ManifestPaths, id DatasetID, expected *partitionScheme) viewCores {
-	core := func(s partitionScheme) *dataset { return newDataset(id, store, newPathLayout(names, s)) }
+func viewCandidates(store Store, flat bool, id DatasetID, expected *partitionScheme) viewCores {
+	core := func(s partitionScheme) *dataset { return newDataset(id, store, newPathLayout(flat, s)) }
 	if expected == nil {
 		return viewCores{search: []*dataset{core(noopScheme), core(hiveGrammar)}}
 	}
@@ -443,12 +430,7 @@ func viewCandidates(store Store, names ManifestPaths, id DatasetID, expected *pa
 	return viewCores{search: []*dataset{core(*expected)}, excluded: []*dataset{core(other)}}
 }
 
-// rejectExcluded returns ErrSettingsMismatch when snapshot id, which the
-// pointer names, has a canonical manifest under an excluded grammar: the
-// head was persisted under another layout than the one the view expects.
-// It checks with one Exists per excluded core, which is called only when
-// the expected layout holds no manifest of id.
-func (c viewCores) rejectExcluded(ctx context.Context, id DatasetSnapshotID) error {
+func (c viewCores) rejectExcluded(ctx context.Context, id SnapshotID) error {
 	for _, d := range c.excluded {
 		p := d.layout.manifestPath(d.id, id)
 		exists, err := d.store.Exists(ctx, p)
@@ -461,31 +443,3 @@ func (c viewCores) rejectExcluded(ctx context.Context, id DatasetSnapshotID) err
 	}
 	return nil
 }
-
-// recordView implements RecordView[T].
-type recordView[T any] struct {
-	*dataset
-	codec Codec[T]
-}
-
-func (v *recordView[T]) Read(ctx context.Context, id DatasetSnapshotID) ([]T, error) {
-	return readRecords(ctx, v.dataset, v.codec, id)
-}
-
-// blobView implements BlobView.
-type blobView struct {
-	*dataset
-}
-
-func (v *blobView) Read(ctx context.Context, id DatasetSnapshotID) ([]byte, error) {
-	return v.readBlob(ctx, id)
-}
-
-// The handles implement the public interfaces; stated so a missing method
-// fails the build here.
-var (
-	_ Records[D]    = (*recordDataset[D])(nil)
-	_ Blobs         = (*blobDataset)(nil)
-	_ RecordView[D] = (*recordView[D])(nil)
-	_ BlobView      = (*blobView)(nil)
-)

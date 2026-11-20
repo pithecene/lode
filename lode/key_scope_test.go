@@ -13,10 +13,12 @@ import (
 // keyScopeFixture holds the record dataset "a", the blob dataset "blobs",
 // and the record dataset "b", whose snapshot the escaping names target.
 type keyScopeFixture struct {
-	store   *testutil.KeyRecorder
-	records Records[D]
-	blobs   Blobs
-	other   *DatasetSnapshot
+	store      *testutil.KeyRecorder
+	records    *Records[D]
+	recordView *RecordView[D]
+	blobs      *Blobs
+	blobView   *BlobView
+	other      *Snapshot
 }
 
 func newKeyScopeFixture(t *testing.T) keyScopeFixture {
@@ -46,13 +48,29 @@ func newKeyScopeFixture(t *testing.T) keyScopeFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return keyScopeFixture{store: store, records: records, blobs: blobs, other: snap}
+	readRoot := OpenReadOnly(Use(store))
+	recordView, err := readRoot.Records(ctx, "a", JSONL[D]())
+	if err != nil {
+		t.Fatal(err)
+	}
+	blobView, err := readRoot.Blobs(ctx, "blobs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return keyScopeFixture{
+		store:      store,
+		records:    records,
+		recordView: recordView,
+		blobs:      blobs,
+		blobView:   blobView,
+		other:      snap,
+	}
 }
 
 // escapingSnapshotIDs are snapshot IDs that are not one path segment; the
 // first names dataset b's snapshot from dataset a's directory.
-func (f keyScopeFixture) escapingSnapshotIDs() []DatasetSnapshotID {
-	return []DatasetSnapshotID{
+func (f keyScopeFixture) escapingSnapshotIDs() []SnapshotID {
+	return []SnapshotID{
 		"../../b/snapshots/" + f.other.ID, "..", ".", "", "x/y", `x\y`, ".lode-tmp-x",
 	}
 }
@@ -74,6 +92,9 @@ func TestKeyScope_EveryEntryPoint(t *testing.T) {
 			_, err := Open(Use(f.store)).Blobs(t.Context(), id)
 			return err
 		}),
+		"Root.RemoveDataset": openRejects(func(f keyScopeFixture, id DatasetID) error {
+			return Open(Use(f.store)).RemoveDataset(t.Context(), id)
+		}),
 		"ReadRoot.Records": openRejects(func(f keyScopeFixture, id DatasetID) error {
 			_, err := OpenReadOnly(Use(f.store)).Records(t.Context(), id, JSONL[D]())
 			return err
@@ -82,61 +103,58 @@ func TestKeyScope_EveryEntryPoint(t *testing.T) {
 			_, err := OpenReadOnly(Use(f.store)).Blobs(t.Context(), id)
 			return err
 		}),
-		"SnapshotReader.Snapshot": readFinds("datasets/a/", func(f keyScopeFixture, id DatasetSnapshotID) error {
-			_, err := f.records.Snapshot(t.Context(), id)
-			return err
-		}),
-		"WithPinnedSnapshot": func(t *testing.T, f keyScopeFixture) {
+		"WithAnchor": func(t *testing.T, f keyScopeFixture) {
 			t.Helper()
 			for _, id := range f.escapingSnapshotIDs() {
 				var err error
 				keys := f.store.Recorded(func() {
-					_, err = OpenReadOnly(Use(f.store)).Records(t.Context(), "a", JSONL[D](), WithPinnedSnapshot(id))
+					_, err = OpenReadOnly(Use(f.store)).Records(t.Context(), "a", JSONL[D](), WithAnchor(id))
 				})
 				if !errors.Is(err, ErrInvalidArgument) {
-					t.Errorf("WithPinnedSnapshot(%q) = %v, want ErrInvalidArgument", id, err)
+					t.Errorf("WithAnchor(%q) = %v, want ErrInvalidArgument", id, err)
 				}
 				if len(keys) > 0 {
-					t.Errorf("WithPinnedSnapshot(%q) reached %v before rejecting the ID", id, keys)
+					t.Errorf("WithAnchor(%q) reached %v before rejecting the ID", id, keys)
 				}
 			}
 		},
-		"SnapshotReader.GetManifest": readFinds("datasets/a/", func(f keyScopeFixture, id DatasetSnapshotID) error {
-			_, err := f.records.GetManifest(t.Context(), ManifestRef{ID: id})
-			return err
-		}),
-		"RecordView.Read": readFinds("datasets/a/", func(f keyScopeFixture, id DatasetSnapshotID) error {
-			_, err := f.records.Read(t.Context(), id)
-			return err
-		}),
-		"BlobView.Read": readFinds("datasets/blobs/", func(f keyScopeFixture, id DatasetSnapshotID) error {
-			_, err := f.blobs.Read(t.Context(), id)
-			return err
-		}),
-		"Retention.Expire": func(t *testing.T, f keyScopeFixture) {
-			t.Helper()
-			for _, id := range f.escapingSnapshotIDs() {
-				var report *ExpireReport
-				var err error
-				keys := f.store.Recorded(func() {
-					report, err = f.records.Expire(t.Context(), ExpireRequest{IDs: []DatasetSnapshotID{id}})
-				})
-				requireWithin(t, keys, "datasets/a/", string(id))
-				if err == nil && len(report.Expired) > 0 {
-					t.Errorf("Expire(%q) expired %v", id, report.Expired)
-				}
-			}
-		},
+		"Records.Read":    readFinds("datasets/a/", func(f keyScopeFixture, id SnapshotID) error { return discardRead(f.records.Read(t.Context(), id)) }),
+		"RecordView.Read": readFinds("datasets/a/", func(f keyScopeFixture, id SnapshotID) error { return discardRead(f.recordView.Read(t.Context(), id)) }),
+		"Blobs.Read":      readFinds("datasets/blobs/", func(f keyScopeFixture, id SnapshotID) error { return discardRead(f.blobs.Read(t.Context(), id)) }),
+		"BlobView.Read":   readFinds("datasets/blobs/", func(f keyScopeFixture, id SnapshotID) error { return discardRead(f.blobView.Read(t.Context(), id)) }),
 	}
 
-	declared, err := testutil.EntryPoints(".", "DatasetID", "DatasetSnapshotID", "ManifestRef", "ExpireRequest")
+	declared, err := testutil.EntryPoints(".", "DatasetID", "SnapshotID", "ManifestRef", "ExpireRequest")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if tested := slices.Sorted(maps.Keys(cases)); !slices.Equal(tested, declared) {
 		t.Fatalf("the cases %v do not match the entry points %v that take a dataset or snapshot name", tested, declared)
 	}
-	for name, check := range cases {
+
+	// Promoted methods declared on unexported *dataset and *writer receivers
+	// are also exercised against escaping snapshot IDs.
+	allCases := maps.Clone(cases)
+	allCases["dataset.Snapshot"] = readFinds("datasets/a/", func(f keyScopeFixture, id SnapshotID) error {
+		_, err := f.records.Snapshot(t.Context(), id)
+		return err
+	})
+	allCases["writer.Expire"] = func(t *testing.T, f keyScopeFixture) {
+		t.Helper()
+		for _, id := range f.escapingSnapshotIDs() {
+			var report *ExpireReport
+			var expErr error
+			keys := f.store.Recorded(func() {
+				report, expErr = f.records.Expire(t.Context(), ExpireRequest{IDs: []SnapshotID{id}})
+			})
+			requireWithin(t, keys, "datasets/a/", string(id))
+			if expErr == nil && len(report.Expired) > 0 {
+				t.Errorf("Expire(%q) expired %v", id, report.Expired)
+			}
+		}
+	}
+
+	for name, check := range allCases {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			f := newKeyScopeFixture(t)
@@ -174,7 +192,7 @@ func openRejects(open func(f keyScopeFixture, id DatasetID) error) func(t *testi
 // readFinds checks that a read by a snapshot ID that is not one path segment
 // returns ErrNotFound, since no snapshot has such an ID, and reaches no key
 // outside dir.
-func readFinds(dir string, read func(f keyScopeFixture, id DatasetSnapshotID) error) func(t *testing.T, f keyScopeFixture) {
+func readFinds(dir string, read func(f keyScopeFixture, id SnapshotID) error) func(t *testing.T, f keyScopeFixture) {
 	return func(t *testing.T, f keyScopeFixture) {
 		t.Helper()
 		for _, id := range f.escapingSnapshotIDs() {
@@ -226,3 +244,5 @@ type extensionCompressor struct {
 
 func (c *extensionCompressor) Name() string      { return "extension" }
 func (c *extensionCompressor) Extension() string { return c.ext }
+
+func discardRead[T any](_ T, err error) error { return err }

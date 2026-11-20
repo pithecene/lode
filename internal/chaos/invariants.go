@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/pithecene/lode/lode"
@@ -14,17 +16,18 @@ import (
 // history, a clean handle to read it through, and what the workload
 // observed. Each invariant is one of its methods.
 type verifier struct {
-	ds          lode.Records[any]
-	snapshots   map[lode.DatasetSnapshotID]*lode.DatasetSnapshot
-	chain       *chain[lode.DatasetSnapshotID]
-	settle      lode.DatasetSnapshotID // the settling commit
-	head        lode.DatasetSnapshotID // what Latest returns
-	acked       map[lode.DatasetSnapshotID]Commit
-	expired     []lode.DatasetSnapshotID
-	failedReads []lode.DatasetSnapshotID
+	ds          chaosDataset
+	store       lode.RangeStore
+	snapshots   map[lode.SnapshotID]*lode.Snapshot
+	chain       *chain[lode.SnapshotID]
+	settle      lode.SnapshotID // the settling commit
+	head        lode.SnapshotID // what Latest returns
+	acked       map[lode.SnapshotID]Commit
+	expired     []lode.SnapshotID
+	failedReads []lode.SnapshotID
 }
 
-func (r *run) newVerifier(ctx context.Context, ds lode.Records[any], settle lode.DatasetSnapshotID) (*verifier, error) {
+func (r *run) newVerifier(ctx context.Context, ds chaosDataset, settle lode.SnapshotID) (*verifier, error) {
 	snaps, err := ds.Snapshots(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("chaos: list snapshots: %w", err)
@@ -35,11 +38,12 @@ func (r *run) newVerifier(ctx context.Context, ds lode.Records[any], settle lode
 	}
 	v := &verifier{
 		ds:        ds,
-		snapshots: make(map[lode.DatasetSnapshotID]*lode.DatasetSnapshot, len(snaps)),
-		chain:     newChain[lode.DatasetSnapshotID](),
+		store:     r.store,
+		snapshots: make(map[lode.SnapshotID]*lode.Snapshot, len(snaps)),
+		chain:     newChain[lode.SnapshotID](),
 		settle:    settle,
 		head:      head.ID,
-		acked:     make(map[lode.DatasetSnapshotID]Commit),
+		acked:     make(map[lode.SnapshotID]Commit),
 	}
 	for _, s := range snaps {
 		v.snapshots[s.ID] = s
@@ -77,6 +81,8 @@ var datasetChecks = []check[*verifier]{
 	{"history-shape", (*verifier).historyShape},
 	{"parents-explained", (*verifier).parentsExplained},
 	{"contents-match-manifests", (*verifier).contentsMatch},
+	{"checksums-verified", (*verifier).checksumsVerified},
+	{"anchored-views-read", (*verifier).anchoredViewsRead},
 	{"listings-cover-history", (*verifier).listingsCover},
 }
 
@@ -92,7 +98,7 @@ func (r *run) verifyDataset(ctx context.Context) int {
 		r.ledger.violate("verify", "open: %v", err)
 		return 0
 	}
-	settle, err := ds.Write(ctx, Commit{Writer: -1, Rows: 1, Day: days[0]}.records(), lode.D{"op": "settle"})
+	settle, err := ds.writeSettle(ctx)
 	if err != nil {
 		r.ledger.violate("verify", "settling commit: %v", err)
 		return 0
@@ -121,7 +127,7 @@ func (c Config) checks() []check[*verifier] {
 }
 
 // isExpired reports whether snapshot id reads as expired.
-func (v *verifier) isExpired(ctx context.Context, id lode.DatasetSnapshotID) bool {
+func (v *verifier) isExpired(ctx context.Context, id lode.SnapshotID) bool {
 	_, err := v.ds.Snapshot(ctx, id)
 	return errors.Is(err, lode.ErrSnapshotExpired)
 }
@@ -167,21 +173,167 @@ func (v *verifier) parentsExplained(ctx context.Context) []string {
 	return bad
 }
 
-// contentsMatch reads every snapshot: its rows must match its manifest's
-// row count and, for an acknowledged commit, be exactly the writer's
-// records.
+// contentsMatch reads every snapshot: its units must match its manifest's
+// row count, its objects must record CRC32C checksums (and Parquet statistics
+// when encoded as Parquet), and an acknowledged commit must hold exactly its
+// writer's payload.
 func (v *verifier) contentsMatch(ctx context.Context) []string {
 	var bad []string
 	for _, id := range v.chain.ids() {
-		rows, err := v.ds.Read(ctx, id)
-		switch c, acked := v.acked[id]; {
-		case err != nil:
-			bad = append(bad, fmt.Sprintf("%s: Read: %v", id, err))
-		case int64(len(rows)) != v.snapshots[id].RowCount:
-			bad = append(bad, fmt.Sprintf("%s: %d rows, manifest records %d", id, len(rows), v.snapshots[id].RowCount))
-		case acked && !c.matches(rows):
-			bad = append(bad, fmt.Sprintf("%s: the rows read are not the %d that writer %d committed as seq %d", id, c.Rows, c.Writer, c.Seq))
+		snap := v.snapshots[id]
+		bad = append(bad, verifyManifestObjects(snap)...)
+		bad = append(bad, v.verifySnapshotContents(ctx, snap)...)
+	}
+	return bad
+}
+
+func verifyManifestObjects(snap *lode.Snapshot) []string {
+	var bad []string
+	if snap.ChecksumAlgorithm != "crc32c" {
+		bad = append(bad, fmt.Sprintf("%s: checksum_algorithm = %q, want crc32c", snap.ID, snap.ChecksumAlgorithm))
+	}
+	var statRows int64
+	for i, obj := range snap.Objects {
+		if obj.Checksum == "" {
+			bad = append(bad, fmt.Sprintf("%s: objects[%d] (%s) missing checksum", snap.ID, i, obj.Path))
+		}
+		if snap.Codec == "parquet" {
+			if obj.Stats == nil {
+				bad = append(bad, fmt.Sprintf("%s: parquet objects[%d] (%s) missing stats", snap.ID, i, obj.Path))
+			} else {
+				statRows += obj.Stats.RowCount
+			}
+		}
+	}
+	if snap.Codec == "parquet" && len(bad) == 0 && statRows != snap.RowCount {
+		bad = append(bad, fmt.Sprintf("%s: parquet object stats sum to %d rows, manifest records %d", snap.ID, statRows, snap.RowCount))
+	}
+	return bad
+}
+
+func (v *verifier) verifySnapshotContents(ctx context.Context, snap *lode.Snapshot) []string {
+	units, err := v.ds.readUnits(ctx, snap.ID)
+	if err != nil {
+		return []string{fmt.Sprintf("%s: Read: %v", snap.ID, err)}
+	}
+	if units != snap.RowCount {
+		return []string{fmt.Sprintf("%s: %d units, manifest records %d", snap.ID, units, snap.RowCount)}
+	}
+	c, acked := v.acked[snap.ID]
+	if !acked {
+		return nil
+	}
+	ok, err := v.ds.checkCommit(ctx, c)
+	if err != nil || !ok {
+		return []string{fmt.Sprintf("%s: payload read does not match writer %d seq %d (%v)", snap.ID, c.Writer, c.Seq, err)}
+	}
+	return nil
+}
+
+// checksumsVerified confirms that read-time CRC32C verification rejects a
+// mismatched digest with lode.ErrChecksumMismatch.
+func (v *verifier) checksumsVerified(ctx context.Context) []string {
+	headSnap, ok := v.snapshots[v.head]
+	if !ok || len(headSnap.Objects) == 0 || headSnap.Objects[0].Checksum == "" {
+		return nil
+	}
+	orig := headSnap.Objects[0].Checksum
+	tampered := tamperChecksumStore{
+		ObjectStore: v.store,
+		oldDigest:   orig,
+		newDigest:   flipHex(orig),
+	}
+	err := v.ds.readWithStore(ctx, tampered, v.head)
+	if !errors.Is(err, lode.ErrChecksumMismatch) {
+		return []string{fmt.Sprintf("reading %s with a tampered CRC32C digest returned %v, want ErrChecksumMismatch", v.head, err)}
+	}
+	return nil
+}
+
+func flipHex(digest string) string {
+	if strings.HasPrefix(digest, "0") {
+		return "f" + digest[1:]
+	}
+	return "0" + digest[1:]
+}
+
+type tamperChecksumStore struct {
+	lode.ObjectStore
+	oldDigest, newDigest string
+}
+
+func (s tamperChecksumStore) Get(ctx context.Context, path string) (io.ReadCloser, error) {
+	rc, err := s.ObjectStore.Get(ctx, path)
+	if err != nil || !strings.HasSuffix(path, "/manifest.json") {
+		return rc, err
+	}
+	data, readErr := io.ReadAll(rc)
+	_ = rc.Close()
+	if readErr != nil {
+		return nil, readErr
+	}
+	mutated := strings.ReplaceAll(string(data), s.oldDigest, s.newDigest)
+	return io.NopCloser(strings.NewReader(mutated)), nil
+}
+
+// anchoredViewsRead opens up to 16 surviving acknowledged commits via ReadRoot
+// with WithAnchor(id), verifying payload equality, one removal fence check per operation,
+// and single manifest Get across Open + Snapshot(id) + Read(id).
+func (v *verifier) anchoredViewsRead(ctx context.Context) []string {
+	var commits []Commit
+	for _, id := range v.chain.ids() {
+		if c, ok := v.acked[id]; ok {
+			commits = append(commits, c)
+		}
+	}
+	var bad []string
+	for _, c := range sampleCommits(commits, 16) {
+		probe := &anchorProbeStore{ObjectStore: v.store}
+		ok, err := v.ds.checkAnchored(ctx, probe, c)
+		switch {
+		case err != nil || !ok:
+			bad = append(bad, fmt.Sprintf("%s: WithAnchor read failed or mismatched (%v)", c.ID, err))
+		case probe.pointerReads != 3:
+			bad = append(bad, fmt.Sprintf("%s: WithAnchor checked the removal fence %d times across Open+Snapshot+Read, want 3", c.ID, probe.pointerReads))
+		case probe.manifestHits != 1:
+			bad = append(bad, fmt.Sprintf("%s: WithAnchor loaded manifest %d times across Open+Snapshot+Read, want 1", c.ID, probe.manifestHits))
 		}
 	}
 	return bad
+}
+
+func sampleCommits(commits []Commit, limit int) []Commit {
+	if len(commits) <= limit {
+		return commits
+	}
+	out := make([]Commit, 0, limit)
+	step := len(commits) / limit
+	for i := 0; i < len(commits) && len(out) < limit-1; i += step {
+		out = append(out, commits[i])
+	}
+	return append(out, commits[len(commits)-1])
+}
+
+type anchorProbeStore struct {
+	lode.ObjectStore
+	pointerReads int
+	manifestHits int
+}
+
+func (s *anchorProbeStore) Get(ctx context.Context, path string) (io.ReadCloser, error) {
+	if strings.HasSuffix(path, "/latest") {
+		s.pointerReads++
+	}
+	rc, err := s.ObjectStore.Get(ctx, path)
+	if err == nil && strings.HasSuffix(path, "/manifest.json") {
+		s.manifestHits++
+	}
+	return rc, err
+}
+
+func (s *anchorProbeStore) Exists(ctx context.Context, path string) (bool, error) {
+	if strings.HasSuffix(path, "/latest") {
+		s.pointerReads++
+	}
+	return s.ObjectStore.Exists(ctx, path)
 }

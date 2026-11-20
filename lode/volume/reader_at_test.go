@@ -27,7 +27,7 @@ func newReaderAtFixture(t *testing.T) readerAtFixture {
 	vol := newTestVolume(t, "vol", lode.Use[lode.RangeStore](store), 30)
 	a := stageBlock(t, vol, 0, []byte("AAAAAAAAAA"))
 	b := stageBlock(t, vol, 10, []byte("BBBBBBBBBB"))
-	snap := commitBlocks(t, vol, []BlockRef{a, b}, Metadata{})
+	snap := commitBlocks(t, vol, []BlockRef{a, b}, nil)
 	return readerAtFixture{store: store, vol: vol, snap: snap}
 }
 
@@ -107,7 +107,7 @@ func TestReaderAt_ReadAcrossTheEnd(t *testing.T) {
 	t.Parallel()
 	store := lode.NewMemory()
 	vol := newTestVolume(t, "vol", lode.Use[lode.RangeStore](store), 10)
-	snap := commitBlocks(t, vol, []BlockRef{stageBlock(t, vol, 0, []byte("0123456789"))}, Metadata{})
+	snap := commitBlocks(t, vol, []BlockRef{stageBlock(t, vol, 0, []byte("0123456789"))}, nil)
 	r, err := vol.ReaderAt(t.Context(), snap.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -192,7 +192,7 @@ func TestReaderAt_ConcurrentReads(t *testing.T) {
 func TestReadAt_GapFailsBeforeAllocating(t *testing.T) {
 	const size = 64 << 20
 	vol := newTestVolume(t, "vol", lode.Use[lode.RangeStore](lode.NewMemory()), size)
-	snap := commitBlocks(t, vol, []BlockRef{stageBlock(t, vol, 0, []byte("A"))}, Metadata{})
+	snap := commitBlocks(t, vol, []BlockRef{stageBlock(t, vol, 0, []byte("A"))}, nil)
 	var before, after runtime.MemStats
 	runtime.GC()
 	runtime.ReadMemStats(&before)

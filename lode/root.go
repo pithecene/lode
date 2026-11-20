@@ -2,12 +2,11 @@ package lode
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
-	"slices"
-	"strings"
 
-	"github.com/pithecene/lode/internal/storepath"
+	"github.com/pithecene/lode/internal/history"
 	"github.com/pithecene/lode/internal/validate"
 )
 
@@ -16,13 +15,13 @@ import (
 // -----------------------------------------------------------------------------
 
 // Root opens the datasets of one store for writing. Open returns one. Every
-// dataset of a root shares the root's one store value and its path names.
+// dataset of a root shares the root's one store value and its path topology.
 // A Root is safe for concurrent use; the handles it returns are not
 // (CONTRACT_WRITE_API §Concurrency).
 type Root struct {
 	store Store
-	names ManifestPaths
-	err   error // a factory or path-option error, which every method returns
+	flat  bool
+	err   error // a factory or option error, which every method returns
 }
 
 // ReadRoot opens the datasets of one store for reading. OpenReadOnly
@@ -30,87 +29,160 @@ type Root struct {
 // CompareAndSwap.
 type ReadRoot struct {
 	store Store // the store, behind readOnlyStore
-	names ManifestPaths
+	flat  bool
 	err   error
 }
 
-// Open calls the factory once and returns a root over the store it
-// creates. A factory error, or an invalid path option, is recorded and
-// returned by every method of the root, so a caller checks one error:
+// Open calls the factory once and returns a root over the store it creates.
+// A factory error, or a nil option, is recorded and returned by every method
+// of the root, so a caller checks one error:
 //
 //	events, err := lode.Open(lode.FS("/data")).Records(ctx, "events", lode.JSONL[Event]())
-//
-// Open requires a Store, which provides CompareAndSwap; a factory of a
-// store without it does not compile here (OpenReadOnly accepts one).
 func Open[S Store](f Factory[S], opts ...RootOption) *Root {
-	store, names, err := openStore(f, opts)
+	store, flat, err := openStore(f, opts)
 	if err != nil {
 		return &Root{err: err}
 	}
-	return &Root{store: store, names: names}
+	return &Root{store: store, flat: flat}
 }
 
 // OpenReadOnly calls the factory once and returns a root whose views read
 // the store's datasets and never write. Errors are recorded as by Open.
 func OpenReadOnly[S ObjectStore](f Factory[S], opts ...RootOption) *ReadRoot {
-	store, names, err := openStore(f, opts)
+	store, flat, err := openStore(f, opts)
 	if err != nil {
 		return &ReadRoot{err: err}
 	}
-	return &ReadRoot{store: newReadOnlyStore(store), names: names}
+	return &ReadRoot{store: newReadOnlyStore(store), flat: flat}
 }
 
-// openStore validates the path options, then calls the factory: arguments
-// are checked before any store work (CONTRACT_ERRORS §5).
-func openStore[S ObjectStore](f Factory[S], opts []RootOption) (S, ManifestPaths, error) {
+func openStore[S ObjectStore](f Factory[S], opts []RootOption) (S, bool, error) {
 	var zero S
-	names, err := resolveRootConfig(opts)
+	flat, err := resolveRootConfig(opts)
 	if err != nil {
-		return zero, ManifestPaths{}, err
+		return zero, false, err
 	}
 	if f == nil {
-		return zero, ManifestPaths{}, validate.Argument("store factory is required")
+		return zero, false, validate.Argument("store factory is required")
 	}
 	store, err := f()
 	if err != nil {
-		return zero, ManifestPaths{}, fmt.Errorf("store factory failed: %w", err)
+		if errors.Is(err, ErrInvalidArgument) {
+			return zero, false, err
+		}
+		return zero, false, fmt.Errorf("store factory failed: %w", err)
 	}
-	if isNilStore(store) {
-		return zero, ManifestPaths{}, validate.Argument("store factory returned nil store")
+	if validate.Nil(store) {
+		return zero, false, validate.Argument("store factory returned nil store")
 	}
-	return store, names, nil
+	return store, flat, nil
 }
 
-// isNilStore reports whether a factory returned no store: a nil interface,
-// or a nil pointer, map, slice, function, or channel inside one.
-func isNilStore(store any) bool {
-	return validate.Nil(store)
-}
-
-// ListDatasets returns the IDs of the root's datasets, in lexicographic
-// order. Returns ErrDatasetsNotModeled for flat paths, which have no common
-// prefix.
+// ListDatasets returns the IDs of the root's committed datasets in
+// lexicographic order. Returns ErrDatasetsNotModeled when opened with
+// WithFlatPaths().
 func (r *Root) ListDatasets(ctx context.Context, opts DatasetListOptions) ([]DatasetID, error) {
 	if r.err != nil {
 		return nil, r.err
 	}
-	return listDatasets(ctx, r.store, r.names, opts)
+	return listDatasets(ctx, r.store, r.flat, opts)
 }
 
-// ListDatasets returns the IDs of the root's datasets, as Root.ListDatasets
-// does.
+// ListDatasets returns the IDs of the root's committed datasets, as
+// Root.ListDatasets does.
 func (r *ReadRoot) ListDatasets(ctx context.Context, opts DatasetListOptions) ([]DatasetID, error) {
 	if r.err != nil {
 		return nil, r.err
 	}
-	return listDatasets(ctx, r.store, r.names, opts)
+	return listDatasets(ctx, r.store, r.flat, opts)
 }
 
-// readOnlyStore is a ReadRoot's store: every read passes through, and every
-// write is refused, because a view never writes (it resolves the head
-// without creating a pointer). A view's handle shares the writer's dataset
-// core, so the refusal is what keeps a method that writes, such as Sweep
-// reached by a type assertion, from changing the store.
+// RemoveDataset permanently removes dataset id from the root's store. It
+// first replaces the dataset's head pointer with the removal marker, so
+// subsequent opens, reads of Latest, and commits return ErrRemoved, and then
+// deletes every manifest, staged manifest, tombstone, and data object under
+// the dataset's prefix. The removal pointer stays as a fence, and a second
+// call completes an interrupted removal.
+//
+// WithRetry and the other retry DatasetOptions retry pointer CAS conflicts;
+// other DatasetOptions have no effect. Returns ErrHeadUncommitted (leaving
+// objects intact behind the fence) if the fenced head belongs to a pending
+// commit whose canonical manifest has not been persisted yet.
+func (r *Root) RemoveDataset(ctx context.Context, id DatasetID, opts ...DatasetOption) error {
+	if r.err != nil {
+		return r.err
+	}
+	if err := validateDatasetID(id); err != nil {
+		return err
+	}
+	cfg, err := resolveDatasetConfig(opts)
+	if err != nil {
+		return err
+	}
+	unpartLayout := newPathLayout(r.flat, noopScheme)
+	hiveLayout := newPathLayout(r.flat, hiveGrammar)
+	pointer := unpartLayout.latestPointerPath(id)
+
+	previous, err := history.Remove(ctx, r.store, pointer, historyErrors, &cfg.retry)
+	if err != nil {
+		return err
+	}
+	if previous != "" && previous != history.RemovedPointer {
+		if err := pendingDatasetCommit(ctx, r.store, id, SnapshotID(previous), unpartLayout, hiveLayout); err != nil {
+			return err
+		}
+	}
+
+	keys, err := r.store.List(ctx, unpartLayout.datasetPrefix(id))
+	if err != nil {
+		return fmt.Errorf("failed to list dataset objects: %w", err)
+	}
+	lockKey := pointer + ".lock"
+	for _, k := range keys {
+		if k == pointer || k == lockKey {
+			continue
+		}
+		if err := r.store.Delete(ctx, k); err != nil && !errors.Is(err, ErrNotFound) {
+			return fmt.Errorf("failed to delete dataset object %s: %w", k, err)
+		}
+	}
+	return nil
+}
+
+func pendingDatasetCommit(ctx context.Context, store Store, id DatasetID, head SnapshotID, layouts ...*pathLayout) error {
+	if !history.IsGeneratedID(head) {
+		return nil
+	}
+	for _, l := range layouts {
+		committed, err := store.Exists(ctx, l.manifestPath(id, head))
+		if err != nil {
+			return fmt.Errorf("failed to resolve head: %w", err)
+		}
+		if committed {
+			return nil
+		}
+	}
+	for _, l := range layouts {
+		if !l.supportsPartitions() {
+			continue
+		}
+		keys, err := store.List(ctx, l.partitionsPrefix(id, ""))
+		if err != nil {
+			return fmt.Errorf("failed to resolve head: %w", err)
+		}
+		for _, k := range keys {
+			if sp, ok := l.manifest(k); ok && sp.dataset == id && sp.snapshot == head {
+				return nil
+			}
+		}
+	}
+	return fmt.Errorf("lode: latest pointer named %s, whose manifest has not been persisted: %w", head, ErrHeadUncommitted)
+}
+
+// -----------------------------------------------------------------------------
+// Read-only store wrapper (preserves RangeReader & PrefixLister)
+// -----------------------------------------------------------------------------
+
 type readOnlyStore struct {
 	ObjectStore
 }
@@ -123,158 +195,76 @@ func (readOnlyStore) CompareAndSwap(context.Context, string, string, string) err
 	return ErrReadOnly
 }
 
-// readOnlyRangeStore is a readOnlyStore over a store that reads ranges;
-// range reads pass through.
 type readOnlyRangeStore struct {
 	readOnlyStore
 	RangeReader
 }
 
-// newReadOnlyStore wraps store so that it refuses writes and reads ranges
-// only when store does (RangeReader).
+type readOnlyPrefixStore struct {
+	readOnlyStore
+	PrefixLister
+}
+
+type readOnlyFullStore struct {
+	readOnlyStore
+	RangeReader
+	PrefixLister
+}
+
 func newReadOnlyStore(store ObjectStore) Store {
-	if ranges, ok := store.(RangeReader); ok {
-		return readOnlyRangeStore{readOnlyStore{store}, ranges}
+	base := readOnlyStore{store}
+	ranges, hasRanges := store.(RangeReader)
+	prefixes, hasPrefixes := store.(PrefixLister)
+	switch {
+	case hasRanges && hasPrefixes:
+		return readOnlyFullStore{base, ranges, prefixes}
+	case hasRanges:
+		return readOnlyRangeStore{base, ranges}
+	case hasPrefixes:
+		return readOnlyPrefixStore{base, prefixes}
+	default:
+		return base
 	}
-	return readOnlyStore{store}
 }
 
 // -----------------------------------------------------------------------------
-// Path options
+// Root options
 // -----------------------------------------------------------------------------
 
-// RootOption sets one of the names within a root's dataset paths. Without
-// options a root uses the default names, which every earlier release wrote:
-//
-//	datasets/<id>/snapshots/<snapshot>/manifest.json
-//
-// The names are part of a dataset's address, as the store is: a root with
-// other names addresses other objects. Each manifest records its names, and
-// a writer whose names differ is rejected with ErrSettingsMismatch
-// (CONTRACT_LAYOUT §Path Names). The pointer's name, latest, is not an
-// option: it is where the writers of a dataset coordinate.
+// RootOption configures a Root or ReadRoot. Without options, datasets live
+// under datasets/<id>/snapshots/<snapshot>/manifest.json (or segments/ when
+// partitioned). Custom bucket prefixes are configured via lode.Prefixed.
 type RootOption interface {
 	applyRoot(cfg *rootConfig) error
 }
 
-// rootConfig is the names a root's options set, and which options set them.
 type rootConfig struct {
-	names ManifestPaths
-	set   map[string]bool
+	flat bool
 }
 
-// nameOption sets one name of the convention.
-type nameOption struct {
-	field pathField
-	value string
-}
-
-func (o nameOption) applyRoot(cfg *rootConfig) error {
-	*o.field.of(&cfg.names) = o.value
-	cfg.set[o.field.option] = true
-	return nil
-}
-
-// nameOptionFor is the option, named option, that sets one name.
-func nameOptionFor(option, value string) RootOption {
-	i := slices.IndexFunc(pathFields, func(f pathField) bool { return f.option == option })
-	return nameOption{field: pathFields[i], value: value}
-}
-
-// flatOption selects flat paths.
 type flatOption struct{}
 
 func (flatOption) applyRoot(cfg *rootConfig) error {
-	cfg.names.Flat = true
+	cfg.flat = true
 	return nil
 }
 
-// WithDatasetsDir names the directory that holds every dataset (default
-// "datasets").
-func WithDatasetsDir(name string) RootOption { return nameOptionFor("WithDatasetsDir", name) }
-
-// WithSnapshotsDir names the directory of an unpartitioned dataset's
-// snapshots (default "snapshots").
-func WithSnapshotsDir(name string) RootOption { return nameOptionFor("WithSnapshotsDir", name) }
-
-// WithPartitionsDir names the directory of a Hive dataset's partitions
-// (default "partitions").
-func WithPartitionsDir(name string) RootOption { return nameOptionFor("WithPartitionsDir", name) }
-
-// WithSegmentsDir names the directory of a Hive dataset's snapshots, within
-// a partition and beside the canonical manifests (default "segments").
-func WithSegmentsDir(name string) RootOption { return nameOptionFor("WithSegmentsDir", name) }
-
-// WithManifestFile names every manifest file (default "manifest.json").
-func WithManifestFile(name string) RootOption { return nameOptionFor("WithManifestFile", name) }
-
-// WithDataDir names the directory of a snapshot's data files (default
-// "data").
-func WithDataDir(name string) RootOption { return nameOptionFor("WithDataDir", name) }
-
-// WithExpiredDir names the directory of a dataset's retention tombstones
-// (default "expired").
-func WithExpiredDir(name string) RootOption { return nameOptionFor("WithExpiredDir", name) }
-
-// WithStagedDir names the directory of a dataset's staged first manifest
-// (default "staged").
-func WithStagedDir(name string) RootOption { return nameOptionFor("WithStagedDir", name) }
-
-// WithFlatPaths selects flat paths, which place each dataset at the store
-// root and, without partitions, each snapshot directly under its dataset:
-//
-//	<id>/<snapshot>/manifest.json
-//
-// Flat paths cannot list datasets (ErrDatasetsNotModeled), and cannot be
-// combined with WithDatasetsDir or WithSnapshotsDir, which name the
-// directories they omit.
+// WithFlatPaths places each dataset directly at the store root and, without
+// partitions, each snapshot directly under its dataset (<id>/<snapshot>/manifest.json).
+// Flat paths cannot enumerate datasets (ListDatasets returns ErrDatasetsNotModeled).
 func WithFlatPaths() RootOption {
 	return flatOption{}
 }
 
-// resolveRootConfig applies opts over the default names and validates the
-// result. Flat paths omit the datasets and snapshots directories, so an
-// option that names one is rejected, and the defaults are cleared.
-func resolveRootConfig(opts []RootOption) (ManifestPaths, error) {
-	cfg := &rootConfig{names: defaultPaths(false), set: map[string]bool{}}
+func resolveRootConfig(opts []RootOption) (bool, error) {
+	var cfg rootConfig
 	for _, opt := range opts {
 		if opt == nil {
-			return ManifestPaths{}, validate.Argument("root option must not be nil")
+			return false, validate.Argument("root option must not be nil")
 		}
-		if err := opt.applyRoot(cfg); err != nil {
-			return ManifestPaths{}, err
+		if err := opt.applyRoot(&cfg); err != nil {
+			return false, err
 		}
 	}
-	if cfg.names.Flat {
-		if cfg.set["WithDatasetsDir"] || cfg.set["WithSnapshotsDir"] {
-			return ManifestPaths{}, validate.Argument("WithFlatPaths cannot be combined with WithDatasetsDir or WithSnapshotsDir: flat paths omit those directories")
-		}
-		cfg.names.Datasets, cfg.names.Snapshots = "", ""
-	}
-	if problem := cfg.names.problem(func(f pathField) string { return f.option }); problem != "" {
-		return ManifestPaths{}, validate.Argument("%s", problem)
-	}
-	return cfg.names, nil
-}
-
-// pathName is one name of a convention, labeled by the option or manifest
-// field that sets it.
-type pathName struct{ label, value string }
-
-// nameProblem returns why names do not form a convention, or "": each must
-// be one canonical path segment (storepath.Segment) without "=", other than
-// the pointer's name, and distinct from the others. Roots and manifests
-// apply the same rule (CONTRACT_LAYOUT §Path Names).
-func nameProblem(names []pathName) string {
-	seen := map[string]string{latestFile: "the latest pointer"}
-	for _, nm := range names {
-		if !storepath.Segment(nm.value) || strings.Contains(nm.value, "=") {
-			return fmt.Sprintf("%s: name %q must be one path segment without \"=\"", nm.label, nm.value)
-		}
-		if other, dup := seen[nm.value]; dup {
-			return fmt.Sprintf("%s: name %q is already used by %s", nm.label, nm.value, other)
-		}
-		seen[nm.value] = nm.label
-	}
-	return ""
+	return cfg.flat, nil
 }

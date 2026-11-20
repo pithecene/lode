@@ -2,6 +2,7 @@ package lode
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -33,10 +34,10 @@ func writeHiveDays(t *testing.T, days ...string) *testReader {
 	return reader
 }
 
-func refPaths(refs []PartitionRef) []string {
+func refPaths(refs []PartitionPath) []string {
 	out := make([]string, 0, len(refs))
 	for _, r := range refs {
-		out = append(out, r.Path.String())
+		out = append(out, r.String())
 	}
 	return out
 }
@@ -75,8 +76,8 @@ func TestView_ListPartitions_Order(t *testing.T) {
 			if len(page) != 1 {
 				t.Fatalf("page size = %d, want 1", len(page))
 			}
-			seen = append(seen, page[0].Path.String())
-			cursor = page[0].Path
+			seen = append(seen, page[0].String())
+			cursor = page[0]
 		}
 		want := []string{"day=2024-01-15", "day=2024-01-16", "day=2024-01-17"}
 		if !slices.Equal(seen, want) {
@@ -180,8 +181,8 @@ func TestView_ListPartitions_Prefix(t *testing.T) {
 			t.Fatal(err)
 		}
 		_, err = reader.ListPartitions(t.Context(), "test-ds", PartitionListOptions{Prefix: "day=2024"})
-		if !errors.Is(err, ErrPartitionPrefixNotSupported) {
-			t.Fatalf("expected ErrPartitionPrefixNotSupported, got %v", err)
+		if !errors.Is(err, ErrNotPartitioned) {
+			t.Fatalf("expected ErrNotPartitioned, got %v", err)
 		}
 	})
 
@@ -233,7 +234,7 @@ func TestView_ListPartitions_Prefix(t *testing.T) {
 		}
 
 		// Malformed wins over unsupported: a partitionless layout still reports
-		// ErrInvalidPath for an escaping prefix, not ErrPartitionPrefixNotSupported.
+		// ErrInvalidPath for an escaping prefix, not ErrNotPartitioned.
 		plain, err := newTestReader(Use(store))
 		if err != nil {
 			t.Fatal(err)
@@ -300,7 +301,7 @@ func TestView_ListManifests_Order(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		var ids []DatasetSnapshotID
+		var ids []SnapshotID
 		for i := range 3 {
 			snap, err := ds.Write(t.Context(), R(D{"id": i}), nil)
 			if err != nil {
@@ -536,30 +537,53 @@ func TestPartitionPath_Text(t *testing.T) {
 	}
 }
 
+// extraListStore injects an extra listed path when matching prefix.
+type extraListStore struct {
+	Store
+	extra string
+}
+
+func (s extraListStore) List(ctx context.Context, prefix string) ([]string, error) {
+	keys, err := s.Store.List(ctx, prefix)
+	if err != nil {
+		return nil, err
+	}
+	if strings.HasPrefix(s.extra, prefix) {
+		keys = append(keys, s.extra)
+	}
+	return keys, nil
+}
+
 func TestView_ListPartitions_RejectsNoncanonicalPartitions(t *testing.T) {
-	store := NewMemory()
-	ds, err := Open(Use(store)).Records(t.Context(), "test-ds", JSONL[D](), hive("day"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := ds.Write(t.Context(), R(D{"day": "a"}), nil); err != nil {
-		t.Fatal(err)
-	}
-	keys, err := store.List(t.Context(), "datasets/test-ds/")
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Every manifest copy names its data file under a partition whose segment
-	// contains a backslash, which ParsePartitionPath refuses.
-	for _, k := range keys {
-		if strings.HasSuffix(k, "/manifest.json") {
-			rewriteObject(t, store, k, func(s string) string { return strings.ReplaceAll(s, "day=a/", `day=a\\b/`) })
+	t.Run("canonical manifest fallback", func(t *testing.T) {
+		store, ds, snap := writeSingleDayHive(t)
+		// Remove the partition manifest copy so ListPartitions loads the canonical
+		// manifest, whose object path was rewritten with a backslash in its partition.
+		if err := store.Delete(t.Context(), "datasets/test-ds/partitions/day=a/segments/"+string(snap.ID)+"/manifest.json"); err != nil {
+			t.Fatal(err)
 		}
-	}
-	_, err = ds.ListPartitions(t.Context(), PartitionListOptions{})
-	if !errors.Is(err, ErrManifestInvalid) || !strings.Contains(err.Error(), "not a canonical path") {
-		t.Errorf("ListPartitions = %v, want ErrManifestInvalid for the noncanonical partition", err)
-	}
+		canonical := "datasets/test-ds/segments/" + string(snap.ID) + "/manifest.json"
+		rewriteObject(t, store, canonical, func(s string) string {
+			return strings.ReplaceAll(s, "day=a/", `day=a\\b/`)
+		})
+		_, err := ds.ListPartitions(t.Context(), PartitionListOptions{})
+		if !errors.Is(err, ErrManifestInvalid) || !strings.Contains(err.Error(), "not a canonical path") {
+			t.Errorf("ListPartitions = %v, want ErrManifestInvalid for the noncanonical partition", err)
+		}
+	})
+
+	t.Run("listed partition index key", func(t *testing.T) {
+		store, _, snap := writeSingleDayHive(t)
+		badKey := `datasets/test-ds/partitions/day=a\b/segments/` + string(snap.ID) + "/manifest.json"
+		view, err := OpenReadOnly(Use(extraListStore{Store: store, extra: badKey})).Records(t.Context(), "test-ds", JSONL[D]())
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = view.ListPartitions(t.Context(), PartitionListOptions{})
+		if !errors.Is(err, ErrManifestInvalid) || !strings.Contains(err.Error(), "not a canonical path") {
+			t.Errorf("ListPartitions = %v, want ErrManifestInvalid for the noncanonical partition key", err)
+		}
+	})
 }
 
 // rewriteObject replaces the object at key with edit applied to its
@@ -616,7 +640,7 @@ func TestView_ListManifests_CanonicalOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	write := func(records ...D) DatasetSnapshotID {
+	write := func(records ...D) SnapshotID {
 		t.Helper()
 		snap, err := ds.Write(t.Context(), records, nil)
 		if err != nil {
@@ -627,7 +651,7 @@ func TestView_ListManifests_CanonicalOnly(t *testing.T) {
 	indexed := write(D{"day": "a"})
 	bare := write(D{"day": "b"}, D{"day": "c"})
 	partial := write(D{"day": "d"}, D{"day": "e"})
-	unindex := func(id DatasetSnapshotID, days ...string) {
+	unindex := func(id SnapshotID, days ...string) {
 		t.Helper()
 		for _, day := range days {
 			if err := store.Delete(t.Context(), "datasets/test-ds/partitions/day="+day+"/segments/"+string(id)+"/manifest.json"); err != nil {
@@ -637,44 +661,50 @@ func TestView_ListManifests_CanonicalOnly(t *testing.T) {
 	}
 	unindex(bare, "b", "c")
 	unindex(partial, "d")
-	at := func(id DatasetSnapshotID, partition string) ManifestRef {
+	at := func(id SnapshotID, partition string) ManifestRef {
 		return ManifestRef{ID: id, Partition: PartitionPath{path: partition}}
 	}
 
 	t.Run("unfiltered listing reports each snapshot once", func(t *testing.T) {
-		refs, err := ds.ListManifests(t.Context(), PartitionPath{}, ManifestListOptions{})
-		if err != nil {
-			t.Fatal(err)
-		}
+		got := collect(t, ds, PartitionPath{}, ManifestListOptions{})
 		want := []ManifestRef{at(bare, ""), at(indexed, "day=a"), at(partial, "day=e")}
-		if !slices.Equal(refs, want) {
-			t.Errorf("ListManifests = %v, want %v", refs, want)
+		if refs := refsOf(got); !slices.Equal(refs, want) {
+			t.Errorf("Manifests refs = %v, want %v", refs, want)
+		}
+		if got[0].Manifest.SnapshotID != bare {
+			t.Errorf("canonical manifest loaded %s, want %s", got[0].Manifest.SnapshotID, bare)
 		}
 	})
 
 	t.Run("canonical reference loads", func(t *testing.T) {
-		m, err := ds.GetManifest(t.Context(), at(bare, ""))
+		snap, err := ds.Snapshot(t.Context(), bare)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if m.SnapshotID != bare {
-			t.Errorf("GetManifest loaded %s, want %s", m.SnapshotID, bare)
+		if snap.ID != bare {
+			t.Errorf("Snapshot loaded %s, want %s", snap.ID, bare)
 		}
 	})
 
 	t.Run("partition filter reflects the index", func(t *testing.T) {
 		for _, day := range []string{"b", "d"} {
-			refs, err := ds.ListManifests(t.Context(), PartitionPath{path: "day=" + day}, ManifestListOptions{})
-			if err != nil && !errors.Is(err, ErrNotFound) {
-				t.Fatal(err)
+			var refs []ManifestRef
+			for loaded, err := range ds.Manifests(t.Context(), PartitionPath{path: "day=" + day}, ManifestListOptions{}) {
+				if err != nil {
+					if !errors.Is(err, ErrNotFound) {
+						t.Fatal(err)
+					}
+					continue
+				}
+				refs = append(refs, loaded.Ref)
 			}
 			if len(refs) != 0 {
-				t.Errorf("ListManifests(day=%s) = %v, want none: no partition manifest remains there", day, refs)
+				t.Errorf("Manifests(day=%s) = %v, want none: no partition manifest remains there", day, refs)
 			}
 		}
 	})
 
-	t.Run("unfiltered partitions include the canonical manifest's files", func(t *testing.T) {
+	t.Run("unfiltered partitions include the canonical manifest's objects", func(t *testing.T) {
 		parts, err := ds.ListPartitions(t.Context(), PartitionListOptions{})
 		if err != nil {
 			t.Fatal(err)
@@ -697,22 +727,33 @@ func TestView_ListManifests_CanonicalOnly(t *testing.T) {
 }
 
 // TestView_ListManifests_EmptyHiveSnapshot verifies that a Hive snapshot
-// with no files, which has no partition manifest, is listed under the
+// with no objects, which has no partition manifest, is listed under the
 // dataset root rather than omitted.
 func TestView_ListManifests_EmptyHiveSnapshot(t *testing.T) {
 	ds, err := Open(Use(NewMemory())).Records(t.Context(), "test-ds", JSONL[D](), hive("day"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	snap, err := ds.Write(t.Context(), []D{}, nil) // no records: a snapshot without files
+	snap, err := ds.Write(t.Context(), []D{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	refs, err := ds.ListManifests(t.Context(), PartitionPath{}, ManifestListOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	refs := refsOf(collect(t, ds, PartitionPath{}, ManifestListOptions{}))
 	if want := []ManifestRef{{ID: snap.ID}}; !slices.Equal(refs, want) {
-		t.Errorf("ListManifests = %v, want %v", refs, want)
+		t.Errorf("Manifests = %v, want %v", refs, want)
 	}
+}
+
+func writeSingleDayHive(t *testing.T) (RangeStore, *Records[D], *Snapshot) {
+	t.Helper()
+	store := NewMemory()
+	ds, err := Open(Use(store)).Records(t.Context(), "test-ds", JSONL[D](), hive("day"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap, err := ds.Write(t.Context(), R(D{"day": "a"}), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store, ds, snap
 }

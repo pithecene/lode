@@ -14,8 +14,8 @@ type config struct {
 	retry    retry.Config
 }
 
-// Option configures New. Lode's dataset options are a separate type and do
-// not apply to a Volume.
+// Option configures New and Remove. Lode's dataset options are a separate type
+// and do not apply to a Volume.
 type Option interface {
 	apply(*config) error
 }
@@ -28,13 +28,14 @@ func (f optionFunc) apply(c *config) error { return f(c) }
 // in the manifest. Default: none.
 func WithChecksum(c lode.Checksum) Option {
 	return optionFunc(func(cfg *config) error {
+		if validate.Nil(c) {
+			return validate.Argument("WithChecksum: checksum must not be nil")
+		}
 		cfg.checksum = c
 		return nil
 	})
 }
 
-// retryOption reports a retry.Config setter's validation failure as an
-// invalid argument named after the option, as lode's WithRetry* options do.
 func retryOption(name string, set func(*retry.Config) error) Option {
 	return optionFunc(func(cfg *config) error {
 		if err := set(&cfg.retry); err != nil {
@@ -44,9 +45,9 @@ func retryOption(name string, set func(*retry.Config) error) Option {
 	})
 }
 
-// WithRetryCount is lode.WithRetryCount for a Volume's Commit.
-func WithRetryCount(n int) Option {
-	return retryOption("WithRetryCount", func(r *retry.Config) error { return r.SetMaxAttempts(n) })
+// WithRetry enables automatic retry on lode.ErrSnapshotConflict up to n retries.
+func WithRetry(n int) Option {
+	return retryOption("WithRetry", func(r *retry.Config) error { return r.SetMaxAttempts(n) })
 }
 
 // WithRetryBaseDelay is lode.WithRetryBaseDelay for a Volume's Commit.

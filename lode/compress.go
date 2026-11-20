@@ -14,20 +14,13 @@ import (
 // gzipCompressor implements Compressor using gzip compression.
 type gzipCompressor struct{}
 
-// NewGzipCompressor creates a gzip compressor.
-//
-// Files are compressed using standard gzip format with .gz extension.
-func NewGzipCompressor() Compressor {
+// Gzip returns a gzip compressor (.gz, wire name "gzip").
+func Gzip() Compressor {
 	return &gzipCompressor{}
 }
 
-func (g *gzipCompressor) Name() string {
-	return "gzip"
-}
-
-func (g *gzipCompressor) Extension() string {
-	return ".gz"
-}
+func (g *gzipCompressor) Name() string      { return "gzip" }
+func (g *gzipCompressor) Extension() string { return ".gz" }
 
 func (g *gzipCompressor) Compress(w io.Writer) (io.WriteCloser, error) {
 	return gzip.NewWriter(w), nil
@@ -41,24 +34,16 @@ func (g *gzipCompressor) Decompress(r io.Reader) (io.ReadCloser, error) {
 // Zstd Compressor
 // -----------------------------------------------------------------------------
 
-// zstdCompressor implements Compressor using zstd compression.
+// zstdCompressor implements Compressor using Zstandard compression.
 type zstdCompressor struct{}
 
-// NewZstdCompressor creates a zstd compressor.
-//
-// Files are compressed using Zstandard format with .zst extension.
-// Zstd provides higher compression ratios and faster decompression than gzip.
-func NewZstdCompressor() Compressor {
+// Zstd returns a Zstandard compressor (.zst, wire name "zstd").
+func Zstd() Compressor {
 	return &zstdCompressor{}
 }
 
-func (z *zstdCompressor) Name() string {
-	return "zstd"
-}
-
-func (z *zstdCompressor) Extension() string {
-	return ".zst"
-}
+func (z *zstdCompressor) Name() string      { return "zstd" }
+func (z *zstdCompressor) Extension() string { return ".zst" }
 
 func (z *zstdCompressor) Compress(w io.Writer) (io.WriteCloser, error) {
 	return zstd.NewWriter(w)
@@ -73,27 +58,20 @@ func (z *zstdCompressor) Decompress(r io.Reader) (io.ReadCloser, error) {
 }
 
 // -----------------------------------------------------------------------------
-// NoOp Compressor
+// Uncompressed (No-Op) Compressor
 // -----------------------------------------------------------------------------
 
 // noopCompressor implements Compressor with no compression.
 type noopCompressor struct{}
 
-// NewNoOpCompressor creates a noop compressor.
-//
-// Data passes through unchanged. This is the explicit "noop" compressor
-// per CONTRACT_LAYOUT.md.
-func NewNoOpCompressor() Compressor {
+// Uncompressed returns a pass-through compressor with no file extension
+// (wire name "noop", the default when WithCompressor is omitted).
+func Uncompressed() Compressor {
 	return &noopCompressor{}
 }
 
-func (n *noopCompressor) Name() string {
-	return "noop"
-}
-
-func (n *noopCompressor) Extension() string {
-	return ""
-}
+func (n *noopCompressor) Name() string      { return "noop" }
+func (n *noopCompressor) Extension() string { return "" }
 
 func (n *noopCompressor) Compress(w io.Writer) (io.WriteCloser, error) {
 	return &noopWriteCloser{w}, nil
@@ -107,6 +85,4 @@ type noopWriteCloser struct {
 	io.Writer
 }
 
-func (n *noopWriteCloser) Close() error {
-	return nil
-}
+func (n *noopWriteCloser) Close() error { return nil }

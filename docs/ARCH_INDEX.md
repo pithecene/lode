@@ -39,7 +39,7 @@ Readers:
 Contracts (`contracts/`), by subject:
 
 - Data model: `CONTRACT_CORE.md` (core model invariants and immutability), `CONTRACT_VOLUME.md` (Volume persistence model)
-- Writing and reading: `CONTRACT_WRITE_API.md` (write semantics), `CONTRACT_READ_API.md` (read semantics and adapter obligations), `CONTRACT_ITERATION.md` (object iterator lifecycle), `CONTRACT_RETENTION.md` (snapshot expiry and unreferenced-object sweep)
+- Writing and reading: `CONTRACT_WRITE_API.md` (write semantics), `CONTRACT_READ_API.md` (read semantics and adapter obligations), `CONTRACT_RETENTION.md` (snapshot expiry and unreferenced-object sweep)
 - Storage and formats: `CONTRACT_STORAGE.md` (storage adapter obligations), `CONTRACT_COMPOSITION.md` (store composition determinism), `CONTRACT_LAYOUT.md` (layout, partitioning, and component rules), `CONTRACT_PARQUET.md` (Parquet codec semantics and schema rules)
 - Errors and bounds: `CONTRACT_ERRORS.md` (error taxonomy), `CONTRACT_COMPLEXITY.md` (complexity bounds for all public operations)
 - Repository conventions: `CONTRACT_EXAMPLES.md` (example and callsite conventions)
@@ -115,15 +115,6 @@ Build and maintenance scripts.
 - `verify-snippets.sh` — validates runnable code fences in documentation
 - `release-notes.sh` — extracts the release notes from the message of an annotated tag
 - `fuzz.sh` — runs every Go fuzz target for a fixed duration (`task fuzz`)
-
----
-
-## ai/
-
-AI governance: repo-local skill definitions and agent bookkeeping.
-
-- `skills/repo-convention-enforcer/v1/` — structural convention validator (SKILL.md format)
-- `TEST_MATRIX.md` — contract-to-test traceability that agents maintain with each contract or test change
 
 ---
 

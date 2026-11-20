@@ -29,8 +29,8 @@ type Ledger struct {
 	violations []Violation
 	// expired lists what Expire reported as expired; failedReads lists
 	// snapshots whose reads failed as if expired, to confirm at the end.
-	expired     []lode.DatasetSnapshotID
-	failedReads []lode.DatasetSnapshotID
+	expired     []lode.SnapshotID
+	failedReads []lode.SnapshotID
 	// volumeCommits and blocks record a Volume run's acknowledged commits
 	// and the blocks they committed.
 	volumeCommits []volume.SnapshotID
@@ -75,14 +75,14 @@ func (l *Ledger) volumeCommit(id volume.SnapshotID, blocks []Block) {
 }
 
 // expire records snapshots an Expire report listed as expired.
-func (l *Ledger) expire(ids ...lode.DatasetSnapshotID) {
+func (l *Ledger) expire(ids ...lode.SnapshotID) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.expired = append(l.expired, ids...)
 }
 
 // failedRead records a read that failed as if its snapshot were expired.
-func (l *Ledger) failedRead(id lode.DatasetSnapshotID) {
+func (l *Ledger) failedRead(id lode.SnapshotID) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.failedReads = append(l.failedReads, id)
@@ -122,7 +122,7 @@ func (l *Ledger) volumeHistory() (commits []volume.SnapshotID, blocks []Block) {
 }
 
 // retention returns copies of the expired snapshots and of the failed reads.
-func (l *Ledger) retention() (expired, failedReads []lode.DatasetSnapshotID) {
+func (l *Ledger) retention() (expired, failedReads []lode.SnapshotID) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return slices.Clone(l.expired), slices.Clone(l.failedReads)

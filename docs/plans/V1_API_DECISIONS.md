@@ -20,7 +20,8 @@ observed in production; most of its parts change contracts rather than
 signatures, but they define what v1.0 promises about commits and listing.
 D11 decides the v1.0 construction and record surface, judged at the call
 sites of Quarry and the examples; it supersedes D1, D2, D3, and the
-fixed-name part of D8.
+fixed-name part of D8. D12 records the final pre-v1 API unification and
+manifest format 1.2.0 pass across `lode`, `lode/s3`, and `lode/volume`.
 
 ---
 
@@ -282,11 +283,16 @@ Volume written before the boundary moves must stay readable after it.
 
 **Breaks.** Nothing; it forbids a class of future changes.
 
-**Status.** Accepted as revised by D11 (2026-10-22). The names within a
-dataset's paths are root options; the default names and the flat paths,
-the order, placement, and parsing of path segments, the manifest's field
-names, and the Volume grammar are persisted format that no release
-changes (CONTRACT_LAYOUT §Path Names).
+**Status.** Accepted as revised by D11 (2026-10-22) and refined by D12
+(2026-11-18). Internal segment names (`datasets`, `snapshots`, `partitions`,
+`segments`, `manifest.json`, `data`, `expired`, `staged`, and `latest`) are
+fixed constants (with `WithFlatPaths()` as the sole topology option and
+`lode.Prefixed` for custom bucket placement); the default and flat grammars,
+manifest field compatibility (`1.0.0`, `1.1.0`, and `1.2.0`), and the Volume
+grammar (both nonced `<offset>-<length>-<nonce>.bin` and legacy
+`<offset>-<length>.bin` block paths) are persisted formats that no release
+breaks ([`CONTRACT_LAYOUT.md`](../contracts/CONTRACT_LAYOUT.md),
+[`CONTRACT_VOLUME.md`](../contracts/CONTRACT_VOLUME.md)).
 
 ---
 
@@ -826,4 +832,63 @@ decision left open:
   compressor; reads do not verify checksums.
 
 **Status.** Accepted (owner decision, 2026-10-22), implemented, and shipped
-in v0.12.0: the persisted format in #279 and the surface in #280.
+in v0.12.0: the persisted format in #279 and the surface in #280. Refined
+prior to v1.0.0 by D12 below.
+
+---
+
+## D12 — The v1.0.0 API unification and format 1.2.0 pass
+
+**Current.** Between v0.12.0 and v0.17.1, incremental additions (`lode.Prefixed`,
+`Manifests`, `WithPinnedSnapshot`, `WithLayout` on views, `volume.Remove`,
+`volume.Head`, and `volume.Reader.ReaderAt`) exposed overlapping APIs and
+naming seams left over from v0:
+1. Interface-wrapped dataset handles (`Records[T]`, `Blobs`, `RecordView[T]`,
+   `BlobView`) plus `SnapshotReader` and `Retention` interfaces forced every
+   read-surface addition to break mock implementers, while `DatasetSnapshot`,
+   `DatasetSnapshotID`, `FileRef`, and `FileStats` mixed "dataset" and "file"
+   nouns beside `ObjectRef` and `ObjectStore`.
+2. Eight root options from D11 customized internal directory and file names.
+   Each manifest recorded that convention in `ManifestPaths`. The separate
+   `lode.Prefixed` option scopes the whole store to a prefix.
+3. `ListManifests`, `GetManifest`, and `PartitionRef` duplicated `Manifests`
+   and `PartitionPath`; `ListPartitions` still loaded every manifest (`M`
+   `Get` calls); `ListDatasets` scanned every object key (`O(N)`) and
+   returned `ErrNoManifests` when uncommitted objects existed; and
+   `WithPinnedSnapshot` discarded the manifest it had just read at open time.
+4. `Blobs.StreamWrite` returned a stateful `StreamWriter` (`Write`, `Commit`,
+   `Abort`, `Close`) while `Records.StreamWrite` was a single call; `Parquet`
+   accepted `lode.D` only (`Codec[D]`) and mutated internal stats state per
+   encode; `Read` computed checksums on write without verifying them on read;
+   and `s3.Config` / `s3.Factory` duplicated `lode.Prefixed`.
+5. `Volume` staged blocks at deterministic `<offset>-<length>.bin` paths (so
+   an aborted `StageWriteAt` blocked retries at the same range with
+   `ErrPathExists`), used a separate `volume.Metadata` map type and
+   `WithRetryCount` spelling, and datasets had no `RemoveDataset` counterpart
+   to `volume.Remove`.
+
+**Decided.** Unify the public surface and wire format before tagging
+`v1.0.0`. Formats `1.0.0` and `1.1.0` remain readable in place in standard
+and flat layouts with standard internal names. Readers retain support for
+pre-`1.2.0` tombstones in those layouts and for historical Volume block paths.
+
+| Area | Unified v1.0.0 Shape | Replaces / Removes |
+|---|---|---|
+| Concrete handles & views | `*Records[T]`, `*Blobs`, `*RecordView[T]`, `*BlobView` returned as concrete pointers with shared methods directly on the types | `SnapshotReader` and `Retention` interfaces |
+| Snapshot & object types | `Snapshot`, `SnapshotID`, `ObjectRef` (carrying `Path`, `SizeBytes`, `Checksum`, `*ObjectStats`), `Manifest.Objects` (`"objects"`) | `DatasetSnapshot`, `DatasetSnapshotID`, `FileRef`, `FileStats` (`"files"` kept as read-compat alias) |
+| Root topology & format `1.2.0` | Fixed internal segment names; `WithFlatPaths()` (`RootOption`) persists `flat: true` in format `1.2.0`; custom bucket prefixes use `lode.Prefixed` | `WithDatasetsDir`, `WithSnapshotsDir`, `WithPartitionsDir`, `WithSegmentsDir`, `WithManifestFile`, `WithDataDir`, `WithExpiredDir`, `WithStagedDir`, `ManifestPaths` (standard and flat legacy paths remain readable in place; custom internal names require replay into a fresh root) |
+| Single-call blob streaming | `Blobs.StreamWrite(ctx, io.Reader, metadata) (*Snapshot, error)` (direct `Store.Put` without `io.Pipe` when uncompressed) | `StreamWriter` (`Commit`, `Abort`, `Close`) |
+| Generic stateless Parquet | `Parquet[T](schema, opts...) Codec[T]` supporting both `lode.D` and flat Go structs (`parquet` tag, `json` tag, or field name); stateless `StatisticalCodec[T].EncodeWithStats` and `StatisticalStreamEncoder.ObjectStats` | Map-only `Parquet(schema) Codec[D]` and stateful `FileStats()` |
+| Listings & anchored views | `Manifests` is the manifest iterator. Indexed Hive partition discovery reads the fence and lists keys. S3 uses delimiter listing, Memory scans keys, and FS can traverse descendants. Anchored reads check the fence and canonical object existence before reusing a private manifest copy. | `ListManifests`, `GetManifest`, `PartitionRef`, `WithPinnedSnapshot`, `ErrNoManifests` |
+| Components & checksums | `Uncompressed()`, `Gzip()`, `Zstd()`, `SHA256()`, `CRC32C()`, `MD5()`, `NewMetadata(v)`; automatic read-time checksum verification returning `ErrChecksumMismatch`; `OpenObject` / `ReaderAt` serving raw stored bytes | `NewNoOpCompressor`, `NewGzipCompressor`, `NewZstdCompressor`, `NewMD5Checksum` |
+| Filesystem & S3 stores | `FS(root, opts...)` / `NewFS(root, opts...)` with `FSOption` (`WithSync()`); `s3.New(client, bucket, opts...)` and `s3.Bucket(client, bucket, opts...)` with `s3.Option` | `s3.Config`, `s3.Factory` |
+| Whole-dataset removal & sentinels | `Root.RemoveDataset(ctx, id, opts...)` fencing `latest` with `lode:removed` and returning `ErrRemoved` (shared with `volume.ErrRemoved`); `ErrNotPartitioned`; `nil` iterator/reader folded into `ErrInvalidArgument` | `ErrPartitionPrefixNotSupported`, `ErrNilIterator` |
+| Volume alignment | Nonced block paths `volumes/<id>/data/<offset>-<length>-<nonce>.bin` (accepting legacy `<offset>-<length>.bin` on read/commit), `Commit(..., metadata any)` backed by `lode.Metadata`, `volume.WithRetry(n)` | `volume.Metadata`, `volume.WithRetryCount` |
+
+**Breaks.** Pre-v1 callers of the replaced constructors, options, listing
+methods, and `StreamWriter` update call sites once for `v1.0.0`. Datasets with custom internal names
+require replay into a separate root.
+The upgrade procedure in [`PUBLIC_API.md`](../../PUBLIC_API.md#upgrading-a-dataset-with-custom-internal-names)
+covers snapshot ID mapping and verification before cutover.
+
+**Status.** Accepted and implemented (2026-11-18) on `feat/v1-api-unification`.

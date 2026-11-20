@@ -109,3 +109,7 @@ func extendedLength(p string) (string, error) {
 		return `\\?\` + abs, nil
 	}
 }
+
+// syncDir is a no-op on Windows: FlushFileBuffers on a directory handle
+// returns ERROR_ACCESS_DENIED unless SE_BACKUP_PRIVILEGE is held.
+func syncDir(string) error { return nil }

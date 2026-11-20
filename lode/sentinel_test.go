@@ -1,36 +1,35 @@
 package lode
 
-import "testing"
+import (
+	"testing"
+)
 
 func TestSentinelErrors_ErrorMessages(t *testing.T) {
-	tests := []struct {
-		name string
-		err  error
-		want string
-	}{
-		{"ErrNotFound", ErrNotFound, "not found"},
-		{"ErrNoSnapshots", ErrNoSnapshots, "no snapshots"},
-		{"ErrPathExists", ErrPathExists, "path exists"},
-		{"ErrNoManifests", ErrNoManifests, "no manifests found (storage contains objects)"},
-		{"ErrRangeReadNotSupported", ErrRangeReadNotSupported, "range read not supported"},
-		{"ErrCodecNotStreamable", ErrCodecNotStreamable, "codec does not support streaming"},
-		{"ErrNilIterator", ErrNilIterator, "records iterator must be non-nil"},
-		{"ErrPartitioningNotSupported", ErrPartitioningNotSupported, "StreamWrite does not support partitioning; use Write for partitioned data"},
-		{"ErrPartitionPrefixNotSupported", ErrPartitionPrefixNotSupported, "partition prefix requires a partition-aware layout"},
-		{"ErrSchemaViolation", ErrSchemaViolation, "schema violation"},
-		{"ErrInvalidFormat", ErrInvalidFormat, "invalid format"},
-		{"ErrSnapshotConflict", ErrSnapshotConflict, "snapshot conflict: another writer committed"},
-		{"ErrDatasetsNotModeled", ErrDatasetsNotModeled, "datasets not modeled by this layout"},
-		{"ErrSettingsMismatch", ErrSettingsMismatch, "settings mismatch"},
-		{"ErrReadOnly", ErrReadOnly, "read-only store"},
+	wantMessages := map[error]string{
+		ErrNotFound:                 "not found",
+		ErrNoSnapshots:              "no snapshots",
+		ErrPathExists:               "path exists",
+		ErrRangeReadNotSupported:    "range read not supported",
+		ErrCodecNotStreamable:       "codec does not support streaming",
+		ErrPartitioningNotSupported: "StreamWrite does not support partitioning; use Write for partitioned data",
+		ErrNotPartitioned:           "operation requires a partitioned layout",
+		ErrSchemaViolation:          "schema violation",
+		ErrInvalidFormat:            "invalid format",
+		ErrChecksumMismatch:         "checksum mismatch",
+		ErrSnapshotConflict:         "snapshot conflict: another writer committed",
+		ErrInvalidArgument:          "invalid argument",
+		ErrInvalidPath:              "invalid path",
+		ErrSnapshotExpired:          "snapshot expired",
+		ErrRemoved:                  "removed",
+		ErrHeadUncommitted:          "head snapshot is not committed yet",
+		ErrSettingsMismatch:         "settings mismatch",
+		ErrManifestInvalid:          "invalid manifest",
+		ErrReadOnly:                 "read-only store",
+		ErrDatasetsNotModeled:       "datasets not modeled by this layout",
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := tt.err.Error()
-			if got != tt.want {
-				t.Errorf("%s.Error() = %q, want %q", tt.name, got, tt.want)
-			}
-		})
+	for sentinel, want := range wantMessages {
+		if got := sentinel.Error(); got != want {
+			t.Errorf("Error() = %q, want %q", got, want)
+		}
 	}
 }
