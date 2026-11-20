@@ -31,14 +31,14 @@ const (
 // run.
 type MemoryBaseline struct {
 	heap       uint64
-	goroutines map[int]bool
+	goroutines map[int]struct{}
 }
 
 // TakeMemoryBaseline measures the live heap and records the goroutines.
 func TakeMemoryBaseline() MemoryBaseline {
-	ids := make(map[int]bool)
+	ids := make(map[int]struct{})
 	for id := range goroutineStacks() {
-		ids[id] = true
+		ids[id] = struct{}{}
 	}
 	return MemoryBaseline{heap: liveHeap(), goroutines: ids}
 }
@@ -72,7 +72,7 @@ func goroutineStacks() map[int]string {
 func (b MemoryBaseline) startedSince(lingering func(stack string) bool) []string {
 	var started []string
 	for id, stack := range goroutineStacks() {
-		if !b.goroutines[id] && (lingering == nil || !lingering(stack)) {
+		if _, existed := b.goroutines[id]; !existed && (lingering == nil || !lingering(stack)) {
 			started = append(started, stack)
 		}
 	}

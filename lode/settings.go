@@ -222,12 +222,12 @@ func (d *writer) settingsManifest(ctx context.Context, parent SnapshotID) (*Mani
 
 func (d *dataset) verifyLegacyKeys(ctx context.Context, head *Manifest, holder string) error {
 	want := d.layout.partitioning().keys
-	visited := map[SnapshotID]bool{}
+	visited := map[SnapshotID]struct{}{}
 	for m := head; ; {
-		if visited[m.SnapshotID] {
+		if _, repeated := visited[m.SnapshotID]; repeated {
 			return fmt.Errorf("lode: cannot verify partition keys: the parent chain repeats snapshot %s: %w", m.SnapshotID, ErrSettingsMismatch)
 		}
-		visited[m.SnapshotID] = true
+		visited[m.SnapshotID] = struct{}{}
 		if len(m.Objects) > 0 {
 			have := partitionKeyNames(d.layout.extractPartitionPath(m.Objects[0].Path))
 			if !slices.Equal(want, have) {

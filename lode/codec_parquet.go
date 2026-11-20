@@ -776,14 +776,14 @@ func (c *parquetCodec[T]) planDecodeColumns(fileSchema *parquet.Schema) (decodeP
 	}
 	fileFields := fileSchema.Fields()
 	cols := make([]decodeColumn, len(fileSchema.Columns()))
-	seen := make(map[string]bool, len(fileFields))
+	seen := make(map[string]struct{}, len(fileFields))
 
 	for _, pf := range fileFields {
 		name := pf.Name()
-		if seen[name] {
+		if _, dup := seen[name]; dup {
 			return decodePlan{}, fmt.Errorf("parquet: %w: duplicate column %q in file schema", ErrInvalidFormat, name)
 		}
-		seen[name] = true
+		seen[name] = struct{}{}
 		expected, ok := c.fieldsByName[name]
 		if !ok {
 			continue
@@ -808,7 +808,7 @@ func (c *parquetCodec[T]) planDecodeColumns(fileSchema *parquet.Schema) (decodeP
 
 	var missingNullable []string
 	for _, field := range c.schema.Fields {
-		if seen[field.Name] {
+		if _, present := seen[field.Name]; present {
 			continue
 		}
 		if !field.Nullable {

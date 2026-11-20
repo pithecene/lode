@@ -44,7 +44,7 @@ func TestEveryExportIsDocumented(t *testing.T) {
 	named := documentReferences(t)
 	for name, dir := range packages {
 		for _, export := range exports(t, dir) {
-			if !named[name+"."+export] {
+			if _, ok := named[name+"."+export]; !ok {
 				t.Errorf("PUBLIC_API.md does not name %s.%s", name, export)
 			}
 		}
@@ -77,17 +77,17 @@ func readDocument(t *testing.T) string {
 // documentReferences returns each package-qualified name that the
 // document's code blocks and inline code refer to, as "pkg.Name". An
 // unqualified name refers to the package named by unqualified.
-func documentReferences(t *testing.T) map[string]bool {
+func documentReferences(t *testing.T) map[string]struct{} {
 	t.Helper()
 	doc := readDocument(t)
-	found := map[string]bool{}
+	found := map[string]struct{}{}
 	for _, span := range append(fence.FindAllString(doc, -1), inline.FindAllString(fence.ReplaceAllString(doc, ""), -1)...) {
 		for _, m := range reference.FindAllStringSubmatch(span, -1) {
 			pkg := m[1]
 			if pkg == "" {
 				pkg = unqualified
 			}
-			found[pkg+"."+m[2]] = true
+			found[pkg+"."+m[2]] = struct{}{}
 		}
 	}
 	return found
@@ -195,15 +195,15 @@ func TestEveryContractIsIndexedAndTypesExist(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read docs/ARCH_INDEX.md: %v", err)
 	}
-	indexed := map[string]bool{}
+	indexed := map[string]struct{}{}
 	for _, m := range contractFilePattern.FindAllString(string(indexData), -1) {
-		indexed[m] = true
+		indexed[m] = struct{}{}
 	}
 
-	allTypes := map[string]bool{}
+	allTypes := map[string]struct{}{}
 	for _, dir := range packages {
 		for _, typ := range exportedTypes(t, dir) {
-			allTypes[typ] = true
+			allTypes[typ] = struct{}{}
 		}
 	}
 
@@ -212,24 +212,24 @@ func TestEveryContractIsIndexedAndTypesExist(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read docs/contracts: %v", err)
 	}
-	onDisk := map[string]bool{}
+	onDisk := map[string]struct{}{}
 	for _, entry := range entries {
 		name := entry.Name()
 		if entry.IsDir() || !strings.HasPrefix(name, "CONTRACT_") || !strings.HasSuffix(name, ".md") {
 			continue
 		}
-		onDisk[name] = true
-		if !indexed[name] {
+		onDisk[name] = struct{}{}
+		if _, ok := indexed[name]; !ok {
 			t.Errorf("docs/contracts/%s is not listed in docs/ARCH_INDEX.md", name)
 		}
 		for _, typ := range declaredContractTypes(t, filepath.Join(contractsDir, name)) {
-			if !allTypes[typ] {
+			if _, ok := allTypes[typ]; !ok {
 				t.Errorf("docs/contracts/%s declares type %s, which no public package exports", name, typ)
 			}
 		}
 	}
 	for name := range indexed {
-		if !onDisk[name] {
+		if _, ok := onDisk[name]; !ok {
 			t.Errorf("docs/ARCH_INDEX.md lists %s, which does not exist in docs/contracts/", name)
 		}
 	}

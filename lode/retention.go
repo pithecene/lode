@@ -96,11 +96,14 @@ func newSelection(req ExpireRequest) selection {
 		sel.byTombstone = slices.Compact(slices.Sorted(slices.Values(req.IDs))) // each once
 	}
 	if len(req.IDs) > 0 {
-		ids := make(map[SnapshotID]bool, len(req.IDs))
+		ids := make(map[SnapshotID]struct{}, len(req.IDs))
 		for _, id := range req.IDs {
-			ids[id] = true
+			ids[id] = struct{}{}
 		}
-		sel.matches = append(sel.matches, func(id SnapshotID) bool { return ids[id] })
+		sel.matches = append(sel.matches, func(id SnapshotID) bool {
+			_, ok := ids[id]
+			return ok
+		})
 	}
 	if !req.Before.IsZero() {
 		sel.matches = append(sel.matches, func(id SnapshotID) bool { return startedBefore(id, req.Before) })
@@ -163,7 +166,7 @@ type expiryCandidate struct {
 // first, and every listed key, which meters what the run deletes.
 type expiryListing struct {
 	candidates []expiryCandidate
-	listed     map[string]bool
+	listed     map[string]struct{}
 }
 
 func (d *dataset) expiryListing(ctx context.Context, sel selection) (expiryListing, error) {
@@ -171,13 +174,13 @@ func (d *dataset) expiryListing(ctx context.Context, sel selection) (expiryListi
 	if err != nil {
 		return expiryListing{}, fmt.Errorf("failed to list snapshots: %w", err)
 	}
-	listing := expiryListing{listed: make(map[string]bool, len(keys))}
+	listing := expiryListing{listed: make(map[string]struct{}, len(keys))}
 	for _, k := range keys {
-		listing.listed[k] = true
+		listing.listed[k] = struct{}{}
 	}
-	withManifest := make(map[SnapshotID]bool)
+	withManifest := make(map[SnapshotID]struct{})
 	for _, g := range groupBySnapshot(keys, d.objectsOfKind(manifestLeaf, sel.selects)) {
-		withManifest[g.id] = true
+		withManifest[g.id] = struct{}{}
 		listing.candidates = append(listing.candidates, expiryCandidate{snapshotKeys: g})
 	}
 	resumed, err := d.tombstoneCandidates(ctx, sel, withManifest)
@@ -191,10 +194,10 @@ func (d *dataset) expiryListing(ctx context.Context, sel selection) (expiryListi
 
 // tombstoneCandidates are the requested IDs with no manifest left whose
 // expiry a tombstone records: the request completes them from it.
-func (d *dataset) tombstoneCandidates(ctx context.Context, sel selection, withManifest map[SnapshotID]bool) ([]expiryCandidate, error) {
+func (d *dataset) tombstoneCandidates(ctx context.Context, sel selection, withManifest map[SnapshotID]struct{}) ([]expiryCandidate, error) {
 	var out []expiryCandidate
 	for _, id := range sel.byTombstone {
-		if withManifest[id] {
+		if _, ok := withManifest[id]; ok {
 			continue
 		}
 		t, err := d.tombstones().lookup(ctx, id)
@@ -248,7 +251,7 @@ func groupBySnapshot(keys []string, owner func(string) (SnapshotID, bool)) []sna
 type headGuard struct {
 	history   *history.History[SnapshotID, Manifest]
 	current   SnapshotID
-	protected map[SnapshotID]bool
+	protected map[SnapshotID]struct{}
 }
 
 // refuseHeadless is for a dataset with neither a pointer nor a manifest: a
@@ -263,7 +266,7 @@ func (d *dataset) refuseHeadless(ctx context.Context) error {
 }
 
 func newHeadGuard(ctx context.Context, h *history.History[SnapshotID, Manifest]) (*headGuard, error) {
-	g := &headGuard{history: h, protected: make(map[SnapshotID]bool)}
+	g := &headGuard{history: h, protected: make(map[SnapshotID]struct{})}
 	return g, g.refresh(ctx)
 }
 
@@ -273,11 +276,14 @@ func (g *headGuard) refresh(ctx context.Context) error {
 		return err
 	}
 	g.current = id
-	g.protected[id] = true
+	g.protected[id] = struct{}{}
 	return nil
 }
 
-func (g *headGuard) is(id SnapshotID) bool { return g.protected[id] }
+func (g *headGuard) is(id SnapshotID) bool {
+	_, ok := g.protected[id]
+	return ok
+}
 
 // -----------------------------------------------------------------------------
 // Expiring one snapshot
@@ -322,7 +328,7 @@ type expiryRun struct {
 	ds     *dataset
 	sel    selection
 	head   *headGuard
-	listed map[string]bool
+	listed map[string]struct{}
 	dryRun bool
 }
 
@@ -447,7 +453,10 @@ func (r expiryRun) tombstoneFor(ctx context.Context, c expiryCandidate) (tombsto
 // present meters objects: those the run's listing showed, so an object an
 // earlier interrupted run already deleted is not counted twice.
 func (r expiryRun) present(objects []ObjectRef) []ObjectRef {
-	return slices.DeleteFunc(slices.Clone(objects), func(obj ObjectRef) bool { return !r.listed[obj.Path] })
+	return slices.DeleteFunc(slices.Clone(objects), func(obj ObjectRef) bool {
+		_, ok := r.listed[obj.Path]
+		return !ok
+	})
 }
 
 // remove runs steps 1–4 from the plan: tombstone (unless recorded already),
@@ -473,7 +482,7 @@ func (r expiryRun) remove(ctx context.Context, c expiryCandidate, plan expiryPla
 		if err := deleteObject(ctx, d.store, obj.Path); err != nil {
 			return out, err
 		}
-		if r.listed[obj.Path] {
+		if _, ok := r.listed[obj.Path]; ok {
 			out.deleted = append(out.deleted, obj)
 		}
 	}
@@ -555,12 +564,12 @@ type inventorySplit struct {
 
 func (d *dataset) splitObjects(id SnapshotID, objects []ObjectRef) inventorySplit {
 	var split inventorySplit
-	seen := make(map[string]bool, len(objects))
+	seen := make(map[string]struct{}, len(objects))
 	for _, obj := range objects {
-		if seen[obj.Path] {
+		if _, dup := seen[obj.Path]; dup {
 			continue // one object, counted once however often it is listed
 		}
-		seen[obj.Path] = true
+		seen[obj.Path] = struct{}{}
 		if d.layout.isObjectOf(d.id, id, dataLeaf, obj.Path) {
 			split.owned = append(split.owned, obj)
 			continue

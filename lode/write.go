@@ -108,14 +108,14 @@ func (d *dataset) manifestPaths(snapshotID SnapshotID, partitionKeys []string) [
 	if !d.layout.supportsPartitions() {
 		return paths
 	}
-	seen := map[string]bool{canonical: true}
+	seen := map[string]struct{}{canonical: {}}
 	for _, pk := range partitionKeys {
 		if pk == "" {
 			continue
 		}
 		p := d.layout.manifestPathInPartition(d.id, snapshotID, pk)
-		if !seen[p] {
-			seen[p] = true
+		if _, dup := seen[p]; !dup {
+			seen[p] = struct{}{}
 			paths = append(paths, p)
 		}
 	}

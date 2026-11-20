@@ -115,19 +115,24 @@ func listDatasetsByScan(ctx context.Context, store ObjectStore, opts DatasetList
 		return nil, err
 	}
 	grammars := []pathGrammar{newPathGrammar(false, false), newPathGrammar(false, true)}
-	seen := make(map[DatasetID]bool)
+	seen := make(map[DatasetID]struct{})
 	datasets := []DatasetID{}
 	for _, p := range paths {
 		for _, g := range grammars {
-			if sp, ok := g.parse(p); ok && sp.kind == manifestLeaf && !seen[sp.dataset] {
-				removed, err := isPointerRemoved(ctx, store, join(datasetsDir, string(sp.dataset), latestFile))
-				if err != nil {
-					return nil, err
-				}
-				seen[sp.dataset] = true
-				if !removed {
-					datasets = append(datasets, sp.dataset)
-				}
+			sp, ok := g.parse(p)
+			if !ok || sp.kind != manifestLeaf {
+				continue
+			}
+			if _, dup := seen[sp.dataset]; dup {
+				continue
+			}
+			removed, err := isPointerRemoved(ctx, store, join(datasetsDir, string(sp.dataset), latestFile))
+			if err != nil {
+				return nil, err
+			}
+			seen[sp.dataset] = struct{}{}
+			if !removed {
+				datasets = append(datasets, sp.dataset)
 			}
 		}
 	}
@@ -181,13 +186,13 @@ func (d *dataset) ListPartitions(ctx context.Context, opts PartitionListOptions)
 	}
 
 	anyManifest := false
-	seenPartitions := make(map[string]bool)
-	indexedSnapshots := make(map[SnapshotID]bool)
+	seenPartitions := make(map[string]struct{})
+	indexedSnapshots := make(map[SnapshotID]struct{})
 	type snapPart struct {
 		id   SnapshotID
 		part string
 	}
-	indexedParts := make(map[SnapshotID]map[string]bool)
+	indexedParts := make(map[SnapshotID]map[string]struct{})
 	var dataPairs []snapPart
 	var canonical []listedManifest
 	partitions := []PartitionPath{}
@@ -221,14 +226,14 @@ func (d *dataset) ListPartitions(ctx context.Context, opts PartitionListOptions)
 			canonical = append(canonical, listedManifest{id: sp.snapshot, path: p})
 			continue
 		}
-		indexedSnapshots[sp.snapshot] = true
+		indexedSnapshots[sp.snapshot] = struct{}{}
 		addIndexedPartition(indexedParts, sp.snapshot, sp.partition)
-		if !seenPartitions[sp.partition] && strings.HasPrefix(sp.partition, opts.Prefix) {
+		if _, dup := seenPartitions[sp.partition]; !dup && strings.HasPrefix(sp.partition, opts.Prefix) {
 			partPath, err := listedPartitionPath(sp.partition, p)
 			if err != nil {
 				return nil, err
 			}
-			seenPartitions[sp.partition] = true
+			seenPartitions[sp.partition] = struct{}{}
 			partitions = append(partitions, partPath)
 		}
 	}
@@ -243,10 +248,10 @@ func (d *dataset) ListPartitions(ctx context.Context, opts PartitionListOptions)
 		return partitions, nil
 	}
 
-	partialSnapshots := make(map[SnapshotID]bool)
+	partialSnapshots := make(map[SnapshotID]struct{})
 	for _, dp := range dataPairs {
-		if !indexedParts[dp.id][dp.part] {
-			partialSnapshots[dp.id] = true
+		if _, indexed := indexedParts[dp.id][dp.part]; !indexed {
+			partialSnapshots[dp.id] = struct{}{}
 		}
 	}
 
@@ -259,11 +264,11 @@ func (d *dataset) ListPartitions(ctx context.Context, opts PartitionListOptions)
 	return cursorWindow(partitions, func(p PartitionPath) bool { return p.path > opts.StartAfter.path }, opts.Limit), nil
 }
 
-func addIndexedPartition(indexedParts map[SnapshotID]map[string]bool, id SnapshotID, part string) {
+func addIndexedPartition(indexedParts map[SnapshotID]map[string]struct{}, id SnapshotID, part string) {
 	if indexedParts[id] == nil {
-		indexedParts[id] = make(map[string]bool)
+		indexedParts[id] = make(map[string]struct{})
 	}
-	indexedParts[id][part] = true
+	indexedParts[id][part] = struct{}{}
 }
 
 // collectUnindexedPartitions loads only canonical manifests whose partition
@@ -271,13 +276,15 @@ func addIndexedPartition(indexedParts map[SnapshotID]map[string]bool, id Snapsho
 func (d *dataset) collectUnindexedPartitions(
 	ctx context.Context,
 	canonical []listedManifest,
-	indexed, partial map[SnapshotID]bool,
-	seen map[string]bool,
+	indexed, partial map[SnapshotID]struct{},
+	seen map[string]struct{},
 	prefix string,
 	partitions []PartitionPath,
 ) ([]PartitionPath, error) {
 	for _, m := range canonical {
-		if indexed[m.id] && !partial[m.id] {
+		_, isIndexed := indexed[m.id]
+		_, isPartial := partial[m.id]
+		if isIndexed && !isPartial {
 			continue
 		}
 		manifest, err := d.loadListed(ctx, m)
@@ -289,14 +296,17 @@ func (d *dataset) collectUnindexedPartitions(
 		}
 		for _, obj := range manifest.Objects {
 			part := d.layout.extractPartitionPath(obj.Path)
-			if part == "" || seen[part] || !strings.HasPrefix(part, prefix) {
+			if part == "" || !strings.HasPrefix(part, prefix) {
+				continue
+			}
+			if _, dup := seen[part]; dup {
 				continue
 			}
 			partPath, err := listedPartitionPath(part, m.path)
 			if err != nil {
 				return nil, err
 			}
-			seen[part] = true
+			seen[part] = struct{}{}
 			partitions = append(partitions, partPath)
 		}
 	}
@@ -329,7 +339,7 @@ func (d *dataset) Manifests(ctx context.Context, partition PartitionPath, opts M
 	}
 }
 
-func (d *dataset) yieldLoaded(ctx context.Context, listed []listedManifest, tombstoned map[SnapshotID]bool, opts ManifestListOptions, yield func(LoadedManifest, error) bool) {
+func (d *dataset) yieldLoaded(ctx context.Context, listed []listedManifest, tombstoned map[SnapshotID]struct{}, opts ManifestListOptions, yield func(LoadedManifest, error) bool) {
 	yielded := 0
 	for _, m := range listed {
 		if opts.Limit > 0 && yielded == opts.Limit {
@@ -338,7 +348,7 @@ func (d *dataset) yieldLoaded(ctx context.Context, listed []listedManifest, tomb
 		if !manifestRefLess(opts.StartAfter, ManifestRef{ID: m.id, Partition: PartitionPath{path: m.partition}}) {
 			continue
 		}
-		if m.partition != "" && tombstoned[m.id] {
+		if _, isTombstoned := tombstoned[m.id]; m.partition != "" && isTombstoned {
 			live, err := newDatasetKind(d.id, d.layout, d.store).NotExpired(ctx, m.id)
 			if err != nil {
 				yield(LoadedManifest{}, err)
@@ -390,7 +400,7 @@ type listedManifest struct {
 
 type manifestListing struct {
 	manifests  []listedManifest
-	tombstoned map[SnapshotID]bool
+	tombstoned map[SnapshotID]struct{}
 	any        bool
 }
 
@@ -431,10 +441,10 @@ func (d *dataset) listManifests(ctx context.Context, prefix string) (manifestLis
 	}
 	sortListed(indexed)
 
-	seen := make(map[SnapshotID]bool, len(indexed)+len(canonical))
+	seen := make(map[SnapshotID]struct{}, len(indexed)+len(canonical))
 	for _, m := range slices.Concat(indexed, canonical) {
-		if !seen[m.id] {
-			seen[m.id] = true
+		if _, dup := seen[m.id]; !dup {
+			seen[m.id] = struct{}{}
 			listing.manifests = append(listing.manifests, m)
 		}
 	}
@@ -444,7 +454,7 @@ func (d *dataset) listManifests(ctx context.Context, prefix string) (manifestLis
 
 type expiryFilter struct {
 	ds         *dataset
-	tombstoned map[SnapshotID]bool
+	tombstoned map[SnapshotID]struct{}
 	cache      map[SnapshotID]*bool
 }
 
@@ -471,16 +481,19 @@ func (d *dataset) newExpiryFilter(ctx context.Context, listedPaths []string, pre
 	if len(keys) == 0 {
 		return f, nil
 	}
-	f.tombstoned = make(map[SnapshotID]bool, len(keys))
+	f.tombstoned = make(map[SnapshotID]struct{}, len(keys))
 	for _, k := range keys {
-		f.tombstoned[SnapshotID(strings.TrimPrefix(k, tombPrefix))] = true
+		f.tombstoned[SnapshotID(strings.TrimPrefix(k, tombPrefix))] = struct{}{}
 	}
 	f.cache = make(map[SnapshotID]*bool, len(keys))
 	return f, nil
 }
 
 func (f expiryFilter) skipSnapshot(ctx context.Context, id SnapshotID) (bool, error) {
-	if id == "" || !f.tombstoned[id] {
+	if id == "" {
+		return false, nil
+	}
+	if _, ok := f.tombstoned[id]; !ok {
 		return false, nil
 	}
 	if cached, ok := f.cache[id]; ok {

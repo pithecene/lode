@@ -1085,7 +1085,7 @@ func (h *History[ID, M]) advancePointer(ctx context.Context, expected string, id
 // its expected predecessor, or the root. A gap or cycle leaves the outcome
 // uncertain. Each kind identifies the copies that reliably record its parent.
 func (h *History[ID, M]) containsAttempt(ctx context.Context, head, attempt, expected ID) (bool, error) {
-	seen := make(map[ID]bool)
+	seen := make(map[ID]struct{})
 	for id := head; id != expected && id != ""; {
 		if id == attempt {
 			return true, nil
@@ -1093,10 +1093,10 @@ func (h *History[ID, M]) containsAttempt(ctx context.Context, head, attempt, exp
 		if !IsGeneratedID(id) {
 			return false, pointerNotSnapshotID{content: string(id)}
 		}
-		if seen[id] {
+		if _, repeated := seen[id]; repeated {
 			return false, fmt.Errorf("lode: snapshot ancestry repeats %s", id)
 		}
-		seen[id] = true
+		seen[id] = struct{}{}
 		if err := ctx.Err(); err != nil {
 			return false, err
 		}
