@@ -32,35 +32,55 @@ go get github.com/pithecene/lode
 
 ### Writing and Reading a Blob
 
-<!-- illustrative: shows API pattern; see examples/ for runnable code -->
+The program below creates a temporary storage directory, writes one blob with explicit metadata, and reads the snapshot back (run [`examples/blob_upload`](examples/blob_upload/main.go) with `go run ./examples/blob_upload` for metadata decoding and streaming writes):
+
+<!-- illustrative -->
 ```go
 package main
 
 import (
-    "context"
-    "fmt"
-    "github.com/pithecene/lode/lode"
+	"context"
+	"fmt"
+	"log"
+	"os"
+
+	"github.com/pithecene/lode/lode"
 )
 
 func main() {
-    ctx := context.Background()
+	ctx := context.Background()
 
-    // Open a root over filesystem storage, and a blob dataset in it.
-    blobs, _ := lode.Open(lode.FS("/tmp/lode-demo")).Blobs(ctx, "mydata")
+	dir, err := os.MkdirTemp("", "lode-quickstart-*")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
 
-    // Write a blob: one []byte per snapshot.
-    snap, _ := blobs.Write(ctx, []byte("hello world"), lode.D{"source": "demo"})
-    fmt.Println("Created snapshot:", snap.ID)
+	root := lode.Open(lode.FS(dir))
+	ds, err := root.Blobs(ctx, "mydata")
+	if err != nil {
+		log.Fatal(err)
+	}
 
-    // Read the blob back.
-    data, _ := blobs.Read(ctx, snap.ID)
-    fmt.Println("Data:", string(data))
+	snapshot, err := ds.Write(ctx, []byte("hello world"), lode.D{"source": "demo"})
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("Created snapshot:", snapshot.ID)
+
+	data, err := ds.Read(ctx, snapshot.ID)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("Data:", string(data))
 }
 ```
 
 ### Writing Structured Records
 
-<!-- illustrative: shows API pattern; see examples/ for runnable code -->
+The illustrative fragment below omits setup and error handling to show typed JSON Lines records partitioned by day; see [`examples/hive_layout/main.go`](examples/hive_layout/main.go) for a complete runnable program:
+
+<!-- illustrative -->
 ```go
 // The codec fixes the record type: here Event, encoded as JSON Lines.
 type Event struct {

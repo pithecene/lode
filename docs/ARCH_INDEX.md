@@ -94,11 +94,13 @@ Example usage and integration references; `README.md` indexes them.
 
 - `default_layout/` — write → list → read with DefaultLayout
 - `hive_layout/` — partition-first layout with Hive partitioner
+- `vessel_positions/` — vessel position reports under Hive day layout (foundation page capture recipe)
 - `manifest_driven/` — manifest-driven discovery demonstration
 - `blob_upload/` — raw blob write/read with default bundle
 - `stream_write_records/` — streaming record writes with iterator
 - `parquet/` — Parquet codec with schema-typed fields
 - `volume_sparse/` — sparse Volume: stage, commit, read with gaps
+- `depth_grid/` — three-commit sparse depth-grid Volume (foundation page capture recipe)
 - `optimistic_concurrency/` — CAS conflict detection and retry pattern
 - `vector_artifacts/` — vector artifact pipeline: embeddings, indices, active pointers
 - `retention/` — expire runs by partition with a dry-run preview, then sweep
