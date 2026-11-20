@@ -867,7 +867,6 @@ func TestStore_List(t *testing.T) {
 			{"day=2024-01-15", 2},  // bare string prefix includes it
 			{"day=2024-01", 2},     // partial final token
 			{"day=2030", 0},
-			{"/", 3}, // slash-only prefix is the store root, not the key "/"
 			{"", 3},
 		}
 		for _, tc := range cases {
@@ -878,6 +877,9 @@ func TestStore_List(t *testing.T) {
 			if len(keys) != tc.want {
 				t.Errorf("List(%q) = %v, want %d keys", tc.prefix, keys, tc.want)
 			}
+		}
+		if _, err := store.List(ctx, "/"); !errors.Is(err, lode.ErrInvalidPath) {
+			t.Errorf("List(\"/\") = %v, want ErrInvalidPath", err)
 		}
 	})
 
@@ -993,15 +995,16 @@ func TestStore_ListPrefixes(t *testing.T) {
 			t.Errorf("ListPrefixes(datasets/) = %v, want %v", got, want)
 		}
 
-		for _, rootPrefix := range []string{"", "/"} {
-			gotRoot, err := store.ListPrefixes(ctx, rootPrefix)
-			if err != nil {
-				t.Fatalf("ListPrefixes(%q): %v", rootPrefix, err)
-			}
-			wantRoot := []string{"datasets/", "volumes/"}
-			if !slices.Equal(gotRoot, wantRoot) {
-				t.Errorf("ListPrefixes(%q) = %v, want %v", rootPrefix, gotRoot, wantRoot)
-			}
+		gotRoot, err := store.ListPrefixes(ctx, "")
+		if err != nil {
+			t.Fatalf("ListPrefixes(\"\"): %v", err)
+		}
+		wantRoot := []string{"datasets/", "volumes/"}
+		if !slices.Equal(gotRoot, wantRoot) {
+			t.Errorf("ListPrefixes(\"\") = %v, want %v", gotRoot, wantRoot)
+		}
+		if _, err := store.ListPrefixes(ctx, "/"); !errors.Is(err, lode.ErrInvalidPath) {
+			t.Errorf("ListPrefixes(\"/\") = %v, want ErrInvalidPath", err)
 		}
 	})
 

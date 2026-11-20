@@ -11,11 +11,14 @@ import (
 // the current content matches expected. See ConditionalWriter for semantics.
 //
 // It holds an exclusive lock on a companion .lock file (lockExclusive: flock
-// on Unix, LockFileEx on Windows) and writes through a temporary file and a
-// rename under the lock.
-func (f *fsStore) CompareAndSwap(_ context.Context, path, expected, replacement string) error {
+// on Unix, LockFileEx on Windows) while honoring ctx cancellation, and writes
+// through a temporary file and an atomic rename under the lock.
+func (f *fsStore) CompareAndSwap(ctx context.Context, path, expected, replacement string) error {
 	fullPath, err := f.safePathForFile(path)
 	if err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
 		return err
 	}
 
@@ -33,11 +36,15 @@ func (f *fsStore) CompareAndSwap(_ context.Context, path, expected, replacement 
 	}
 	defer closer(lockFile)()
 
-	unlock, err := lockExclusive(lockFile)
+	unlock, err := lockExclusive(ctx, lockFile)
 	if err != nil {
 		return fmt.Errorf("fs: lock: %w", err)
 	}
 	defer unlock()
+
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	// Under lock: read current content and compare.
 	current, err := os.ReadFile(fullPath)
@@ -79,6 +86,11 @@ func (f *fsStore) CompareAndSwap(_ context.Context, path, expected, replacement 
 	if err := tmp.Close(); err != nil {
 		_ = os.Remove(tmpName)
 		return fmt.Errorf("fs: cas close temp: %w", err)
+	}
+
+	if err := ctx.Err(); err != nil {
+		_ = os.Remove(tmpName)
+		return err
 	}
 
 	// replaceFile replaces the pointer even while a reader holds it open,

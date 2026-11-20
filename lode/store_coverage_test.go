@@ -40,7 +40,7 @@ func TestFSStore_SafePath(t *testing.T) {
 			{"parent traversal prefix", "../secret", true},
 			{"leading slash", "/etc/passwd", true},
 			{"dot path", ".", true},
-			{"double slash normalized", "a//b/c.txt", false},
+			{"double slash rejected", "a//b/c.txt", true},
 			{"valid nested", "datasets/test/file.txt", false},
 			{"valid single", "file.txt", false},
 		}},
@@ -49,7 +49,7 @@ func TestFSStore_SafePath(t *testing.T) {
 			{"parent traversal", "..", true},
 			{"parent traversal prefix", "../escape", true},
 			{"leading slash", "/absolute", true},
-			{"dot prefix", ".", false},
+			{"dot prefix", ".", true},
 			{"valid prefix", "datasets/test/", false},
 		}},
 	} {

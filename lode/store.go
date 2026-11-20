@@ -120,7 +120,10 @@ func (f *fsStore) Put(_ context.Context, path string, r io.Reader) error {
 		return err
 	}
 
-	if _, err := os.Stat(fullPath); err == nil {
+	if info, err := os.Stat(fullPath); err == nil {
+		if info.IsDir() {
+			return fmt.Errorf("fs: put: %q is a directory", path)
+		}
 		return ErrPathExists
 	}
 
@@ -233,7 +236,19 @@ func (f *fsStore) openObject(path, op string) (*os.File, error) {
 		if os.IsNotExist(err) {
 			return nil, ErrNotFound
 		}
+		if info, statErr := os.Stat(fullPath); statErr == nil && info.IsDir() {
+			return nil, ErrNotFound
+		}
 		return nil, fmt.Errorf("fs: %s: %w", op, err)
+	}
+	info, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return nil, fmt.Errorf("fs: %s: %w", op, err)
+	}
+	if info.IsDir() {
+		_ = file.Close()
+		return nil, ErrNotFound
 	}
 	return file, nil
 }
@@ -247,9 +262,9 @@ func (f *fsStore) Exists(_ context.Context, path string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	_, err = os.Stat(fullPath)
+	info, err := os.Stat(fullPath)
 	if err == nil {
-		return true, nil
+		return !info.IsDir(), nil
 	}
 	if os.IsNotExist(err) {
 		return false, nil
@@ -267,9 +282,9 @@ func (f *fsStore) List(ctx context.Context, prefix string) ([]string, error) {
 	}
 
 	walkRoot, filter := searchPath, ""
-	if searchPath != f.root && !strings.HasSuffix(prefix, "/") {
+	if filepath.Clean(searchPath) != filepath.Clean(f.root) && !strings.HasSuffix(prefix, "/") {
 		walkRoot = filepath.Dir(searchPath)
-		filter = filepath.ToSlash(filepath.Clean(prefix))
+		filter = prefix
 	}
 
 	info, err := os.Stat(walkRoot)
@@ -368,7 +383,8 @@ func (f *fsStore) ListPrefixes(ctx context.Context, prefix string) ([]string, er
 			return nil, err
 		}
 		name := e.Name()
-		if !e.IsDir() || isTemporary(name) || (partial != "" && !strings.HasPrefix(name, partial)) {
+		// ReservedPrefix applies only to final object-key segments, not intermediate directories.
+		if !e.IsDir() || (partial != "" && !strings.HasPrefix(name, partial)) {
 			continue
 		}
 		hasObj, err := hasAnyObject(ctx, filepath.Join(parentDir, name))
@@ -383,7 +399,7 @@ func (f *fsStore) ListPrefixes(ctx context.Context, prefix string) ([]string, er
 }
 
 // hasAnyObject reports whether dir contains at least one published object,
-// returning on the first regular non-temporary file encountered.
+// returning on the first non-temporary file encountered.
 func hasAnyObject(ctx context.Context, dir string) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
@@ -399,15 +415,15 @@ func hasAnyObject(ctx context.Context, dir string) (bool, error) {
 		if err := ctx.Err(); err != nil {
 			return false, err
 		}
-		if isTemporary(e.Name()) {
+		if e.IsDir() {
+			ok, err := hasAnyObject(ctx, filepath.Join(dir, e.Name()))
+			if err != nil || ok {
+				return ok, err
+			}
 			continue
 		}
-		if !e.IsDir() {
+		if !isTemporary(e.Name()) {
 			return true, nil
-		}
-		ok, err := hasAnyObject(ctx, filepath.Join(dir, e.Name()))
-		if err != nil || ok {
-			return ok, err
 		}
 	}
 	return false, nil
@@ -417,6 +433,9 @@ func (f *fsStore) Delete(_ context.Context, path string) error {
 	fullPath, err := f.safePathForFile(path)
 	if err != nil {
 		return err
+	}
+	if info, statErr := os.Stat(fullPath); statErr == nil && info.IsDir() {
+		return nil
 	}
 	err = os.Remove(fullPath)
 	if err != nil && os.IsNotExist(err) {
@@ -433,17 +452,9 @@ func (f *fsStore) ReadRange(_ context.Context, path string, offset, length int64
 		return nil, ErrInvalidPath
 	}
 
-	fullPath, err := f.safePathForFile(path)
+	file, err := f.openObject(path, "read range")
 	if err != nil {
 		return nil, err
-	}
-
-	file, err := openRead(fullPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, ErrNotFound
-		}
-		return nil, fmt.Errorf("fs: read range: %w", err)
 	}
 	defer closer(file)()
 
@@ -487,7 +498,7 @@ func (f *fsStore) safePathForPrefix(prefix string) (string, error) {
 }
 
 func isRooted(p string) bool {
-	return strings.HasPrefix(p, "/") || filepath.IsAbs(p)
+	return strings.HasPrefix(p, "/") || filepath.IsAbs(p) || filepath.VolumeName(p) != ""
 }
 
 func (f *fsStore) resolve(rel string, allowRoot bool) (string, error) {
@@ -506,7 +517,11 @@ func (f *fsStore) resolve(rel string, allowRoot bool) (string, error) {
 		}
 		return f.root, nil
 	}
-	if !strings.HasPrefix(absFull, absRoot+string(filepath.Separator)) {
+	rootPrefix := absRoot
+	if !strings.HasSuffix(rootPrefix, string(filepath.Separator)) {
+		rootPrefix += string(filepath.Separator)
+	}
+	if !strings.HasPrefix(absFull, rootPrefix) {
 		return "", ErrInvalidPath
 	}
 	return full, nil
@@ -665,14 +680,21 @@ func (m *memoryStore) Delete(_ context.Context, path string) error {
 	return nil
 }
 
-func (m *memoryStore) CompareAndSwap(_ context.Context, path, expected, replacement string) error {
+func (m *memoryStore) CompareAndSwap(ctx context.Context, path, expected, replacement string) error {
 	normalized, valid := storepath.Key(path)
 	if !valid {
 		return ErrInvalidPath
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	data, exists := m.data[normalized]
 	switch {

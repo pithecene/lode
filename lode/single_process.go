@@ -7,7 +7,27 @@ import (
 	"io"
 	"strings"
 	"sync"
+
+	"github.com/pithecene/lode/internal/storepath"
+	"github.com/pithecene/lode/internal/validate"
 )
+
+// casJournalSuffix names the companion backup object written before Delete in
+// SingleProcess.CompareAndSwap so a failed replacement Put or process crash
+// never leaves the committed pointer unrecoverable.
+const casJournalSuffix = ".lode-cas"
+
+func isCASJournal(path string) bool {
+	return strings.HasSuffix(path, casJournalSuffix)
+}
+
+func casJournalPath(path string) string {
+	return path + casJournalSuffix
+}
+
+func casTargetPath(journal string) (string, bool) {
+	return strings.CutSuffix(journal, casJournalSuffix)
+}
 
 // SingleProcess returns a Store whose CompareAndSwap serializes updates
 // through a lock held by this process. It is the explicit escape hatch for a
@@ -18,21 +38,30 @@ import (
 // other processes, or a second SingleProcess wrapping the same backend, are
 // not serialized and can fork a history.
 //
+// Before deleting an existing target, CompareAndSwap journals the verified
+// prior content at <path>.lode-cas, restoring <path> if the replacement Put
+// fails and serving <path>.lode-cas whenever <path> is absent so neither a
+// replacement failure nor process termination loses the committed head.
+//
 // Reads through the returned store wait for a replacement in progress, so a
 // reader in this process observes the old or the new content of a path,
 // never its absence between the Delete and the Put. Optional capabilities of
 // store (RangeReader, PrefixLister) are preserved on the returned value.
 //
 // A store that already implements ConditionalWriter is returned unchanged,
-// and a nil store is returned as nil, so that a constructor rejects it.
+// and a nil or typed-nil store is returned as nil, so that a constructor
+// rejects it.
 func SingleProcess(store ObjectStore) Store {
-	if store == nil {
+	if validate.Nil(store) {
 		return nil
 	}
 	if s, ok := store.(Store); ok {
 		return s
 	}
-	base := &singleProcessStore{ObjectStore: store}
+	base := &singleProcessStore{
+		ObjectStore: store,
+		journaled:   make(map[string]bool),
+	}
 	ranges, hasRanges := store.(RangeReader)
 	prefixes, hasPrefixes := store.(PrefixLister)
 	switch {
@@ -51,28 +80,96 @@ func SingleProcess(store ObjectStore) Store {
 }
 
 // singleProcessStore implements CompareAndSwap over a store without one.
-// CompareAndSwap holds mu exclusively; the reads hold it shared.
+// CompareAndSwap, Put, and Delete hold mu exclusively; reads hold it shared.
 type singleProcessStore struct {
 	ObjectStore
-	mu sync.RWMutex
+	mu        sync.RWMutex
+	journaled map[string]bool
+}
+
+func (s *singleProcessStore) Put(ctx context.Context, path string, r io.Reader) error {
+	if isCASJournal(path) {
+		return ErrInvalidPath
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.journaled[path] {
+		return ErrPathExists
+	}
+	return s.ObjectStore.Put(ctx, path, r)
 }
 
 func (s *singleProcessStore) Get(ctx context.Context, path string) (io.ReadCloser, error) {
+	if isCASJournal(path) {
+		return nil, ErrInvalidPath
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.ObjectStore.Get(ctx, path)
+	rc, err := s.ObjectStore.Get(ctx, path)
+	if !errors.Is(err, ErrNotFound) {
+		return rc, err
+	}
+	jrc, jerr := s.ObjectStore.Get(ctx, casJournalPath(path))
+	if errors.Is(jerr, ErrNotFound) {
+		return nil, err
+	}
+	return jrc, jerr
 }
 
 func (s *singleProcessStore) Exists(ctx context.Context, path string) (bool, error) {
+	if isCASJournal(path) {
+		return false, ErrInvalidPath
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.ObjectStore.Exists(ctx, path)
+	ok, err := s.ObjectStore.Exists(ctx, path)
+	if err != nil || ok {
+		return ok, err
+	}
+	return s.ObjectStore.Exists(ctx, casJournalPath(path))
+}
+
+func (s *singleProcessStore) Delete(ctx context.Context, path string) error {
+	if isCASJournal(path) {
+		return ErrInvalidPath
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.ObjectStore.Delete(ctx, path); err != nil {
+		return err
+	}
+	if err := s.ObjectStore.Delete(ctx, casJournalPath(path)); err != nil && !errors.Is(err, ErrNotFound) {
+		return err
+	}
+	delete(s.journaled, path)
+	return nil
 }
 
 func (s *singleProcessStore) List(ctx context.Context, prefix string) ([]string, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.ObjectStore.List(ctx, prefix)
+	raw, err := s.ObjectStore.List(ctx, prefix)
+	if err != nil {
+		return nil, err
+	}
+	present := make(map[string]struct{}, len(raw))
+	out := make([]string, 0, len(raw))
+	var journals []string
+	for _, k := range raw {
+		if target, ok := casTargetPath(k); ok {
+			journals = append(journals, target)
+			continue
+		}
+		present[k] = struct{}{}
+		out = append(out, k)
+	}
+	for _, target := range journals {
+		if _, ok := present[target]; !ok && strings.HasPrefix(target, prefix) {
+			present[target] = struct{}{}
+			out = append(out, target)
+		}
+	}
+	return out, nil
 }
 
 type singleProcessRangeStore struct {
@@ -81,15 +178,85 @@ type singleProcessRangeStore struct {
 }
 
 func (s singleProcessRangeStore) ReadRange(ctx context.Context, path string, offset, length int64) ([]byte, error) {
+	if isCASJournal(path) {
+		return nil, ErrInvalidPath
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.ranges.ReadRange(ctx, path, offset, length)
+	data, err := s.ranges.ReadRange(ctx, path, offset, length)
+	if !errors.Is(err, ErrNotFound) {
+		return data, err
+	}
+	jdata, jerr := s.ranges.ReadRange(ctx, casJournalPath(path), offset, length)
+	if errors.Is(jerr, ErrNotFound) {
+		return nil, err
+	}
+	return jdata, jerr
 }
 
 func (s singleProcessRangeStore) ReaderAt(ctx context.Context, path string) (io.ReaderAt, error) {
+	if isCASJournal(path) {
+		return nil, ErrInvalidPath
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.ranges.ReaderAt(ctx, path)
+	ra, err := s.openReaderAtLocked(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	wrapped := &singleProcessReaderAt{
+		store: s,
+		ctx:   ctx,
+		path:  path,
+		ra:    ra,
+	}
+	if c, ok := ra.(io.Closer); ok {
+		return &singleProcessReadAtCloser{singleProcessReaderAt: wrapped, closer: c}, nil
+	}
+	return wrapped, nil
+}
+
+func (s singleProcessRangeStore) openReaderAtLocked(ctx context.Context, path string) (io.ReaderAt, error) {
+	ra, err := s.ranges.ReaderAt(ctx, path)
+	if !errors.Is(err, ErrNotFound) {
+		return ra, err
+	}
+	jra, jerr := s.ranges.ReaderAt(ctx, casJournalPath(path))
+	if errors.Is(jerr, ErrNotFound) {
+		return nil, err
+	}
+	return jra, jerr
+}
+
+type singleProcessReaderAt struct {
+	store singleProcessRangeStore
+	ctx   context.Context
+	path  string
+	ra    io.ReaderAt
+}
+
+func (r *singleProcessReaderAt) ReadAt(p []byte, off int64) (int, error) {
+	r.store.mu.RLock()
+	defer r.store.mu.RUnlock()
+	n, err := r.ra.ReadAt(p, off)
+	if err != nil && !errors.Is(err, io.EOF) {
+		if fresh, openErr := r.store.openReaderAtLocked(r.ctx, r.path); openErr == nil {
+			if c, ok := fresh.(io.Closer); ok {
+				defer closer(c)()
+			}
+			return fresh.ReadAt(p, off)
+		}
+	}
+	return n, err
+}
+
+type singleProcessReadAtCloser struct {
+	*singleProcessReaderAt
+	closer io.Closer
+}
+
+func (r *singleProcessReadAtCloser) Close() error {
+	return r.closer.Close()
 }
 
 type singleProcessPrefixStore struct {
@@ -115,28 +282,104 @@ func (s singleProcessFullStore) ListPrefixes(ctx context.Context, prefix string)
 }
 
 func (s *singleProcessStore) CompareAndSwap(ctx context.Context, path, expected, replacement string) error {
+	cleaned, valid := storepath.Key(path)
+	if !valid || isCASJournal(cleaned) {
+		return ErrInvalidPath
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	current, exists, err := s.read(ctx, path)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	current, exists, fromJournal, err := s.readStateLocked(ctx, cleaned)
 	if err != nil {
 		return err
 	}
 	if (exists && current != expected) || (!exists && expected != "") {
 		return ErrSnapshotConflict
 	}
-	if exists {
-		if err := s.Delete(ctx, path); err != nil {
+	if !exists {
+		if err := s.ObjectStore.Put(ctx, cleaned, strings.NewReader(replacement)); err != nil {
+			if errors.Is(err, ErrPathExists) {
+				return ErrSnapshotConflict
+			}
+			return fmt.Errorf("single-process cas put: %w", err)
+		}
+		return nil
+	}
+	if !fromJournal && expected == replacement {
+		return nil
+	}
+
+	jPath := casJournalPath(cleaned)
+	if !fromJournal {
+		if err := s.stageJournalLocked(ctx, jPath, expected); err != nil {
+			return err
+		}
+		s.journaled[cleaned] = true
+		if err := s.ObjectStore.Delete(ctx, cleaned); err != nil {
 			return fmt.Errorf("single-process cas delete: %w", err)
 		}
 	}
-	if err := s.Put(ctx, path, strings.NewReader(replacement)); err != nil {
+
+	if err := s.ObjectStore.Put(ctx, cleaned, strings.NewReader(replacement)); err != nil {
+		s.restoreAfterFailedPutLocked(ctx, cleaned, jPath, expected)
 		return fmt.Errorf("single-process cas put: %w", err)
+	}
+
+	s.clearJournalLocked(ctx, cleaned, jPath)
+	return nil
+}
+
+func (s *singleProcessStore) stageJournalLocked(ctx context.Context, jPath, expected string) error {
+	err := s.ObjectStore.Put(ctx, jPath, strings.NewReader(expected))
+	if errors.Is(err, ErrPathExists) {
+		if delErr := s.ObjectStore.Delete(ctx, jPath); delErr != nil && !errors.Is(delErr, ErrNotFound) {
+			return fmt.Errorf("single-process cas journal cleanup: %w", delErr)
+		}
+		err = s.ObjectStore.Put(ctx, jPath, strings.NewReader(expected))
+	}
+	if err != nil {
+		return fmt.Errorf("single-process cas journal: %w", err)
 	}
 	return nil
 }
 
-func (s *singleProcessStore) read(ctx context.Context, path string) (string, bool, error) {
+func (s *singleProcessStore) restoreAfterFailedPutLocked(ctx context.Context, cleaned, jPath, expected string) {
+	restoreCtx := context.WithoutCancel(ctx)
+	restoreErr := s.ObjectStore.Put(restoreCtx, cleaned, strings.NewReader(expected))
+	if restoreErr == nil || errors.Is(restoreErr, ErrPathExists) {
+		s.clearJournalLocked(restoreCtx, cleaned, jPath)
+	}
+}
+
+func (s *singleProcessStore) clearJournalLocked(ctx context.Context, cleaned, jPath string) {
+	delErr := s.ObjectStore.Delete(context.WithoutCancel(ctx), jPath)
+	if delErr == nil || errors.Is(delErr, ErrNotFound) {
+		delete(s.journaled, cleaned)
+	}
+}
+
+func (s *singleProcessStore) readStateLocked(ctx context.Context, path string) (content string, exists, fromJournal bool, err error) {
+	content, exists, err = s.readRawLocked(ctx, path)
+	if err != nil || exists {
+		return content, exists, false, err
+	}
+	content, exists, err = s.readRawLocked(ctx, casJournalPath(path))
+	if err != nil || !exists {
+		return "", false, false, err
+	}
+	s.journaled[path] = true
+	return content, true, true, nil
+}
+
+func (s *singleProcessStore) readRawLocked(ctx context.Context, path string) (string, bool, error) {
 	rc, err := s.ObjectStore.Get(ctx, path)
 	if errors.Is(err, ErrNotFound) {
 		return "", false, nil

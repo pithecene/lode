@@ -16,11 +16,13 @@ func TestKey(t *testing.T) {
 		{"..", "", false},
 		{"../secret", "", false},
 		{"/", "", false},
+		{"/file.txt", "", false},
+		{"file.txt/", "", false},
+		{"a/./b", "", false},
+		{"a//b", "", false},
+		{"a/../b", "", false},
 		{"datasets/test/file.txt", "datasets/test/file.txt", true},
 		{"file.txt", "file.txt", true},
-		{"/file.txt", "file.txt", true},
-		{"a/./b//c", "a/b/c", true},
-		{"a/../b", "b", true}, // resolves inside the root
 		{".lode-tmp-x", "", false},
 		{"a/.lode-tmp-cas-1", "", false},
 		{".lode-tmp-x/a", ".lode-tmp-x/a", true}, // only the final segment is reserved
@@ -40,14 +42,19 @@ func TestPrefix(t *testing.T) {
 		ok   bool
 	}{
 		{"", "", true},
-		{".", "", true},
-		{"/", "", true},
-		{"a/..", "", true},
+		{".", "", false},
+		{"./", "", false},
+		{"/", "", false},
+		{"a/..", "", false},
+		{"a/./b", "", false},
+		{"a//b", "", false},
+		{"a//", "", false},
 		{"..", "", false},
 		{"../escape", "", false},
+		{"/day=2026-10", "", false},
 		{"datasets/test/", "datasets/test/", true}, // trailing slash preserved
 		{"datasets/test", "datasets/test", true},
-		{"/day=2026-10", "day=2026-10", true},
+		{".lode-tmp-dir/", ".lode-tmp-dir/", true},
 	}
 	for _, c := range cases {
 		got, ok := Prefix(c.in)

@@ -3,6 +3,7 @@ package lode
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"slices"
 	"sort"
@@ -113,19 +114,21 @@ func TestFSStore_List(t *testing.T) {
 		}
 	})
 
-	// TestFSStore_List_RootNormalizingPrefixes verifies prefixes that normalize to
-	// the store root ("", ".", "a/..") walk the root directly and never its parent.
-	t.Run("root-normalizing prefixes", func(t *testing.T) {
+	// Empty prefix walks the store root; dot-segment prefixes are rejected per
+	// CONTRACT_STORAGE §List.
+	t.Run("root and dot-segment prefixes", func(t *testing.T) {
 		store, err := NewFS(t.TempDir())
 		if err != nil {
 			t.Fatal(err)
 		}
 		seedPrefixFixture(t, store)
 		ctx := t.Context()
-		for _, prefix := range []string{"", ".", "ds/.."} {
-			got := listSorted(ctx, t, store, prefix)
-			if len(got) != 6 {
-				t.Fatalf("List(%q): got %d paths %v, want all 6", prefix, len(got), got)
+		if got := listSorted(ctx, t, store, ""); len(got) != 6 {
+			t.Fatalf("List(\"\"): got %d paths %v, want all 6", len(got), got)
+		}
+		for _, prefix := range []string{".", "ds/.."} {
+			if _, err := store.List(ctx, prefix); !errors.Is(err, ErrInvalidPath) {
+				t.Fatalf("List(%q) = %v, want ErrInvalidPath", prefix, err)
 			}
 		}
 	})
