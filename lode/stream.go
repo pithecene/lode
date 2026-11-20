@@ -2,6 +2,7 @@ package lode
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"iter"
@@ -274,6 +275,11 @@ func (r *putResult) start(putCtx, callerCtx context.Context, store Store, path s
 		err := store.Put(putCtx, path, pr)
 		if stopCancel != nil {
 			stopCancel()
+		}
+		// A read after the cancellation closed the pipe reports only
+		// io.ErrClosedPipe, so the caller's cause is joined back in.
+		if cause := callerCtx.Err(); cause != nil && errors.Is(err, io.ErrClosedPipe) && !errors.Is(err, cause) {
+			err = errors.Join(cause, err)
 		}
 		r.mu.Lock()
 		r.err, r.finished = err, true
