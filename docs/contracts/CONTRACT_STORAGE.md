@@ -240,3 +240,6 @@ type ConditionalWriter interface {
 | `ReaderAt` | 1 to open + 1 per `ReadAt` | O(L) per read |
 | `List` | `⌈N/page⌉` | O(N) materialized |
 | `ListPrefixes` | `⌈P_child/page⌉` | O(P_child) |
+
+See [Store Interface](CONTRACT_COMPLEXITY.md#store-interface) for the
+`SingleProcess` bounds for `Delete` and `ReaderAt`.

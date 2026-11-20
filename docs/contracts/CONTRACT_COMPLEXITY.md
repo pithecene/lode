@@ -62,6 +62,20 @@ depth of a dataset's or volume's snapshot history.
 | `List` | `⌈N/page⌉` | O(N) | Materializes all keys matching prefix |
 | `ListPrefixes` | `⌈D/page⌉` | O(D) | S3 delimiter listing (`PrefixLister`) |
 
+For `SingleProcess`, the following bounds count calls to the wrapped store:
+
+- `Delete` makes at most three calls. If the target exists, one `Exists`
+  call precedes deletion of the journal and target. Otherwise, at most two
+  `Exists` calls precede one `Delete` call.
+- `ReaderAt` opens the target, then opens the journal if the target is missing.
+  Each read from a journal-backed reader makes at most two `ReaderAt` calls
+  and one `ReadAt` call, including after the target is recreated. A reader
+  opened on the target makes one `ReadAt` call and incurs the same additional
+  calls only if that read returns `ErrNotFound`.
+- Each read that reopens an object also incurs the wrapped store's memory
+  cost of opening it. For `Memory`, each successful open copies the whole
+  object.
+
 ---
 
 S3 returns child prefixes in pages without transferring every descendant
@@ -117,7 +131,7 @@ ancestry reads.
 | `Read(id)` | Hot | snapshot lookup + `F` object reads | O(R_total) | O(R_total) |
 | `Snapshots()` | Cold | 1 `List` + `1 + S` `Get` calls | O(S × manifest) | O(S log S) |
 | `OpenObject` | Hot | 1 `Get` | O(1) stream | O(1) |
-| `ReaderAt` | Hot | 1 to open + 1 per `ReadAt` | O(L) per read | O(1) |
+| `ReaderAt` | Hot | 1 to open + 1 per `ReadAt` (see [Store Interface](#store-interface) for `SingleProcess`) | O(L) per read plus any reopen cost | O(1) excluding storage calls |
 
 ---
 
