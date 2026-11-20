@@ -14,18 +14,19 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pithecene/lode/internal/history"
 	"github.com/pithecene/lode/lode"
 )
 
 type gatedStore struct {
 	lode.RangeStore
 	mu     sync.Mutex
-	onPut  func(ctx context.Context, key string) error
+	onPut  func(ctx context.Context, key string, r io.Reader) error
 	onDel  func(ctx context.Context, key string) error
 	putBlk func(ctx context.Context) error
 }
 
-func (g *gatedStore) setOnPut(fn func(ctx context.Context, key string) error) {
+func (g *gatedStore) setOnPut(fn func(ctx context.Context, key string, r io.Reader) error) {
 	g.mu.Lock()
 	g.onPut = fn
 	g.mu.Unlock()
@@ -43,9 +44,7 @@ func (g *gatedStore) Put(ctx context.Context, key string, r io.Reader) error {
 	putBlk := g.putBlk
 	g.mu.Unlock()
 	if hook != nil {
-		if err := hook(ctx, key); err != nil {
-			return err
-		}
+		return hook(ctx, key, r)
 	}
 	if putBlk != nil && strings.Contains(key, "/data/") {
 		return putBlk(ctx)
@@ -53,7 +52,17 @@ func (g *gatedStore) Put(ctx context.Context, key string, r io.Reader) error {
 	return g.RangeStore.Put(ctx, key, r)
 }
 
+func (g *gatedStore) Get(ctx context.Context, key string) (io.ReadCloser, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return g.RangeStore.Get(ctx, key)
+}
+
 func (g *gatedStore) Delete(ctx context.Context, key string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	g.mu.Lock()
 	hook := g.onDel
 	g.mu.Unlock()
@@ -84,20 +93,31 @@ func openGatedHarness(t *testing.T, opts ...lode.DatasetOption) gatedHarness {
 	return gatedHarness{mem: mem, gs: gs, root: root, ds: ds}
 }
 
-func pauseFirstPut(gs *gatedStore, match func(string) bool) (entered <-chan struct{}, release chan<- struct{}) {
+func pauseFirstPut(t *testing.T, gs *gatedStore, match func(string) bool, afterPut func() error) (<-chan struct{}, func()) {
+	t.Helper()
 	ent := make(chan struct{})
 	rel := make(chan struct{})
+	release := sync.OnceFunc(func() { close(rel) })
+	t.Cleanup(release)
 	var once sync.Once
-	gs.setOnPut(func(_ context.Context, key string) error {
+	gs.setOnPut(func(ctx context.Context, key string, r io.Reader) error {
+		var paused bool
 		if match(key) {
 			once.Do(func() {
+				paused = true
 				close(ent)
 				<-rel
 			})
 		}
+		if err := gs.RangeStore.Put(ctx, key, r); err != nil {
+			return err
+		}
+		if paused && afterPut != nil {
+			return afterPut()
+		}
 		return nil
 	})
-	return ent, rel
+	return ent, release
 }
 
 func mustWriteDoc(t *testing.T, ds *lode.Records[lode.D], doc lode.D) *lode.Snapshot {
@@ -116,32 +136,38 @@ func assertDatasetFencedOnly(t *testing.T, store lode.Store) {
 		t.Fatal(err)
 	}
 	if !slices.Equal(keys, []string{"datasets/events/latest"}) {
-		t.Fatalf("remaining keys = %v, want only datasets/events/latest", keys)
+		t.Errorf("remaining keys = %v, want only datasets/events/latest", keys)
 	}
 }
 
-func finishRemovalAndAwaitWrite(t *testing.T, h gatedHarness, release chan<- struct{}, writeErrCh <-chan error) {
+func finishRemovalAndAwaitWrite(t *testing.T, h gatedHarness, release func(), writeErrCh <-chan error) error {
 	t.Helper()
 	if err := h.root.RemoveDataset(t.Context(), "events"); err != nil {
 		t.Fatalf("RemoveDataset = %v, want nil", err)
 	}
-	close(release)
-	if err := <-writeErrCh; !errors.Is(err, lode.ErrRemoved) {
-		t.Fatalf("Write after removal = %v, want ErrRemoved", err)
-	}
+	release()
+	err := <-writeErrCh
 	assertDatasetFencedOnly(t, h.mem)
+	return err
 }
 
-func startPausedCanonicalWriteAndFence(t *testing.T) (gatedHarness, chan<- struct{}, <-chan error) {
+func startPausedCanonicalWriteAndFence(t *testing.T, cancelAfterPut bool, putErr error) (gatedHarness, func(), <-chan error) {
 	t.Helper()
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
 	h := openGatedHarness(t)
-	entered, release := pauseFirstPut(h.gs, func(key string) bool {
+	entered, release := pauseFirstPut(t, h.gs, func(key string) bool {
 		return strings.HasPrefix(key, "datasets/events/snapshots/") && strings.HasSuffix(key, "/manifest.json")
+	}, func() error {
+		if cancelAfterPut {
+			cancel()
+		}
+		return putErr
 	})
 
 	writeErrCh := make(chan error, 1)
 	go func() {
-		_, werr := h.ds.Write(t.Context(), lode.R(lode.D{"k": "v"}), nil)
+		_, werr := h.ds.Write(ctx, lode.R(lode.D{"k": "v"}), nil)
 		writeErrCh <- werr
 	}()
 
@@ -157,16 +183,35 @@ func TestAudit_AdvancePostPublicationFence_DatasetAndHive(t *testing.T) {
 
 	t.Run("unpartitioned dataset write paused before canonical manifest", func(t *testing.T) {
 		t.Parallel()
-		h, release, writeErrCh := startPausedCanonicalWriteAndFence(t)
-		finishRemovalAndAwaitWrite(t, h, release, writeErrCh)
+		h, release, writeErrCh := startPausedCanonicalWriteAndFence(t, false, nil)
+		if err := finishRemovalAndAwaitWrite(t, h, release, writeErrCh); !errors.Is(err, lode.ErrRemoved) {
+			t.Fatalf("Write after removal = %v, want ErrRemoved", err)
+		}
+	})
+
+	t.Run("dataset manifest persisted before Put failed", func(t *testing.T) {
+		t.Parallel()
+		putErr := errors.New("manifest Put response lost")
+		h, release, writeErrCh := startPausedCanonicalWriteAndFence(t, false, putErr)
+		err := finishRemovalAndAwaitWrite(t, h, release, writeErrCh)
+		assertRemovedPublicationError(t, err, putErr)
+	})
+
+	t.Run("caller canceled after publication", func(t *testing.T) {
+		t.Parallel()
+		h, release, writeErrCh := startPausedCanonicalWriteAndFence(t, true, nil)
+		if err := finishRemovalAndAwaitWrite(t, h, release, writeErrCh); !errors.Is(err, lode.ErrRemoved) {
+			t.Fatalf("Write after removal and cancellation = %v, want ErrRemoved", err)
+		}
 	})
 
 	t.Run("hive dataset write paused before partition manifest", func(t *testing.T) {
 		t.Parallel()
 		h := openGatedHarness(t, lode.WithLayout(lode.Hive("run_id")))
-		entered, release := pauseFirstPut(h.gs, func(key string) bool {
+		putErr := errors.New("partition manifest Put response lost")
+		entered, release := pauseFirstPut(t, h.gs, func(key string) bool {
 			return strings.Contains(key, "/partitions/run_id=a/segments/") && strings.HasSuffix(key, "/manifest.json")
-		})
+		}, func() error { return putErr })
 
 		writeErrCh := make(chan error, 1)
 		go func() {
@@ -175,7 +220,8 @@ func TestAudit_AdvancePostPublicationFence_DatasetAndHive(t *testing.T) {
 		}()
 
 		<-entered
-		finishRemovalAndAwaitWrite(t, h, release, writeErrCh)
+		err := finishRemovalAndAwaitWrite(t, h, release, writeErrCh)
+		assertRemovedPublicationError(t, err, putErr)
 	})
 
 	t.Run("sweep reindex cleans up late partition manifest after removal", func(t *testing.T) {
@@ -186,9 +232,13 @@ func TestAudit_AdvancePostPublicationFence_DatasetAndHive(t *testing.T) {
 		if err := h.mem.Delete(t.Context(), partManifest); err != nil {
 			t.Fatal(err)
 		}
-		time.Sleep(30 * time.Millisecond)
-
-		entered, release := pauseFirstPut(h.gs, func(key string) bool { return key == partManifest })
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		putErr := errors.New("repaired manifest Put response lost")
+		entered, release := pauseFirstPut(t, h.gs, func(key string) bool { return key == partManifest }, func() error {
+			cancel()
+			return putErr
+		})
 
 		type sweepRes struct {
 			report *lode.SweepReport
@@ -196,7 +246,7 @@ func TestAudit_AdvancePostPublicationFence_DatasetAndHive(t *testing.T) {
 		}
 		sweepCh := make(chan sweepRes, 1)
 		go func() {
-			rep, serr := h.ds.Sweep(t.Context(), lode.SweepRequest{Grace: time.Millisecond})
+			rep, serr := h.ds.Sweep(ctx, lode.SweepRequest{Grace: time.Nanosecond})
 			sweepCh <- sweepRes{report: rep, err: serr}
 		}()
 
@@ -204,17 +254,26 @@ func TestAudit_AdvancePostPublicationFence_DatasetAndHive(t *testing.T) {
 		if err := h.root.RemoveDataset(t.Context(), "events"); err != nil {
 			t.Fatalf("RemoveDataset = %v, want nil", err)
 		}
-		close(release)
+		release()
 
 		res := <-sweepCh
-		if !errors.Is(res.err, lode.ErrRemoved) {
-			t.Fatalf("Sweep after removal = %v, want ErrRemoved", res.err)
+		assertDatasetFencedOnly(t, h.mem)
+		if !errors.Is(res.err, lode.ErrRemoved) || !errors.Is(res.err, putErr) {
+			t.Fatalf("Sweep after removal = %v, want ErrRemoved and %v", res.err, putErr)
 		}
 		if len(res.report.Reindexed) != 0 {
 			t.Fatalf("Reindexed = %v, want empty", res.report.Reindexed)
 		}
-		assertDatasetFencedOnly(t, h.mem)
 	})
+}
+
+func assertRemovedPublicationError(t *testing.T, err, putErr error) {
+	t.Helper()
+	for _, want := range []error{lode.ErrRemoved, history.ErrManifestUncertain, putErr} {
+		if !errors.Is(err, want) {
+			t.Errorf("Write after removal = %v, want it to match %v", err, want)
+		}
+	}
 }
 
 type headerStreamCodec struct {
@@ -552,7 +611,8 @@ func TestAudit_ReviewRegressions_PR395(t *testing.T) {
 
 	t.Run("late manifest cleanup delete failure joins with ErrRemoved", func(t *testing.T) {
 		t.Parallel()
-		h, release, writeErrCh := startPausedCanonicalWriteAndFence(t)
+		putErr := errors.New("manifest Put response lost")
+		h, release, writeErrCh := startPausedCanonicalWriteAndFence(t, false, putErr)
 		if err := h.root.RemoveDataset(t.Context(), "events"); err != nil {
 			t.Fatalf("second RemoveDataset = %v, want nil", err)
 		}
@@ -564,11 +624,12 @@ func TestAudit_ReviewRegressions_PR395(t *testing.T) {
 			}
 			return nil
 		})
-		close(release)
+		release()
 
 		err := <-writeErrCh
-		if !errors.Is(err, lode.ErrRemoved) || !errors.Is(err, errDelBoom) {
-			t.Fatalf("Write = %v, want joined ErrRemoved and %v", err, errDelBoom)
+		assertRemovedPublicationError(t, err, putErr)
+		if !errors.Is(err, errDelBoom) {
+			t.Errorf("Write after removal = %v, want it to match %v", err, errDelBoom)
 		}
 	})
 

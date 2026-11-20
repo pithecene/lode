@@ -170,6 +170,12 @@ The `latest` pointer holding `lode:removed` remains permanently as the fence
 that prevents open handles or later calls from resurrecting or appending to
 the removed dataset.
 
+After attempting manifest publication, commits and `Sweep` repairs check the
+fence and delete any manifests they may have persisted if fenced. The check
+and deletes share a ten-second timeout independent of caller cancellation.
+When publication also failed, the error preserves both `ErrRemoved` and
+the publication error, plus any cleanup error.
+
 ---
 
 ## Concurrency and Optimistic CAS

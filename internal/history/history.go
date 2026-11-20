@@ -68,6 +68,8 @@ type Errors struct {
 // history open through the removal can never advance the pointer again.
 const RemovedPointer = "lode:removed"
 
+const removalCleanupTimeout = 10 * time.Second
+
 // Kind is what a container knows about its own snapshots: where they live
 // and how to read one. Implemented by small value types, not closures.
 type Kind[ID ~string, M any] interface {
@@ -197,9 +199,11 @@ func (h *History[ID, M]) CompletePending(ctx context.Context, id ID) error {
 	// A removal fences the pointer before it lists and deletes, so a pointer
 	// read after the write either precedes the fence, and the removal's
 	// listing deletes the manifest, or finds the marker.
-	if removed := h.checkRemoval(ctx, "after completing a commit"); removed != nil {
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), removalCleanupTimeout)
+	defer cancel()
+	if removed := h.checkRemoval(cleanupCtx, "after completing a commit"); removed != nil {
 		if wrote && errors.Is(removed, h.errs.Removed) {
-			_ = h.store.Delete(ctx, canonical) // best-effort: the next removal deletes it too
+			_ = h.store.Delete(cleanupCtx, canonical) // best-effort: the next removal deletes it too
 		}
 		return removed
 	}
@@ -894,10 +898,12 @@ func (h *History[ID, M]) Advance(ctx context.Context, expected string, id ID, ma
 	if err != nil {
 		return err
 	}
-	written, putErr := h.publishManifests(ctx, id, expected, data, paths)
-	if removed := h.checkRemoval(ctx, "after writing "+h.noun); removed != nil {
+	attempted, putErr := h.publishManifests(ctx, id, expected, data, paths)
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), removalCleanupTimeout)
+	defer cancel()
+	if removed := h.checkRemoval(cleanupCtx, "after writing "+h.noun); removed != nil {
 		if errors.Is(removed, h.errs.Removed) {
-			return errors.Join(removed, h.cleanupRemoved(ctx, staged, stagedWrote, paths[:written]))
+			return errors.Join(removed, putErr, h.cleanupRemoved(cleanupCtx, staged, stagedWrote, paths[:attempted]))
 		}
 		h.Forget()
 		if putErr != nil {
@@ -921,7 +927,8 @@ func (h *History[ID, M]) publishManifests(ctx context.Context, id ID, expected s
 			// The pointer now names id, so the remembered head and pointer
 			// are stale: the next Resolve consults storage and adopts id.
 			h.Forget()
-			return i, manifestUncertain{fmt.Errorf("failed to write %s: %w", h.noun, err)}
+			// The failed Put may have reached storage before returning.
+			return i + 1, manifestUncertain{fmt.Errorf("failed to write %s: %w", h.noun, err)}
 		}
 		if h.adopted != "" && p == h.kind.ManifestPath(id) {
 			h.releaseAdopted(ctx, expected)
@@ -930,16 +937,15 @@ func (h *History[ID, M]) publishManifests(ctx context.Context, id ID, expected s
 	return len(paths), nil
 }
 
-func (h *History[ID, M]) cleanupRemoved(ctx context.Context, staged string, stagedWrote bool, written []string) error {
-	cleanupCtx := context.WithoutCancel(ctx)
+func (h *History[ID, M]) cleanupRemoved(ctx context.Context, staged string, stagedWrote bool, attempted []string) error {
 	var errs []error
-	for _, p := range written {
-		if err := h.store.Delete(cleanupCtx, p); err != nil && !errors.Is(err, h.errs.NotFound) {
+	for _, p := range attempted {
+		if err := h.store.Delete(ctx, p); err != nil && !errors.Is(err, h.errs.NotFound) {
 			errs = append(errs, fmt.Errorf("failed to delete %s %s after removal: %w", h.noun, p, err))
 		}
 	}
 	if stagedWrote && staged != "" {
-		if err := h.store.Delete(cleanupCtx, staged); err != nil && !errors.Is(err, h.errs.NotFound) {
+		if err := h.store.Delete(ctx, staged); err != nil && !errors.Is(err, h.errs.NotFound) {
 			errs = append(errs, fmt.Errorf("failed to delete staged %s %s after removal: %w", h.noun, staged, err))
 		}
 	}

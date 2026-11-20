@@ -8,9 +8,12 @@ import (
 	"io"
 	"maps"
 	"slices"
+	"time"
 
 	"github.com/pithecene/lode/internal/history"
 )
+
+const reindexCleanupTimeout = 10 * time.Second
 
 // The partition manifests of a Hive snapshot are an index of its canonical
 // manifest, persisted after the commit is complete (CONTRACT_CORE §Head
@@ -92,38 +95,39 @@ func (r sweepRun) reindexOne(ctx context.Context, id SnapshotID) (bool, error) {
 	// Only the snapshot's own data objects name its partitions: an ObjectRef
 	// outside them (§Mixed Snapshots) never places a copy in this dataset.
 	owned := r.ds.splitObjects(id, m.Objects).owned
-	persisted, putErr := r.persistMissing(ctx, id, r.ds.allManifestPaths(id, nil, owned), data)
+	persisted, reindexed, putErr := r.persistMissing(ctx, id, r.ds.allManifestPaths(id, nil, owned), data)
 	if len(persisted) == 0 || r.dryRun {
-		return len(persisted) > 0, putErr
+		return reindexed, putErr
 	}
 	kept, err := r.keepUnlessExpired(ctx, id, persisted)
-	return kept, errors.Join(putErr, err)
+	return reindexed && kept, errors.Join(putErr, err)
 }
 
 // persistMissing creates a copy of data at each partition path of snapshot
-// id that the listing does not show, and returns the paths it created,
-// those created before a failure included.
-func (r sweepRun) persistMissing(ctx context.Context, id SnapshotID, paths []string, data []byte) ([]string, error) {
+// id that the listing does not show. It returns every path it may have
+// created and whether it confirmed at least one new copy, or would create
+// one in a dry run.
+func (r sweepRun) persistMissing(ctx context.Context, id SnapshotID, paths []string, data []byte) (persisted []string, reindexed bool, err error) {
 	canonical := r.ds.layout.manifestPath(r.ds.id, id)
-	var persisted []string
 	for _, p := range paths {
 		if p == canonical || slices.Contains(r.inv.manifests[id], p) {
 			continue
 		}
-		created, err := r.persistCopy(ctx, p, data)
-		if err != nil {
-			return persisted, err
-		}
-		if created {
+		mayHavePersisted, putErr := r.persistCopy(ctx, p, data)
+		if mayHavePersisted {
 			persisted = append(persisted, p)
 		}
+		if putErr != nil {
+			return persisted, reindexed, putErr
+		}
+		reindexed = reindexed || mayHavePersisted
 	}
-	return persisted, nil
+	return persisted, reindexed, nil
 }
 
 // persistCopy creates the manifest copy at p and reports whether this run
-// created it; a dry run reports whether it would. A copy already present,
-// which a lagging listing omitted, is left as it is.
+// may have created it. A dry run reports whether it would. A copy already
+// present, which a lagging listing omitted, is left as it is.
 func (r sweepRun) persistCopy(ctx context.Context, p string, data []byte) (bool, error) {
 	if r.dryRun {
 		present, err := r.ds.store.Exists(ctx, p)
@@ -137,7 +141,7 @@ func (r sweepRun) persistCopy(ctx context.Context, p string, data []byte) (bool,
 		return false, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("failed to persist manifest %s: %w", p, err)
+		return true, fmt.Errorf("failed to persist manifest %s: %w", p, err)
 	}
 	return true, nil
 }
@@ -146,11 +150,12 @@ func (r sweepRun) persistCopy(ctx context.Context, p string, data []byte) (bool,
 // dataset was removed or a tombstone now records the snapshot. Both RemoveDataset
 // and Expire record their marker before deleting manifests, so a copy persisted
 // after their deletion pass is seen here and deleted. It reports whether copies
-// may remain: when a check or deletion fails, they are reported with the error.
+// may remain, including after a failed check or deletion.
 func (r sweepRun) keepUnlessExpired(ctx context.Context, id SnapshotID, persisted []string) (bool, error) {
-	if err := r.ds.history.CheckLive(ctx); err != nil {
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), reindexCleanupTimeout)
+	defer cancel()
+	if err := r.ds.history.CheckLive(cleanupCtx); err != nil {
 		if errors.Is(err, ErrRemoved) {
-			cleanupCtx := context.WithoutCancel(ctx)
 			if delErr := deleteObjects(cleanupCtx, r.ds.store, persisted); delErr != nil {
 				return true, errors.Join(err, delErr)
 			}
@@ -158,11 +163,11 @@ func (r sweepRun) keepUnlessExpired(ctx context.Context, id SnapshotID, persiste
 		}
 		return true, err
 	}
-	absent, err := r.ds.tombstones().absent(ctx, id)
+	absent, err := r.ds.tombstones().absent(cleanupCtx, id)
 	if err != nil || absent {
 		return true, err
 	}
-	if err := deleteObjects(ctx, r.ds.store, persisted); err != nil {
+	if err := deleteObjects(cleanupCtx, r.ds.store, persisted); err != nil {
 		return true, err
 	}
 	return false, nil

@@ -11,18 +11,20 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/pithecene/lode/internal/history"
 	"github.com/pithecene/lode/lode"
 	"github.com/pithecene/lode/lode/volume"
 )
 
 type gatedRangeStore struct {
 	lode.RangeStore
-	mu    sync.Mutex
-	onPut func(ctx context.Context, key string) error
-	onCAS func(ctx context.Context, key, expected, replacement string) error
+	mu              sync.Mutex
+	onPut           func(ctx context.Context, key string, r io.Reader) error
+	onCAS           func(ctx context.Context, key, expected, replacement string) error
+	beforeReadRange func()
 }
 
-func (g *gatedRangeStore) setOnPut(fn func(ctx context.Context, key string) error) {
+func (g *gatedRangeStore) setOnPut(fn func(ctx context.Context, key string, r io.Reader) error) {
 	g.mu.Lock()
 	g.onPut = fn
 	g.mu.Unlock()
@@ -40,11 +42,16 @@ func (g *gatedRangeStore) Put(ctx context.Context, key string, r io.Reader) erro
 	hook := g.onPut
 	g.mu.Unlock()
 	if hook != nil {
-		if err := hook(ctx, key); err != nil {
-			return err
-		}
+		return hook(ctx, key, r)
 	}
 	return g.RangeStore.Put(ctx, key, r)
+}
+
+func (g *gatedRangeStore) ReadRange(ctx context.Context, key string, offset, length int64) ([]byte, error) {
+	if g.beforeReadRange != nil {
+		g.beforeReadRange()
+	}
+	return g.RangeStore.ReadRange(ctx, key, offset, length)
 }
 
 func (g *gatedRangeStore) CompareAndSwap(ctx context.Context, key, expected, replacement string) error {
@@ -98,22 +105,26 @@ func TestAudit_VolumeCommit_PostPublicationFence(t *testing.T) {
 	ctx := t.Context()
 	mem := lode.NewMemory()
 	gs := &gatedRangeStore{RangeStore: mem}
-	factory := func() (lode.RangeStore, error) { return gs, nil }
+	factory := lode.Use[lode.RangeStore](gs)
 
 	vol := openTestVol(t, "vol-1", factory)
 	blk := mustStageBlock(t, vol, 0, "hello")
 
-	entered := make(chan struct{})
+	putErr := errors.New("volume manifest Put response lost")
+	entered := make(chan string)
 	release := make(chan struct{})
-	var once sync.Once
-	gs.setOnPut(func(_ context.Context, key string) error {
-		if strings.HasPrefix(key, "volumes/vol-1/snapshots/") && strings.HasSuffix(key, "/manifest.json") {
-			once.Do(func() {
-				close(entered)
-				<-release
-			})
+	resume := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(resume)
+	gs.setOnPut(func(ctx context.Context, key string, r io.Reader) error {
+		if !strings.HasPrefix(key, "volumes/vol-1/snapshots/") || !strings.HasSuffix(key, "/manifest.json") {
+			return mem.Put(ctx, key, r)
 		}
-		return nil
+		entered <- key
+		<-release
+		if err := mem.Put(ctx, key, r); err != nil {
+			return err
+		}
+		return putErr
 	})
 
 	commitErrCh := make(chan error, 1)
@@ -122,20 +133,60 @@ func TestAudit_VolumeCommit_PostPublicationFence(t *testing.T) {
 		commitErrCh <- cerr
 	}()
 
-	<-entered
+	manifest := <-entered
+	id := volume.SnapshotID(strings.TrimSuffix(strings.TrimPrefix(manifest, "volumes/vol-1/snapshots/"), "/manifest.json"))
 	if err := volume.Remove(ctx, "vol-1", factory); !errors.Is(err, lode.ErrHeadUncommitted) {
 		t.Fatalf("first volume.Remove = %v, want ErrHeadUncommitted", err)
 	}
 	if err := volume.Remove(ctx, "vol-1", factory); err != nil {
 		t.Fatalf("second volume.Remove = %v, want nil", err)
 	}
-	close(release)
+	if exists, err := mem.Exists(ctx, blk.Path); exists || err != nil {
+		t.Fatalf("Exists(staged block) after removal = %v, %v, want false, nil", exists, err)
+	}
+	resume()
 
-	if err := <-commitErrCh; !errors.Is(err, volume.ErrRemoved) {
-		t.Fatalf("Commit after removal = %v, want ErrRemoved", err)
+	err := <-commitErrCh
+	for _, want := range []error{volume.ErrRemoved, history.ErrManifestUncertain, putErr} {
+		if !errors.Is(err, want) {
+			t.Errorf("Commit after removal = %v, want it to match %v", err, want)
+		}
+	}
+	if _, err := vol.Snapshot(ctx, id); !errors.Is(err, volume.ErrRemoved) && !errors.Is(err, lode.ErrNotFound) {
+		t.Errorf("Snapshot(%s) after removal = %v, want ErrRemoved or ErrNotFound", id, err)
 	}
 	if keys, err := mem.List(ctx, "volumes/vol-1/"); err != nil || !slices.Equal(keys, []string{"volumes/vol-1/latest"}) {
 		t.Fatalf("remaining keys = %v (err=%v), want only volumes/vol-1/latest", keys, err)
+	}
+}
+
+func TestAudit_VolumeReadAt_RemovedBlock(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	gs := &gatedRangeStore{RangeStore: lode.NewMemory()}
+	factory := lode.Use[lode.RangeStore](gs)
+	vol := openTestVol(t, "vol-read-race", factory)
+	blk := mustStageBlock(t, vol, 0, "hello")
+	snap, err := vol.Commit(ctx, []volume.BlockRef{blk}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader, err := vol.ReaderAt(ctx, snap.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Remove after ReadAt has loaded the manifest but before it reads the block.
+	gs.beforeReadRange = sync.OnceFunc(func() {
+		if err := volume.Remove(ctx, vol.ID(), factory); err != nil {
+			t.Fatalf("Remove = %v, want nil", err)
+		}
+	})
+	if _, err := vol.ReadAt(ctx, snap.ID, 0, blk.Length); !errors.Is(err, volume.ErrRemoved) {
+		t.Errorf("Volume.ReadAt after removal = %v, want ErrRemoved", err)
+	}
+	if _, err := reader.ReadAt(make([]byte, int(blk.Length)), 0); !errors.Is(err, volume.ErrRemoved) {
+		t.Errorf("SnapshotReaderAt.ReadAt after removal = %v, want ErrRemoved", err)
 	}
 }
 
