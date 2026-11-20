@@ -563,12 +563,16 @@ func (s *recoveryStore) ReaderAt(ctx context.Context, path string) (io.ReaderAt,
 
 type closableKeyReaderAt struct {
 	keyReaderAt
-	closed bool
+	closed  bool
+	readErr error
 }
 
 func (r *closableKeyReaderAt) ReadAt(buf []byte, off int64) (int, error) {
 	if r.closed {
 		return 0, io.ErrClosedPipe
+	}
+	if r.readErr != nil {
+		return 0, r.readErr
 	}
 	return r.keyReaderAt.ReadAt(buf, off)
 }
@@ -615,6 +619,15 @@ func TestSingleProcess_JournalReaderAtRecovers(t *testing.T) {
 	latestReader := raw.lastReader
 	if latestReader == initialReader || !latestReader.closed {
 		t.Error("expected the recovered read to close its temporary reader")
+	}
+
+	readErr := errors.New("injected range read failure")
+	initialReader.readErr = readErr
+	if _, err := ra.ReadAt(buf, 0); !errors.Is(err, readErr) {
+		t.Errorf("failed ReadAt = %v, want %v", err, readErr)
+	}
+	if raw.lastReader != latestReader {
+		t.Error("ReadAt reopened a reader after an I/O error")
 	}
 
 	if err := ra.(io.Closer).Close(); err != nil {
@@ -697,25 +710,15 @@ func TestSingleProcess_CancelWhileWaitingForExclusiveLock(t *testing.T) {
 			}
 			replaced := make(chan error, 1)
 			go func() { replaced <- store.CompareAndSwap(ctx, raw.targetKey, "old", "new") }()
+			release := sync.OnceFunc(func() { close(raw.release) })
+			defer release()
 			select {
 			case <-raw.deleted:
 			case err := <-replaced:
 				t.Fatalf("CAS returned before holding the lock: %v", err)
 			case <-time.After(3 * time.Second):
-				close(raw.release)
 				t.Fatal("CAS never reached the target delete")
 			}
-			defer func() {
-				close(raw.release)
-				select {
-				case err := <-replaced:
-					if err != nil {
-						t.Errorf("CAS holding the lock: %v", err)
-					}
-				case <-time.After(time.Second):
-					t.Error("CAS holding the lock did not finish")
-				}
-			}()
 
 			const other = "ptr/other"
 			waitCtx, cancel := context.WithCancel(ctx)
@@ -747,6 +750,21 @@ func TestSingleProcess_CancelWhileWaitingForExclusiveLock(t *testing.T) {
 				}
 			case <-time.After(time.Second):
 				t.Fatalf("contended %s waited for the lock after cancellation", op.name)
+			}
+
+			release()
+			select {
+			case err := <-replaced:
+				if err != nil {
+					t.Fatalf("CAS holding the lock: %v", err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("CAS holding the lock did not finish")
+			}
+			retryCtx, stop := context.WithTimeout(ctx, time.Second)
+			defer stop()
+			if err := store.CompareAndSwap(retryCtx, other, "", "created"); err != nil {
+				t.Errorf("CAS after canceled %s = %v, want nil", op.name, err)
 			}
 		})
 	}
