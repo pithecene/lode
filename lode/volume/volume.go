@@ -600,10 +600,7 @@ func (v *volume) fillRead(ctx context.Context, p readPlan, dst []byte) error {
 
 		data, err := v.store.ReadRange(ctx, b.Path, storeOffset, readLen)
 		if err != nil {
-			if errors.Is(err, lode.ErrNotFound) && errors.Is(v.history.CheckLive(ctx), ErrRemoved) {
-				return ErrRemoved
-			}
-			return fmt.Errorf("failed to read block at offset %d: %w", b.Offset, err)
+			return v.blockReadError(ctx, b.Offset, err)
 		}
 		if int64(len(data)) != readLen {
 			return fmt.Errorf("lode: block data truncated at offset %d (expected %d bytes, got %d)", b.Offset, readLen, len(data))
@@ -612,6 +609,22 @@ func (v *volume) fillRead(ctx context.Context, p readPlan, dst []byte) error {
 		copy(dst[readStart-p.offset:], data)
 	}
 	return nil
+}
+
+func (v *volume) blockReadError(ctx context.Context, offset int64, err error) error {
+	blockErr := fmt.Errorf("failed to read block at offset %d: %w", offset, err)
+	if !errors.Is(err, lode.ErrNotFound) {
+		return blockErr
+	}
+	fenceErr := v.history.CheckLive(ctx)
+	switch {
+	case fenceErr == nil:
+		return blockErr
+	case errors.Is(fenceErr, ErrRemoved):
+		return ErrRemoved
+	default:
+		return errors.Join(blockErr, fmt.Errorf("failed to check volume removal: %w", fenceErr))
+	}
 }
 
 func (v *volume) ReaderAt(ctx context.Context, snapshotID SnapshotID) (SnapshotReaderAt, error) {
