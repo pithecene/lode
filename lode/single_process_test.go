@@ -515,3 +515,281 @@ func TestSingleProcess_ReviewRegressions(t *testing.T) {
 		}
 	})
 }
+
+type recoveryStore struct {
+	*failingPointerStore
+	journalDeleteErr  error
+	afterTargetDelete func()
+	afterJournalGet   func()
+	lastReader        *closableKeyReaderAt
+}
+
+func (s *recoveryStore) Put(ctx context.Context, path string, r io.Reader) error {
+	return s.failingPointerStore.Put(context.WithoutCancel(ctx), path, r)
+}
+
+func (s *recoveryStore) Get(ctx context.Context, path string) (io.ReadCloser, error) {
+	rc, err := s.ObjectStore.Get(context.WithoutCancel(ctx), path)
+	if err == nil && path == casJournalPath(s.failKey) && s.afterJournalGet != nil {
+		s.afterJournalGet()
+	}
+	return rc, err
+}
+
+func (s *recoveryStore) Delete(ctx context.Context, path string) error {
+	if path == casJournalPath(s.failKey) && s.journalDeleteErr != nil {
+		return s.journalDeleteErr
+	}
+	if err := s.ObjectStore.Delete(context.WithoutCancel(ctx), path); err != nil {
+		return err
+	}
+	if path == s.failKey && s.afterTargetDelete != nil {
+		s.afterTargetDelete()
+	}
+	return nil
+}
+
+func (s *recoveryStore) ReaderAt(ctx context.Context, path string) (io.ReaderAt, error) {
+	exists, err := s.Exists(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, ErrNotFound
+	}
+	s.lastReader = &closableKeyReaderAt{keyReaderAt: keyReaderAt{ctx: ctx, ranges: s.RangeReader, path: path}}
+	return s.lastReader, nil
+}
+
+type closableKeyReaderAt struct {
+	keyReaderAt
+	closed bool
+}
+
+func (r *closableKeyReaderAt) ReadAt(buf []byte, off int64) (int, error) {
+	if r.closed {
+		return 0, io.ErrClosedPipe
+	}
+	return r.keyReaderAt.ReadAt(buf, off)
+}
+
+func (r *closableKeyReaderAt) Close() error {
+	r.closed = true
+	return nil
+}
+
+func TestSingleProcess_JournalReaderAtRecovers(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	const path = "ptr/latest"
+	raw := &recoveryStore{failingPointerStore: newFailingPointerStore(path)}
+	store := SingleProcess(raw).(RangeStore)
+	if err := store.CompareAndSwap(ctx, path, "", "old"); err != nil {
+		t.Fatal(err)
+	}
+	raw.setFailPuts(-1)
+	if err := store.CompareAndSwap(ctx, path, "old", "lost"); err == nil {
+		t.Fatal("expected replacement and restore to fail")
+	}
+
+	ra, err := store.ReaderAt(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initialReader := raw.lastReader
+	if initialReader.path != casJournalPath(path) {
+		t.Fatalf("ReaderAt opened %q, want the journal", initialReader.path)
+	}
+	buf := make([]byte, 3)
+	if n, err := ra.ReadAt(buf, 0); err != nil || n != len(buf) || string(buf) != "old" {
+		t.Fatalf("journal ReadAt = %d, %q, %v, want 3, old, nil", n, buf, err)
+	}
+
+	raw.setFailPuts(0)
+	if err := store.CompareAndSwap(ctx, path, "old", "new"); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := ra.ReadAt(buf, 0); err != nil || n != len(buf) || string(buf) != "new" {
+		t.Errorf("recovered ReadAt = %d, %q, %v, want 3, new, nil", n, buf, err)
+	}
+	latestReader := raw.lastReader
+	if latestReader == initialReader || !latestReader.closed {
+		t.Error("expected the recovered read to close its temporary reader")
+	}
+
+	if err := ra.(io.Closer).Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ra.ReadAt(buf, 0); !errors.Is(err, io.ErrClosedPipe) {
+		t.Errorf("closed ReadAt = %v, want io.ErrClosedPipe", err)
+	}
+	if raw.lastReader != latestReader {
+		t.Error("ReadAt reopened a closed reader")
+	}
+}
+
+func TestSingleProcess_DeleteRetainsTargetOnJournalFailure(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	const path = "ptr/latest"
+	raw := &recoveryStore{failingPointerStore: newFailingPointerStore(path)}
+	store := SingleProcess(raw).(RangeStore)
+	if err := store.CompareAndSwap(ctx, path, "", "old"); err != nil {
+		t.Fatal(err)
+	}
+	deleteErr := errors.New("injected journal delete failure")
+	raw.journalDeleteErr = deleteErr
+	if err := store.CompareAndSwap(ctx, path, "old", "new"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Delete(ctx, path); !errors.Is(err, deleteErr) {
+		t.Fatalf("Delete = %v, want %v", err, deleteErr)
+	}
+	if got := readOrAbsent(t, store, path); got != "new" {
+		t.Errorf("Get after failed Delete = %q, want new", got)
+	}
+
+	raw.journalDeleteErr = nil
+	if err := store.Delete(ctx, path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Get(ctx, path); !errors.Is(err, ErrNotFound) {
+		t.Errorf("Get after successful Delete = %v, want ErrNotFound", err)
+	}
+	if err := store.Put(ctx, path, strings.NewReader("recreated")); err != nil {
+		t.Fatalf("Put after successful Delete: %v", err)
+	}
+
+	raw.setFailPuts(-1)
+	if err := store.CompareAndSwap(ctx, path, "recreated", "lost"); err == nil {
+		t.Fatal("expected replacement and restore to fail")
+	}
+	targetDeletes := 0
+	raw.afterTargetDelete = func() { targetDeletes++ }
+	if err := store.Delete(ctx, path); err != nil || targetDeletes != 0 {
+		t.Errorf("journal-only Delete = %v with %d target deletions, want nil and 0", err, targetDeletes)
+	}
+	if _, err := store.Get(ctx, path); !errors.Is(err, ErrNotFound) {
+		t.Errorf("Get after journal-only Delete = %v, want ErrNotFound", err)
+	}
+	if err := store.Delete(ctx, path); err != nil || targetDeletes != 1 {
+		t.Errorf("absent Delete = %v with %d target deletions, want nil and 1", err, targetDeletes)
+	}
+}
+
+func TestSingleProcess_CancelWhileWaitingForExclusiveLock(t *testing.T) {
+	t.Parallel()
+	for _, op := range []struct {
+		name string
+		run  func(Store, context.Context, string) error
+	}{
+		{"CAS", func(s Store, ctx context.Context, path string) error {
+			return s.CompareAndSwap(ctx, path, "", "new")
+		}},
+		{"Delete", Store.Delete},
+	} {
+		t.Run(op.name, func(t *testing.T) {
+			ctx := t.Context()
+			raw := newPausedDelete()
+			store := SingleProcess(raw).(singleProcessFullStore)
+			if err := store.CompareAndSwap(ctx, raw.targetKey, "", "old"); err != nil {
+				t.Fatal(err)
+			}
+			replaced := make(chan error, 1)
+			go func() { replaced <- store.CompareAndSwap(ctx, raw.targetKey, "old", "new") }()
+			select {
+			case <-raw.deleted:
+			case err := <-replaced:
+				t.Fatalf("CAS returned before holding the lock: %v", err)
+			case <-time.After(3 * time.Second):
+				close(raw.release)
+				t.Fatal("CAS never reached the target delete")
+			}
+			defer func() {
+				close(raw.release)
+				select {
+				case err := <-replaced:
+					if err != nil {
+						t.Errorf("CAS holding the lock: %v", err)
+					}
+				case <-time.After(time.Second):
+					t.Error("CAS holding the lock did not finish")
+				}
+			}()
+
+			const other = "ptr/other"
+			waitCtx, cancel := context.WithCancel(ctx)
+			defer cancel()
+			done := make(chan error, 1)
+			go func() { done <- op.run(store, waitCtx, other) }()
+			deadline := time.NewTimer(3 * time.Second)
+			defer deadline.Stop()
+			tick := time.NewTicker(time.Millisecond)
+			defer tick.Stop()
+			for {
+				store.stateMu.Lock()
+				_, waiting := store.busy[other]
+				store.stateMu.Unlock()
+				if waiting {
+					break
+				}
+				select {
+				case <-tick.C:
+				case <-deadline.C:
+					t.Fatal("operation never acquired its per-key lock")
+				}
+			}
+			cancel()
+			select {
+			case err := <-done:
+				if !errors.Is(err, context.Canceled) {
+					t.Errorf("contended %s = %v, want context.Canceled", op.name, err)
+				}
+			case <-time.After(time.Second):
+				t.Fatalf("contended %s waited for the lock after cancellation", op.name)
+			}
+		})
+	}
+}
+
+func TestSingleProcess_CancelBeforeReplacementPut(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name        string
+		fromJournal bool
+		failRestore bool
+	}{
+		{name: "after target delete"},
+		{name: "after target delete with failed restore", failRestore: true},
+		{name: "after reading journal", fromJournal: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := t.Context()
+			const path = "ptr/latest"
+			raw := &recoveryStore{failingPointerStore: newFailingPointerStore(path)}
+			store := SingleProcess(raw).(RangeStore)
+			casCtx, cancel := context.WithCancel(ctx)
+			defer cancel()
+			if tc.fromJournal {
+				if err := raw.Put(ctx, casJournalPath(path), strings.NewReader("old")); err != nil {
+					t.Fatal(err)
+				}
+				raw.afterJournalGet = cancel
+			} else {
+				if err := store.CompareAndSwap(ctx, path, "", "old"); err != nil {
+					t.Fatal(err)
+				}
+				raw.afterTargetDelete = cancel
+			}
+			if tc.failRestore {
+				raw.setFailPuts(-1)
+			}
+			if err := store.CompareAndSwap(casCtx, path, "old", "new"); !errors.Is(err, context.Canceled) {
+				t.Errorf("CompareAndSwap = %v, want context.Canceled", err)
+			}
+			if got := readOrAbsent(t, store, path); got != "old" {
+				t.Errorf("Get after canceled CAS = %q, want old", got)
+			}
+		})
+	}
+}

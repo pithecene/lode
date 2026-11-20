@@ -172,7 +172,19 @@ validated as a single canonical path segment (non-empty, not `.` or `..`, no
   `ErrInvalidPath`.
 - `Get`, `Exists`, `List`, `ReadRange`, `ListPrefixes`, and every `ReadAt` call
   on a returned `ReaderAt` hold the read lock so in-process readers never
-  observe the transient replacement gap.
+  observe the transient replacement gap. If the underlying `ReadAt` returns
+  `ErrNotFound`, the same call resolves the logical key again, checking
+  `<path>` first and then `<path>.lode-cas`. The call closes the temporary
+  reader if it implements `io.Closer`. Other read errors pass through unchanged.
+- `Delete` removes the journal before an existing target. `ErrNotFound` counts
+  as successful journal cleanup in this case. Any other journal deletion
+  error leaves the target intact. A journal without a target is the logical
+  object, and `Delete` returns the result of deleting it. When both keys are
+  absent, `Delete` returns the underlying result for the target key.
+- `CompareAndSwap` and `Delete` return `ctx.Err()` if canceled while waiting
+  for the exclusive lock. When `CompareAndSwap` observes cancellation before
+  a replacement `Put`, it returns `ctx.Err()` and preserves the verified
+  prior content at the target or in the journal.
 - Returns stores that already satisfy `Store` unchanged, and returns `nil`
   for `nil` and typed-nil stores. Preserves `RangeReader` and `PrefixLister`.
 
