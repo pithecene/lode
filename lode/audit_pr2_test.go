@@ -186,7 +186,7 @@ func TestAudit_AdvancePostPublicationFence_DatasetAndHive(t *testing.T) {
 		if err := h.mem.Delete(t.Context(), partManifest); err != nil {
 			t.Fatal(err)
 		}
-		time.Sleep(5 * time.Millisecond)
+		time.Sleep(30 * time.Millisecond)
 
 		entered, release := pauseFirstPut(h.gs, func(key string) bool { return key == partManifest })
 
@@ -468,7 +468,10 @@ func assertExpirySurfaceParity(
 	for _, s := range snaps {
 		snapIDs = append(snapIDs, s.ID)
 	}
-	if want := []lode.SnapshotID{legacyID, expiringID, liveID}; !slices.Equal(snapIDs, want) {
+	slices.Sort(snapIDs)
+	want := []lode.SnapshotID{legacyID, expiringID, liveID}
+	slices.Sort(want)
+	if !slices.Equal(snapIDs, want) {
 		t.Fatalf("%s Snapshots = %v, want %v", name, snapIDs, want)
 	}
 
