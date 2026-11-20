@@ -60,6 +60,7 @@ func SingleProcess(store ObjectStore) Store {
 	}
 	base := &singleProcessStore{
 		ObjectStore: store,
+		busy:        make(map[string]chan struct{}),
 		journaled:   make(map[string]bool),
 	}
 	ranges, hasRanges := store.(RangeReader)
@@ -80,23 +81,101 @@ func SingleProcess(store ObjectStore) Store {
 }
 
 // singleProcessStore implements CompareAndSwap over a store without one.
-// CompareAndSwap, Put, and Delete hold mu exclusively; reads hold it shared.
+// CompareAndSwap and Delete hold mu exclusively across pointer/object removal;
+// reads hold mu shared; Put serializes per key via busy without holding mu
+// while consuming caller-supplied readers.
 type singleProcessStore struct {
 	ObjectStore
 	mu        sync.RWMutex
+	stateMu   sync.Mutex
+	busy      map[string]chan struct{}
 	journaled map[string]bool
 }
 
-func (s *singleProcessStore) Put(ctx context.Context, path string, r io.Reader) error {
-	if isCASJournal(path) {
-		return ErrInvalidPath
+func (s *singleProcessStore) acquireKey(ctx context.Context, key string) (chan struct{}, error) {
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		s.stateMu.Lock()
+		waitCh, active := s.busy[key]
+		if !active {
+			ch := make(chan struct{})
+			s.busy[key] = ch
+			s.stateMu.Unlock()
+			return ch, nil
+		}
+		s.stateMu.Unlock()
+		select {
+		case <-waitCh:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.journaled[path] {
+}
+
+func (s *singleProcessStore) releaseKey(key string, ch chan struct{}) {
+	s.stateMu.Lock()
+	delete(s.busy, key)
+	close(ch)
+	s.stateMu.Unlock()
+}
+
+func (s *singleProcessStore) setJournaled(key string, v bool) {
+	s.stateMu.Lock()
+	if v {
+		s.journaled[key] = true
+	} else {
+		delete(s.journaled, key)
+	}
+	s.stateMu.Unlock()
+}
+
+func (s *singleProcessStore) isJournaled(key string) bool {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	return s.journaled[key]
+}
+
+func (s *singleProcessStore) checkPutPreconditions(ctx context.Context, key string) error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.isJournaled(key) {
 		return ErrPathExists
 	}
-	return s.ObjectStore.Put(ctx, path, r)
+	exists, err := s.ObjectStore.Exists(ctx, key)
+	if err != nil {
+		return err
+	}
+	if exists {
+		return ErrPathExists
+	}
+	jExists, err := s.ObjectStore.Exists(ctx, casJournalPath(key))
+	if err != nil {
+		return err
+	}
+	if jExists {
+		s.setJournaled(key, true)
+		return ErrPathExists
+	}
+	return nil
+}
+
+func (s *singleProcessStore) Put(ctx context.Context, path string, r io.Reader) error {
+	cleaned, valid := storepath.Key(path)
+	if !valid || isCASJournal(cleaned) {
+		return ErrInvalidPath
+	}
+	ch, err := s.acquireKey(ctx, cleaned)
+	if err != nil {
+		return err
+	}
+	defer s.releaseKey(cleaned, ch)
+
+	if err := s.checkPutPreconditions(ctx, cleaned); err != nil {
+		return err
+	}
+	return s.ObjectStore.Put(ctx, cleaned, r)
 }
 
 func (s *singleProcessStore) Get(ctx context.Context, path string) (io.ReadCloser, error) {
@@ -130,18 +209,25 @@ func (s *singleProcessStore) Exists(ctx context.Context, path string) (bool, err
 }
 
 func (s *singleProcessStore) Delete(ctx context.Context, path string) error {
-	if isCASJournal(path) {
+	cleaned, valid := storepath.Key(path)
+	if !valid || isCASJournal(cleaned) {
 		return ErrInvalidPath
 	}
+	ch, err := s.acquireKey(ctx, cleaned)
+	if err != nil {
+		return err
+	}
+	defer s.releaseKey(cleaned, ch)
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.ObjectStore.Delete(ctx, path); err != nil {
+	if err := s.ObjectStore.Delete(ctx, cleaned); err != nil {
 		return err
 	}
-	if err := s.ObjectStore.Delete(ctx, casJournalPath(path)); err != nil && !errors.Is(err, ErrNotFound) {
+	if err := s.ObjectStore.Delete(ctx, casJournalPath(cleaned)); err != nil && !errors.Is(err, ErrNotFound) {
 		return err
 	}
-	delete(s.journaled, path)
+	s.setJournaled(cleaned, false)
 	return nil
 }
 
@@ -239,12 +325,12 @@ func (r *singleProcessReaderAt) ReadAt(p []byte, off int64) (int, error) {
 	r.store.mu.RLock()
 	defer r.store.mu.RUnlock()
 	n, err := r.ra.ReadAt(p, off)
-	if err != nil && !errors.Is(err, io.EOF) {
-		if fresh, openErr := r.store.openReaderAtLocked(r.ctx, r.path); openErr == nil {
-			if c, ok := fresh.(io.Closer); ok {
+	if errors.Is(err, ErrNotFound) {
+		if jra, jerr := r.store.ranges.ReaderAt(r.ctx, casJournalPath(r.path)); jerr == nil {
+			if c, ok := jra.(io.Closer); ok {
 				defer closer(c)()
 			}
-			return fresh.ReadAt(p, off)
+			return jra.ReadAt(p, off)
 		}
 	}
 	return n, err
@@ -289,6 +375,11 @@ func (s *singleProcessStore) CompareAndSwap(ctx context.Context, path, expected,
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	ch, err := s.acquireKey(ctx, cleaned)
+	if err != nil {
+		return err
+	}
+	defer s.releaseKey(cleaned, ch)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -322,7 +413,7 @@ func (s *singleProcessStore) CompareAndSwap(ctx context.Context, path, expected,
 		if err := s.stageJournalLocked(ctx, jPath, expected); err != nil {
 			return err
 		}
-		s.journaled[cleaned] = true
+		s.setJournaled(cleaned, true)
 		if err := s.ObjectStore.Delete(ctx, cleaned); err != nil {
 			return fmt.Errorf("single-process cas delete: %w", err)
 		}
@@ -362,7 +453,7 @@ func (s *singleProcessStore) restoreAfterFailedPutLocked(ctx context.Context, cl
 func (s *singleProcessStore) clearJournalLocked(ctx context.Context, cleaned, jPath string) {
 	delErr := s.ObjectStore.Delete(context.WithoutCancel(ctx), jPath)
 	if delErr == nil || errors.Is(delErr, ErrNotFound) {
-		delete(s.journaled, cleaned)
+		s.setJournaled(cleaned, false)
 	}
 }
 
@@ -375,7 +466,7 @@ func (s *singleProcessStore) readStateLocked(ctx context.Context, path string) (
 	if err != nil || !exists {
 		return "", false, false, err
 	}
-	s.journaled[path] = true
+	s.setJournaled(path, true)
 	return content, true, true, nil
 }
 

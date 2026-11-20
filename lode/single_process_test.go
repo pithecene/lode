@@ -433,3 +433,85 @@ func TestSingleProcess_RejectsReservedJournalKey(t *testing.T) {
 	store := SingleProcess(testutil.WithoutCAS(NewMemory())).(RangeStore)
 	assertKeyOpsRejectInvalidPath(t, store, "ptr/latest"+casJournalSuffix)
 }
+
+func TestSingleProcess_ReviewRegressions(t *testing.T) {
+	t.Parallel()
+
+	t.Run("fresh wrapper rejects Put when persisted journal exists", func(t *testing.T) {
+		t.Parallel()
+		ctx := t.Context()
+		raw := newFailingPointerStore("ptr/latest")
+		first := SingleProcess(raw)
+		if err := first.CompareAndSwap(ctx, "ptr/latest", "", "snap-1"); err != nil {
+			t.Fatal(err)
+		}
+		raw.setFailPuts(-1)
+		if err := first.CompareAndSwap(ctx, "ptr/latest", "snap-1", "snap-2"); err == nil {
+			t.Fatal("expected replacement failure")
+		}
+		raw.setFailPuts(0)
+
+		restarted := SingleProcess(raw)
+		if err := restarted.Put(ctx, "ptr/latest", strings.NewReader("overwrite")); !errors.Is(err, ErrPathExists) {
+			t.Fatalf("Put over persisted journal = %v, want ErrPathExists", err)
+		}
+	})
+
+	t.Run("Put consuming ReaderAt from same store does not deadlock", func(t *testing.T) {
+		t.Parallel()
+		ctx := t.Context()
+		mem := NewMemory()
+		store := SingleProcess(struct {
+			ObjectStore
+			RangeReader
+		}{testutil.WithoutCAS(mem), mem}).(RangeStore)
+
+		if err := store.Put(ctx, "src/blob", strings.NewReader("payload-bytes")); err != nil {
+			t.Fatal(err)
+		}
+		ra, err := store.ReaderAt(ctx, "src/blob")
+		if err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan error, 1)
+		go func() {
+			done <- store.Put(ctx, "dst/blob", io.NewSectionReader(ra, 0, int64(len("payload-bytes"))))
+		}()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("Put from ReaderAt = %v", err)
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatal("Put deadlocked while reading from SingleProcess.ReaderAt")
+		}
+	})
+
+	t.Run("closed ReaderAt propagates error instead of reopening", func(t *testing.T) {
+		t.Parallel()
+		ctx := t.Context()
+		fsStore, err := NewFS(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		store := SingleProcess(struct {
+			ObjectStore
+			RangeReader
+		}{testutil.WithoutCAS(fsStore), fsStore.(RangeReader)}).(RangeStore)
+
+		if err := store.Put(ctx, "obj/file", strings.NewReader("hello")); err != nil {
+			t.Fatal(err)
+		}
+		ra, err := store.ReaderAt(ctx, "obj/file")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := ra.(io.Closer).Close(); err != nil {
+			t.Fatal(err)
+		}
+		buf := make([]byte, 5)
+		if _, err := ra.ReadAt(buf, 0); err == nil {
+			t.Fatal("ReadAt after Close succeeded; expected closed-file error")
+		}
+	})
+}

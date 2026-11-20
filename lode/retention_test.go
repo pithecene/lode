@@ -1375,7 +1375,12 @@ func TestExpire_PathSafety(t *testing.T) {
 			"elsewhere/x.jsonl", // not a data path
 			"datasets/events/snapshots/" + string(first.ID) + `/data/x\y`, // no store accepts it
 		}
-		stored := foreign[:len(foreign)-1] // the last is not a storable key
+		stored := []string{
+			"datasets/other/snapshots/" + string(first.ID) + "/data/x.jsonl",
+			"datasets/events/snapshots/123/data/x.jsonl",
+			"datasets/events/snapshots/" + string(first.ID) + "/x", // target that ../x would resolve to
+			"elsewhere/x.jsonl",
+		}
 		m := *first.Manifest
 		for _, p := range foreign {
 			m.Objects = append(m.Objects, ObjectRef{Path: p, SizeBytes: 1})
