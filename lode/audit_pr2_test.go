@@ -395,10 +395,12 @@ func TestAudit_StreamWrite_InitFailureCancelsPut(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			ctx := t.Context()
+			putCanceled := make(chan struct{})
 			store := &gatedStore{
 				RangeStore: lode.NewMemory(),
 				putBlk: func(ctx context.Context) error {
 					<-ctx.Done()
+					close(putCanceled)
 					return ctx.Err()
 				},
 			}
@@ -423,6 +425,11 @@ func TestAudit_StreamWrite_InitFailureCancelsPut(t *testing.T) {
 				}
 			case <-time.After(time.Second):
 				t.Fatal("StreamWrite waited for Put after constructor failure")
+			}
+			select {
+			case <-putCanceled:
+			default:
+				t.Fatal("Put did not observe cancellation before StreamWrite returned")
 			}
 		})
 	}
