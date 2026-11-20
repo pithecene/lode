@@ -22,6 +22,7 @@ type gatedRangeStore struct {
 	onPut           func(ctx context.Context, key string, r io.Reader) error
 	onCAS           func(ctx context.Context, key, expected, replacement string) error
 	beforeReadRange func()
+	fenceReadErr    error
 }
 
 func (g *gatedRangeStore) setOnPut(fn func(ctx context.Context, key string, r io.Reader) error) {
@@ -52,6 +53,13 @@ func (g *gatedRangeStore) ReadRange(ctx context.Context, key string, offset, len
 		g.beforeReadRange()
 	}
 	return g.RangeStore.ReadRange(ctx, key, offset, length)
+}
+
+func (g *gatedRangeStore) Get(ctx context.Context, key string) (io.ReadCloser, error) {
+	if g.fenceReadErr != nil && strings.HasSuffix(key, "/latest") {
+		return nil, g.fenceReadErr
+	}
+	return g.RangeStore.Get(ctx, key)
 }
 
 func (g *gatedRangeStore) CompareAndSwap(ctx context.Context, key, expected, replacement string) error {
@@ -209,10 +217,31 @@ func TestAudit_VolumePendingCompletion_PostPublicationFence(t *testing.T) {
 	}
 }
 
-func TestAudit_VolumeReadAt_RemovedBlock(t *testing.T) {
+func TestAudit_VolumeReadAt_MissingBlock(t *testing.T) {
 	t.Parallel()
+	fenceErr := errors.New("volume fence read failed")
+	for _, tc := range []struct {
+		name   string
+		remove bool
+		probe  error
+		want   error
+	}{
+		{name: "removed volume", remove: true, want: volume.ErrRemoved},
+		{name: "live volume", want: lode.ErrNotFound},
+		{name: "fence read failed", probe: fenceErr, want: lode.ErrNotFound},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			testMissingVolumeBlock(t, tc.remove, tc.probe, tc.want)
+		})
+	}
+}
+
+func testMissingVolumeBlock(t *testing.T, remove bool, probeErr, want error) {
+	t.Helper()
 	ctx := t.Context()
-	gs := &gatedRangeStore{RangeStore: lode.NewMemory()}
+	mem := lode.NewMemory()
+	gs := &gatedRangeStore{RangeStore: mem}
 	factory := lode.Use[lode.RangeStore](gs)
 	vol := openTestVol(t, "vol-read-race", factory)
 	blk := mustStageBlock(t, vol, 0, "hello")
@@ -225,17 +254,29 @@ func TestAudit_VolumeReadAt_RemovedBlock(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Remove after ReadAt has loaded the manifest but before it reads the block.
+	// Delete after ReadAt has loaded the manifest but before it reads the block.
 	gs.beforeReadRange = sync.OnceFunc(func() {
-		if err := volume.Remove(ctx, vol.ID(), factory); err != nil {
-			t.Fatalf("Remove = %v, want nil", err)
+		if remove {
+			if err := volume.Remove(ctx, vol.ID(), factory); err != nil {
+				t.Fatal(err)
+			}
+		} else if err := mem.Delete(ctx, blk.Path); err != nil {
+			t.Fatal(err)
 		}
+		gs.fenceReadErr = probeErr
 	})
-	if _, err := vol.ReadAt(ctx, snap.ID, 0, blk.Length); !errors.Is(err, volume.ErrRemoved) {
-		t.Errorf("Volume.ReadAt after removal = %v, want ErrRemoved", err)
-	}
-	if _, err := reader.ReadAt(make([]byte, int(blk.Length)), 0); !errors.Is(err, volume.ErrRemoved) {
-		t.Errorf("SnapshotReaderAt.ReadAt after removal = %v, want ErrRemoved", err)
+	_, readErr := vol.ReadAt(ctx, snap.ID, 0, blk.Length)
+	_, readerErr := reader.ReadAt(make([]byte, int(blk.Length)), 0)
+	for _, result := range []struct {
+		method string
+		err    error
+	}{
+		{method: "Volume.ReadAt", err: readErr},
+		{method: "SnapshotReaderAt.ReadAt", err: readerErr},
+	} {
+		if !errors.Is(result.err, want) || (probeErr != nil && !errors.Is(result.err, probeErr)) {
+			t.Errorf("%s = %v, want missing-block outcome %v and fence read error %v", result.method, result.err, want, probeErr)
+		}
 	}
 }
 
