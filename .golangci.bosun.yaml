@@ -2,7 +2,9 @@ version: "2"
 
 # Bosun's Go analyzers, which the internal check runs on this module
 # (bosun.yaml and CI's check job). The stock linters stay in .golangci.yaml,
-# which CI's lint job runs.
+# which CI's lint job runs. Lode leaves commentpolicy off: its caps of two
+# lines on an exported declaration and four inline would cut the contract-style
+# doc comments that AGENTS.md requires.
 linters:
   default: none
   enable:
