@@ -10,22 +10,15 @@ import (
 	"strings"
 )
 
-// Key normalizes an object key: cleaned, slash-separated, no leading slash.
-// It rejects the empty key, ".", a backslash anywhere (keys are
-// slash-separated on every platform, so a backslash is never a spelling of a
-// parent directory that one adapter sees and another does not) and anything
-// that would escape the root. It also rejects a key whose final segment
-// begins with ReservedPrefix, on every adapter, so that a key behaves alike
-// on every backend.
+// Key validates an object key as a canonical slash-separated relative path:
+// non-empty, not rooted, no trailing slash, no empty ("//"), "." or ".."
+// segments, no backslash anywhere, and its final segment not beginning with
+// ReservedPrefix (CONTRACT_STORAGE §Put).
 func Key(key string) (string, bool) {
-	if key == "" || strings.ContainsRune(key, '\\') {
+	if strings.ContainsRune(key, '\\') || !isCanonicalRelative(key) || Reserved(key) {
 		return "", false
 	}
-	cleaned := clean(key)
-	if cleaned == "" || cleaned == "." || escapes(cleaned) || Reserved(cleaned) {
-		return "", false
-	}
-	return cleaned, true
+	return key, true
 }
 
 // ReservedPrefix begins the name of every temporary file the filesystem
@@ -51,9 +44,12 @@ func Segment(s string) bool {
 		!strings.ContainsAny(s, `/\`) && !strings.HasPrefix(s, ReservedPrefix)
 }
 
-// Prefix normalizes a listing prefix. The empty prefix (or one that cleans to
-// the root) lists everything. A trailing slash is preserved: "a/" and "a" are
-// different string prefixes — only the former excludes "a2/x".
+// Prefix validates a listing prefix (CONTRACT_STORAGE §List). The empty prefix
+// lists everything; any non-empty prefix must be a canonical slash-separated
+// relative path with an optional single trailing slash ("a/" and "a" are
+// distinct string prefixes — only the former excludes "a2/x"). Rooted
+// prefixes, backslashes, empty segments ("//"), and "." or ".." segments are
+// rejected.
 func Prefix(prefix string) (string, bool) {
 	if prefix == "" {
 		return "", true
@@ -61,17 +57,11 @@ func Prefix(prefix string) (string, bool) {
 	if strings.ContainsRune(prefix, '\\') {
 		return "", false
 	}
-	cleaned := clean(prefix)
-	if escapes(cleaned) {
+	body := strings.TrimSuffix(prefix, "/")
+	if !isCanonicalRelative(body) {
 		return "", false
 	}
-	if cleaned == "." || cleaned == "" {
-		return "", true
-	}
-	if strings.HasSuffix(prefix, "/") {
-		cleaned += "/"
-	}
-	return cleaned, true
+	return prefix, true
 }
 
 // MaxRangeLength is the largest ReadRange length an adapter accepts: what a
@@ -84,16 +74,10 @@ func RangeValid(offset, length int64) bool {
 	return offset >= 0 && length >= 0 && length <= MaxRangeLength && offset <= math.MaxInt64-length
 }
 
-func clean(p string) string {
-	if isAlreadyClean(p) {
-		return p
-	}
-	return strings.TrimPrefix(path.Clean(p), "/")
-}
-
-// isAlreadyClean reports whether p is already in canonical slash-separated
-// relative form, avoiding path.Clean's buffer allocation on the hot path.
-func isAlreadyClean(p string) bool {
+// isCanonicalRelative reports whether p is a non-empty, unrooted,
+// slash-separated relative path with no trailing slash, empty segment, "." or
+// ".." segment.
+func isCanonicalRelative(p string) bool {
 	if p == "" || p[0] == '/' || p[len(p)-1] == '/' {
 		return false
 	}
@@ -108,8 +92,4 @@ func isAlreadyClean(p string) bool {
 		}
 		rem = tail
 	}
-}
-
-func escapes(cleaned string) bool {
-	return cleaned == ".." || strings.HasPrefix(cleaned, "../")
 }

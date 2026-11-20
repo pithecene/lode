@@ -23,9 +23,10 @@ This document defines the required semantics for storage adapters implementing
 existing object.
 
 **Behavior**:
-- Paths are slash-separated relative keys on every platform. Empty paths,
-  rooted paths, paths containing `\`, `.` or `..` segments, or paths whose
-  final segment begins with `.lode-tmp-` MUST return `ErrInvalidPath`.
+- Paths are canonical slash-separated relative keys on every platform. Empty
+  paths, rooted paths, trailing slashes, empty segments (`"//"`), paths
+  containing `\`, `.` or `..` segments, or paths whose final segment begins
+  with `.lode-tmp-` MUST return `ErrInvalidPath`.
 - If `path` already exists, `Put` MUST return `ErrPathExists`, with one
   idempotency exception for lost-response transport retries: where the
   backend exposes a content digest comparable to the payload's, the adapter
@@ -64,11 +65,13 @@ Adapters MUST document their atomic threshold, maximum object size, and any
 backend-specific multipart caveats.
 
 ### `Get` and `Exists`
-- `Get` MUST return a readable `io.ReadCloser` for an existing key and an
-  error matching `ErrNotFound` for a missing key. Any non-`ErrNotFound` I/O
-  error MUST be returned as-is so Lode never mistakes a transient read error
-  for an absent pointer ([`CONTRACT_CORE.md`](CONTRACT_CORE.md) §Head
-  Pointer).
+- `Get` MUST return a readable `io.ReadCloser` for an existing object key and
+  an error matching `ErrNotFound` for a missing key. Intermediate directory
+  prefixes (such as `"parent"` when `"parent/child"` is stored on `FS`) are not
+  stored objects: `Get` MUST return `ErrNotFound` and `Exists` MUST return
+  `false, nil`. Any non-`ErrNotFound` I/O error MUST be returned as-is so Lode
+  never mistakes a transient read error for an absent pointer
+  ([`CONTRACT_CORE.md`](CONTRACT_CORE.md) §Head Pointer).
 - `Exists` MUST report key existence without mutating storage.
 
 ### `List`
@@ -78,7 +81,8 @@ backend-specific multipart caveats.
   files and `.lock` files where applicable (note: `.lock` companion files are
   filtered by Lode's layout parsers).
 - Result order is unspecified; callers sort as needed. Invalid prefixes
-  (rooted, `\`, `.` or `..` segments) MUST return `ErrInvalidPath`.
+  (rooted, empty segments `"//"`, `\`, `.` or `..` segments) MUST return
+  `ErrInvalidPath`.
 
 ### `PrefixLister` (Optional Capability)
 
@@ -91,7 +95,9 @@ type PrefixLister interface {
 - `ListPrefixes(ctx, prefix)` returns the immediate child prefixes (each
   ending in `"/"`) beneath `prefix` that contain at least one stored object,
   sorted lexicographically and deduplicated, without enumerating every
-  descendant key.
+  descendant key. Intermediate segments starting with `.lode-tmp-` are valid
+  directory segments (only the final object-key segment reserves `.lode-tmp-`)
+  and MUST be included when they contain stored objects.
 - Invalid prefixes MUST return `ErrInvalidPath`. When no child prefixes
   exist, `ListPrefixes` returns an empty slice without error.
 - `FS`, `Memory`, and `s3.Store` (via `ListObjectsV2` with `Delimiter="/"`)
@@ -100,8 +106,10 @@ type PrefixLister interface {
   MUST preserve `PrefixLister` whenever the inner store implements it.
 
 ### `Delete`
-- `Delete` MUST remove `path` if present and succeed idempotently if `path`
-  does not exist. Invalid paths MUST return `ErrInvalidPath`.
+- `Delete` MUST remove the stored object at `path` if present and succeed
+  idempotently if `path` does not name a stored object (including when `path`
+  is an intermediate directory on `FS`). Invalid paths MUST return
+  `ErrInvalidPath`.
 
 ### `RangeReader` and `RangeStore`
 
@@ -110,15 +118,15 @@ type PrefixLister interface {
 - `FS`, `Memory`, `Prefixed`, and `s3.Store` implement `RangeStore`.
 - `ReadRange(ctx, path, offset, length)`:
   - Returns `ErrInvalidPath` when `offset < 0`, `length < 0`, `length`
-    exceeds platform `int` capacity, or `offset + length` overflows `int64`,
-    and when `path` is invalid.
-  - Returns `ErrNotFound` if `path` does not exist (including when
-    `length == 0`).
+    exceeds platform `int` capacity, or `offset + length` overflows `64`-bit
+    signed bounds, and when `path` is invalid.
+  - Returns `ErrNotFound` if `path` does not name a stored object (including
+    when `length == 0` or when `path` is an intermediate directory on `FS`).
   - Clamps buffer allocation to available bytes when `offset + length`
     extends past EOF, and returns `[]byte{}` when `offset >= size`.
   - Uses genuine range requests (such as HTTP `Range` headers on S3).
 - `ReaderAt(ctx, path)` returns an `io.ReaderAt` safe for concurrent reads at
-  different offsets, or `ErrNotFound` if `path` does not exist.
+  different offsets, or `ErrNotFound` if `path` does not name a stored object.
 
 ---
 
@@ -154,12 +162,19 @@ validated as a single canonical path segment (non-empty, not `.` or `..`, no
 
 ### `SingleProcess(store)`
 - Wraps an `ObjectStore` that lacks conditional writes with a process-local
-  `sync.RWMutex` implementing `CompareAndSwap` (`Delete` + `Put` under write
-  lock, while `Get`, `Exists`, `List`, `ReadRange`, `ReaderAt`, and
-  `ListPrefixes` hold the read lock so in-process readers never observe the
-  transient gap).
+  `sync.RWMutex` implementing `CompareAndSwap`. Before deleting `<path>`,
+  `CompareAndSwap` writes the verified prior content to `<path>.lode-cas`,
+  restores `<path>` on replacement `Put` failure, and serves `<path>.lode-cas`
+  across `Get`, `Exists`, `List`, `ReadRange`, `ReaderAt`, and subsequent
+  `CompareAndSwap` calls whenever `<path>` is absent so neither replacement
+  failures nor process termination lose the committed head. Keys ending in
+  `.lode-cas` are reserved on a `SingleProcess`-wrapped store and return
+  `ErrInvalidPath`.
+- `Get`, `Exists`, `List`, `ReadRange`, `ListPrefixes`, and every `ReadAt` call
+  on a returned `ReaderAt` hold the read lock so in-process readers never
+  observe the transient replacement gap.
 - Returns stores that already satisfy `Store` unchanged, and returns `nil`
-  for `nil`. Preserves `RangeReader` and `PrefixLister`.
+  for `nil` and typed-nil stores. Preserves `RangeReader` and `PrefixLister`.
 
 ---
 
@@ -178,12 +193,16 @@ type ConditionalWriter interface {
 | Exists, content `== expected` | Any | Atomically replace content with `replacement` |
 | Exists, content `!= expected` | Any | Return `ErrSnapshotConflict` |
 
+- **Cancellation**: `CompareAndSwap` MUST honor `ctx` cancellation while
+  waiting to acquire contention locks and MUST NOT publish `replacement` if
+  `ctx` is already canceled before the atomic publication step.
 - **Filesystem (`FS` / `NewFS`)**: acquires an exclusive advisory lock on
-  `<path>.lock` (`flock` on Unix, `LockFileEx` on Windows;
-  `errors.ErrUnsupported` on platforms without file locking), reads and
-  compares `<path>`, writes a `.lode-tmp-cas-*` file (`fsync`ing it when
-  `WithSync()` is set), atomically replaces `<path>`, and `fsync`s the parent
-  directory when `WithSync()` is set.
+  `<path>.lock` (`flock` on Unix, `LockFileEx` on Windows, honoring `ctx`
+  cancellation while waiting; `errors.ErrUnsupported` on platforms without file
+  locking), reads and compares `<path>`, writes a `.lode-tmp-cas-*` file
+  (`fsync`ing it when `WithSync()` is set), checks `ctx.Err()` before atomic
+  replacement, replaces `<path>`, and `fsync`s the parent directory when
+  `WithSync()` is set.
 - **S3 (`s3.New` / `s3.Bucket`)**: uses `PutObject` with `If-None-Match: "*"`
   when `expected == ""` and `If-Match` (with bare unquoted `ETag`) when
   replacing a known version, falling back to `GetObject` + conditional
