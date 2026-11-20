@@ -124,7 +124,7 @@ func runSparseVolume(ctx context.Context, tmpDir string) error {
 		fmt.Printf("  Sparse volumes explicitly track which ranges are committed.\n")
 		fmt.Printf("  Gaps are detected, not silently zero-filled.\n\n")
 	case err == nil:
-		return fmt.Errorf("expected ErrRangeMissing for gap, but ReadAt succeeded")
+		return errors.New("expected ErrRangeMissing for gap, but ReadAt succeeded")
 	default:
 		return fmt.Errorf("expected ErrRangeMissing for gap, got: %w", err)
 	}
