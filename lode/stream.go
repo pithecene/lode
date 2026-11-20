@@ -59,13 +59,14 @@ func (cr *countingReader) Read(p []byte) (int, error) {
 }
 
 type dataStream struct {
-	path   string
-	reader *io.PipeReader
-	pipe   *io.PipeWriter
-	comp   io.WriteCloser
-	count  countingWriter
-	hasher HashWriter
-	put    putResult
+	path      string
+	reader    *io.PipeReader
+	pipe      *io.PipeWriter
+	comp      io.WriteCloser
+	count     countingWriter
+	hasher    HashWriter
+	put       putResult
+	cancelPut context.CancelFunc
 }
 
 func (d *writer) openStream(ctx context.Context, id SnapshotID, role string) (*dataStream, error) {
@@ -84,7 +85,9 @@ func (d *writer) openStream(ctx context.Context, id SnapshotID, role string) (*d
 		sink = io.MultiWriter(&s.count, s.hasher)
 	}
 
-	s.put.start(ctx, d.store, path, pr)
+	putCtx, cancel := context.WithCancel(ctx)
+	s.cancelPut = cancel
+	s.put.start(putCtx, ctx, d.store, path, pr)
 	comp, err := d.components.compressor.Compress(sink)
 	if err != nil {
 		fromPut, cause := s.put.rootCause(err)
@@ -119,7 +122,9 @@ func (s *dataStream) finish() (ObjectRef, error) {
 	if err := s.pipe.Close(); err != nil {
 		return ObjectRef{}, s.fail("pipe", err)
 	}
-	if err := s.put.wait(); err != nil {
+	err := s.put.wait()
+	s.cancelPut()
+	if err != nil {
 		return ObjectRef{}, fmt.Errorf("failed to write data: %w", err)
 	}
 
@@ -132,7 +137,7 @@ func (s *dataStream) finish() (ObjectRef, error) {
 
 func (s *dataStream) fail(step string, err error, upstream ...io.Closer) error {
 	fromPut, cause := s.put.rootCause(err)
-	s.closePipe(cause)
+	s.cancelUpload(cause)
 	for _, c := range upstream {
 		_ = c.Close()
 	}
@@ -143,16 +148,17 @@ func (s *dataStream) fail(step string, err error, upstream ...io.Closer) error {
 	return fmt.Errorf("failed to close %s: %w", step, cause)
 }
 
-func (s *dataStream) closePipe(cause error) {
+func (s *dataStream) cancelUpload(cause error) {
 	if cause == nil {
 		cause = io.ErrClosedPipe
 	}
 	_ = s.reader.CloseWithError(cause)
 	_ = s.pipe.CloseWithError(cause)
+	s.cancelPut()
 }
 
 func (s *dataStream) abort(cause error) {
-	s.closePipe(cause)
+	s.cancelUpload(cause)
 	if s.comp != nil {
 		_ = s.comp.Close()
 	}
@@ -240,7 +246,7 @@ func (r *recordStream[T]) finish() (ObjectRef, error) {
 }
 
 func (r *recordStream[T]) abort(cause error) {
-	r.closePipe(cause)
+	r.cancelUpload(cause)
 	_ = r.encoder.Close()
 	if r.comp != nil {
 		_ = r.comp.Close()
@@ -255,16 +261,17 @@ type putResult struct {
 	err      error
 }
 
-func (r *putResult) start(ctx context.Context, store Store, path string, pr *io.PipeReader) {
+func (r *putResult) start(putCtx, callerCtx context.Context, store Store, path string, pr *io.PipeReader) {
 	r.done = make(chan struct{})
 	var stopCancel func() bool
-	if ctx.Done() != nil {
-		stopCancel = context.AfterFunc(ctx, func() {
-			_ = pr.CloseWithError(ctx.Err())
+	// Local aborts close the pipe themselves. Watch only caller cancellation.
+	if callerCtx.Done() != nil {
+		stopCancel = context.AfterFunc(callerCtx, func() {
+			_ = pr.CloseWithError(callerCtx.Err())
 		})
 	}
 	go func() {
-		err := store.Put(ctx, path, pr)
+		err := store.Put(putCtx, path, pr)
 		if stopCancel != nil {
 			stopCancel()
 		}

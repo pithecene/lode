@@ -252,11 +252,15 @@ func (c headerStreamCodec) NewStreamEncoder(w io.Writer) (lode.StreamEncoder[lod
 
 type headerCompressor struct {
 	headerBytes int
+	initErr     error
 }
 
 func (c headerCompressor) Name() string      { return "hdrcomp" }
 func (c headerCompressor) Extension() string { return ".hc" }
 func (c headerCompressor) Compress(w io.Writer) (io.WriteCloser, error) {
+	if c.initErr != nil {
+		return nil, c.initErr
+	}
 	if _, err := w.Write(bytes.Repeat([]byte("C"), c.headerBytes)); err != nil {
 		return nil, err
 	}
@@ -374,6 +378,61 @@ func TestAudit_StreamWrite_PipeInitNoDeadlock(t *testing.T) {
 			t.Fatal("StreamWrite deadlocked when stalled Put context was canceled")
 		}
 	})
+}
+
+func TestAudit_StreamWrite_InitFailureCancelsPut(t *testing.T) {
+	t.Parallel()
+	errInit := errors.New("stream constructor failed")
+	cases := []struct {
+		name       string
+		codec      lode.Codec[lode.D]
+		compressor lode.Compressor
+	}{
+		{"compressor", lode.JSONL[lode.D](), headerCompressor{initErr: errInit}},
+		{"stream encoder", headerStreamCodec{initErr: errInit}, lode.Uncompressed()},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := t.Context()
+			putCanceled := make(chan struct{})
+			store := &gatedStore{
+				RangeStore: lode.NewMemory(),
+				putBlk: func(ctx context.Context) error {
+					<-ctx.Done()
+					close(putCanceled)
+					return ctx.Err()
+				},
+			}
+			ds, err := lode.Open(lode.Use(store)).Records(ctx, "events", tc.codec, lode.WithCompressor(tc.compressor))
+			if err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan error, 1)
+			go func() {
+				_, err := ds.StreamWrite(ctx, func(yield func(lode.D, error) bool) {
+					yield(lode.D{"id": "1"}, nil)
+				}, nil)
+				done <- err
+			}()
+			select {
+			case err := <-done:
+				if !errors.Is(err, errInit) {
+					t.Errorf("StreamWrite = %v, want %v", err, errInit)
+				}
+				if err := ctx.Err(); err != nil {
+					t.Errorf("caller context = %v, want live context", err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("StreamWrite waited for Put after constructor failure")
+			}
+			select {
+			case <-putCanceled:
+			default:
+				t.Fatal("Put did not observe cancellation before StreamWrite returned")
+			}
+		})
+	}
 }
 
 func TestAudit_InterruptedExpiry_ConsistentAcrossReadAndListingAPIs(t *testing.T) {
