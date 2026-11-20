@@ -738,70 +738,55 @@ func TestSingleProcess_CancelWhileWaitingForExclusiveLock(t *testing.T) {
 		{"Delete", Store.Delete},
 	} {
 		t.Run(op.name, func(t *testing.T) {
-			ctx := t.Context()
-			raw := newPausedDelete()
-			store := SingleProcess(raw).(singleProcessFullStore)
-			if err := store.CompareAndSwap(ctx, raw.targetKey, "", "old"); err != nil {
-				t.Fatal(err)
-			}
-			replaced := make(chan error, 1)
-			go func() { replaced <- store.CompareAndSwap(ctx, raw.targetKey, "old", "new") }()
-			release := sync.OnceFunc(func() { close(raw.release) })
-			defer release()
-			select {
-			case <-raw.deleted:
-			case err := <-replaced:
-				t.Fatalf("CAS returned before holding the lock: %v", err)
-			case <-time.After(3 * time.Second):
-				t.Fatal("CAS never reached the target delete")
-			}
-
-			const other = "ptr/other"
-			waitCtx, cancel := context.WithCancel(ctx)
-			defer cancel()
-			done := make(chan error, 1)
-			go func() { done <- op.run(store, waitCtx, other) }()
-			deadline := time.NewTimer(3 * time.Second)
-			defer deadline.Stop()
-			tick := time.NewTicker(time.Millisecond)
-			defer tick.Stop()
-			for {
-				store.stateMu.Lock()
-				_, waiting := store.busy[other]
-				store.stateMu.Unlock()
-				if waiting {
-					break
+			synctest.Test(t, func(t *testing.T) {
+				ctx := t.Context()
+				raw := newPausedDelete()
+				store := SingleProcess(raw)
+				if err := store.CompareAndSwap(ctx, raw.targetKey, "", "old"); err != nil {
+					t.Fatal(err)
 				}
+				replaced := make(chan error, 1)
+				go func() { replaced <- store.CompareAndSwap(ctx, raw.targetKey, "old", "new") }()
+				release := sync.OnceFunc(func() { close(raw.release) })
+				defer release()
+				synctest.Wait()
 				select {
-				case <-tick.C:
-				case <-deadline.C:
-					t.Fatal("operation never acquired its per-key lock")
+				case <-raw.deleted:
+				default:
+					t.Fatal("CAS never reached the target delete")
 				}
-			}
-			cancel()
-			select {
-			case err := <-done:
-				if !errors.Is(err, context.Canceled) {
-					t.Errorf("contended %s = %v, want context.Canceled", op.name, err)
-				}
-			case <-time.After(time.Second):
-				t.Fatalf("contended %s waited for the lock after cancellation", op.name)
-			}
 
-			release()
-			select {
-			case err := <-replaced:
-				if err != nil {
+				// Use a different key so the operation waits for the store-wide lock.
+				const other = "ptr/other"
+				waitCtx, cancel := context.WithCancel(ctx)
+				defer cancel()
+				done := make(chan error, 1)
+				go func() { done <- op.run(store, waitCtx, other) }()
+				synctest.Wait()
+				select {
+				case err := <-done:
+					t.Fatalf("contended %s returned before cancellation: %v", op.name, err)
+				default:
+				}
+				cancel()
+				synctest.Wait()
+				select {
+				case err := <-done:
+					if !errors.Is(err, context.Canceled) {
+						t.Errorf("contended %s = %v, want context.Canceled", op.name, err)
+					}
+				default:
+					t.Fatalf("contended %s waited for the lock after cancellation", op.name)
+				}
+
+				release()
+				if err := <-replaced; err != nil {
 					t.Fatalf("CAS holding the lock: %v", err)
 				}
-			case <-time.After(time.Second):
-				t.Fatal("CAS holding the lock did not finish")
-			}
-			retryCtx, stop := context.WithTimeout(ctx, time.Second)
-			defer stop()
-			if err := store.CompareAndSwap(retryCtx, other, "", "created"); err != nil {
-				t.Errorf("CAS after canceled %s = %v, want nil", op.name, err)
-			}
+				if err := store.CompareAndSwap(ctx, other, "", "created"); err != nil {
+					t.Errorf("CAS after canceled %s = %v, want nil", op.name, err)
+				}
+			})
 		})
 	}
 }
