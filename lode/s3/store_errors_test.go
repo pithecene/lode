@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/pithecene/lode/internal/errs"
+
 	"github.com/aws/aws-sdk-go-v2/aws"
 	s3api "github.com/aws/aws-sdk-go-v2/service/s3"
 
@@ -70,6 +72,7 @@ func (c *codeClient) rangeSeen() string {
 var conditionalCodes = []string{"PreconditionFailed", "412", "ConditionalRequestConflict", "409"}
 
 func TestStore_MapsPreconditionCodes(t *testing.T) {
+	t.Parallel()
 	t.Run("put maps precondition and conflict codes", func(t *testing.T) {
 		ctx := t.Context()
 		for _, code := range append(conditionalCodes, "SlowDown") {
@@ -93,9 +96,11 @@ func TestStore_MapsPreconditionCodes(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, _ = tmp.Write(data)
+			t.Cleanup(func() { errs.DiscardClose(tmp) })
+			if _, err := tmp.Write(data); err != nil {
+				t.Fatal(err)
+			}
 			err = store.putMultipartFromFile(ctx, "large.bin", tmp, int64(len(data)))
-			_ = tmp.Close()
 			wantExists := code == "PreconditionFailed" || code == "412"
 			if errors.Is(err, lode.ErrPathExists) != wantExists || err == nil {
 				t.Errorf("code %s: got %v, want ErrPathExists=%v", code, err, wantExists)
@@ -132,6 +137,7 @@ func TestStore_MapsPreconditionCodes(t *testing.T) {
 }
 
 func TestStore_ReadRange_Headers(t *testing.T) {
+	t.Parallel()
 	t.Run("exact range header", func(t *testing.T) {
 		ctx := t.Context()
 		client := &codeClient{MockS3Client: NewMockS3Client()}
@@ -209,6 +215,7 @@ func (c conflictingStageClient) PutObject(ctx context.Context, p *s3api.PutObjec
 }
 
 func TestStageConflictDoesNotAdvanceDatasetHead(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	store, err := New(conflictingStageClient{NewMockS3Client()}, "test")
 	if err != nil {

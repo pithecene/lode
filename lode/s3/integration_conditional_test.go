@@ -61,6 +61,7 @@ var conditionalRaces = []conditionalRace{
 }
 
 func TestIntegration_ConditionalWrites(t *testing.T) {
+	t.Parallel()
 	for _, backend := range s3Backends {
 		for _, race := range conditionalRaces {
 			t.Run(backend.name+"/"+race.name+" has one winner", func(t *testing.T) {

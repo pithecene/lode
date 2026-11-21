@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/pithecene/lode/internal/errs"
 )
 
 // CompareAndSwap atomically replaces the content at path if and only if
@@ -72,31 +74,31 @@ func (f *fsStore) CompareAndSwap(ctx context.Context, path, expected, replacemen
 	tmpName := tmp.Name()
 
 	if _, err := tmp.WriteString(replacement); err != nil {
-		_ = tmp.Close()
-		_ = os.Remove(tmpName)
+		errs.DiscardClose(tmp)
+		errs.IgnoreError(os.Remove(tmpName))
 		return fmt.Errorf("fs: cas write temp: %w", err)
 	}
 	if f.sync {
 		if err := tmp.Sync(); err != nil {
-			_ = tmp.Close()
-			_ = os.Remove(tmpName)
+			errs.DiscardClose(tmp)
+			errs.IgnoreError(os.Remove(tmpName))
 			return fmt.Errorf("fs: cas sync temp: %w", err)
 		}
 	}
 	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpName)
+		errs.IgnoreError(os.Remove(tmpName))
 		return fmt.Errorf("fs: cas close temp: %w", err)
 	}
 
 	if err := ctx.Err(); err != nil {
-		_ = os.Remove(tmpName)
+		errs.IgnoreError(os.Remove(tmpName))
 		return err
 	}
 
 	// replaceFile replaces the pointer even while a reader holds it open,
 	// which os.Rename cannot do on Windows.
 	if err := replaceFile(tmpName, fullPath); err != nil {
-		_ = os.Remove(tmpName)
+		errs.IgnoreError(os.Remove(tmpName))
 		return fmt.Errorf("fs: cas rename: %w", err)
 	}
 	return f.syncPublishedDir(existing, dir)

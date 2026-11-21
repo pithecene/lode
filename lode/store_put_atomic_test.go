@@ -12,6 +12,8 @@ import (
 	"testing"
 
 	"github.com/go-openapi/testify/v2/assert"
+
+	"github.com/pithecene/lode/internal/errs"
 )
 
 // Put is all-or-nothing (CONTRACT_STORAGE §Put): a reader that fails part way
@@ -85,6 +87,7 @@ func assertPutAllOrNothing(t *testing.T, store RangeStore) {
 // when the directory turns read-only mid-write: the object is published only
 // after it is complete, and a leftover temporary file is never listed.
 func TestFSStore_Put_FailureLeavesNothingVisible(t *testing.T) {
+	t.Parallel()
 	if os.Geteuid() == 0 {
 		t.Skip("directory permissions do not bind root")
 	}
@@ -104,7 +107,7 @@ func TestFSStore_Put_FailureLeavesNothingVisible(t *testing.T) {
 	}
 	r := &lockingReader{dir: dir, inner: newFailingReader("partial")}
 	err = store.Put(t.Context(), "locked/obj", r)
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+	t.Cleanup(func() { errs.IgnoreError(os.Chmod(dir, 0o755)) })
 	if !errors.Is(err, errReaderBoom) {
 		t.Fatalf("got %v, want the reader error in the chain", err)
 	}
@@ -123,6 +126,7 @@ func TestFSStore_Put_FailureLeavesNothingVisible(t *testing.T) {
 // adapter rejects a key that uses it, not only the filesystem adapter whose
 // List would hide it (CONTRACT_STORAGE §Put).
 func TestStore_Put_RejectsReservedNames(t *testing.T) {
+	t.Parallel()
 	stores := map[string]func(t *testing.T) Store{
 		"fs": func(t *testing.T) Store {
 			store, err := NewFS(t.TempDir())
@@ -148,6 +152,7 @@ func TestStore_Put_RejectsReservedNames(t *testing.T) {
 // A reader never sees a partially written object: while a Put is still
 // streaming, Get reports ErrNotFound and List omits the object.
 func TestFSStore_Put_PublishesAtomically(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	store, err := NewFS(root)
 	if err != nil {
@@ -167,8 +172,8 @@ func TestFSStore_Put_PublishesAtomically(t *testing.T) {
 		if keys, err := store.List(t.Context(), ""); err != nil || len(keys) != 0 {
 			t.Fatalf("List during a Put = %v, %v; want nothing", keys, err)
 		}
-		_, _ = pw.Write([]byte("second half"))
-		_ = pw.Close()
+		errs.IgnoreResult(pw.Write([]byte("second half")))
+		errs.DiscardClose(pw)
 		wg.Wait()
 		if err := <-done; err != nil {
 			t.Fatal(err)
@@ -221,7 +226,7 @@ type lockingReader struct {
 func (l *lockingReader) Read(p []byte) (int, error) {
 	if !l.locked {
 		l.locked = true
-		_ = os.Chmod(l.dir, 0o555)
+		errs.IgnoreError(os.Chmod(l.dir, 0o555))
 	}
 	return l.inner.Read(p)
 }

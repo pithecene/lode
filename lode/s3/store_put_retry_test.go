@@ -7,6 +7,8 @@ import (
 	"io"
 	"testing"
 
+	"github.com/pithecene/lode/internal/errs"
+
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 
@@ -45,6 +47,7 @@ func (c *lostResponseClient) HeadObject(ctx context.Context, params *s3.HeadObje
 // A refused conditional write whose object is the call's own payload is a
 // success (CONTRACT_STORAGE §Put).
 func TestStore_Put_OwnUploadAfterLostResponse(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	mock := &lostResponseClient{MockS3Client: NewMockS3Client()}
 	store, _ := New(mock, "test")
@@ -57,7 +60,7 @@ func TestStore_Put_OwnUploadAfterLostResponse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = rc.Close() }()
+	defer func() { errs.DiscardClose(rc) }()
 	got, _ := io.ReadAll(rc)
 	if !bytes.Equal(got, payload) {
 		t.Fatalf("stored %q, want %q", got, payload)
@@ -66,6 +69,7 @@ func TestStore_Put_OwnUploadAfterLostResponse(t *testing.T) {
 
 // A refused write whose object holds other bytes belongs to another writer.
 func TestStore_Put_OtherWritersObjectStaysRefused(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	mock := NewMockS3Client()
 	store, _ := New(mock, "test")
@@ -82,6 +86,7 @@ func TestStore_Put_OtherWritersObjectStaysRefused(t *testing.T) {
 // A refusal the adapter cannot confirm as its own, because the HEAD fails,
 // stays a refusal.
 func TestStore_Put_UnconfirmedRefusalStaysRefused(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	mock := &lostResponseClient{MockS3Client: NewMockS3Client(), headErr: errors.New("head unavailable")}
 	store, _ := New(mock, "test")
@@ -95,6 +100,7 @@ func TestStore_Put_UnconfirmedRefusalStaysRefused(t *testing.T) {
 // The adapter compares the payload's MD5 with the ETag, so a multipart
 // ETag, which carries a part count, never passes as the adapter's own.
 func TestStore_Put_MultipartETagNeverMatches(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	mock := &lostResponseClient{MockS3Client: NewMockS3Client()}
 	store, _ := New(mock, "test")
@@ -115,6 +121,7 @@ func TestStore_Put_MultipartETagNeverMatches(t *testing.T) {
 // AWS S3 returns 409 ConditionalRequestConflict when concurrent conditional
 // writes race on the same key. Only matching stored bytes confirm success.
 func TestStore_Put_ConditionalRequestConflictMapped(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	for _, code := range []string{"ConditionalRequestConflict", "409"} {
 		t.Run(code, func(t *testing.T) {

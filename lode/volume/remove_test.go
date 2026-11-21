@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pithecene/lode/internal/errs"
+
 	"github.com/pithecene/lode/internal/history"
 	"github.com/pithecene/lode/internal/testutil"
 	"github.com/pithecene/lode/lode"
@@ -22,7 +24,7 @@ func pointerContent(t *testing.T, store lode.Store, id ID) string {
 	if err != nil {
 		t.Fatalf("reading the pointer: %v", err)
 	}
-	defer func() { _ = rc.Close() }()
+	defer func() { errs.DiscardClose(rc) }()
 	data, err := io.ReadAll(rc)
 	if err != nil {
 		t.Fatal(err)
@@ -45,6 +47,7 @@ func listed(t *testing.T, store lode.Store, prefix string) []string {
 // Every handle then refuses its head and its commits, and a volume whose ID
 // extends the removed one is untouched.
 func TestRemove_LeavesOnlyTheFence(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	store := lode.NewMemory()
 	factory := lode.Use(store)
@@ -86,6 +89,7 @@ func TestRemove_LeavesOnlyTheFence(t *testing.T) {
 // Removing a volume that was never written writes the fence, so no later
 // commit can start its history.
 func TestRemove_FencesAVolumeNeverWritten(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	store := lode.NewMemory()
 	if err := Remove(ctx, "fresh", lode.Use(store)); err != nil {
@@ -101,6 +105,7 @@ func TestRemove_FencesAVolumeNeverWritten(t *testing.T) {
 // A removal that fails part way keeps the fence, and a second call deletes
 // what remains, including a block staged into the volume after the first.
 func TestRemove_CompletesAnInterruptedRemoval(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	fs := testutil.NewFaultStore(lode.NewMemory())
 	factory := newFaultStoreFactory(fs)
@@ -135,6 +140,7 @@ func TestRemove_CompletesAnInterruptedRemoval(t *testing.T) {
 // persisted its manifest refuses to delete: the fence is up, the commit can
 // finish, and the next removal deletes what then exists.
 func TestRemove_RefusesWhileACommitIsPending(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	fs := testutil.NewFaultStore(lode.NewMemory())
 	factory := newFaultStoreFactory(fs)
@@ -166,7 +172,7 @@ func TestRemove_RefusesWhileACommitIsPending(t *testing.T) {
 		t.Fatal(err)
 	}
 	data, _ := io.ReadAll(staged)
-	_ = staged.Close()
+	errs.DiscardClose(staged)
 	if err := fs.Put(ctx, volumeManifestPath("v", SnapshotID(stagedID(t, fs, "v"))), bytes.NewReader(data)); err != nil {
 		t.Fatal(err)
 	}
@@ -192,6 +198,7 @@ func stagedID(t *testing.T, store lode.Store, id ID) string {
 // A store that reports a deleted object as missing, as when two removals
 // overlap, does not fail the removal.
 func TestRemove_TreatsAMissingObjectAsDeleted(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	fs := testutil.NewFaultStore(lode.NewMemory())
 	factory := newFaultStoreFactory(fs)
@@ -209,6 +216,7 @@ func TestRemove_TreatsAMissingObjectAsDeleted(t *testing.T) {
 // The largest retry count writes the fence as any other: the attempt loop
 // counts up to the attempts and never past them.
 func TestRemove_WritesTheFenceAtTheLargestRetryCount(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	store := lode.NewMemory()
 	factory := lode.Use(store)
@@ -228,6 +236,7 @@ func TestRemove_WritesTheFenceAtTheLargestRetryCount(t *testing.T) {
 // A writer that held the volume open through the removal can never commit:
 // its swap conflicts with the fence, and its retry reads the removal.
 func TestRemove_FencesAWriterThatHeldTheVolume(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	store := lode.NewMemory()
 	factory := lode.Use(store)
@@ -266,6 +275,7 @@ func TestRemove_FencesAWriterThatHeldTheVolume(t *testing.T) {
 // conflict and deletes nothing; with retries it reads the new head and
 // removes the volume, the new commit included.
 func TestRemove_RetriesAConflictingCommit(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		opts    []Option
@@ -313,6 +323,7 @@ func TestRemove_RetriesAConflictingCommit(t *testing.T) {
 
 // Arguments are checked before the store is created.
 func TestRemove_ChecksItsArguments(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	created := false
 	factory := func() (lode.RangeStore, error) { created = true; return lode.NewMemory(), nil }

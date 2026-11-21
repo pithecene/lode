@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/pithecene/lode/internal/errs"
+
 	"github.com/pithecene/lode/internal/history"
 	"github.com/pithecene/lode/internal/storepath"
 	"github.com/pithecene/lode/internal/validate"
@@ -69,7 +71,7 @@ func datasetHasCommittedManifest(ctx context.Context, store ObjectStore, id Data
 	rc, err := store.Get(ctx, pointer)
 	if err == nil {
 		data, readErr := io.ReadAll(rc)
-		_ = rc.Close()
+		errs.DiscardClose(rc)
 		if readErr != nil {
 			return false, fmt.Errorf("lode: failed to read latest pointer: %w", readErr)
 		}

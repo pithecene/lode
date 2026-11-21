@@ -96,6 +96,7 @@ func metadataOf(t testing.TB, m Metadata) D {
 }
 
 func TestRecords_AnEmptyWriteRemainsReadable(t *testing.T) {
+	t.Parallel()
 	store := NewMemory()
 	snap, err := recordsOn(t, store, "events").Write(t.Context(), R(), nil)
 	if err != nil {
@@ -108,6 +109,7 @@ func TestRecords_AnEmptyWriteRemainsReadable(t *testing.T) {
 }
 
 func TestViews_RejectANilCompressor(t *testing.T) {
+	t.Parallel()
 	_, err := OpenReadOnly(Use(NewMemory())).Records(t.Context(), "events", JSONL[D](), WithCompressor(nil))
 	if !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("got %v, want ErrInvalidArgument", err)
@@ -115,6 +117,7 @@ func TestViews_RejectANilCompressor(t *testing.T) {
 }
 
 func TestWrite_RejectsMetadataDecodedFromANonObject(t *testing.T) {
+	t.Parallel()
 	var m Metadata
 	if err := json.Unmarshal([]byte(`[1]`), &m); err != nil {
 		t.Fatal(err)
@@ -126,6 +129,7 @@ func TestWrite_RejectsMetadataDecodedFromANonObject(t *testing.T) {
 }
 
 func TestViews_CannotWriteThroughRetention(t *testing.T) {
+	t.Parallel()
 	store := NewMemory()
 	if _, err := recordsOn(t, store, "events").Write(t.Context(), R(D{"a": 1}), nil); err != nil {
 		t.Fatal(err)
@@ -152,6 +156,7 @@ func TestViews_CannotWriteThroughRetention(t *testing.T) {
 type nilCodec struct{ Codec[D] }
 
 func TestHandles_RejectNilComponents(t *testing.T) {
+	t.Parallel()
 	var codec *nilCodec
 	var compressor *renamedCompressor
 	var checksum *renamedChecksum
@@ -188,6 +193,7 @@ func TestHandles_RejectNilComponents(t *testing.T) {
 }
 
 func TestMetadata_NullEmptiesAReusedValue(t *testing.T) {
+	t.Parallel()
 	var m Metadata
 	if err := json.Unmarshal([]byte(`{"a":1}`), &m); err != nil {
 		t.Fatal(err)
@@ -206,6 +212,7 @@ type unnamedCodec struct{ Codec[D] }
 func (unnamedCodec) Name() string { return "" }
 
 func TestHandles_RejectAnUnnamedCodec(t *testing.T) {
+	t.Parallel()
 	codec := unnamedCodec{JSONL[D]()}
 	if _, err := Open(Use(NewMemory())).Records(t.Context(), "events", Codec[D](codec)); !errors.Is(err, ErrInvalidArgument) {
 		t.Errorf("writer: got %v, want ErrInvalidArgument", err)
@@ -229,6 +236,7 @@ func (mapStore) ReaderAt(context.Context, string) (io.ReaderAt, error)          
 func (mapStore) CompareAndSwap(context.Context, string, string, string) error    { return nil }
 
 func TestRoots_RejectANilMapStore(t *testing.T) {
+	t.Parallel()
 	var nilStore mapStore
 	factory := Factory[mapStore](func() (mapStore, error) { return nilStore, nil })
 	if _, err := Open(factory).Records(t.Context(), "events", JSONL[D]()); !errors.Is(err, ErrInvalidArgument) {
@@ -237,6 +245,7 @@ func TestRoots_RejectANilMapStore(t *testing.T) {
 }
 
 func TestViews_HaveNoWriterMethods(t *testing.T) {
+	t.Parallel()
 	store := NewMemory()
 	if _, err := recordsOn(t, store, "logs").Write(t.Context(), R(D{"a": 1}), nil); err != nil {
 		t.Fatal(err)

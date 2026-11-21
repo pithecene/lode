@@ -8,6 +8,8 @@ import (
 	"os"
 	"syscall"
 	"time"
+
+	"github.com/pithecene/lode/internal/errs"
 )
 
 const (
@@ -24,7 +26,7 @@ func lockExclusive(ctx context.Context, f *os.File) (unlock func(), err error) {
 	fd := int(f.Fd())
 	err = syscall.Flock(fd, syscall.LOCK_EX|syscall.LOCK_NB)
 	if err == nil {
-		return func() { _ = syscall.Flock(fd, syscall.LOCK_UN) }, nil
+		return func() { errs.IgnoreError(syscall.Flock(fd, syscall.LOCK_UN)) }, nil
 	}
 	if !isLockContended(err) {
 		return nil, err
@@ -45,7 +47,7 @@ func lockExclusive(ctx context.Context, f *os.File) (unlock func(), err error) {
 		}
 		err = syscall.Flock(fd, syscall.LOCK_EX|syscall.LOCK_NB)
 		if err == nil {
-			return func() { _ = syscall.Flock(fd, syscall.LOCK_UN) }, nil
+			return func() { errs.IgnoreError(syscall.Flock(fd, syscall.LOCK_UN)) }, nil
 		}
 		if !isLockContended(err) {
 			return nil, err

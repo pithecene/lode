@@ -23,6 +23,7 @@ func (f *failingReader) Read(p []byte) (int, error) {
 // Put spools the reader before any upload, so a failing reader never creates
 // an object (CONTRACT_STORAGE §Put: all-or-nothing).
 func TestStore_Put_AllOrNothing(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	mock := NewMockS3Client()
 	store, _ := New(mock, "test")

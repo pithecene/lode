@@ -2,15 +2,19 @@ version: "2"
 
 # Bosun's Go analyzers, which the internal check runs on this module
 # (bosun.yaml and CI's check job). The stock linters stay in .golangci.yaml,
-# which CI's lint job runs.
+# which CI's lint job runs. Lode leaves commentpolicy off: its caps of two
+# lines on an exported declaration and four inline would cut the contract-style
+# doc comments that AGENTS.md requires.
 linters:
   default: none
   enable:
+    - errdiscard
     - errjoin
     - leakcheck
     - mapboolset
     - osexitscope
     - spawnscope
+    - testparallel
     - testtable
     - unused
     - useany
@@ -18,6 +22,11 @@ linters:
     unused:
       field-writes-are-uses: false
     custom:
+      errdiscard:
+        type: module
+        settings:
+          helper-package: errs
+          helper-location: internal/errs
       mapboolset:
         type: module
       errjoin:
@@ -28,8 +37,16 @@ linters:
         type: module
       spawnscope:
         type: module
+      testparallel:
+        type: module
+        settings:
+          serial-helper-packages:
+            - github.com/pithecene/lode/internal/testutil
       testtable:
         type: module
+        settings:
+          serial-helper-packages:
+            - github.com/pithecene/lode/internal/testutil
       useany:
         type: module
 

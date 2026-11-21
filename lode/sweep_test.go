@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pithecene/lode/internal/errs"
+
 	"github.com/pithecene/lode/internal/testutil"
 )
 
@@ -23,6 +25,7 @@ const sweepGrace = 24 * time.Hour
 // -----------------------------------------------------------------------------
 
 func TestSweep_Request(t *testing.T) {
+	t.Parallel()
 	t.Run("non-positive grace is rejected", func(t *testing.T) {
 		for _, grace := range []time.Duration{0, -time.Second} {
 			fs := testutil.NewFaultStore(NewMemory())
@@ -149,6 +152,7 @@ func TestSweep_Request(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestSweep_Settle(t *testing.T) {
+	t.Parallel()
 	t.Run("a manifest the listing omits is still removed", func(t *testing.T) {
 		mem, lister, ds, first := newTombstonedListFixture(t)
 		manifest := "datasets/events/snapshots/" + string(first.ID) + "/manifest.json"
@@ -242,6 +246,7 @@ func TestSweep_Settle(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestSweep_Reclaim(t *testing.T) {
+	t.Parallel()
 	t.Run("an orphan whose manifest the listing omits is kept", func(t *testing.T) {
 		mem := NewMemory()
 		ds := newDefaultRetention(t, mem)
@@ -382,6 +387,7 @@ func TestSweep_Reclaim(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestSweep_Head(t *testing.T) {
+	t.Parallel()
 	t.Run("is never settled", func(t *testing.T) {
 		store := NewMemory()
 		ds := newDefaultRetention(t, store)
@@ -423,6 +429,7 @@ func TestSweep_Head(t *testing.T) {
 // TestSweep_HeadResolution covers how Sweep finds the head it holds: only
 // the pointer names it.
 func TestSweep_HeadResolution(t *testing.T) {
+	t.Parallel()
 	t.Run("a pointer-less dataset is refused", func(t *testing.T) {
 		mem := NewMemory()
 		ds := newDefaultRetention(t, mem)
@@ -531,6 +538,7 @@ func TestSweep_HeadResolution(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestSweep_RejectedTombstone(t *testing.T) {
+	t.Parallel()
 	t.Run("invalid ones settle nothing", func(t *testing.T) {
 		store := NewMemory()
 		ds := newDefaultRetention(t, store)
@@ -719,7 +727,7 @@ func readObject(t *testing.T, store Store, p string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = rc.Close() }()
+	defer func() { errs.DiscardClose(rc) }()
 	data, err := io.ReadAll(rc)
 	if err != nil {
 		t.Fatal(err)
@@ -732,6 +740,7 @@ func readObject(t *testing.T, store Store, p string) string {
 const elapsed = time.Nanosecond
 
 func TestSweep_Reindex(t *testing.T) {
+	t.Parallel()
 	t.Run("restores the partition index from the canonical manifest", func(t *testing.T) {
 		store := NewMemory()
 		ds := newHiveRetention(t, store)
@@ -817,6 +826,7 @@ func TestSweep_Reindex(t *testing.T) {
 // runs, created by an earlier attempt, a lagging listing, or a concurrent
 // expiry.
 func TestSweep_ReindexExistingCopies(t *testing.T) {
+	t.Parallel()
 	t.Run("a file outside the snapshot names no partition", func(t *testing.T) {
 		store := NewMemory()
 		ds := newHiveRetention(t, store)
@@ -884,6 +894,7 @@ func TestSweep_ReindexExistingCopies(t *testing.T) {
 // concurrent expiry, or both interrupt: Reindexed reports every snapshot
 // whose copies may remain, and no copy outlives an expiry.
 func TestSweep_ReindexFailures(t *testing.T) {
+	t.Parallel()
 	t.Run("a repair that fails partway reports the copies it created", func(t *testing.T) {
 		fault := testutil.NewFaultStore(NewMemory())
 		ds := newHiveRetention(t, fault)
@@ -990,6 +1001,7 @@ func TestSweep_ReindexFailures(t *testing.T) {
 // §Storage Layout), with a staged block and a staged manifest copy added at
 // their layout paths, as a pending commit leaves them.
 func TestSweep_LeavesAVolumeInTheDatasetDirectory(t *testing.T) {
+	t.Parallel()
 	old := string(idAt(time.Now().Add(-48 * time.Hour)))
 	cases := []struct {
 		name   string

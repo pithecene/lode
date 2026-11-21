@@ -39,7 +39,7 @@ func execExample() error {
 	if err != nil {
 		return err
 	}
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	defer removeTempDir(tmpDir)
 	return runSparseVolume(context.Background(), tmpDir)
 }
 
@@ -214,4 +214,12 @@ func runSparseVolume(ctx context.Context, tmpDir string) error {
 // allEqual returns true if every byte in data equals b.
 func allEqual(data []byte, b byte) bool {
 	return bytes.Equal(data, bytes.Repeat([]byte{b}, len(data)))
+}
+
+// removeTempDir deletes the example's scratch directory. A failed removal
+// does not change the example's outcome, so it is logged rather than returned.
+func removeTempDir(dir string) {
+	if err := os.RemoveAll(dir); err != nil {
+		log.Printf("remove temp dir %s: %v", dir, err)
+	}
 }

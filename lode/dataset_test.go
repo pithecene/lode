@@ -14,6 +14,8 @@ import (
 	"testing/iotest"
 	"time"
 
+	"github.com/pithecene/lode/internal/errs"
+
 	"github.com/pithecene/lode/internal/testutil"
 
 	"github.com/go-openapi/testify/v2/assert"
@@ -24,6 +26,7 @@ import (
 // -----------------------------------------------------------------------------
 
 func TestOpen(t *testing.T) {
+	t.Parallel()
 	nilFactory := Factory[Store](func() (Store, error) {
 		return nil, nil //nolint:nilnil // intentionally testing nil store with nil error
 	})
@@ -68,6 +71,7 @@ func TestOpen(t *testing.T) {
 }
 
 func TestOpenReadOnly(t *testing.T) {
+	t.Parallel()
 	failing := Factory[Store](func() (Store, error) { return nil, errors.New("factory down") })
 	root := OpenReadOnly(failing)
 	_, recordsErr := root.Records(t.Context(), "d", JSONL[D]())
@@ -130,6 +134,7 @@ func TestOpenReadOnly(t *testing.T) {
 }
 
 func TestRoot_Blobs(t *testing.T) {
+	t.Parallel()
 	t.Run("a partitioned layout is rejected", func(t *testing.T) {
 		_, err := Open(Memory()).Blobs(t.Context(), "test-ds", hive("day"))
 		if !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "cannot be partitioned") {
@@ -168,6 +173,7 @@ type runInfo struct {
 }
 
 func TestRoot_Records_Typed(t *testing.T) {
+	t.Parallel()
 	t.Run("the record type is inferred from the codec", func(t *testing.T) {
 		ds, err := Open(Memory()).Records(t.Context(), "events", JSONL[event]())
 		if err != nil {
@@ -258,6 +264,7 @@ type renamedCompressor struct{ Compressor }
 func (renamedCompressor) Name() string { return "custom-gzip" }
 
 func TestRecords_Read(t *testing.T) {
+	t.Parallel()
 	t.Run("a handle with another codec is rejected", func(t *testing.T) {
 		store := NewMemory()
 		if _, err := recordsOn(t, store, "test-ds").Write(t.Context(), R(D{"id": "1"}), nil); err != nil {
@@ -305,6 +312,7 @@ func assertEmptyMetadata(t *testing.T, m Metadata) {
 // -----------------------------------------------------------------------------
 
 func TestDataset_Write_Metadata(t *testing.T) {
+	t.Parallel()
 	t.Run("empty metadata valid and persisted", func(t *testing.T) {
 		ds, err := Open(Memory()).Blobs(t.Context(), "test-ds")
 		if err != nil {
@@ -343,6 +351,7 @@ func TestDataset_Write_Metadata(t *testing.T) {
 }
 
 func TestBlobs_StreamWrite_Metadata(t *testing.T) {
+	t.Parallel()
 	t.Run("empty metadata valid and persisted", func(t *testing.T) {
 		ds, err := Open(Memory()).Blobs(t.Context(), "test-ds")
 		if err != nil {
@@ -373,6 +382,7 @@ func TestBlobs_StreamWrite_Metadata(t *testing.T) {
 }
 
 func TestRecords_StreamWrite_Metadata(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		metadata any
@@ -451,6 +461,7 @@ func TestRecords_StreamWrite_Metadata(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestBlobs_StreamWrite_Visibility(t *testing.T) {
+	t.Parallel()
 	t.Run("not visible before commit", func(t *testing.T) {
 		ds, err := Open(Memory()).Blobs(t.Context(), "test-ds")
 		if err != nil {
@@ -576,6 +587,7 @@ func TestBlobs_StreamWrite_Visibility(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestBlobs_StreamWrite_Abort(t *testing.T) {
+	t.Parallel()
 	t.Run("context canceled mid-stream leaves no manifest", func(t *testing.T) {
 		store := NewMemory()
 		ds, err := Open(Use(store)).Blobs(t.Context(), "test-ds")
@@ -597,7 +609,7 @@ func TestBlobs_StreamWrite_Abort(t *testing.T) {
 				t.Fatalf("Write failed: %v", err)
 			}
 			cancel()
-			_ = pw.CloseWithError(ctx.Err())
+			errs.IgnoreError(pw.CloseWithError(ctx.Err()))
 
 			if err := <-done; err == nil {
 				t.Fatal("expected error after context cancellation")
@@ -628,6 +640,7 @@ func TestBlobs_StreamWrite_Abort(t *testing.T) {
 }
 
 func TestBlobs_StreamWrite_Interrupted(t *testing.T) {
+	t.Parallel()
 	t.Run("reader error mid-stream writes no manifest", func(t *testing.T) {
 		store := NewMemory()
 		ds, err := Open(Use(store)).Blobs(t.Context(), "test-ds")
@@ -663,6 +676,7 @@ func TestBlobs_StreamWrite_Interrupted(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestBlobs_StreamWrite_ManifestPresenceIsCommitSignal(t *testing.T) {
+	t.Parallel()
 	store := NewMemory()
 	ds, err := Open(Use(store)).Blobs(t.Context(), "test-ds")
 	if err != nil {
@@ -720,6 +734,7 @@ func TestBlobs_StreamWrite_ManifestPresenceIsCommitSignal(t *testing.T) {
 }
 
 func TestRecords_StreamWrite_ManifestPresenceIsCommitSignal(t *testing.T) {
+	t.Parallel()
 	store := NewMemory()
 	ds, err := Open(Use(store)).Records(t.Context(), "test-ds", JSONL[D]())
 	if err != nil {
@@ -750,6 +765,7 @@ func TestRecords_StreamWrite_ManifestPresenceIsCommitSignal(t *testing.T) {
 }
 
 func TestRecords_StreamWrite_IteratorError(t *testing.T) {
+	t.Parallel()
 	t.Run("iterator error", func(t *testing.T) {
 		ds, err := Open(Memory()).Records(t.Context(), "test-ds", JSONL[D]())
 		if err != nil {
@@ -812,6 +828,7 @@ func TestRecords_StreamWrite_IteratorError(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestDataset_EmptyDataset(t *testing.T) {
+	t.Parallel()
 	t.Run("latest empty dataset returns err no snapshots", func(t *testing.T) {
 		ds, err := Open(Memory()).Blobs(t.Context(), "test-ds")
 		if err != nil {
@@ -859,6 +876,7 @@ func TestDataset_EmptyDataset(t *testing.T) {
 // The blob type makes v0's shape errors (no blob, two blobs, a value that is
 // not a []byte) impossible; an empty blob is one empty object.
 func TestBlobs_Write_EmptyBlob(t *testing.T) {
+	t.Parallel()
 	ds := blobsOn(t, NewMemory(), "test-ds")
 	snap, err := ds.Write(t.Context(), nil, nil)
 	if err != nil {
@@ -878,6 +896,7 @@ func TestBlobs_Write_EmptyBlob(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestBlobs_StreamWrite_Commit(t *testing.T) {
+	t.Parallel()
 	t.Run("success", func(t *testing.T) {
 		ds, err := Open(Memory()).Blobs(t.Context(), "test-ds")
 		if err != nil {
@@ -943,6 +962,7 @@ func TestBlobs_StreamWrite_Commit(t *testing.T) {
 }
 
 func TestBlobs_StreamWrite_Misuse(t *testing.T) {
+	t.Parallel()
 	t.Run("nil reader returns ErrInvalidArgument", func(t *testing.T) {
 		ds, err := Open(Memory()).Blobs(t.Context(), "test-ds")
 		if err != nil {
@@ -965,6 +985,7 @@ func TestBlobs_StreamWrite_Misuse(t *testing.T) {
 }
 
 func TestBlobs_StreamWrite_Lineage(t *testing.T) {
+	t.Parallel()
 	t.Run("parent snapshot linked", func(t *testing.T) {
 		ds, err := Open(Memory()).Blobs(t.Context(), "test-ds")
 		if err != nil {
@@ -1014,6 +1035,7 @@ func TestBlobs_StreamWrite_Lineage(t *testing.T) {
 }
 
 func TestBlobs_StreamWrite_Encoding(t *testing.T) {
+	t.Parallel()
 	t.Run("with checksum records checksum", func(t *testing.T) {
 		ds, err := Open(Memory()).Blobs(t.Context(), "test-ds", WithChecksum(MD5()))
 		if err != nil {
@@ -1052,6 +1074,7 @@ func TestBlobs_StreamWrite_Encoding(t *testing.T) {
 }
 
 func TestDataset_Write_Encoding(t *testing.T) {
+	t.Parallel()
 	t.Run("with checksum records checksum", func(t *testing.T) {
 		ds, err := Open(Memory()).Blobs(t.Context(), "test-ds", WithChecksum(MD5()))
 		if err != nil {
@@ -1134,6 +1157,7 @@ func TestDataset_Write_Encoding(t *testing.T) {
 }
 
 func TestRecords_StreamWrite_Encoding(t *testing.T) {
+	t.Parallel()
 	t.Run("with checksum records checksum", func(t *testing.T) {
 		ds, err := Open(Memory()).Records(t.Context(), "test-ds", JSONL[D](), WithChecksum(MD5()))
 		if err != nil {
@@ -1179,6 +1203,7 @@ func TestRecords_StreamWrite_Encoding(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestRecords_StreamWrite_Commit(t *testing.T) {
+	t.Parallel()
 	t.Run("success", func(t *testing.T) {
 		ds, err := Open(Memory()).Records(t.Context(), "test-ds", JSONL[D]())
 		if err != nil {
@@ -1311,6 +1336,7 @@ func TestRecords_StreamWrite_Commit(t *testing.T) {
 }
 
 func TestRecords_StreamWrite_Rejects(t *testing.T) {
+	t.Parallel()
 	t.Run("nil iterator", func(t *testing.T) {
 		ds, err := Open(Memory()).Records(t.Context(), "test-ds", JSONL[D]())
 		if err != nil {
@@ -1363,6 +1389,7 @@ func TestRecords_StreamWrite_Rejects(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestDataset_Checksum(t *testing.T) {
+	t.Parallel()
 	t.Run("computed on compressed data", func(t *testing.T) {
 		// Two datasets with same data but different compression
 		// should produce different checksums (since checksum is on stored bytes)
@@ -1433,6 +1460,7 @@ func TestDataset_Checksum(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestDataset_Write_Timestamps(t *testing.T) {
+	t.Parallel()
 	t.Run("non timestamped records omits min max", func(t *testing.T) {
 		ds, err := Open(Memory()).Records(t.Context(), "test-ds", JSONL[D]())
 		if err != nil {
@@ -1516,6 +1544,7 @@ func TestDataset_Write_Timestamps(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestDataset_Write_Stats(t *testing.T) {
+	t.Parallel()
 	t.Run("JSONL codec stats nil", func(t *testing.T) {
 		ds, err := Open(Memory()).Records(t.Context(), "jsonl-ds", JSONL[D]())
 		if err != nil {
@@ -1601,6 +1630,7 @@ func TestDataset_Write_Stats(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestFileRef_Stats(t *testing.T) {
+	t.Parallel()
 	t.Run("JSON round trip", func(t *testing.T) {
 		ref := ObjectRef{
 			Path:      "data/test.parquet",
@@ -1712,6 +1742,7 @@ func (c *testCodec) Decode(_ io.Reader) ([]D, error) {
 // -----------------------------------------------------------------------------
 
 func TestDataset_Write_Pointer(t *testing.T) {
+	t.Parallel()
 	t.Run("latest pointer skips scan", func(t *testing.T) {
 		// After the first Write creates the pointer, subsequent writes must not
 		// call store.List to resolve the parent snapshot ID (O(1) via pointer).
@@ -1886,6 +1917,7 @@ func TestDataset_Write_Pointer(t *testing.T) {
 }
 
 func TestDataset_LatestPointer_PendingCommit(t *testing.T) {
+	t.Parallel()
 	// Advance writes the pointer before the manifest, so a pointer that
 	// names a snapshot without a manifest may belong to a pending commit.
 	// Latest serves the scan result but must not replace the pointer, and the
@@ -1922,7 +1954,7 @@ func TestDataset_LatestPointer_PendingCommit(t *testing.T) {
 		t.Fatal(err)
 	}
 	pointer, _ := io.ReadAll(rc)
-	_ = rc.Close()
+	errs.DiscardClose(rc)
 	if string(pointer) != string(pending.ID) {
 		t.Errorf("pointer = %q, want it to remain at the pending %q", pointer, pending.ID)
 	}
@@ -1942,6 +1974,7 @@ func TestDataset_LatestPointer_PendingCommit(t *testing.T) {
 // persisted its manifest, adopts the pending commit as its parent. Any other
 // parent would fork the history (CONTRACT_CORE §Head Pointer).
 func TestDataset_Write_ParentsOnPendingCommit(t *testing.T) {
+	t.Parallel()
 	store := NewMemory()
 	open := func() *Records[D] {
 		ds, err := Open(Use(store)).Records(t.Context(), "test-ds", JSONL[D]())
@@ -1993,6 +2026,7 @@ func writeInvertedHead(t *testing.T, store Store) SnapshotID {
 // as an absent pointer or manifest selects the largest snapshot ID, which is
 // the head's parent in this shape (CONTRACT_CORE §Head Pointer, lode#208).
 func TestDataset_TransientHeadReadErrors(t *testing.T) {
+	t.Parallel()
 	t.Run("Latest returns a failed head load", func(t *testing.T) {
 		store := NewMemory()
 		head := writeInvertedHead(t, store)
@@ -2028,6 +2062,7 @@ func TestDataset_TransientHeadReadErrors(t *testing.T) {
 }
 
 func TestDataset_LatestPointer(t *testing.T) {
+	t.Parallel()
 	t.Run("read after write", func(t *testing.T) {
 		// After a write, the pointer file must exist in the store and
 		// Latest() must resolve via pointer (no List calls).
@@ -2096,7 +2131,9 @@ func TestDataset_LatestPointer(t *testing.T) {
 		}
 
 		// Delete the pointer to simulate pre-pointer state.
-		_ = store.Delete(t.Context(), "datasets/test-ds/latest")
+		if err := store.Delete(t.Context(), "datasets/test-ds/latest"); err != nil {
+			t.Fatal(err)
+		}
 
 		// Latest() should still work via scan fallback.
 		latest, err := ds.Latest(t.Context())
@@ -2118,7 +2155,7 @@ func TestDataset_LatestPointer(t *testing.T) {
 			t.Fatalf("pointer should exist after write: %v", err)
 		}
 		data, _ := io.ReadAll(rc)
-		_ = rc.Close()
+		errs.DiscardClose(rc)
 		if string(data) != string(snap2.ID) {
 			t.Errorf("pointer %q, expected %q", string(data), snap2.ID)
 		}
@@ -2141,8 +2178,12 @@ func TestDataset_LatestPointer(t *testing.T) {
 
 		// Overwrite the pointer with a nonexistent snapshot ID.
 		pointerPath := "datasets/test-ds/latest"
-		_ = store.Delete(t.Context(), pointerPath)
-		_ = store.Put(t.Context(), pointerPath, strings.NewReader("nonexistent-id"))
+		if err := store.Delete(t.Context(), pointerPath); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Put(t.Context(), pointerPath, strings.NewReader("nonexistent-id")); err != nil {
+			t.Fatal(err)
+		}
 
 		// Latest() should fall back to scan and find snap1.
 		latest, err := ds.Latest(t.Context())
@@ -2190,6 +2231,7 @@ func TestDataset_LatestPointer(t *testing.T) {
 }
 
 func TestDataset_HiveLayout(t *testing.T) {
+	t.Parallel()
 	// TestDataset_HiveLayout_SnapshotByID_NoListCall verifies that Snapshot(ctx, id)
 	// with HiveLayout does NOT require a List call. The canonical manifest is always
 	// written alongside partition manifests, so a single Get resolves the snapshot.
@@ -2284,6 +2326,7 @@ func TestDataset_HiveLayout(t *testing.T) {
 }
 
 func TestDataset_Write_ColdStart(t *testing.T) {
+	t.Parallel()
 	// TestDataset_Write_ColdStart_CorruptPointer_FallsBackToScan verifies that
 	// a new Dataset instance (cold start) with a corrupt pointer (references
 	// nonexistent snapshot) correctly falls back to scan.
@@ -2354,7 +2397,7 @@ func TestDataset_Write_ColdStart(t *testing.T) {
 			t.Fatal(err)
 		}
 		data, _ := io.ReadAll(rc)
-		_ = rc.Close()
+		errs.DiscardClose(rc)
 		if string(data) != string(snap3.ID) {
 			t.Fatalf("pointer should track snap3, got %q", string(data))
 		}
@@ -2382,6 +2425,7 @@ func TestDataset_Write_ColdStart(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestDataset_Write_Conflict(t *testing.T) {
+	t.Parallel()
 	// TestDataset_Write_ConcurrentConflict verifies that two datasets sharing
 	// the same store detect concurrent writes via ErrSnapshotConflict.
 	// Memory store implements ConditionalWriter, enabling CAS.
@@ -2544,6 +2588,7 @@ func TestDataset_Write_Conflict(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestDataset_Write_RetryOptions(t *testing.T) {
+	t.Parallel()
 	// TestDataset_Write_WithRetryCount_OptionValidation verifies option validation.
 	t.Run("with retry count option validation", func(t *testing.T) {
 		_, err := Open(Memory()).Blobs(t.Context(), "test", WithRetry(-1))
@@ -2649,6 +2694,7 @@ func TestDataset_Write_RetryOptions(t *testing.T) {
 // snapshot with no data object on every layout: the partitioner yields no
 // group for an empty batch.
 func TestDataset_Write_EmptyBatch(t *testing.T) {
+	t.Parallel()
 	for name, root := range map[string]struct {
 		paths  []RootOption
 		layout Layout
@@ -2680,10 +2726,12 @@ type renamedChecksum struct{ Checksum }
 func (renamedChecksum) Name() string { return "custom-md5" }
 
 func TestBlobs_Read_CustomChecksumIsPassedToTheView(t *testing.T) {
+	t.Parallel()
 	assertCustomBlobComponentRequired(t, "custom-md5", WithChecksum(renamedChecksum{MD5()}))
 }
 
 func TestRoot_RemoveDataset(t *testing.T) {
+	t.Parallel()
 	t.Run("removes objects, writes tombstone, and blocks writers and views", func(t *testing.T) {
 		store := &hookStore{Store: NewMemory()}
 		root := Open(Use(store))
@@ -2791,6 +2839,7 @@ func TestRoot_RemoveDataset(t *testing.T) {
 }
 
 func TestChecksum_ReadVerification(t *testing.T) {
+	t.Parallel()
 	for _, alg := range []Checksum{SHA256(), CRC32C(), MD5()} {
 		t.Run(alg.Name(), func(t *testing.T) {
 			// Sequential read path (Blobs + JSONL) and random-access read path (Parquet).
@@ -2812,7 +2861,7 @@ func TestChecksum_ReadVerification(t *testing.T) {
 				t.Fatal(err)
 			}
 			raw, _ := io.ReadAll(rc)
-			_ = rc.Close()
+			errs.DiscardClose(rc)
 			raw[len(raw)-1] ^= 0xff
 			overwriteObjectAndExpectChecksumMismatch(t, store, blobKey, raw, func() ([]byte, error) {
 				return blobs.Read(t.Context(), bsnap.ID)
@@ -2846,7 +2895,7 @@ func TestChecksum_ReadVerification(t *testing.T) {
 				t.Fatal(err)
 			}
 			pqRaw, _ := io.ReadAll(prc)
-			_ = prc.Close()
+			errs.DiscardClose(prc)
 			pqRaw[0] ^= 0xff
 			overwriteObjectAndExpectChecksumMismatch(t, pstore, pqKey, pqRaw, func() ([]row, error) {
 				return pds.Read(t.Context(), psnap.ID)
@@ -3066,6 +3115,7 @@ func (s *lostPointerResponse) CompareAndSwap(ctx context.Context, path, expected
 }
 
 func TestWriteReconcilesAppliedCAS(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	store := &lostPointerResponse{Store: NewMemory()}
 	ds := recordsOn(t, store, "shared", WithRetry(1))
@@ -3088,6 +3138,7 @@ func TestWriteReconcilesAppliedCAS(t *testing.T) {
 }
 
 func TestWriteReconcilesAppliedCASAfterDescendants(t *testing.T) {
+	t.Parallel()
 	for _, count := range []int{1, 3} {
 		t.Run(fmt.Sprintf("%d descendants", count), func(t *testing.T) {
 			ctx := t.Context()

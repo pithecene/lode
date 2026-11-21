@@ -11,6 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pithecene/lode/internal/errs"
+	"github.com/pithecene/lode/internal/testutil"
+
 	"github.com/pithecene/lode/lode"
 
 	"github.com/go-openapi/testify/v2/assert"
@@ -35,6 +38,7 @@ var (
 // unless -chaos is passed. A failure logs the seed and the command that
 // repeats the run's random choices.
 func TestChaos(t *testing.T) {
+	testutil.Serial(t, "counts the process's goroutines and measures its heap")
 	if !*flagChaos {
 		t.Skip("skipping the chaos harness; use -chaos to enable")
 	}
@@ -128,7 +132,7 @@ func (tr *trial) run(t *testing.T) {
 	if err := tr.backend.Store.CompareAndSwap(t.Context(), probe, "", "probe"); errors.Is(err, errors.ErrUnsupported) {
 		t.Skipf("the %s store does not support CompareAndSwap here: %v", tr.backendName, err)
 	}
-	_ = tr.backend.Store.Delete(t.Context(), probe) // best-effort: the probe is not part of any dataset
+	errs.IgnoreError(tr.backend.Store.Delete(t.Context(), probe)) // best-effort: the probe is not part of any dataset
 
 	report := Run(t.Context(), tr.cfg, tr.backend.Store)
 	tr.commits = report.Commits
@@ -200,6 +204,7 @@ func splitList(s string) []string {
 // views, Retention, Faults, and Volume) in brief in-memory runs during the
 // regular test suite.
 func TestChaos_Workloads(t *testing.T) {
+	testutil.Serial(t, "gives writers a short wall-clock window to start a commit")
 	if *flagChaos {
 		t.Skip("skipping brief smoke runs when full -chaos suite is enabled")
 	}

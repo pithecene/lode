@@ -59,7 +59,7 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("create temp dir: %w", err)
 	}
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	defer removeTempDir(tmpDir)
 
 	fmt.Printf("Storage root: %s\n\n", tmpDir)
 
@@ -220,14 +220,14 @@ func run() error {
 }
 
 func simulateEmbeddings(count, dimension int) []byte {
-	buf := new(bytes.Buffer)
+	buf := make([]byte, 0, count*dimension*4)
 	for i := range count {
 		for d := range dimension {
 			val := float32(math.Sin(float64(i*dimension+d) * 0.01))
-			_ = binary.Write(buf, binary.LittleEndian, val)
+			buf = binary.LittleEndian.AppendUint32(buf, math.Float32bits(val))
 		}
 	}
-	return buf.Bytes()
+	return buf
 }
 
 func simulateIndex(size int) []byte {
@@ -237,4 +237,12 @@ func simulateIndex(size int) []byte {
 		buf[i] = byte(i % 251)
 	}
 	return buf
+}
+
+// removeTempDir deletes the example's scratch directory. A failed removal
+// does not change the example's outcome, so it is logged rather than returned.
+func removeTempDir(dir string) {
+	if err := os.RemoveAll(dir); err != nil {
+		log.Printf("remove temp dir %s: %v", dir, err)
+	}
 }

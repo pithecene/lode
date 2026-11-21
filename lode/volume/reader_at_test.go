@@ -192,6 +192,7 @@ func TestReaderAt_ConcurrentReads(t *testing.T) {
 //
 //nolint:paralleltest // TotalAlloc counts every goroutine's allocations
 func TestReadAt_GapFailsBeforeAllocating(t *testing.T) {
+	testutil.Serial(t, "measures the process heap, which every running goroutine adds to")
 	const size = 64 << 20
 	vol := newTestVolume(t, "vol", lode.Use[lode.RangeStore](lode.NewMemory()), size)
 	snap := commitBlocks(t, vol, []BlockRef{stageBlock(t, vol, 0, []byte("A"))}, nil)

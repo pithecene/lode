@@ -3,6 +3,8 @@ package s3
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -11,6 +13,8 @@ import (
 	"slices"
 	"testing"
 	"time"
+
+	"github.com/pithecene/lode/internal/errs"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
@@ -119,6 +123,7 @@ func setupTestBucket(t *testing.T, backend s3Backend) *Store {
 // -----------------------------------------------------------------------------
 
 func TestIntegration_Reads(t *testing.T) {
+	t.Parallel()
 	t.Run("write list read", func(t *testing.T) {
 		forEachBucket(t, func(t *testing.T, store *Store) {
 			ctx := t.Context()
@@ -140,7 +145,7 @@ func TestIntegration_Reads(t *testing.T) {
 				t.Fatalf("Get failed: %v", err)
 			}
 			data, err := io.ReadAll(rc)
-			_ = rc.Close()
+			errs.DiscardClose(rc)
 			if err != nil {
 				t.Fatalf("reading body failed: %v", err)
 			}
@@ -264,6 +269,7 @@ func testIntegrationListPrefixes(t *testing.T) {
 }
 
 func TestIntegration_Writes(t *testing.T) {
+	t.Parallel()
 	t.Run("immutability enforcement", func(t *testing.T) {
 		forEachBucket(t, func(t *testing.T, store *Store) {
 			ctx := t.Context()
@@ -420,14 +426,16 @@ func (r *cancelingReader) Read(p []byte) (int, error) {
 func deleteTestBucket(cleanupCtx context.Context, client *s3.Client, bucket string) {
 	out, _ := client.ListObjectsV2(cleanupCtx, &s3.ListObjectsV2Input{Bucket: aws.String(bucket)})
 	for _, obj := range out.Contents {
-		_, _ = client.DeleteObject(cleanupCtx, &s3.DeleteObjectInput{Bucket: aws.String(bucket), Key: obj.Key})
+		errs.IgnoreResult(client.DeleteObject(cleanupCtx, &s3.DeleteObjectInput{Bucket: aws.String(bucket), Key: obj.Key}))
 	}
-	_, _ = client.DeleteBucket(cleanupCtx, &s3.DeleteBucketInput{Bucket: aws.String(bucket)})
+	errs.IgnoreResult(client.DeleteBucket(cleanupCtx, &s3.DeleteBucketInput{Bucket: aws.String(bucket)}))
 }
 
 func newEphemeralBucketStore(ctx context.Context, tb testing.TB, client *s3.Client, prefix string) *Store {
 	tb.Helper()
-	bucket := fmt.Sprintf("%s-%d", prefix, time.Now().UnixNano())
+	var suffix [16]byte
+	errs.IgnoreResult(rand.Read(suffix[:])) // crypto/rand.Read never returns an error.
+	bucket := prefix + "-" + hex.EncodeToString(suffix[:])
 	if _, err := client.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: aws.String(bucket)}); err != nil {
 		tb.Fatalf("failed to create bucket: %v", err)
 	}

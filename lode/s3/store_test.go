@@ -3,7 +3,6 @@ package s3
 import (
 	"bytes"
 	"context"
-	"crypto/md5" //nolint:gosec // S3 names a single-part object by its MD5
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -17,6 +16,10 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+
+	"crypto/md5" //nolint:gosec // S3 names a single-part object by its MD5
+
+	"github.com/pithecene/lode/internal/errs"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	s3api "github.com/aws/aws-sdk-go-v2/service/s3"
@@ -33,6 +36,7 @@ import (
 // -----------------------------------------------------------------------------
 
 func TestNew(t *testing.T) {
+	t.Parallel()
 	t.Run("requires client", func(t *testing.T) {
 		_, err := New(nil, "test")
 		if !errors.Is(err, lode.ErrInvalidArgument) || !strings.HasPrefix(err.Error(), "s3: ") {
@@ -72,6 +76,7 @@ func TestNew(t *testing.T) {
 }
 
 func TestBucket(t *testing.T) {
+	t.Parallel()
 	t.Run("creates RangeStore and PrefixLister", func(t *testing.T) {
 		store, err := Bucket(NewMockS3Client(), "test")()
 		if err != nil {
@@ -136,6 +141,7 @@ func TestBucket(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestStore_Put(t *testing.T) {
+	t.Parallel()
 	t.Run("success", func(t *testing.T) {
 		ctx := t.Context()
 		store, _ := New(NewMockS3Client(), "test")
@@ -227,10 +233,10 @@ func TestStore_Put(t *testing.T) {
 		store.createTemp = tracker.createTemp
 
 		// First Put succeeds
-		_ = store.Put(ctx, "existing.txt", bytes.NewReader([]byte("first")))
+		mustPut(t, store, "existing.txt", []byte("first"))
 
 		// Second Put fails with ErrPathExists
-		_ = store.Put(ctx, "existing.txt", bytes.NewReader([]byte("second")))
+		errs.IgnoreError(store.Put(ctx, "existing.txt", bytes.NewReader([]byte("second"))))
 
 		// Verify all tracked temp files were cleaned up (including both Put calls)
 		if tracker.count.Load() < 2 {
@@ -252,6 +258,7 @@ func TestStore_Put(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestStore_PutAtomic(t *testing.T) {
+	t.Parallel()
 	t.Run("should use atomic path", func(t *testing.T) {
 		tests := []struct {
 			name     string
@@ -397,6 +404,7 @@ func TestStore_PutAtomic(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestStore_PutMultipartFromFile(t *testing.T) {
+	t.Parallel()
 	t.Run("success", func(t *testing.T) {
 		ctx := t.Context()
 		mock := NewMockS3Client()
@@ -461,8 +469,7 @@ func TestStore_PutMultipartFromFile(t *testing.T) {
 		// Now try multipart to same path - should fail at preflight
 		tmpFile, _ := os.CreateTemp(t.TempDir(), "test-*")
 		defer closer(tmpFile)()
-		_, _ = tmpFile.Write([]byte("new data"))
-		_, _ = tmpFile.Seek(0, 0)
+		writeAndRewind(t, tmpFile, []byte("new data"))
 
 		err = store.putMultipartFromFile(ctx, "existing.bin", tmpFile, 8)
 		if !errors.Is(err, lode.ErrPathExists) {
@@ -494,8 +501,7 @@ func TestStore_PutMultipartFromFile(t *testing.T) {
 
 		tmpFile, _ := os.CreateTemp(t.TempDir(), "test-*")
 		defer closer(tmpFile)()
-		_, _ = tmpFile.Write(data)
-		_, _ = tmpFile.Seek(0, 0)
+		writeAndRewind(t, tmpFile, data)
 
 		err := store.putMultipartFromFile(ctx, "large-file.bin", tmpFile, int64(size))
 		if err != nil {
@@ -540,8 +546,7 @@ func TestStore_PutMultipartFromFile(t *testing.T) {
 
 		tmpFile, _ := os.CreateTemp(t.TempDir(), "test-*")
 		defer closer(tmpFile)()
-		_, _ = tmpFile.Write(data)
-		_, _ = tmpFile.Seek(0, 0)
+		writeAndRewind(t, tmpFile, data)
 
 		// Call multipart path directly - should fail due to simulated UploadPart failure
 		err := store.putMultipartFromFile(ctx, "will-fail.bin", tmpFile, int64(size))
@@ -608,7 +613,7 @@ func TestStore_PutMultipartFromFile(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer func() { _ = os.Remove(tmpFile.Name()) }()
+		defer func() { errs.IgnoreError(os.Remove(tmpFile.Name())) }()
 		defer closer(tmpFile)()
 
 		// Write data
@@ -711,12 +716,13 @@ func (tr *tempFileTracker) assertAllCleaned(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestStore_Get(t *testing.T) {
+	t.Parallel()
 	t.Run("success", func(t *testing.T) {
 		ctx := t.Context()
 		store, _ := New(NewMockS3Client(), "test")
 
 		content := []byte("hello world")
-		_ = store.Put(ctx, "test.txt", bytes.NewReader(content))
+		mustPut(t, store, "test.txt", content)
 
 		rc, err := store.Get(ctx, "test.txt")
 		if err != nil {
@@ -738,11 +744,12 @@ func TestStore_Get(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestStore_Exists(t *testing.T) {
+	t.Parallel()
 	t.Run("true", func(t *testing.T) {
 		ctx := t.Context()
 		store, _ := New(NewMockS3Client(), "test")
 
-		_ = store.Put(ctx, "test.txt", bytes.NewReader([]byte("hello")))
+		mustPut(t, store, "test.txt", []byte("hello"))
 
 		exists, err := store.Exists(ctx, "test.txt")
 		if err != nil {
@@ -782,11 +789,12 @@ func TestStore_Exists(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestStore_Delete(t *testing.T) {
+	t.Parallel()
 	t.Run("exists", func(t *testing.T) {
 		ctx := t.Context()
 		store, _ := New(NewMockS3Client(), "test")
 
-		_ = store.Put(ctx, "test.txt", bytes.NewReader([]byte("hello")))
+		mustPut(t, store, "test.txt", []byte("hello"))
 
 		err := store.Delete(ctx, "test.txt")
 		if err != nil {
@@ -826,6 +834,7 @@ func TestStore_Delete(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestStore_List(t *testing.T) {
+	t.Parallel()
 	t.Run("empty", func(t *testing.T) {
 		ctx := t.Context()
 		store, _ := New(NewMockS3Client(), "test")
@@ -857,9 +866,9 @@ func TestStore_List(t *testing.T) {
 		ctx := t.Context()
 		store, _ := New(NewMockS3Client(), "test")
 
-		_ = store.Put(ctx, "day=2024-01-15/1.txt", bytes.NewReader([]byte("1")))
-		_ = store.Put(ctx, "day=2024-01-150/2.txt", bytes.NewReader([]byte("2")))
-		_ = store.Put(ctx, "day=2024-02-01/3.txt", bytes.NewReader([]byte("3")))
+		mustPut(t, store, "day=2024-01-15/1.txt", []byte("1"))
+		mustPut(t, store, "day=2024-01-150/2.txt", []byte("2"))
+		mustPut(t, store, "day=2024-02-01/3.txt", []byte("3"))
 
 		cases := []struct {
 			prefix string
@@ -893,8 +902,8 @@ func TestStore_List(t *testing.T) {
 			t.Fatalf("Prefixed failed: %v", err)
 		}
 
-		_ = store.Put(ctx, "foo/1.txt", bytes.NewReader([]byte("1")))
-		_ = store.Put(ctx, "foo/2.txt", bytes.NewReader([]byte("2")))
+		mustPut(t, store, "foo/1.txt", []byte("1"))
+		mustPut(t, store, "foo/2.txt", []byte("2"))
 
 		keys, err := store.List(ctx, "foo/")
 		if err != nil {
@@ -938,7 +947,7 @@ func (p *pagedPrefixClient) ListObjectsV2(_ context.Context, params *s3api.ListO
 	}
 	idx := 0
 	if tok := aws.ToString(params.ContinuationToken); tok != "" {
-		_, _ = fmt.Sscanf(tok, "page-%d", &idx)
+		errs.IgnoreResult(fmt.Sscanf(tok, "page-%d", &idx))
 	}
 	p.calls++
 	if idx >= len(p.pages) {
@@ -959,6 +968,7 @@ func (p *pagedPrefixClient) ListObjectsV2(_ context.Context, params *s3api.ListO
 }
 
 func TestStore_ListPrefixes(t *testing.T) {
+	t.Parallel()
 	t.Run("empty", func(t *testing.T) {
 		ctx := t.Context()
 		store, _ := New(NewMockS3Client(), "test")
@@ -1019,7 +1029,7 @@ func TestStore_ListPrefixes(t *testing.T) {
 			"datasets/alpine/latest",
 			"datasets/beta/latest",
 		} {
-			_ = store.Put(ctx, k, bytes.NewReader([]byte("x")))
+			mustPut(t, store, k, []byte("x"))
 		}
 
 		got, err := store.ListPrefixes(ctx, "datasets/alp")
@@ -1110,12 +1120,13 @@ func TestStore_ListPrefixes(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestStore_ReadRange(t *testing.T) {
+	t.Parallel()
 	t.Run("basic", func(t *testing.T) {
 		ctx := t.Context()
 		store, _ := New(NewMockS3Client(), "test")
 
 		content := []byte("hello world")
-		_ = store.Put(ctx, "test.txt", bytes.NewReader(content))
+		mustPut(t, store, "test.txt", content)
 
 		// Read "world"
 		data, err := store.ReadRange(ctx, "test.txt", 6, 5)
@@ -1142,7 +1153,7 @@ func TestStore_ReadRange(t *testing.T) {
 		store, _ := New(NewMockS3Client(), "test")
 
 		content := []byte("hello")
-		_ = store.Put(ctx, "test.txt", bytes.NewReader(content))
+		mustPut(t, store, "test.txt", content)
 
 		// Offset beyond EOF - should return empty slice
 		data, err := store.ReadRange(ctx, "test.txt", 100, 10)
@@ -1169,7 +1180,7 @@ func TestStore_ReadRange(t *testing.T) {
 		store, _ := New(NewMockS3Client(), "test")
 
 		content := []byte("hello world")
-		_ = store.Put(ctx, "test.txt", bytes.NewReader(content))
+		mustPut(t, store, "test.txt", content)
 
 		// Zero-length read should return empty slice without error
 		data, err := store.ReadRange(ctx, "test.txt", 5, 0)
@@ -1194,6 +1205,7 @@ func TestStore_ReadRange(t *testing.T) {
 }
 
 func TestStore_ReadRange_Bounds(t *testing.T) {
+	t.Parallel()
 	t.Run("negative offset", func(t *testing.T) {
 		ctx := t.Context()
 		store, _ := New(NewMockS3Client(), "test")
@@ -1246,6 +1258,7 @@ func TestStore_ReadRange_Bounds(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestStore_ReaderAt(t *testing.T) {
+	t.Parallel()
 	t.Run("basic", func(t *testing.T) {
 		ra, err := mockStoreWith(t, map[string]string{"test.txt": "hello world"}).ReaderAt(t.Context(), "test.txt")
 		if err != nil {
@@ -1267,7 +1280,7 @@ func TestStore_ReaderAt(t *testing.T) {
 		store, _ := New(NewMockS3Client(), "test")
 
 		content := []byte("0123456789")
-		_ = store.Put(ctx, "test.txt", bytes.NewReader(content))
+		mustPut(t, store, "test.txt", content)
 
 		ra, err := store.ReaderAt(ctx, "test.txt")
 		if err != nil {
@@ -1305,7 +1318,7 @@ func TestStore_ReaderAt(t *testing.T) {
 		store, _ := New(NewMockS3Client(), "test")
 
 		content := []byte("hello")
-		_ = store.Put(ctx, "test.txt", bytes.NewReader(content))
+		mustPut(t, store, "test.txt", content)
 
 		ra, err := store.ReaderAt(ctx, "test.txt")
 		if err != nil {
@@ -1349,6 +1362,7 @@ func (m *racingMockS3Client) CompleteMultipartUpload(ctx context.Context, params
 // -----------------------------------------------------------------------------
 
 func TestStore_CompareAndSwap(t *testing.T) {
+	t.Parallel()
 	t.Run("create when empty", func(t *testing.T) {
 		store := mockStoreWith(t, nil)
 		mustCAS(t, store, "ptr/latest", "", "snap-1")
@@ -1512,6 +1526,7 @@ func assertPointer(t *testing.T, store *Store, want string) {
 // unknown, and a precondition that proves wrong falls back to that read, so
 // every outcome matches the read-first behavior.
 func TestStore_CompareAndSwap_Requests(t *testing.T) {
+	t.Parallel()
 	newPair := func(t *testing.T) (*casClient, *Store) {
 		t.Helper()
 		client := &casClient{MockS3Client: NewMockS3Client()}
@@ -1721,5 +1736,26 @@ func assertMissingAndEmptyKeyErrors(t *testing.T, notFoundName string, call func
 				t.Errorf("call(%q) = %v, want %v", tc.key, err, tc.want)
 			}
 		})
+	}
+}
+
+// writeAndRewind fills f with data and seeks back to the start, so a failed
+// setup write fails the test instead of feeding the upload a short file.
+func writeAndRewind(t *testing.T, f *os.File, data []byte) {
+	t.Helper()
+	if _, err := f.Write(data); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Seek(0, 0); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// mustPut writes data at key and fails the test on error, so a broken
+// fixture cannot pass as a result.
+func mustPut(t *testing.T, store lode.Store, key string, data []byte) {
+	t.Helper()
+	if err := store.Put(t.Context(), key, bytes.NewReader(data)); err != nil {
+		t.Fatal(err)
 	}
 }

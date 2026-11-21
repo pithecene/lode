@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pithecene/lode/internal/errs"
+
 	"github.com/pithecene/lode/lode"
 )
 
@@ -268,7 +270,7 @@ func (s tamperChecksumStore) Get(ctx context.Context, path string) (io.ReadClose
 		return rc, err
 	}
 	data, readErr := io.ReadAll(rc)
-	_ = rc.Close()
+	errs.DiscardClose(rc)
 	if readErr != nil {
 		return nil, readErr
 	}

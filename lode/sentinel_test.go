@@ -5,6 +5,7 @@ import (
 )
 
 func TestSentinelErrors_ErrorMessages(t *testing.T) {
+	t.Parallel()
 	wantMessages := map[error]string{
 		ErrNotFound:                 "not found",
 		ErrNoSnapshots:              "no snapshots",

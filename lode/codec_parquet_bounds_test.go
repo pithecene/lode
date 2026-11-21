@@ -45,6 +45,7 @@ func assertBoundaryCases(t *testing.T, fieldType ParquetType, cases []boundaryCa
 }
 
 func TestParquetCodec_Int32_ExactBounds(t *testing.T) {
+	t.Parallel()
 	// Runtime values rather than constants so the +1/-1 cases compile on
 	// every int width.
 	hi, lo := int64(math.MaxInt32), int64(math.MinInt32)
@@ -73,6 +74,7 @@ func TestParquetCodec_Int32_ExactBounds(t *testing.T) {
 }
 
 func TestParquetCodec_Int64_ExactSafeFloatBounds(t *testing.T) {
+	t.Parallel()
 	safe := float64(1 << 53)
 	assertBoundaryCases(t, ParquetInt64, []boundaryCase{
 		{"float64 at +2^53", safe, false},
@@ -85,6 +87,7 @@ func TestParquetCodec_Int64_ExactSafeFloatBounds(t *testing.T) {
 }
 
 func TestParquetCodec_NewParquetCodec_TypeAtSentinel_Rejected(t *testing.T) {
+	t.Parallel()
 	_, err := newParquet(ParquetSchema{Fields: []ParquetField{{Name: "v", Type: parquetTypeMax}}})
 	if !errors.Is(err, ErrSchemaViolation) {
 		t.Fatalf("Type == parquetTypeMax: got %v, want ErrSchemaViolation", err)
@@ -100,6 +103,7 @@ func TestParquetCodec_NewParquetCodec_TypeAtSentinel_Rejected(t *testing.T) {
 // Int32 and Float32 columns never appeared in a stats test, so their
 // lessThan branches were never executed.
 func TestParquetCodec_FileStats_Int32AndFloat32(t *testing.T) {
+	t.Parallel()
 	codec, err := newParquet(ParquetSchema{Fields: []ParquetField{
 		{Name: "n", Type: ParquetInt32},
 		{Name: "f", Type: ParquetFloat32},

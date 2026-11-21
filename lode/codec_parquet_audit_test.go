@@ -35,7 +35,6 @@ func TestAudit_ParquetTimestampBounds(t *testing.T) {
 	maxTS := time.Unix(0, math.MaxInt64).UTC()
 
 	t.Run("exact min and max int64 nanosecond instants round-trip", func(t *testing.T) {
-		t.Parallel()
 		zone := time.FixedZone("UTC+2", 2*3600)
 		records := []lode.D{
 			{"ts": minTS.In(zone)},
@@ -61,7 +60,6 @@ func TestAudit_ParquetTimestampBounds(t *testing.T) {
 	})
 
 	t.Run("out-of-range time.Time and RFC3339 inputs fail with ErrSchemaViolation", func(t *testing.T) {
-		t.Parallel()
 		badTimes := []time.Time{
 			{},
 			minTS.Add(-time.Nanosecond),
@@ -123,8 +121,6 @@ func TestAudit_ParquetNilByteSliceParity(t *testing.T) {
 	structCodec := lode.Parquet[bytesRow](nullableSchema).(lode.StatisticalCodec[bytesRow])
 
 	t.Run("nullable nil byte slice encodes as null with NullCount=1 across struct and map binders", func(t *testing.T) {
-		t.Parallel()
-
 		var structBuf, mapBuf, customBuf bytes.Buffer
 		sStats, err := structCodec.EncodeWithStats(&structBuf, []bytesRow{{Payload: nil}})
 		if err != nil {
@@ -158,7 +154,6 @@ func TestAudit_ParquetNilByteSliceParity(t *testing.T) {
 	})
 
 	t.Run("non-nil empty byte slice remains present with NullCount=0", func(t *testing.T) {
-		t.Parallel()
 		var buf bytes.Buffer
 		st, err := mapCodec.EncodeWithStats(&buf, []lode.D{{"payload": []byte{}}})
 		if err != nil {
@@ -178,7 +173,6 @@ func TestAudit_ParquetNilByteSliceParity(t *testing.T) {
 	})
 
 	t.Run("non-nullable nil byte slice fails with ErrSchemaViolation", func(t *testing.T) {
-		t.Parallel()
 		reqSchema := lode.ParquetSchema{
 			Fields: []lode.ParquetField{
 				{Name: "payload", Type: lode.ParquetBytes, Nullable: false},
@@ -192,7 +186,6 @@ func TestAudit_ParquetNilByteSliceParity(t *testing.T) {
 	})
 
 	t.Run("nil byte slice on nullable non-bytes column still fails with ErrSchemaViolation", func(t *testing.T) {
-		t.Parallel()
 		nonBytesSchema := lode.ParquetSchema{
 			Fields: []lode.ParquetField{
 				{Name: "count", Type: lode.ParquetInt64, Nullable: true},

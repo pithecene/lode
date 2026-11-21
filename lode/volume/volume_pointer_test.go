@@ -13,6 +13,7 @@ import (
 // cold-start tests assert the parent linkage but not the absence of a scan,
 // so negating the pointer check was unobserved.
 func TestVolume_Commit_ColdStart_ValidPointer_SkipsScan(t *testing.T) {
+	t.Parallel()
 	fs := testutil.NewFaultStore(lode.NewMemory())
 	first := newTestVolume(t, "test-vol", newFaultStoreFactory(fs), 20)
 	blk := stageBlock(t, first, 0, bytes.Repeat([]byte("A"), 10))

@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pithecene/lode/internal/errs"
+
 	"github.com/pithecene/lode/internal/history"
 )
 
@@ -128,7 +130,7 @@ func (d *writer) discard(ctx context.Context, path string) {
 	if path != "" {
 		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), streamCleanupTimeout)
 		defer cancel()
-		_ = d.store.Delete(cleanupCtx, path)
+		errs.IgnoreError(d.store.Delete(cleanupCtx, path))
 	}
 }
 
@@ -190,7 +192,7 @@ func (d *writer) storeObject(ctx context.Context, path string, content objectCon
 		return ObjectRef{}, err
 	}
 	if err := content.writeTo(comp); err != nil {
-		_ = comp.Close()
+		errs.DiscardClose(comp)
 		return ObjectRef{}, err
 	}
 	if err := comp.Close(); err != nil {
@@ -209,7 +211,7 @@ func (d *writer) checksumBytes(data []byte) string {
 		return ""
 	}
 	hasher := d.components.checksum.NewHasher()
-	_, _ = hasher.Write(data)
+	errs.IgnoreResult(hasher.Write(data))
 	return hasher.Sum()
 }
 

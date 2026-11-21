@@ -236,7 +236,6 @@ func TestAudit_VolumeReadAt_MissingBlock(t *testing.T) {
 		{name: "fence read failed", probe: fenceErr, want: lode.ErrNotFound},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			testMissingVolumeBlock(t, tc.remove, tc.probe, tc.want)
 		})
 	}
@@ -289,7 +288,6 @@ func TestAudit_VolumeChecksumMismatchAndNilReader(t *testing.T) {
 	t.Parallel()
 
 	t.Run("StageWriteAt rejects nil and typed-nil readers", func(t *testing.T) {
-		t.Parallel()
 		mem := lode.NewMemory()
 		vol := openTestVol(t, "vol-nil", func() (lode.RangeStore, error) { return mem, nil })
 		if _, err := vol.StageWriteAt(t.Context(), 0, nil); !errors.Is(err, lode.ErrInvalidArgument) {
@@ -302,7 +300,6 @@ func TestAudit_VolumeChecksumMismatchAndNilReader(t *testing.T) {
 	})
 
 	t.Run("reopen with different or omitted checksum algorithm fails with ErrSettingsMismatch", func(t *testing.T) {
-		t.Parallel()
 		ctx := t.Context()
 		mem := lode.NewMemory()
 		factory := func() (lode.RangeStore, error) { return mem, nil }
@@ -326,7 +323,6 @@ func TestAudit_VolumeChecksumMismatchAndNilReader(t *testing.T) {
 	})
 
 	t.Run("concurrent first commit refresh rejects mismatched parent checksum", func(t *testing.T) {
-		t.Parallel()
 		ctx := t.Context()
 		mem := lode.NewMemory()
 		gs := &gatedRangeStore{RangeStore: mem}

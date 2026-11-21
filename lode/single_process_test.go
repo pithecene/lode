@@ -20,6 +20,7 @@ import (
 // so that Root/Volume constructors reject them with ErrInvalidArgument rather
 // than panicking later.
 func TestSingleProcess_NilStore(t *testing.T) {
+	t.Parallel()
 	if got := SingleProcess(nil); got != nil {
 		t.Errorf("SingleProcess(nil) = %v, want nil", got)
 	}
@@ -164,6 +165,7 @@ var replacementReads = []struct {
 // returned store never observes a path as absent between the Delete and the
 // Put of a replacement: it waits, and then observes the new content.
 func TestSingleProcess_ReadsWaitForReplacement(t *testing.T) {
+	t.Parallel()
 	want := map[string]string{
 		"Get": "snap-2", "Exists": "true <nil>", "List": "ptr/latest <nil>",
 		"ListPrefixes": "ptr/ <nil>", "ReadRange": "snap-2", "ReaderAt": "snap-2",
@@ -209,6 +211,7 @@ func TestSingleProcess_ReadsWaitForReplacement(t *testing.T) {
 // ReaderAt opened BEFORE CompareAndSwap begins still acquires the read lock on
 // each ReadAt call rather than observing ErrNotFound during the Delete/Put gap.
 func TestSingleProcess_PreOpenedReaderAtWaitsForReplacement(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	inner := newPausedDelete()
 	store := SingleProcess(inner).(RangeStore)
@@ -304,6 +307,7 @@ func (f *failingPointerStore) Put(ctx context.Context, path string, r io.Reader)
 // replacement fails after deleting latest. Neither a single-shot failure nor a
 // sustained Put outage + fresh SingleProcess wrapper may lose A or fork on B.
 func TestSingleProcess_FailedReplacementPreservesCommittedHead(t *testing.T) {
+	t.Parallel()
 	for _, sustainedOutage := range []bool{false, true} {
 		name := "single-shot put failure"
 		if sustainedOutage {
@@ -445,6 +449,7 @@ func (g *writerAGateStore) CompareAndSwap(ctx context.Context, path, expected, r
 }
 
 func TestSingleProcess_RejectsReservedJournalKey(t *testing.T) {
+	t.Parallel()
 	store := SingleProcess(testutil.WithoutCAS(NewMemory())).(RangeStore)
 	assertKeyOpsRejectInvalidPath(t, store, "ptr/latest"+casJournalSuffix)
 }
@@ -453,7 +458,6 @@ func TestSingleProcess_ReviewRegressions(t *testing.T) {
 	t.Parallel()
 
 	t.Run("fresh wrapper rejects Put when persisted journal exists", func(t *testing.T) {
-		t.Parallel()
 		ctx := t.Context()
 		raw := newFailingPointerStore("ptr/latest")
 		first := SingleProcess(raw)
@@ -473,7 +477,6 @@ func TestSingleProcess_ReviewRegressions(t *testing.T) {
 	})
 
 	t.Run("Put consuming ReaderAt from same store does not deadlock", func(t *testing.T) {
-		t.Parallel()
 		ctx := t.Context()
 		mem := NewMemory()
 		store := SingleProcess(struct {
@@ -507,7 +510,6 @@ func TestSingleProcess_ReviewRegressions(t *testing.T) {
 	})
 
 	t.Run("closed ReaderAt propagates error instead of reopening", func(t *testing.T) {
-		t.Parallel()
 		ctx := t.Context()
 		fsStore, err := NewFS(t.TempDir())
 		if err != nil {

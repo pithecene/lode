@@ -65,7 +65,7 @@ func openPositionsStore(retainDir string) (lode.Factory[lode.RangeStore], func()
 	if err != nil {
 		return nil, nil, fmt.Errorf("create temp dir: %w", err)
 	}
-	return lode.FS(tmpDir), func() { _ = os.RemoveAll(tmpDir) }, nil
+	return lode.FS(tmpDir), func() { removeTempDir(tmpDir) }, nil
 }
 
 func runPositions(ctx context.Context, retainDir string) error {
@@ -106,4 +106,12 @@ func runPositions(ctx context.Context, retainDir string) error {
 	}
 	fmt.Printf("Read back %d position reports\n", len(got))
 	return nil
+}
+
+// removeTempDir deletes the example's scratch directory. A failed removal
+// does not change the example's outcome, so it is logged rather than returned.
+func removeTempDir(dir string) {
+	if err := os.RemoveAll(dir); err != nil {
+		log.Printf("remove temp dir %s: %v", dir, err)
+	}
 }

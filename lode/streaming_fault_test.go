@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pithecene/lode/internal/errs"
+
 	"github.com/pithecene/lode/internal/history"
 	"github.com/pithecene/lode/internal/testutil"
 
@@ -25,6 +27,7 @@ import (
 // TestStreamWrite_CommitFailure covers which failures remove a stream's data
 // object: only those that leave no manifest behind.
 func TestStreamWrite_CommitFailure(t *testing.T) {
+	t.Parallel()
 	t.Run("pointer error removes data", func(t *testing.T) {
 		fs := testutil.NewFaultStore(NewMemory())
 		ds, err := Open(Use(fs)).Blobs(t.Context(), "test-ds")
@@ -86,6 +89,7 @@ func TestStreamWrite_CommitFailure(t *testing.T) {
 }
 
 func TestStreamWrite_Cleanup(t *testing.T) {
+	t.Parallel()
 	t.Run("manifest put error retains data", func(t *testing.T) {
 		inner := NewMemory()
 		fs := testutil.NewFaultStore(inner)
@@ -163,6 +167,7 @@ func assertNoDataObject(t *testing.T, fs *testutil.FaultStore, inner Store) {
 // -----------------------------------------------------------------------------
 
 func TestStreamWriteRecords_Cleanup(t *testing.T) {
+	t.Parallel()
 	t.Run("iterator error no manifest cleanup attempted", func(t *testing.T) {
 		inner := NewMemory()
 		fs := testutil.NewFaultStore(inner)
@@ -207,6 +212,7 @@ func TestStreamWriteRecords_Cleanup(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestStreamWrite_PutFailure(t *testing.T) {
+	t.Parallel()
 	t.Run("blocked put context cancel no manifest", func(t *testing.T) {
 		inner := NewMemory()
 		fs := testutil.NewFaultStore(inner)
@@ -307,6 +313,7 @@ func TestStreamWrite_PutFailure(t *testing.T) {
 }
 
 func TestStreamWrite_ErrorPrecedence(t *testing.T) {
+	t.Parallel()
 	t.Run("commit put failure precedes compressor close error", func(t *testing.T) {
 		fs := testutil.NewFaultStore(NewMemory())
 		fs.SetPutError(ErrPathExists, "/data/")
@@ -364,6 +371,7 @@ func awaitOrFail(t *testing.T, op func() error) error {
 }
 
 func TestStreamWriteRecords_PutFailure(t *testing.T) {
+	t.Parallel()
 	t.Run("data put fails fast returns error", func(t *testing.T) {
 		fs := testutil.NewFaultStore(NewMemory())
 		fs.SetPutError(testutil.ErrInjectedPut, "/data/")
@@ -471,6 +479,7 @@ func assertNoDataDelete(t *testing.T, fs *testutil.FaultStore) {
 }
 
 func TestStreamWrite_ForeignObject(t *testing.T) {
+	t.Parallel()
 	t.Run("put path exists does not delete foreign object", func(t *testing.T) {
 		for _, comp := range []Compressor{Uncompressed(), Zstd()} {
 			fs := testutil.NewFaultStore(NewMemory())
@@ -492,7 +501,7 @@ func TestStreamWrite_ForeignObject(t *testing.T) {
 		ctx := t.Context()
 		fs.SetBeforePut(func(path string) {
 			if strings.Contains(path, "/data/") {
-				_ = inner.Put(ctx, path, strings.NewReader("foreign"))
+				errs.IgnoreError(inner.Put(ctx, path, strings.NewReader("foreign")))
 			}
 		})
 		ds, err := Open(Use(fs)).Blobs(ctx, "test-ds")
@@ -513,13 +522,14 @@ func TestStreamWrite_ForeignObject(t *testing.T) {
 				if gerr != nil {
 					t.Fatalf("foreign object missing after cleanup: %v", gerr)
 				}
-				_ = rc.Close()
+				errs.DiscardClose(rc)
 			}
 		}
 	})
 }
 
 func TestStreamWriteRecords_ForeignObject(t *testing.T) {
+	t.Parallel()
 	t.Run("put path exists does not delete foreign object", func(t *testing.T) {
 		fs := testutil.NewFaultStore(NewMemory())
 		fs.SetPutError(ErrPathExists, "/data/")
@@ -653,7 +663,7 @@ func (c closeFailCompressor) Compress(w io.Writer) (io.WriteCloser, error) {
 type closeFailWriter struct{ io.WriteCloser }
 
 func (c *closeFailWriter) Close() error {
-	_ = c.WriteCloser.Close()
+	errs.DiscardClose(c.WriteCloser)
 	return errCloseBoom
 }
 
@@ -739,6 +749,7 @@ func (s readOnlyPutStore) Put(_ context.Context, _ string, r io.Reader) error {
 // the upload error when the Put reads after the cancellation closed the
 // pipe, which reports only io.ErrClosedPipe.
 func TestPutResult_CallerCancelKeepsCause(t *testing.T) {
+	t.Parallel()
 	callerCtx, cancel := context.WithCancel(t.Context())
 	putCtx, cancelPut := context.WithCancel(callerCtx)
 	defer cancelPut()

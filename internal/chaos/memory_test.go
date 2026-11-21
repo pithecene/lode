@@ -10,11 +10,14 @@ import (
 	"time"
 
 	"github.com/go-openapi/testify/v2/assert"
+
+	"github.com/pithecene/lode/internal/testutil"
 )
 
 // The memory checks must fail on the leaks they exist to catch: a goroutine
 // that outlives the run, and heap that the run retains.
 func TestMemoryBaseline_DetectsLeaks(t *testing.T) {
+	testutil.Serial(t, "counts the process's goroutines and measures its heap")
 	t.Run("a goroutine that outlives the run", func(t *testing.T) {
 		var baseline MemoryBaseline
 		var err error

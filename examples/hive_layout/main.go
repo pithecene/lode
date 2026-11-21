@@ -46,7 +46,7 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("failed to create temp dir: %w", err)
 	}
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	defer removeTempDir(tmpDir)
 
 	fmt.Printf("Storage root: %s\n\n", tmpDir)
 
@@ -176,4 +176,12 @@ func run() error {
 	fmt.Println("Hive layout round-trip complete!")
 
 	return nil
+}
+
+// removeTempDir deletes the example's scratch directory. A failed removal
+// does not change the example's outcome, so it is logged rather than returned.
+func removeTempDir(dir string) {
+	if err := os.RemoveAll(dir); err != nil {
+		log.Printf("remove temp dir %s: %v", dir, err)
+	}
 }

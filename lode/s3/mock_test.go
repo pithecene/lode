@@ -7,12 +7,15 @@ package s3
 import (
 	"bytes"
 	"context"
-	"crypto/md5" //nolint:gosec // the mock reproduces S3's ETag
 	"fmt"
 	"io"
 	"slices"
 	"strings"
 	"sync"
+
+	"crypto/md5" //nolint:gosec // the mock reproduces S3's ETag
+
+	"github.com/pithecene/lode/internal/errs"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -128,7 +131,7 @@ func (m *MockS3Client) GetObject(_ context.Context, params *s3.GetObjectInput, _
 	if params.Range != nil {
 		rangeStr := aws.ToString(params.Range)
 		var start, end int64
-		_, _ = fmt.Sscanf(rangeStr, "bytes=%d-%d", &start, &end)
+		errs.IgnoreResult(fmt.Sscanf(rangeStr, "bytes=%d-%d", &start, &end))
 
 		if start >= int64(len(data)) {
 			return nil, &smithyAPIError{code: "InvalidRange"}

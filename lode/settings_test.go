@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pithecene/lode/internal/errs"
+
 	"github.com/pithecene/lode/internal/testutil"
 )
 
@@ -62,7 +64,7 @@ func readManifest(t *testing.T, store Store, p string) *Manifest {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = rc.Close() }()
+	defer func() { errs.DiscardClose(rc) }()
 	var m Manifest
 	if err := json.NewDecoder(rc).Decode(&m); err != nil {
 		t.Fatal(err)
@@ -86,6 +88,7 @@ func writeManifestAt(t *testing.T, store Store, p string, m *Manifest) {
 }
 
 func TestRoot_DatasetID(t *testing.T) {
+	t.Parallel()
 	root := Open(Memory())
 	for _, id := range []DatasetID{"", ".", "..", "a/b", "../x", `a\b`, ".lode-tmp-x"} {
 		if _, err := root.Records(t.Context(), id, jsonl); !errors.Is(err, ErrInvalidArgument) {
@@ -106,6 +109,7 @@ func TestRoot_DatasetID(t *testing.T) {
 }
 
 func TestWrite_ManifestRecordsSettings(t *testing.T) {
+	t.Parallel()
 	store := NewMemory()
 	codec := parquetOf("day", false)
 	ds := openOn(t, store, codec, hive("day"))
@@ -134,6 +138,7 @@ func TestWrite_ManifestRecordsSettings(t *testing.T) {
 }
 
 func TestWrite_StagesOnlyTheFirstCommit(t *testing.T) {
+	t.Parallel()
 	store := NewMemory()
 	lister := &listInjector{Store: store}
 	ds := openOn(t, lister, jsonl)
@@ -158,6 +163,7 @@ func TestWrite_StagesOnlyTheFirstCommit(t *testing.T) {
 }
 
 func TestWrite_SettingsMismatch(t *testing.T) {
+	t.Parallel()
 	type writer struct {
 		codec Codec[D]
 		opts  []DatasetOption
@@ -212,6 +218,7 @@ func TestWrite_SettingsMismatch(t *testing.T) {
 }
 
 func TestWrite_SettingsOfAPendingFirstCommit(t *testing.T) {
+	t.Parallel()
 	setup := func(t *testing.T) (Store, *Snapshot) {
 		t.Helper()
 		store := NewMemory()
@@ -367,6 +374,7 @@ func (s *commitRace) Get(ctx context.Context, p string) (io.ReadCloser, error) {
 func (*commitRace) List(context.Context, string) ([]string, error) { return nil, nil }
 
 func TestWrite_SettingsCheckRacingAFirstCommit(t *testing.T) {
+	t.Parallel()
 	store := NewMemory()
 	first, err := tryWrite(t, store, jsonl, R(D{"a": 1}))
 	if err != nil {
@@ -397,6 +405,7 @@ func legacyHive(t *testing.T, store Store, snap *Snapshot) {
 }
 
 func TestWrite_LegacyHiveKeys(t *testing.T) {
+	t.Parallel()
 	t.Run("keys are verified against the partition paths", func(t *testing.T) {
 		store := NewMemory()
 		snap, err := tryWrite(t, store, jsonl, R(D{"day": "d", "region": "eu"}), hive("day", "region"))
@@ -455,6 +464,7 @@ func TestWrite_LegacyHiveKeys(t *testing.T) {
 }
 
 func TestCodec_Describe(t *testing.T) {
+	t.Parallel()
 	if d := jsonl.Describe(); d != "" {
 		t.Errorf("JSONL describes %q, want none", d)
 	}
@@ -492,6 +502,7 @@ func (b *beforePointerCAS) CompareAndSwap(ctx context.Context, p, expected, repl
 }
 
 func TestWrite_LayoutMismatch(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name          string
 		first, second []DatasetOption
@@ -525,6 +536,7 @@ func TestWrite_LayoutMismatch(t *testing.T) {
 }
 
 func TestWrite_PartitionKeysCompareStructurally(t *testing.T) {
+	t.Parallel()
 	store := NewMemory()
 	if _, err := tryWrite(t, store, jsonl, R(D{"a,b": "x"}), hive("a,b")); err != nil {
 		t.Fatal(err)
@@ -535,6 +547,7 @@ func TestWrite_PartitionKeysCompareStructurally(t *testing.T) {
 }
 
 func TestHive_KeysNamePartitionsUnambiguously(t *testing.T) {
+	t.Parallel()
 	for _, keys := range [][]string{{"a=b"}, {"a/b"}, {""}, {".."}, nil} {
 		if _, err := Open(Memory()).Records(t.Context(), "events", jsonl, hive(keys...)); !errors.Is(err, ErrInvalidArgument) {
 			t.Errorf("Hive(%q) = %v, want ErrInvalidArgument", keys, err)
@@ -543,6 +556,7 @@ func TestHive_KeysNamePartitionsUnambiguously(t *testing.T) {
 }
 
 func TestWrite_LegacyCheckIsRepeatedAfterAConflict(t *testing.T) {
+	t.Parallel()
 	store := NewMemory()
 	old, err := tryWrite(t, store, parquetOf("a", true), R(D{"a": "x"}))
 	if err != nil {
@@ -569,6 +583,7 @@ func (unlisted) List(context.Context, string) ([]string, error) {
 }
 
 func TestWrite_PendingFirstCommitIsCheckedWithoutListing(t *testing.T) {
+	t.Parallel()
 	store := NewMemory()
 	first, err := tryWrite(t, store, jsonl, R(D{"a": 1}))
 	if err != nil {
@@ -581,6 +596,7 @@ func TestWrite_PendingFirstCommitIsCheckedWithoutListing(t *testing.T) {
 }
 
 func TestWrite_PointerLockIsNotAForeignObject(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "datasets", "events"), 0o755); err != nil {
 		t.Fatal(err)
@@ -598,6 +614,7 @@ func TestWrite_PointerLockIsNotAForeignObject(t *testing.T) {
 }
 
 func TestWrite_ReturnedManifestDoesNotAliasTheLayout(t *testing.T) {
+	t.Parallel()
 	store := NewMemory()
 	ds := openOn(t, store, jsonl, hive("day"))
 	snap, err := ds.Write(t.Context(), R(D{"day": "d"}), nil)
@@ -615,6 +632,7 @@ func TestWrite_ReturnedManifestDoesNotAliasTheLayout(t *testing.T) {
 }
 
 func TestWrite_ForeignManifestsAreAHistoryAndDataIsNot(t *testing.T) {
+	t.Parallel()
 	id := string(idAt(time.Now()))
 	for _, key := range []string{
 		"datasets/events/staged/x/manifest.json",
@@ -641,6 +659,7 @@ func TestWrite_ForeignManifestsAreAHistoryAndDataIsNot(t *testing.T) {
 }
 
 func TestWrite_ConcurrentFirstWritersWithDifferentLayouts(t *testing.T) {
+	t.Parallel()
 	store := NewMemory()
 	partitioned := openOn(t, store, jsonl, hive("a"))
 	racer := &beforePointerCAS{Store: store}
@@ -656,6 +675,7 @@ func TestWrite_ConcurrentFirstWritersWithDifferentLayouts(t *testing.T) {
 }
 
 func TestWrite_LostFirstCommitIsAMismatchWithoutRetries(t *testing.T) {
+	t.Parallel()
 	store := NewMemory()
 	racer := &beforePointerCAS{Store: store}
 	loser := openOn(t, racer, jsonl)
@@ -682,6 +702,7 @@ func TestWrite_LostFirstCommitIsAMismatchWithoutRetries(t *testing.T) {
 }
 
 func TestModernManifestWithoutPathsIsInvalid(t *testing.T) {
+	t.Parallel()
 	store := NewMemory()
 	snap, err := tryWrite(t, store, jsonl, R(D{"a": 1}))
 	if err != nil {
@@ -701,6 +722,7 @@ func TestModernManifestWithoutPathsIsInvalid(t *testing.T) {
 }
 
 func TestReadRoot_RejectsInvalidDatasetIDs(t *testing.T) {
+	t.Parallel()
 	root := OpenReadOnly(Memory())
 	const bad = DatasetID("a/../events")
 	if _, err := root.Records(t.Context(), bad, jsonl); !errors.Is(err, ErrInvalidArgument) {
@@ -712,6 +734,7 @@ func TestReadRoot_RejectsInvalidDatasetIDs(t *testing.T) {
 }
 
 func TestConfiguration_IsCopiedAtConstruction(t *testing.T) {
+	t.Parallel()
 	keys := []string{"day"}
 	layout := Hive(keys...)
 	keys[0] = "region"
@@ -729,6 +752,7 @@ func TestConfiguration_IsCopiedAtConstruction(t *testing.T) {
 }
 
 func TestWrite_LegacyParentCycleIsUnverifiable(t *testing.T) {
+	t.Parallel()
 	store := NewMemory()
 	ds := openOn(t, store, jsonl, hive("day"))
 	a, err := ds.Write(t.Context(), R(), nil)
@@ -753,6 +777,7 @@ func TestWrite_LegacyParentCycleIsUnverifiable(t *testing.T) {
 }
 
 func TestSettings_LegacyManifestsUseTheDefaultPathNames(t *testing.T) {
+	t.Parallel()
 	store := NewMemory()
 	snap, err := tryWrite(t, store, jsonl, R(D{"a": 1}))
 	if err != nil {
@@ -768,6 +793,7 @@ func TestSettings_LegacyManifestsUseTheDefaultPathNames(t *testing.T) {
 }
 
 func TestWrite_DefaultNamedManifestsWithoutAPointer(t *testing.T) {
+	t.Parallel()
 	store := NewMemory()
 	id := string(idAt(time.Now()))
 	// A manifest at a foreign custom directory without a pointer is rejected by
