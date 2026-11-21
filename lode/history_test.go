@@ -37,6 +37,7 @@ func datasetHistory(store Store) history.History[SnapshotID, Manifest] {
 }
 
 func TestHistory_Refresh(t *testing.T) {
+	t.Parallel()
 	// Refresh after a conflict must tolerate an empty history (nothing to
 	// re-parent on) but surface a store that cannot be read.
 	t.Run("empty is not an error", func(t *testing.T) {
@@ -73,6 +74,7 @@ func (f manifestPutFailStore) Put(ctx context.Context, path string, r io.Reader)
 // The shared protocol must keep each kind's wording: a Volume manifest
 // failure says "volume manifest", a Dataset one says "manifest".
 func TestHistory_Advance_ErrorNamesTheKind(t *testing.T) {
+	t.Parallel()
 	boom := errors.New("disk full")
 	cases := []struct {
 		name, noun, want string

@@ -26,7 +26,10 @@ var allocGates = []testutil.AllocGate{
 }
 
 // TestAllocationGates holds each dataset hot path to its allocation ceiling.
-func TestAllocationGates(t *testing.T) { testutil.RunAllocGates(t, allocGates) }
+func TestAllocationGates(t *testing.T) {
+	testutil.Serial(t, "measures allocations, which every running goroutine adds to")
+	testutil.RunAllocGates(t, allocGates)
+}
 
 // gateRecords are the records every gate writes or reads.
 func gateRecords() []D {

@@ -77,6 +77,7 @@ func forEachStore(t *testing.T, test func(t *testing.T, store RangeStore)) {
 }
 
 func TestStore_Put(t *testing.T) {
+	t.Parallel()
 	t.Run("err path exists", func(t *testing.T) {
 		forEachStore(t, func(t *testing.T, store RangeStore) {
 			ctx := t.Context()
@@ -99,6 +100,7 @@ func TestStore_Put(t *testing.T) {
 }
 
 func TestStore_Get(t *testing.T) {
+	t.Parallel()
 	t.Run("not found", func(t *testing.T) {
 		forEachStore(t, func(t *testing.T, store RangeStore) {
 			ctx := t.Context()
@@ -112,6 +114,7 @@ func TestStore_Get(t *testing.T) {
 }
 
 func TestStore_Exists(t *testing.T) {
+	t.Parallel()
 	t.Run("true", func(t *testing.T) {
 		forEachStore(t, func(t *testing.T, store RangeStore) {
 			ctx := t.Context()
@@ -147,6 +150,7 @@ func TestStore_Exists(t *testing.T) {
 }
 
 func TestStore_Delete(t *testing.T) {
+	t.Parallel()
 	t.Run("exists", func(t *testing.T) {
 		forEachStore(t, func(t *testing.T, store RangeStore) {
 			ctx := t.Context()
@@ -207,6 +211,7 @@ func TestStore_Delete(t *testing.T) {
 }
 
 func TestStore_List(t *testing.T) {
+	t.Parallel()
 	t.Run("non-existent prefix returns empty", func(t *testing.T) {
 		forEachStore(t, func(t *testing.T, store RangeStore) {
 			ctx := t.Context()
@@ -257,6 +262,7 @@ func TestStore_List(t *testing.T) {
 }
 
 func TestStore_ListPrefixes(t *testing.T) {
+	t.Parallel()
 	forEachStore(t, func(t *testing.T, store RangeStore) {
 		lister, ok := store.(PrefixLister)
 		if !ok {
@@ -299,6 +305,7 @@ func TestStore_ListPrefixes(t *testing.T) {
 }
 
 func TestFS_WithSync(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	if _, err := NewFS(tmpDir, nil); !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("NewFS(nil option) = %v, want ErrInvalidArgument", err)
@@ -330,6 +337,7 @@ func putStoreBytes(t *testing.T, store Store, key, body string) {
 }
 
 func TestStore_ReadRange(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, body, want string
 		offset, length   int64
@@ -381,6 +389,7 @@ func TestStore_ReadRange(t *testing.T) {
 }
 
 func TestStore_ReadRange_Bounds(t *testing.T) {
+	t.Parallel()
 	t.Run("negative offset", func(t *testing.T) {
 		forEachStore(t, func(t *testing.T, store RangeStore) {
 			ctx := t.Context()
@@ -436,6 +445,7 @@ func TestStore_ReadRange_Bounds(t *testing.T) {
 }
 
 func TestStore_ReaderAt(t *testing.T) {
+	t.Parallel()
 	t.Run("basic", func(t *testing.T) {
 		forEachStore(t, func(t *testing.T, store RangeStore) {
 			putStoreBytes(t, store, "test.txt", "hello world")
@@ -494,6 +504,7 @@ var casBackends = append(slices.Clone(storeBackends), storeBackend{
 // test reaches the process lock: testutil.WithoutCAS must hide the memory
 // store's CompareAndSwap, and a store with CAS is returned unchanged.
 func TestSingleProcess_WrapsOnlyStoresWithoutCAS(t *testing.T) {
+	t.Parallel()
 	if _, ok := SingleProcess(testutil.WithoutCAS(NewMemory())).(singleProcessRangeStore); !ok {
 		t.Error("SingleProcess did not wrap a store without CompareAndSwap")
 	}
@@ -508,6 +519,7 @@ func TestSingleProcess_WrapsOnlyStoresWithoutCAS(t *testing.T) {
 // The steps run in order on one path; want is the content afterwards, ""
 // meaning absent.
 func TestStore_CompareAndSwap(t *testing.T) {
+	t.Parallel()
 	steps := []struct {
 		name, expected, replacement string
 		wantErr                     error
@@ -574,6 +586,7 @@ func assertInvalidStorePath(t *testing.T, err error) {
 }
 
 func TestStore_InvalidReadPath(t *testing.T) {
+	t.Parallel()
 	forEachStore(t, func(t *testing.T, store RangeStore) {
 		_, err := store.Get(t.Context(), "../escape")
 		assertInvalidStorePath(t, err)

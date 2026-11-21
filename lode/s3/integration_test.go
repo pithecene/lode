@@ -3,6 +3,8 @@ package s3
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -98,6 +100,7 @@ func setupTestBucket(t *testing.T, backend s3Backend) *Store {
 // -----------------------------------------------------------------------------
 
 func TestIntegration_Reads(t *testing.T) {
+	t.Parallel()
 	t.Run("write list read", func(t *testing.T) {
 		forEachBucket(t, func(t *testing.T, store *Store) {
 			ctx := t.Context()
@@ -243,6 +246,7 @@ func testIntegrationListPrefixes(t *testing.T) {
 }
 
 func TestIntegration_Writes(t *testing.T) {
+	t.Parallel()
 	t.Run("immutability enforcement", func(t *testing.T) {
 		forEachBucket(t, func(t *testing.T, store *Store) {
 			ctx := t.Context()
@@ -406,7 +410,9 @@ func deleteTestBucket(cleanupCtx context.Context, client *s3.Client, bucket stri
 
 func newEphemeralBucketStore(ctx context.Context, tb testing.TB, client *s3.Client, prefix string) *Store {
 	tb.Helper()
-	bucket := fmt.Sprintf("%s-%d", prefix, time.Now().UnixNano())
+	var suffix [16]byte
+	_, _ = rand.Read(suffix[:]) // crypto/rand.Read never returns an error.
+	bucket := prefix + "-" + hex.EncodeToString(suffix[:])
 	if _, err := client.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: aws.String(bucket)}); err != nil {
 		tb.Fatalf("failed to create bucket: %v", err)
 	}

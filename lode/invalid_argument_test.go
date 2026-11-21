@@ -13,6 +13,7 @@ import (
 // errors.Is instead of matching message text. Each case names the value in
 // its message. Volume's cases live in package lode/volume.
 func TestErrInvalidArgument_Classification(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	factory := Use(NewMemory())
 	nilStore := Factory[Store](func() (Store, error) { return nil, nil }) //nolint:nilnil // the misbehaving factory under test
@@ -82,6 +83,7 @@ func TestErrInvalidArgument_Classification(t *testing.T) {
 
 // The sentinels in api.go keep their identity under errors.Is and their messages.
 func TestSentinels_Messages(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		err  error
 		want string
@@ -108,6 +110,7 @@ func TestSentinels_Messages(t *testing.T) {
 // reported without calling the factory, and an invalid dataset option or
 // metadata value without any store call.
 func TestErrInvalidArgument_BeforeStoreWork(t *testing.T) {
+	t.Parallel()
 	t.Run("root options before the factory", func(t *testing.T) {
 		calls := 0
 		failing := Factory[Store](func() (Store, error) { calls++; return nil, errors.New("factory down") })
@@ -158,6 +161,7 @@ func TestErrInvalidArgument_BeforeStoreWork(t *testing.T) {
 // `error`, so downstream code such as `err := lode.ErrInvalidPath` followed by
 // another assignment keeps compiling.
 func TestMovedSentinels_StaticTypeIsError(t *testing.T) {
+	t.Parallel()
 	for name, ptr := range map[string]any{
 		"ErrInvalidArgument":  &ErrInvalidArgument,
 		"ErrInvalidPath":      &ErrInvalidPath,

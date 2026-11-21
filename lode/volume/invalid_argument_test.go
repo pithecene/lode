@@ -13,6 +13,7 @@ import (
 // lode.ErrInvalidArgument (CONTRACT_ERRORS.md §Configuration Errors), worded
 // as lode's own argument errors are: one "lode: " prefix and the value named.
 func TestErrInvalidArgument_Classification(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	factory := memoryFactoryFrom(lode.NewMemory())
 	nilStore := func() (lode.RangeStore, error) { return nil, nil } //nolint:nilnil // the misbehaving factory under test
@@ -90,6 +91,7 @@ func TestErrInvalidArgument_Classification(t *testing.T) {
 // Argument errors come before any store work: an invalid option is reported
 // even when the factory would fail, and the factory is not called.
 func TestErrInvalidArgument_BeforeStoreFactory(t *testing.T) {
+	t.Parallel()
 	calls := 0
 	failing := func() (lode.RangeStore, error) { calls++; return nil, errors.New("factory down") }
 
@@ -104,6 +106,7 @@ func TestErrInvalidArgument_BeforeStoreFactory(t *testing.T) {
 
 // The Volume sentinels keep the messages they had in package lode.
 func TestSentinels_Messages(t *testing.T) {
+	t.Parallel()
 	if !errors.Is(ErrRemoved, lode.ErrRemoved) {
 		t.Error("expected volume.ErrRemoved to match lode.ErrRemoved")
 	}

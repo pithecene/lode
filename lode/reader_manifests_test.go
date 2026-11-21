@@ -156,6 +156,7 @@ func verifyManifestWindow(t *testing.T, r *Records[D], partition PartitionPath, 
 // Manifests yields ordered references in every window and partition, each
 // carrying the exact manifest Snapshot(id) loads.
 func TestManifests_EquivalentToListThenGet(t *testing.T) {
+	t.Parallel()
 	for _, f := range manifestFixtures {
 		t.Run(f.name, func(t *testing.T) {
 			r := f.build(t, NewMemory())
@@ -188,6 +189,7 @@ func manifestGets(fs *testutil.FaultStore) int {
 
 // Reading a partition through Manifests loads each manifest once.
 func TestManifests_LoadsEachManifestOnce(t *testing.T) {
+	t.Parallel()
 	const snapshots = 5
 	fs := testutil.NewFaultStore(NewMemory())
 	ds := openHive(t, fs)
@@ -208,6 +210,7 @@ func TestManifests_LoadsEachManifestOnce(t *testing.T) {
 // Manifests loads a manifest only when the caller asks for it, so a caller
 // that stops early loads no more.
 func TestManifests_LoadsAsConsumed(t *testing.T) {
+	t.Parallel()
 	fs := testutil.NewFaultStore(NewMemory())
 	ds := openHive(t, fs)
 	writeEach(t, ds, D{"day": "a"}, D{"day": "a"}, D{"day": "a"})
@@ -226,6 +229,7 @@ func TestManifests_LoadsAsConsumed(t *testing.T) {
 
 // A dataset with no manifest yields ErrNotFound and nothing else.
 func TestManifests_NoManifest(t *testing.T) {
+	t.Parallel()
 	ds := openHive(t, NewMemory())
 	var errs []error
 	for loaded, err := range ds.Manifests(t.Context(), PartitionPath{}, ManifestListOptions{}) {
@@ -241,6 +245,7 @@ func TestManifests_NoManifest(t *testing.T) {
 
 // An invalid manifest is yielded as an error, and nothing follows it.
 func TestManifests_StopsAtAnInvalidManifest(t *testing.T) {
+	t.Parallel()
 	store := NewMemory()
 	ds := openHive(t, store)
 	ids := writeEach(t, ds, D{"day": "a"}, D{"day": "a"})
@@ -270,6 +275,7 @@ func TestManifests_StopsAtAnInvalidManifest(t *testing.T) {
 // A snapshot removed after it is yielded surfaces when its data is read, as
 // ErrNotFound. One removed before it is loaded is skipped.
 func TestManifests_RemovalBetweenListingAndUse(t *testing.T) {
+	t.Parallel()
 	t.Run("after it is yielded", func(t *testing.T) {
 		store := NewMemory()
 		ds := openHive(t, store)
@@ -318,6 +324,7 @@ func TestManifests_RemovalBetweenListingAndUse(t *testing.T) {
 // requested window does not fail the window, while widening the window to
 // include it yields the validation error.
 func TestManifests_ValidatesOnlyTheWindow(t *testing.T) {
+	t.Parallel()
 	store := NewMemory()
 	ds := openHive(t, store)
 	ids := writeEach(t, ds, D{"day": "a"}, D{"day": "a"})

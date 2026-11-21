@@ -21,7 +21,6 @@ func TestOpenDecompressed_StreamsAndVerifiesChecksums(t *testing.T) {
 		{"zstd", lode.Zstd()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			ctx := t.Context()
 			store := lode.NewMemory()
 			root := lode.Open(lode.Use(store))

@@ -6,6 +6,7 @@ import (
 )
 
 func TestKey(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		in   string
 		want string
@@ -36,6 +37,7 @@ func TestKey(t *testing.T) {
 }
 
 func TestPrefix(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		in   string
 		want string
@@ -65,6 +67,7 @@ func TestPrefix(t *testing.T) {
 }
 
 func TestRangeValid(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		offset, length int64
 		want           bool
@@ -87,6 +90,7 @@ func TestRangeValid(t *testing.T) {
 // filepath would read `..\secret` as a parent reference, on Linux it would be
 // an odd file name, and the adapters must agree. Both forms are rejected.
 func TestKeyAndPrefix_RejectBackslash(t *testing.T) {
+	t.Parallel()
 	for _, in := range []string{`..\secret`, `a\b`, `\`, `dir/..\x`} {
 		if _, ok := Key(in); ok {
 			t.Errorf("Key(%q) accepted", in)
@@ -98,6 +102,7 @@ func TestKeyAndPrefix_RejectBackslash(t *testing.T) {
 }
 
 func TestSegment(t *testing.T) {
+	t.Parallel()
 	for _, s := range []string{"events", "tenant=acme", "a.b", "..a"} {
 		if !Segment(s) {
 			t.Errorf("Segment(%q) rejected", s)

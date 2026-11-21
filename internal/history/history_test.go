@@ -211,6 +211,7 @@ func wantMessage(t *testing.T, err error, want string) {
 // --- reading ---
 
 func TestSnapshot(t *testing.T) {
+	t.Parallel()
 	t.Run("loads the canonical manifest", func(t *testing.T) {
 		s := newMemStore()
 		put(t, s, "1", "one")
@@ -240,6 +241,7 @@ func TestSnapshot(t *testing.T) {
 }
 
 func TestSnapshots(t *testing.T) {
+	t.Parallel()
 	t.Run("ordered by ID, one per snapshot, non-manifests ignored", func(t *testing.T) {
 		s := newMemStore()
 		put(t, s, "3", "three")
@@ -301,6 +303,7 @@ func TestSnapshots(t *testing.T) {
 }
 
 func TestFind(t *testing.T) {
+	t.Parallel()
 	s := newMemStore()
 	putAt(t, s, prefix+"7/copy/manifest.json", "seven")
 	h := newTestHistory(s)
@@ -321,6 +324,7 @@ func TestFind(t *testing.T) {
 // --- the head ---
 
 func TestReadPointer(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name    string
 		content string
@@ -353,6 +357,7 @@ func TestReadPointer(t *testing.T) {
 // that sentinel. A container that is never removed, which passes none, reads
 // the marker as it reads any other pointer content.
 func TestReadPointer_RemovalMarker(t *testing.T) {
+	t.Parallel()
 	errRemoved := errors.New("removed")
 	removable := testErrors
 	removable.Removed = errRemoved
@@ -380,6 +385,7 @@ func TestReadPointer_RemovalMarker(t *testing.T) {
 // it replaced, creates the pointer when absent, and leaves an existing
 // marker as it is.
 func TestRemove(t *testing.T) {
+	t.Parallel()
 	for _, content := range []string{"5", "", "not an id"} {
 		s := newMemStore()
 		if content != "" {
@@ -408,6 +414,7 @@ func TestRemove(t *testing.T) {
 // returned when it finds the marker, and a read that fails otherwise is
 // returned too, never hidden behind the conflict.
 func TestCommitLoop_ReadsTheRemovalAfterAConflict(t *testing.T) {
+	t.Parallel()
 	errRemoved := errors.New("removed")
 	removable := testErrors
 	removable.Removed = errRemoved
@@ -447,6 +454,7 @@ type iotestErrReader struct{}
 func (iotestErrReader) Read([]byte) (int, error) { return 0, errBoom }
 
 func TestWritePointer(t *testing.T) {
+	t.Parallel()
 	t.Run("CAS store swaps against expected", func(t *testing.T) {
 		s := newMemStore()
 		s.objects[pointer] = []byte("1")
@@ -481,6 +489,7 @@ func assertForgotten(t *testing.T, h History[id, manifest]) {
 }
 
 func TestLatest(t *testing.T) {
+	t.Parallel()
 	t.Run("pointer wins over a larger ID", func(t *testing.T) {
 		s := newMemStore()
 		put(t, s, "1", "one")
@@ -592,6 +601,7 @@ func TestLatest(t *testing.T) {
 }
 
 func TestResolve(t *testing.T) {
+	t.Parallel()
 	t.Run("memory needs no storage", func(t *testing.T) {
 		s := newMemStore()
 		s.fail = func(string, string) error { return errBoom }
@@ -666,6 +676,7 @@ func TestResolve(t *testing.T) {
 }
 
 func TestResolveParent(t *testing.T) {
+	t.Parallel()
 	t.Run("pointer path loads the parent once", func(t *testing.T) {
 		s := newMemStore()
 		put(t, s, "1", "one")
@@ -735,6 +746,7 @@ func TestResolveParent(t *testing.T) {
 }
 
 func TestForget(t *testing.T) {
+	t.Parallel()
 	h := newTestHistory(newMemStore())
 	h.remember("1", "1")
 	h.Forget()
@@ -746,6 +758,7 @@ func TestForget(t *testing.T) {
 // --- committing ---
 
 func TestAdvance(t *testing.T) {
+	t.Parallel()
 	paths := []string{prefix + "5/manifest.json", prefix + "5/copy/manifest.json"}
 
 	t.Run("pointer first, then every manifest, then remember", func(t *testing.T) {
@@ -812,6 +825,7 @@ func (unmarshalableKind) ParentID(*unmarshalable) id { return "" }
 func (unmarshalableKind) Decode(id, io.Reader) (*unmarshalable, error) { return nil, errBoom }
 
 func TestRefresh(t *testing.T) {
+	t.Parallel()
 	t.Run("empty is not an error", func(t *testing.T) {
 		h := newTestHistory(newMemStore())
 		if err := h.Refresh(t.Context()); err != nil {
@@ -840,6 +854,7 @@ func fastRetry(t *testing.T, attempts int) *retry.Config {
 }
 
 func TestCommitLoop(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name           string
 		retries, calls int
@@ -927,6 +942,7 @@ func newStagingHistory(s Store) History[id, manifest] {
 }
 
 func TestAdvance_Staged(t *testing.T) {
+	t.Parallel()
 	paths := []string{prefix + "5/manifest.json"}
 	staged := stagingKind{}.StagedPath("5")
 
@@ -1000,6 +1016,7 @@ func TestAdvance_Staged(t *testing.T) {
 }
 
 func TestAdvancePreservesAnUncertainAttemptOnCyclicAncestry(t *testing.T) {
+	t.Parallel()
 	s := newMemStore()
 	s.objects[pointer] = []byte("3")
 	s.objects[testKind{}.ManifestPath("3")] = []byte(`{"parent":"2"}`)
@@ -1015,6 +1032,7 @@ func TestAdvancePreservesAnUncertainAttemptOnCyclicAncestry(t *testing.T) {
 }
 
 func TestAdvance_StagesOnlyAcceptedCommits(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, expected string
 		staged         bool
@@ -1040,6 +1058,7 @@ func TestAdvance_StagesOnlyAcceptedCommits(t *testing.T) {
 }
 
 func TestLoadStaged(t *testing.T) {
+	t.Parallel()
 	s := newMemStore()
 	putAt(t, s, stagingKind{}.StagedPath("9"), "nine")
 	h := newStagingHistory(s)
@@ -1054,6 +1073,7 @@ func TestLoadStaged(t *testing.T) {
 }
 
 func TestResolveParent_Staged(t *testing.T) {
+	t.Parallel()
 	staged := stagingKind{}.StagedPath("9")
 	pending := func(t *testing.T) *memStore {
 		t.Helper()
@@ -1120,6 +1140,7 @@ func TestResolveParent_Staged(t *testing.T) {
 }
 
 func TestCompletePending(t *testing.T) {
+	t.Parallel()
 	canonical := testKind{}.ManifestPath("5")
 	staged := stagingKind{}.StagedPath("5")
 	pending := func() *memStore {
@@ -1270,6 +1291,7 @@ func (s *publicationCleanupStore) Delete(ctx context.Context, path string) error
 }
 
 func TestPublication_CanceledCallerDeletesStagedManifest(t *testing.T) {
+	t.Parallel()
 	const snapshot id = "5"
 	canonical := testKind{}.ManifestPath(snapshot)
 	staged := stagingKind{}.StagedPath(snapshot)
@@ -1323,6 +1345,7 @@ func TestPublication_CanceledCallerDeletesStagedManifest(t *testing.T) {
 // TestCompletePending_Removal verifies that a completion never leaves a
 // manifest in a removed history, whenever the removal lands.
 func TestCompletePending_Removal(t *testing.T) {
+	t.Parallel()
 	canonical := testKind{}.ManifestPath("5")
 	staged := stagingKind{}.StagedPath("5")
 	pending := func() *memStore {
@@ -1417,6 +1440,7 @@ func TestCompletePending_Removal(t *testing.T) {
 // head, so the next commit resolves the pointer and adopts the pending
 // snapshot instead of expecting the stale pointer and conflicting.
 func TestAdvance_ManifestFailureForgetsTheHead(t *testing.T) {
+	t.Parallel()
 	s := newMemStore()
 	h := newStagingHistory(s)
 	if err := h.Advance(t.Context(), "", "4", &manifest{Tag: "four"}, []string{prefix + "4/manifest.json"}); err != nil {
@@ -1437,6 +1461,7 @@ func TestAdvance_ManifestFailureForgetsTheHead(t *testing.T) {
 // A removal retries a conflicted swap until its attempts are spent, and a
 // backoff that the context ends is returned.
 func TestRemove_RetriesAConflict(t *testing.T) {
+	t.Parallel()
 	s := newMemStore()
 	s.fail = failOn("cas", pointer, errConflict)
 	if _, err := Remove(t.Context(), s, pointer, testErrors, fastRetry(t, 2)); !errors.Is(err, errConflict) {
@@ -1482,6 +1507,7 @@ func (c pointedStore) build(t *testing.T) *memStore {
 }
 
 func TestCommittedHead(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name  string
 		store pointedStore
@@ -1513,6 +1539,7 @@ func TestCommittedHead(t *testing.T) {
 }
 
 func TestPointedHead(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name  string
 		store pointedStore
@@ -1543,6 +1570,7 @@ func TestPointedHead(t *testing.T) {
 // A snapshot written before canonical manifests is committed through any
 // listed copy, and a listing that fails is returned.
 func TestConfirmCommitted_ListedCopy(t *testing.T) {
+	t.Parallel()
 	s := newMemStore()
 	putAt(t, s, prefix+"5/copy/manifest.json", "five")
 	h := newTestHistory(s)
@@ -1559,6 +1587,7 @@ func TestConfirmCommitted_ListedCopy(t *testing.T) {
 // copy and, when the parent is another pending commit, the parent's too:
 // one Delete for each copy.
 func TestAdvance_ReleasesTheAdoptedCopies(t *testing.T) {
+	t.Parallel()
 	for _, parent := range []id{"9", "7"} {
 		s := newMemStore()
 		putAt(t, s, stagingKind{}.StagedPath("9"), "nine")

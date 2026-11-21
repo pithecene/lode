@@ -14,6 +14,7 @@ import (
 // replacing one beyond MAX_PATH (260), which needs extended-length paths in
 // the Win32 calls that the store makes directly.
 func TestFSStore_CompareAndSwap_Replacement(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name       string
 		path       string
