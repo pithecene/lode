@@ -99,7 +99,8 @@ type Manifest struct {
 	Partitioner string `json:"partitioner"`
 
 	// ChecksumAlgorithm records the checksum algorithm used (e.g., "sha256", "crc32c", "md5").
-	// Omitted when no checksum is configured.
+	// Omitted when the writer computes no checksum, configured with WithChecksum or
+	// adopted from the head with WithRecordedComponents.
 	ChecksumAlgorithm string `json:"checksum_algorithm,omitempty"`
 
 	// CodecDescription records the codec's configuration as Codec.Describe

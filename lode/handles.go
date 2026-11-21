@@ -211,7 +211,7 @@ func (r *Root) newWriter(id DatasetID, opts []DatasetOption) (*writer, *datasetC
 	if err != nil {
 		return nil, nil, err
 	}
-	d := &writer{dataset: newDataset(id, r.store, newPathLayout(r.flat, scheme)), retry: cfg.retry}
+	d := &writer{dataset: newDataset(id, r.store, newPathLayout(r.flat, scheme)), retry: cfg.retry, recorded: cfg.recorded}
 	d.components = components{compressor: cfg.compressor, checksum: cfg.checksum}
 	return d, cfg, nil
 }
@@ -221,7 +221,32 @@ func (d *writer) checkAtOpen(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return d.checkSettings(ctx, parent)
+	if !d.recorded || parent == "" {
+		return d.checkSettings(ctx, parent)
+	}
+	head, err := d.settingsManifest(ctx, parent)
+	if err != nil {
+		return err
+	}
+	if err := d.adoptRecordedComponents(head); err != nil {
+		return err
+	}
+	return d.checkManifestSettings(ctx, head)
+}
+
+func (d *writer) adoptRecordedComponents(m *Manifest) error {
+	compressor, err := d.compressorFor(m)
+	if err != nil {
+		return err
+	}
+	var checksum Checksum
+	if m.ChecksumAlgorithm != "" {
+		if checksum, err = d.checksumFor(m); err != nil {
+			return err
+		}
+	}
+	d.components = components{compressor: compressor, checksum: checksum}
+	return nil
 }
 
 func checkCodec[T any](codec Codec[T]) error {

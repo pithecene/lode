@@ -64,6 +64,18 @@ ordered Hive keys, and `WithFlatPaths()`.
      between reads 1 and 2), or
   4. the newest manifest selected by scan when the pointer is absent or none
      of reads 1–3 found a manifest.
+- A writer opened with `WithRecordedComponents()` MUST, when a head exists,
+  take its compressor and checksum from the manifest that this check selects,
+  in place of those that `WithCompressor` and `WithChecksum` configure. It
+  reconstructs a bundled component by name, uses a configured component whose
+  name matches, and MUST otherwise fail to open with `ErrSettingsMismatch`. A
+  manifest without a checksum gives the writer none. The option takes effect
+  wherever it appears among the options, and a writer without it keeps the
+  check of its configured components. It changes neither the codec nor the
+  layout check. With no head, the configured components apply, and a writer
+  that opened without a head keeps them: if another first writer commits
+  other components before it, its commit fails with `ErrSettingsMismatch`
+  under the rule for racing first writers.
 - With no pointer and no manifest under the writer's layout, the writer lists
   the dataset prefix and MUST reject with `ErrSettingsMismatch` if a
   `manifest.json` exists under another layout's topology (preventing parallel
@@ -93,7 +105,7 @@ ordered Hive keys, and `WithFlatPaths()`.
 - Streamed writes MUST write directly to the final object path in a single
   pass without mutating existing objects, setting `Manifest.RowCount` to `1`.
 - When uncompressed (`Uncompressed()`), `StreamWrite` streams `r` directly to
-  `Store.Put` (computing any configured `Checksum` inline) without spawning a
+  `Store.Put` (computing the writer's `Checksum`, configured or adopted, inline) without spawning a
   pipe or background goroutine. When compressed, bytes stream through the
   compressor into `Store.Put`, and an early `Store.Put` error unblocks the
   stream immediately and takes precedence over downstream pipe errors.
@@ -116,8 +128,9 @@ ordered Hive keys, and `WithFlatPaths()`.
 - If the dataset layout is partitioned, `StreamWrite` MUST return
   `ErrPartitioningNotSupported`.
 - `Manifest.RowCount` MUST equal the total number of records consumed.
-- When `WithChecksum` is configured, the checksum is computed over the stored
-  bytes during streaming and recorded on the `ObjectRef`.
+- When the writer computes a checksum, which `WithChecksum` configures or
+  `WithRecordedComponents()` adopts (§Settings), the checksum is computed over
+  the stored bytes during streaming and recorded on the `ObjectRef`.
 - When the `StreamEncoder[T]` implements `StatisticalStreamEncoder`, the
   writer MUST collect `ObjectStats()` after `encoder.Close()` and record it
   on `ObjectRef.Stats`.

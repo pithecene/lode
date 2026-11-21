@@ -806,3 +806,230 @@ func TestWrite_DefaultNamedManifestsWithoutAPointer(t *testing.T) {
 		t.Errorf("view: got %v, want foreign manifest history rejected", err)
 	}
 }
+
+// TestRecordedComponents_Adoption covers which components a writer opened with
+// WithRecordedComponents uses: the head's, published or staged, or the
+// configured ones for a dataset without a head.
+func TestRecordedComponents_Adoption(t *testing.T) {
+	t.Parallel()
+	t.Run("the head's components or the configured ones", func(t *testing.T) {
+		configured := []DatasetOption{WithCompressor(Zstd()), WithChecksum(SHA256()), WithRecordedComponents()}
+		cases := []struct {
+			name           string
+			first          []DatasetOption
+			pend           bool
+			wantCompressor string
+			wantChecksum   string
+		}{
+			{"a dataset without a head uses the configured components", nil, false, "zstd", "sha256"},
+			{"a published head keeps its components", []DatasetOption{}, false, "noop", ""},
+			{"a staged first head keeps its components", []DatasetOption{}, true, "noop", ""},
+			{"a head with other bundled components keeps them", []DatasetOption{WithCompressor(Gzip()), WithChecksum(CRC32C())}, false, "gzip", "crc32c"},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				store := NewMemory()
+				if tc.first != nil {
+					first, err := tryWrite(t, store, jsonl, R(D{"a": 1}), tc.first...)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if tc.pend {
+						pendFirst(t, store, first.ID)
+					}
+				}
+				snap, err := tryWrite(t, store, jsonl, R(D{"a": 2}), configured...)
+				if err != nil {
+					t.Fatalf("write with the configured components: %v", err)
+				}
+				if got := snap.Manifest; got.Compressor != tc.wantCompressor || got.ChecksumAlgorithm != tc.wantChecksum {
+					t.Fatalf("snapshot records %q and %q, want %q and %q", got.Compressor, got.ChecksumAlgorithm, tc.wantCompressor, tc.wantChecksum)
+				}
+				view, err := OpenReadOnly(Use(store)).Records(t.Context(), "events", jsonl)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if recs, err := view.Read(t.Context(), snap.ID); err != nil || len(recs) != 1 {
+					t.Fatalf("read %d records, %v; want the snapshot's one record", len(recs), err)
+				}
+			})
+		}
+	})
+
+	t.Run("opening reads the published head once", func(t *testing.T) {
+		store := NewMemory()
+		first, err := tryWrite(t, store, jsonl, R(D{"a": 1}), WithCompressor(Gzip()), WithChecksum(SHA256()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		spy := testutil.NewFaultStore(store)
+		openOn(t, spy, jsonl, WithRecordedComponents())
+		want := []string{"datasets/events/latest", "datasets/events/snapshots/" + string(first.ID) + "/manifest.json"}
+		if got := spy.GetCalls(); !slices.Equal(got, want) {
+			t.Fatalf("open Get calls = %v, want %v", got, want)
+		}
+	})
+
+	// A Blobs writer adopts the head's components too, and StreamWrite computes
+	// the adopted checksum: a head that records CRC32C gives a streamed object a
+	// CRC32C digest, which a read verifies.
+	t.Run("a Blobs stream write adopts the checksum", func(t *testing.T) {
+		ctx := t.Context()
+		store := NewMemory()
+		first, err := Open(Use(store)).Blobs(ctx, "files", WithChecksum(CRC32C()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := first.Write(ctx, []byte("first"), nil); err != nil {
+			t.Fatal(err)
+		}
+		next, err := Open(Use(store)).Blobs(ctx, "files", WithChecksum(SHA256()), WithRecordedComponents())
+		if err != nil {
+			t.Fatal(err)
+		}
+		snap, err := next.StreamWrite(ctx, strings.NewReader("second"), nil)
+		if err != nil {
+			t.Fatalf("stream write: %v", err)
+		}
+		if snap.ChecksumAlgorithm != "crc32c" || len(snap.Objects) != 1 || snap.Objects[0].Checksum == "" {
+			t.Fatalf("snapshot records %q with objects %+v, want crc32c and a digest", snap.ChecksumAlgorithm, snap.Objects)
+		}
+		view, err := OpenReadOnly(Use(store)).Blobs(ctx, "files")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, err := view.Read(ctx, snap.ID); err != nil || string(got) != "second" {
+			t.Fatalf("read %q, %v; want the streamed bytes", got, err)
+		}
+	})
+}
+
+// TestRecordedComponents_CustomComponents covers a head that records a custom
+// compressor or checksum: the writer needs a configured component of that name.
+func TestRecordedComponents_CustomComponents(t *testing.T) {
+	t.Parallel()
+	// A head that records a custom component the writer does not configure
+	// cannot be adopted by name, so the writer fails to open.
+	t.Run("an unconfigured custom component fails the open", func(t *testing.T) {
+		store := NewMemory()
+		if _, err := tryWrite(t, store, jsonl, R(D{"a": 1}), WithCompressor(renamedCompressor{Gzip()})); err != nil {
+			t.Fatal(err)
+		}
+		_, err := Open(Use(store)).Records(t.Context(), "events", jsonl, WithRecordedComponents())
+		if !errors.Is(err, ErrSettingsMismatch) {
+			t.Fatalf("got %v, want ErrSettingsMismatch", err)
+		}
+	})
+
+	t.Run("a matching custom checksum is used", func(t *testing.T) {
+		store := NewMemory()
+		checksum := renamedChecksum{MD5()}
+		records := R(D{"a": 1})
+		first, err := tryWrite(t, store, jsonl, records, WithChecksum(checksum))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = Open(Use(store)).Records(t.Context(), "events", jsonl, WithRecordedComponents())
+		if !errors.Is(err, ErrSettingsMismatch) {
+			t.Fatalf("open without the custom checksum: got %v, want ErrSettingsMismatch", err)
+		}
+		next, err := tryWrite(t, store, jsonl, records, WithRecordedComponents(), WithChecksum(checksum))
+		if err != nil {
+			t.Fatalf("write with the matching custom checksum: %v", err)
+		}
+		if got := next.ChecksumAlgorithm; got != checksum.Name() {
+			t.Errorf("checksum algorithm = %q, want %q", got, checksum.Name())
+		}
+		if got, want := next.Objects[0].Checksum, first.Objects[0].Checksum; got == "" || got != want {
+			t.Errorf("checksum = %q, want the first snapshot's digest %q", got, want)
+		}
+	})
+
+	// A head that records a custom compressor accepts a writer that configures a
+	// compressor of that name: the writer uses the configured instance, and the
+	// snapshot records the custom name and reads back.
+	t.Run("a matching custom compressor is used", func(t *testing.T) {
+		store := NewMemory()
+		custom := renamedCompressor{Gzip()}
+		if _, err := tryWrite(t, store, jsonl, R(D{"a": 1}), WithCompressor(custom)); err != nil {
+			t.Fatal(err)
+		}
+		next, err := tryWrite(t, store, jsonl, R(D{"a": 2}), WithRecordedComponents(), WithCompressor(custom))
+		if err != nil {
+			t.Fatalf("write with the matching custom compressor: %v", err)
+		}
+		if next.Compressor != custom.Name() {
+			t.Errorf("compressor = %q, want %q", next.Compressor, custom.Name())
+		}
+		view, err := OpenReadOnly(Use(store)).Records(t.Context(), "events", jsonl, WithCompressor(custom))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if recs, err := view.Read(t.Context(), next.ID); err != nil || len(recs) != 1 {
+			t.Fatalf("read %d records, %v; want the snapshot's one record", len(recs), err)
+		}
+	})
+}
+
+// TestRecordedComponents_Boundaries covers what WithRecordedComponents leaves to
+// the existing settings rules: racing first writers and the codec and layout
+// checks.
+func TestRecordedComponents_Boundaries(t *testing.T) {
+	t.Parallel()
+	// Two writers that open an empty dataset with different defaults each keep
+	// their configured components. The first commit records its settings, and
+	// the second fails with ErrSettingsMismatch rather than publishing bytes
+	// under the winner's labels.
+	t.Run("racing first writers keep their components", func(t *testing.T) {
+		ctx := t.Context()
+		store := NewMemory()
+		open := func(opts ...DatasetOption) *Records[D] {
+			return openOn(t, store, jsonl, append(opts, WithRecordedComponents())...)
+		}
+		winner := open(WithCompressor(Zstd()), WithChecksum(SHA256()))
+		loser := open(WithCompressor(Gzip()), WithChecksum(CRC32C()))
+		won, err := winner.Write(ctx, R(D{"a": 1}), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := loser.Write(ctx, R(D{"a": 2}), nil); !errors.Is(err, ErrSettingsMismatch) {
+			t.Fatalf("second first writer: got %v, want ErrSettingsMismatch", err)
+		}
+		view, err := OpenReadOnly(Use(store)).Records(ctx, "events", jsonl)
+		if err != nil {
+			t.Fatal(err)
+		}
+		head, err := view.Latest(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if head.ID != won.ID || head.Compressor != "zstd" || head.ChecksumAlgorithm != "sha256" {
+			t.Fatalf("head %s records %q and %q, want the winner %s with zstd and sha256", head.ID, head.Compressor, head.ChecksumAlgorithm, won.ID)
+		}
+	})
+
+	// WithRecordedComponents adopts only the compressor and checksum: a writer
+	// whose codec or layout differs from the head's still fails to open.
+	t.Run("the codec and layout checks still apply", func(t *testing.T) {
+		cases := []struct {
+			name  string
+			codec Codec[D]
+			opts  []DatasetOption
+		}{
+			{"codec", parquetOf("a", true), nil},
+			{"layout", jsonl, []DatasetOption{hive("a")}},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				store := NewMemory()
+				if _, err := tryWrite(t, store, jsonl, R(D{"a": "x"})); err != nil {
+					t.Fatal(err)
+				}
+				opts := slices.Concat(tc.opts, []DatasetOption{WithRecordedComponents()})
+				if _, err := Open(Use(store)).Records(t.Context(), "events", tc.codec, opts...); !errors.Is(err, ErrSettingsMismatch) {
+					t.Fatalf("open with another %s: got %v, want ErrSettingsMismatch", tc.name, err)
+				}
+			})
+		}
+	})
+}

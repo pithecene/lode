@@ -57,5 +57,6 @@ guide](../../docs/guides/retention.md).
 ## Metadata
 
 Record artifact metadata explicitly (media type, original filename, or custom
-provenance). Checksum digests are recorded and verified on read whenever the
-dataset is configured with `WithChecksum`.
+provenance). Checksum digests are recorded, and verified on read, whenever the writer
+computes a checksum: one that `WithChecksum` configures, or one that
+`WithRecordedComponents()` adopts from the head.

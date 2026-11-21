@@ -101,7 +101,7 @@ with a message naming the rejected argument.
 
 | Error | Source | Meaning |
 |-------|--------|---------|
-| `lode.ErrSettingsMismatch` | Opening handles/views, `Write`, `StreamWrite`, `Read` | Codec name, `Codec.Describe()`, compressor, checksum algorithm, partitioner, Hive keys, `WithFlatPaths()`, or legacy `1.1.0` custom path names differ from the dataset's manifests (or unbundled compressor/checksum omitted on a view) |
+| `lode.ErrSettingsMismatch` | Opening handles/views, `Write`, `StreamWrite`, `Read` | Codec name, `Codec.Describe()`, compressor, checksum algorithm, partitioner, Hive keys, `WithFlatPaths()`, or legacy `1.1.0` custom path names differ from the dataset's manifests (or unbundled compressor/checksum omitted on a view, or on a writer opened with `WithRecordedComponents()`) |
 | `lode.ErrCodecNotStreamable` | `Records.StreamWrite` | Codec does not implement `StreamingCodec[T]` |
 | `lode.ErrSchemaViolation` | `Parquet[T]`, `Records.Write` | Invalid `ParquetSchema`, unsupported or incompatible Go record type `T`, missing required field, type mismatch, or numeric overflow |
 | `lode.ErrInvalidFormat` | `Parquet[T].Decode`, `Read` | Empty, truncated, corrupt, or physical-schema-mismatched Parquet file |

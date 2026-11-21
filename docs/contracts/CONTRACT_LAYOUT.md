@@ -115,9 +115,10 @@ Auxiliary control paths on every dataset layout (`<dataset dir>` is
   `MD5()` (`"md5"`).
 - Custom `Checksum` implementations provide `Name()` and `NewHasher()
   HashWriter`.
-- When configured via `WithChecksum`, manifests record `checksum_algorithm`
-  and per-object hex digests over stored bytes; when omitted, no checksum
-  fields are written.
+- When a writer computes a checksum, which `WithChecksum` configures or
+  `WithRecordedComponents()` adopts from the head, manifests record
+  `checksum_algorithm` and per-object hex digests over stored bytes; when the
+  writer computes none, no checksum fields are written.
 
 ### Codec
 - Bundled constructors: `JSONL[T]()` (`"jsonl"`) and `Parquet[T](schema,

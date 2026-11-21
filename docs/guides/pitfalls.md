@@ -13,7 +13,8 @@ this guide before writing.
   otherwise).
 - A writer computes checksums and records them in manifests only when the
   caller configures `WithChecksum` (such as `lode.SHA256()` or
-  `lode.CRC32C()`). When a snapshot manifest records a checksum algorithm,
+  `lode.CRC32C()`), or when `WithRecordedComponents()` adopts a checksum that
+  the head records. When a snapshot manifest records a checksum algorithm,
   `Read` verifies the stored bytes automatically and returns
   `ErrChecksumMismatch` on corruption.
 

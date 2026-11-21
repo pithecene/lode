@@ -164,6 +164,9 @@ it: the codec name and `Codec.Describe()` output, the compressor, the
 checksum algorithm, the partitioner and Hive keys, and `WithFlatPaths()`.
 Lode returns `ErrSettingsMismatch` at open time if any setting differs, or at
 commit time if a concurrent first writer commits different settings first.
+With `WithRecordedComponents()`, a writer of a dataset with a head takes the
+head's compressor and checksum, and `WithCompressor` and `WithChecksum` only
+supply a custom component that the head names (CONTRACT_WRITE_API §Settings).
 Opening a handle never writes to storage.
 
 Opening a view resolves the head without creating a missing pointer, adopts
@@ -280,8 +283,9 @@ constructor, so inapplicable options fail to compile.
 | `WithFlatPaths()` | `RootOption` | `Open`, `OpenReadOnly` | Places datasets at the store root (§Path Topology) |
 | `WithSync()` | `FSOption` | `FS`, `NewFS` | Fsyncs temporary object and pointer files and parent directories on publish |
 | `WithLayout(l)` | `ComponentOption` | Writer, View | Writer: `Unpartitioned()` (default) or `Hive(keys...)`. View: expected layout |
-| `WithCompressor(c)` | `ComponentOption` | Writer, View | Writer: compressor (default: `Uncompressed()`). View: custom compressor matched by name |
-| `WithChecksum(c)` | `ComponentOption` | Writer, View | Writer: object checksums (default: none). View: custom checksum matched by name |
+| `WithCompressor(c)` | `ComponentOption` | Writer, View | Writer: compressor (default: `Uncompressed()`), which `WithRecordedComponents()` overrides for a dataset with a head. View: custom compressor matched by name |
+| `WithChecksum(c)` | `ComponentOption` | Writer, View | Writer: object checksums (default: none), which `WithRecordedComponents()` overrides for a dataset with a head. View: custom checksum matched by name |
+| `WithRecordedComponents()` | `DatasetOption` | Writer | Takes the compressor and checksum that the head records, published or staged. `WithCompressor` and `WithChecksum` then set the components of a dataset without a head, and otherwise only supply a custom component that the head names |
 | `WithRetry(n)` | `DatasetOption` | Writer, `RemoveDataset` | Maximum automatic CAS retries after `ErrSnapshotConflict` (default: 0) |
 | `WithRetryBaseDelay(d)` | `DatasetOption` | Writer, `RemoveDataset` | Exponential backoff base delay (default: 10 ms) |
 | `WithRetryMaxDelay(d)` | `DatasetOption` | Writer, `RemoveDataset` | Exponential backoff maximum delay (default: 2 s) |
