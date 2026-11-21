@@ -6,6 +6,8 @@ import (
 	"io"
 	"slices"
 	"testing"
+
+	"github.com/pithecene/lode/internal/errs"
 )
 
 // A prefixed store writes every object under its prefix in the inner store,
@@ -60,7 +62,7 @@ func TestPrefixed_KeepsObjectsUnderThePrefix(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, _ := io.ReadAll(rc)
-	_ = rc.Close()
+	errs.DiscardClose(rc)
 	if string(got) != "def" {
 		t.Fatalf("the swap reached %q, want def", got)
 	}

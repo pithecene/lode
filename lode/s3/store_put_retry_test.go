@@ -7,6 +7,8 @@ import (
 	"io"
 	"testing"
 
+	"github.com/pithecene/lode/internal/errs"
+
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 
@@ -58,7 +60,7 @@ func TestStore_Put_OwnUploadAfterLostResponse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = rc.Close() }()
+	defer func() { errs.DiscardClose(rc) }()
 	got, _ := io.ReadAll(rc)
 	if !bytes.Equal(got, payload) {
 		t.Fatalf("stored %q, want %q", got, payload)

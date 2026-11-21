@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pithecene/lode/internal/errs"
+
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
@@ -122,7 +124,7 @@ func TestIntegration_Reads(t *testing.T) {
 				t.Fatalf("Get failed: %v", err)
 			}
 			data, err := io.ReadAll(rc)
-			_ = rc.Close()
+			errs.DiscardClose(rc)
 			if err != nil {
 				t.Fatalf("reading body failed: %v", err)
 			}
@@ -403,15 +405,15 @@ func (r *cancelingReader) Read(p []byte) (int, error) {
 func deleteTestBucket(cleanupCtx context.Context, client *s3.Client, bucket string) {
 	out, _ := client.ListObjectsV2(cleanupCtx, &s3.ListObjectsV2Input{Bucket: aws.String(bucket)})
 	for _, obj := range out.Contents {
-		_, _ = client.DeleteObject(cleanupCtx, &s3.DeleteObjectInput{Bucket: aws.String(bucket), Key: obj.Key})
+		errs.IgnoreResult(client.DeleteObject(cleanupCtx, &s3.DeleteObjectInput{Bucket: aws.String(bucket), Key: obj.Key}))
 	}
-	_, _ = client.DeleteBucket(cleanupCtx, &s3.DeleteBucketInput{Bucket: aws.String(bucket)})
+	errs.IgnoreResult(client.DeleteBucket(cleanupCtx, &s3.DeleteBucketInput{Bucket: aws.String(bucket)}))
 }
 
 func newEphemeralBucketStore(ctx context.Context, tb testing.TB, client *s3.Client, prefix string) *Store {
 	tb.Helper()
 	var suffix [16]byte
-	_, _ = rand.Read(suffix[:]) // crypto/rand.Read never returns an error.
+	errs.IgnoreResult(rand.Read(suffix[:])) // crypto/rand.Read never returns an error.
 	bucket := prefix + "-" + hex.EncodeToString(suffix[:])
 	if _, err := client.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: aws.String(bucket)}); err != nil {
 		tb.Fatalf("failed to create bucket: %v", err)

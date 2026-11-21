@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pithecene/lode/internal/errs"
+
 	"github.com/pithecene/lode/internal/testutil"
 )
 
@@ -62,7 +64,7 @@ func readManifest(t *testing.T, store Store, p string) *Manifest {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = rc.Close() }()
+	defer func() { errs.DiscardClose(rc) }()
 	var m Manifest
 	if err := json.NewDecoder(rc).Decode(&m); err != nil {
 		t.Fatal(err)

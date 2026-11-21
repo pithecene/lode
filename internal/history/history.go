@@ -28,6 +28,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pithecene/lode/internal/errs"
+
 	"github.com/pithecene/lode/internal/retry"
 )
 
@@ -167,7 +169,7 @@ func (h *History[ID, M]) LoadAt(ctx context.Context, id ID, path string) (*Snaps
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = rc.Close() }() // read-only stream
+	defer func() { errs.DiscardClose(rc) }() // read-only stream
 	m, err := h.kind.Decode(id, rc)
 	if err != nil {
 		return nil, err
@@ -293,7 +295,7 @@ func (h *History[ID, M]) readAll(ctx context.Context, path string) ([]byte, erro
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = rc.Close() }() // read-only stream
+	defer func() { errs.DiscardClose(rc) }() // read-only stream
 	return io.ReadAll(rc)
 }
 
@@ -506,7 +508,7 @@ func readPointer(ctx context.Context, store Store, pointerPath string) (string, 
 	if err != nil {
 		return "", fmt.Errorf("failed to read latest pointer: %w", err)
 	}
-	defer func() { _ = rc.Close() }() // read-only stream
+	defer func() { errs.DiscardClose(rc) }() // read-only stream
 	data, err := io.ReadAll(rc)
 	if err != nil {
 		return "", fmt.Errorf("lode: failed to read latest pointer: %w", err)
@@ -983,9 +985,9 @@ func (h *History[ID, M]) cleanupRemoved(ctx context.Context, staged string, stag
 // pending commit that this history never loaded. At most 2 Delete calls.
 // Best-effort: a copy that remains is never listed.
 func (h *History[ID, M]) releaseAdopted(ctx context.Context, expected string) {
-	_ = h.store.Delete(ctx, h.stager.StagedPath(h.adopted))
+	errs.IgnoreError(h.store.Delete(ctx, h.stager.StagedPath(h.adopted)))
 	if parent := ID(expected); IsGeneratedID(parent) && parent != h.adopted {
-		_ = h.store.Delete(ctx, h.stager.StagedPath(parent))
+		errs.IgnoreError(h.store.Delete(ctx, h.stager.StagedPath(parent)))
 	}
 	h.adopted = ""
 }
@@ -1061,7 +1063,7 @@ func (h *History[ID, M]) unstagePublished(ctx context.Context, staged string) {
 // Best-effort: a copy that remains is never listed.
 func (h *History[ID, M]) unstage(ctx context.Context, staged string) {
 	if staged != "" {
-		_ = h.store.Delete(ctx, staged)
+		errs.IgnoreError(h.store.Delete(ctx, staged))
 	}
 }
 

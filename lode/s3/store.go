@@ -60,7 +60,6 @@ package s3
 
 import (
 	"context"
-	"crypto/md5" //nolint:gosec // S3 names a single-part object by its MD5
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -69,6 +68,10 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"crypto/md5" //nolint:gosec // S3 names a single-part object by its MD5
+
+	"github.com/pithecene/lode/internal/errs"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -197,8 +200,8 @@ func (s *Store) Put(ctx context.Context, key string, r io.Reader) error {
 		return fmt.Errorf("s3: creating temp file: %w", err)
 	}
 	defer func() {
-		_ = tmpFile.Close()
-		_ = os.Remove(tmpFile.Name())
+		errs.DiscardClose(tmpFile)
+		errs.IgnoreError(os.Remove(tmpFile.Name()))
 	}()
 
 	digest := md5.New() //nolint:gosec // S3 names a single-part object by its MD5; this is a comparison, not a security hash
@@ -281,11 +284,11 @@ func (s *Store) putMultipartFromFile(ctx context.Context, fullKey string, file i
 	abortUpload := func() {
 		abortCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		_, _ = s.client.AbortMultipartUpload(abortCtx, &s3.AbortMultipartUploadInput{
+		errs.IgnoreResult(s.client.AbortMultipartUpload(abortCtx, &s3.AbortMultipartUploadInput{
 			Bucket:   aws.String(s.bucket),
 			Key:      aws.String(fullKey),
 			UploadId: aws.String(uploadID),
-		})
+		}))
 	}
 
 	var offset int64

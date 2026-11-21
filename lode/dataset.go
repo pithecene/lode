@@ -9,6 +9,8 @@ import (
 	"io"
 	"time"
 
+	"github.com/pithecene/lode/internal/errs"
+
 	"github.com/pithecene/lode/internal/history"
 	"github.com/pithecene/lode/internal/retry"
 	"github.com/pithecene/lode/internal/storepath"
@@ -542,7 +544,7 @@ func (d *dataset) openObjectStream(ctx context.Context, m *Manifest, obj ObjectR
 	decompressed, err := compressor.Decompress(raw)
 	if err != nil {
 		vErr := verifyStoredBytesOnError(raw, hasher, obj, err)
-		_ = rc.Close()
+		errs.DiscardClose(rc)
 		return nil, vErr
 	}
 	return &verifiedObjectStream{

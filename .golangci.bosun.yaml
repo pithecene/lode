@@ -8,6 +8,7 @@ version: "2"
 linters:
   default: none
   enable:
+    - errdiscard
     - errjoin
     - mapboolset
     - osexitscope
@@ -20,6 +21,11 @@ linters:
     unused:
       field-writes-are-uses: false
     custom:
+      errdiscard:
+        type: module
+        settings:
+          helper-package: errs
+          helper-location: internal/errs
       mapboolset:
         type: module
       errjoin:

@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/pithecene/lode/internal/errs"
+
 	"github.com/pithecene/lode/internal/storepath"
 	"github.com/pithecene/lode/internal/validate"
 )
@@ -146,7 +148,7 @@ func (f *fsStore) Put(_ context.Context, path string, r io.Reader) error {
 		}
 		return discardTemp(tmp.Name(), fmt.Errorf("fs: put: %w", err))
 	}
-	_ = os.Remove(tmp.Name())
+	errs.IgnoreError(os.Remove(tmp.Name()))
 	return f.syncPublishedDir(existing, dir)
 }
 
@@ -243,11 +245,11 @@ func (f *fsStore) openObject(path, op string) (*os.File, error) {
 	}
 	info, err := file.Stat()
 	if err != nil {
-		_ = file.Close()
+		errs.DiscardClose(file)
 		return nil, fmt.Errorf("fs: %s: %w", op, err)
 	}
 	if info.IsDir() {
-		_ = file.Close()
+		errs.DiscardClose(file)
 		return nil, ErrNotFound
 	}
 	return file, nil

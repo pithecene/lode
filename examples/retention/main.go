@@ -36,7 +36,7 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("failed to create temp dir: %w", err)
 	}
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	defer removeTempDir(tmpDir)
 
 	ds, err := lode.Open(lode.FS(tmpDir)).Records(ctx, "crawls", lode.JSONL[lode.D](),
 		lode.WithLayout(lode.Hive("run_id", "event_type")))
@@ -117,4 +117,12 @@ func writeRun(ctx context.Context, ds *lode.Records[lode.D], run string) ([]*lod
 func printExpiry(label string, r *lode.ExpireReport) {
 	fmt.Printf("%s: %d snapshots, %d objects, %d bytes (mixed %d)\n",
 		label, len(r.Expired), r.Objects, r.Bytes, len(r.Mixed))
+}
+
+// removeTempDir deletes the example's scratch directory. A failed removal
+// does not change the example's outcome, so it is logged rather than returned.
+func removeTempDir(dir string) {
+	if err := os.RemoveAll(dir); err != nil {
+		log.Printf("remove temp dir %s: %v", dir, err)
+	}
 }

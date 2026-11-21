@@ -7,6 +7,8 @@ import (
 	"io"
 	"iter"
 	"sync"
+
+	"github.com/pithecene/lode/internal/errs"
 )
 
 // -----------------------------------------------------------------------------
@@ -140,9 +142,9 @@ func (s *dataStream) fail(step string, err error, upstream ...io.Closer) error {
 	fromPut, cause := s.put.rootCause(err)
 	s.cancelUpload(cause)
 	for _, c := range upstream {
-		_ = c.Close()
+		errs.DiscardClose(c)
 	}
-	_ = s.put.wait()
+	errs.IgnoreError(s.put.wait())
 	if fromPut {
 		return fmt.Errorf("failed to write data: %w", cause)
 	}
@@ -153,17 +155,17 @@ func (s *dataStream) cancelUpload(cause error) {
 	if cause == nil {
 		cause = io.ErrClosedPipe
 	}
-	_ = s.reader.CloseWithError(cause)
-	_ = s.pipe.CloseWithError(cause)
+	errs.IgnoreError(s.reader.CloseWithError(cause))
+	errs.IgnoreError(s.pipe.CloseWithError(cause))
 	s.cancelPut()
 }
 
 func (s *dataStream) abort(cause error) {
 	s.cancelUpload(cause)
 	if s.comp != nil {
-		_ = s.comp.Close()
+		errs.DiscardClose(s.comp)
 	}
-	_ = s.put.wait()
+	errs.IgnoreError(s.put.wait())
 }
 
 type recordStream[T any] struct {
@@ -248,11 +250,11 @@ func (r *recordStream[T]) finish() (ObjectRef, error) {
 
 func (r *recordStream[T]) abort(cause error) {
 	r.cancelUpload(cause)
-	_ = r.encoder.Close()
+	errs.DiscardClose(r.encoder)
 	if r.comp != nil {
-		_ = r.comp.Close()
+		errs.DiscardClose(r.comp)
 	}
-	_ = r.put.wait()
+	errs.IgnoreError(r.put.wait())
 }
 
 type putResult struct {
@@ -268,7 +270,7 @@ func (r *putResult) start(putCtx, callerCtx context.Context, store Store, path s
 	// Local aborts close the pipe themselves. Watch only caller cancellation.
 	if callerCtx.Done() != nil {
 		stopCancel = context.AfterFunc(callerCtx, func() {
-			_ = pr.CloseWithError(callerCtx.Err())
+			errs.IgnoreError(pr.CloseWithError(callerCtx.Err()))
 		})
 	}
 	go func() {
@@ -284,7 +286,7 @@ func (r *putResult) start(putCtx, callerCtx context.Context, store Store, path s
 		r.mu.Lock()
 		r.err, r.finished = err, true
 		r.mu.Unlock()
-		_ = pr.CloseWithError(err)
+		errs.IgnoreError(pr.CloseWithError(err))
 		close(r.done)
 	}()
 }

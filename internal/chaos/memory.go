@@ -8,6 +8,8 @@ import (
 	"runtime/pprof"
 	"strings"
 	"time"
+
+	"github.com/pithecene/lode/internal/errs"
 )
 
 const (
@@ -139,7 +141,7 @@ func WriteHeapProfile(dir, name string) error {
 	}
 	runtime.GC()
 	if err := pprof.WriteHeapProfile(f); err != nil {
-		_ = f.Close()
+		errs.DiscardClose(f)
 		return fmt.Errorf("chaos: heap profile: %w", err)
 	}
 	return f.Close()

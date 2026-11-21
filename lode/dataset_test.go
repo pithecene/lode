@@ -13,6 +13,8 @@ import (
 	"testing/iotest"
 	"time"
 
+	"github.com/pithecene/lode/internal/errs"
+
 	"github.com/pithecene/lode/internal/testutil"
 )
 
@@ -594,7 +596,7 @@ func TestBlobs_StreamWrite_Abort(t *testing.T) {
 			t.Fatalf("Write failed: %v", err)
 		}
 		cancel()
-		_ = pw.CloseWithError(ctx.Err())
+		errs.IgnoreError(pw.CloseWithError(ctx.Err()))
 
 		if err := <-done; err == nil {
 			t.Fatal("expected error after context cancellation")
@@ -1933,7 +1935,7 @@ func TestDataset_LatestPointer_PendingCommit(t *testing.T) {
 		t.Fatal(err)
 	}
 	pointer, _ := io.ReadAll(rc)
-	_ = rc.Close()
+	errs.DiscardClose(rc)
 	if string(pointer) != string(pending.ID) {
 		t.Errorf("pointer = %q, want it to remain at the pending %q", pointer, pending.ID)
 	}
@@ -2110,7 +2112,9 @@ func TestDataset_LatestPointer(t *testing.T) {
 		}
 
 		// Delete the pointer to simulate pre-pointer state.
-		_ = store.Delete(t.Context(), "datasets/test-ds/latest")
+		if err := store.Delete(t.Context(), "datasets/test-ds/latest"); err != nil {
+			t.Fatal(err)
+		}
 
 		// Latest() should still work via scan fallback.
 		latest, err := ds.Latest(t.Context())
@@ -2132,7 +2136,7 @@ func TestDataset_LatestPointer(t *testing.T) {
 			t.Fatalf("pointer should exist after write: %v", err)
 		}
 		data, _ := io.ReadAll(rc)
-		_ = rc.Close()
+		errs.DiscardClose(rc)
 		if string(data) != string(snap2.ID) {
 			t.Errorf("pointer %q, expected %q", string(data), snap2.ID)
 		}
@@ -2155,8 +2159,12 @@ func TestDataset_LatestPointer(t *testing.T) {
 
 		// Overwrite the pointer with a nonexistent snapshot ID.
 		pointerPath := "datasets/test-ds/latest"
-		_ = store.Delete(t.Context(), pointerPath)
-		_ = store.Put(t.Context(), pointerPath, strings.NewReader("nonexistent-id"))
+		if err := store.Delete(t.Context(), pointerPath); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Put(t.Context(), pointerPath, strings.NewReader("nonexistent-id")); err != nil {
+			t.Fatal(err)
+		}
 
 		// Latest() should fall back to scan and find snap1.
 		latest, err := ds.Latest(t.Context())
@@ -2370,7 +2378,7 @@ func TestDataset_Write_ColdStart(t *testing.T) {
 			t.Fatal(err)
 		}
 		data, _ := io.ReadAll(rc)
-		_ = rc.Close()
+		errs.DiscardClose(rc)
 		if string(data) != string(snap3.ID) {
 			t.Fatalf("pointer should track snap3, got %q", string(data))
 		}
@@ -2834,7 +2842,7 @@ func TestChecksum_ReadVerification(t *testing.T) {
 				t.Fatal(err)
 			}
 			raw, _ := io.ReadAll(rc)
-			_ = rc.Close()
+			errs.DiscardClose(rc)
 			raw[len(raw)-1] ^= 0xff
 			overwriteObjectAndExpectChecksumMismatch(t, store, blobKey, raw, func() ([]byte, error) {
 				return blobs.Read(t.Context(), bsnap.ID)
@@ -2868,7 +2876,7 @@ func TestChecksum_ReadVerification(t *testing.T) {
 				t.Fatal(err)
 			}
 			pqRaw, _ := io.ReadAll(prc)
-			_ = prc.Close()
+			errs.DiscardClose(prc)
 			pqRaw[0] ^= 0xff
 			overwriteObjectAndExpectChecksumMismatch(t, pstore, pqKey, pqRaw, func() ([]row, error) {
 				return pds.Read(t.Context(), psnap.ID)

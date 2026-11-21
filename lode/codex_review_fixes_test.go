@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/pithecene/lode/internal/errs"
+
 	"github.com/pithecene/lode/lode"
 )
 
@@ -61,9 +63,11 @@ func TestRoot_RemoveDataset_LegacyPartitionOnlyHiveHead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = rc.Close() }()
+	defer func() { errs.DiscardClose(rc) }()
 	var buf bytes.Buffer
-	_, _ = buf.ReadFrom(rc)
+	if _, err := buf.ReadFrom(rc); err != nil {
+		t.Fatal(err)
+	}
 	if !strings.Contains(buf.String(), "removed") {
 		t.Fatalf("latest fence = %q, want removed marker", buf.String())
 	}

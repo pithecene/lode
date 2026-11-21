@@ -140,8 +140,7 @@ func TestView_GetManifest_InvalidManifest(t *testing.T) {
 		store := NewMemory()
 		m := validTestManifest()
 		m.DatasetID = ""
-		data, _ := json.Marshal(m)
-		_ = store.Put(t.Context(), "datasets/test-ds/snapshots/snap-1/manifest.json", bytes.NewReader(data))
+		writeManifestAt(t, store, "datasets/test-ds/snapshots/snap-1/manifest.json", m)
 		if err := manifestErr(t, store, ManifestRef{ID: "snap-1"}); !errors.Is(err, ErrManifestInvalid) {
 			t.Errorf("expected ErrManifestInvalid, got: %v", err)
 		}

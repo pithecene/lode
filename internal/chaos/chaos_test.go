@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pithecene/lode/internal/errs"
 	"github.com/pithecene/lode/internal/testutil"
 
 	"github.com/pithecene/lode/lode"
@@ -128,7 +129,7 @@ func (tr *trial) run(t *testing.T) {
 	if err := tr.backend.Store.CompareAndSwap(t.Context(), probe, "", "probe"); errors.Is(err, errors.ErrUnsupported) {
 		t.Skipf("the %s store does not support CompareAndSwap here: %v", tr.backendName, err)
 	}
-	_ = tr.backend.Store.Delete(t.Context(), probe) // best-effort: the probe is not part of any dataset
+	errs.IgnoreError(tr.backend.Store.Delete(t.Context(), probe)) // best-effort: the probe is not part of any dataset
 
 	report := Run(t.Context(), tr.cfg, tr.backend.Store)
 	tr.commits = report.Commits

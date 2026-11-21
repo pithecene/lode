@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pithecene/lode/internal/errs"
+
 	"github.com/pithecene/lode/internal/history"
 	"github.com/pithecene/lode/internal/testutil"
 	"github.com/pithecene/lode/lode"
@@ -22,7 +24,7 @@ func pointerContent(t *testing.T, store lode.Store, id ID) string {
 	if err != nil {
 		t.Fatalf("reading the pointer: %v", err)
 	}
-	defer func() { _ = rc.Close() }()
+	defer func() { errs.DiscardClose(rc) }()
 	data, err := io.ReadAll(rc)
 	if err != nil {
 		t.Fatal(err)
@@ -170,7 +172,7 @@ func TestRemove_RefusesWhileACommitIsPending(t *testing.T) {
 		t.Fatal(err)
 	}
 	data, _ := io.ReadAll(staged)
-	_ = staged.Close()
+	errs.DiscardClose(staged)
 	if err := fs.Put(ctx, volumeManifestPath("v", SnapshotID(stagedID(t, fs, "v"))), bytes.NewReader(data)); err != nil {
 		t.Fatal(err)
 	}

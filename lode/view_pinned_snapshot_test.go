@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/pithecene/lode/internal/errs"
+
 	"github.com/pithecene/lode/internal/testutil"
 )
 
@@ -249,7 +251,7 @@ func (f anchorFixture) partitionManifests(t *testing.T, id SnapshotID) map[strin
 				t.Fatal(err)
 			}
 			b, err := io.ReadAll(rc)
-			_ = rc.Close() // read-only stream
+			errs.DiscardClose(rc) // read-only stream
 			if err != nil {
 				t.Fatal(err)
 			}

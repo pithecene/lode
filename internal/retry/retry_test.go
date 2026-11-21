@@ -6,6 +6,8 @@ import (
 	"slices"
 	"testing"
 	"time"
+
+	"github.com/pithecene/lode/internal/errs"
 )
 
 // These tests pin the backoff schedule itself: the defaults, the cap and
@@ -277,10 +279,10 @@ func TestConfig_SettersStore(t *testing.T) {
 	}
 
 	before := cfg
-	_ = cfg.SetMaxAttempts(-1)
-	_ = cfg.SetBaseDelay(0)
-	_ = cfg.SetMaxDelay(0)
-	_ = cfg.SetJitter(2)
+	errs.IgnoreError(cfg.SetMaxAttempts(-1))
+	errs.IgnoreError(cfg.SetBaseDelay(0))
+	errs.IgnoreError(cfg.SetMaxDelay(0))
+	errs.IgnoreError(cfg.SetJitter(2))
 	if cfg.maxAttempts != before.maxAttempts || cfg.baseDelay != before.baseDelay || cfg.maxDelay != before.maxDelay || cfg.jitter != before.jitter {
 		t.Fatalf("rejected value changed the config: %+v", cfg)
 	}

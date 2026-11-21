@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pithecene/lode/internal/errs"
+
 	"github.com/pithecene/lode/internal/testutil"
 )
 
@@ -725,7 +727,7 @@ func readObject(t *testing.T, store Store, p string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = rc.Close() }()
+	defer func() { errs.DiscardClose(rc) }()
 	data, err := io.ReadAll(rc)
 	if err != nil {
 		t.Fatal(err)
