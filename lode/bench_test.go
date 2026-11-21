@@ -3,6 +3,7 @@ package lode
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 	"testing"
@@ -173,4 +174,39 @@ func parquetBenchmarkFixture(b *testing.B) (Codec[D], []D) {
 		records[i] = D{"id": int64(i), "name": "user", "score": 99.5}
 	}
 	return codec, records
+}
+
+// -----------------------------------------------------------------------------
+// BenchmarkZstd_Compress measures one stream of a reused zstd compressor: a
+// small object, as a commit of one record writes, and a large one.
+// -----------------------------------------------------------------------------
+
+func BenchmarkZstd_Compress(b *testing.B) {
+	line := "lorem ipsum dolor sit amet, consectetur adipiscing elit 0123456789\n"
+	for _, size := range []struct {
+		name  string
+		bytes int
+	}{
+		{"small", 1 << 10},
+		{"large", 64 << 20},
+	} {
+		payload := []byte(strings.Repeat(line, size.bytes/len(line)+1)[:size.bytes])
+		b.Run(size.name, func(b *testing.B) {
+			c := Zstd()
+			b.SetBytes(int64(len(payload)))
+			b.ReportAllocs()
+			for b.Loop() {
+				w, err := c.Compress(io.Discard)
+				if err != nil {
+					b.Fatal(err)
+				}
+				if _, err := w.Write(payload); err != nil {
+					b.Fatal(err)
+				}
+				if err := w.Close(); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
 }
