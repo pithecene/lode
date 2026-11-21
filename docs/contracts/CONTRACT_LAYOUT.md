@@ -116,8 +116,8 @@ Auxiliary control paths on every dataset layout (`<dataset dir>` is
 - Custom `Checksum` implementations MUST return a non-empty `Name()`
   (`ErrInvalidArgument` when a writer or view opens otherwise) and provide
   `NewHasher() HashWriter`.
-- When a writer has a checksum, which `WithChecksum` configures or
-  `WithRecordedComponents()` adopts from the head, its manifests record
+- `WithChecksum` configures a writer's checksum, or `WithRecordedComponents()`
+  adopts it from the head. Such a writer's manifests record
   `checksum_algorithm`, even on a snapshot that stores no object, and a hex
   digest over the stored bytes of each object. A writer without a checksum
   writes neither.

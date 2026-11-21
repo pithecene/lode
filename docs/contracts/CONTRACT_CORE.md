@@ -206,12 +206,13 @@ the codec:
 ### Checksum Rules
 
 - Checksum computation is explicit and disabled by default.
-- When a writer has a checksum (`SHA256`, `CRC32C`, `MD5`, or a custom
-  `Checksum`), whether `WithChecksum` configures it or
-  `WithRecordedComponents()` adopts it from the head, its manifests MUST record
-  `checksum_algorithm`, even when the snapshot stores no object, and a
-  lowercase hex-encoded `checksum` on every `ObjectRef`, computed over the
-  exact stored bytes (after compression, if any).
+- A writer has a checksum (`SHA256`, `CRC32C`, `MD5`, or a custom `Checksum`)
+  when `WithChecksum` configures it or `WithRecordedComponents()` adopts it
+  from the head. Its manifests MUST then record `checksum_algorithm`, even
+  when the snapshot stores no object.
+- Each `ObjectRef` of such a writer MUST record a lowercase hex-encoded
+  `checksum`, computed over the exact stored bytes (after compression, if
+  any).
 - When `checksum_algorithm` is recorded on a manifest, `Read` on handles and
   views MUST recompute the digest over the complete stored object bytes and
   return `ErrChecksumMismatch` if an object's `Checksum` is empty or does not
