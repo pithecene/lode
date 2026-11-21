@@ -19,13 +19,13 @@ import (
 // uncompressed, r passes directly to store.Put without an io.Pipe or background
 // goroutine; when compressed, bytes pass through dataStream.
 func (d *writer) streamBlob(ctx context.Context, id SnapshotID, r io.Reader) (ObjectRef, error) {
-	if _, uncompressed := d.components.compressor.(*noopCompressor); uncompressed {
+	if _, uncompressed := d.writes.compressor.(*noopCompressor); uncompressed {
 		path := d.filePath(id, "", blobFile)
 		cr := &countingReader{r: r}
 		src := io.Reader(cr)
 		var hasher HashWriter
-		if d.components.checksum != nil {
-			hasher = d.components.checksum.NewHasher()
+		if d.writes.checksum != nil {
+			hasher = d.writes.checksum.NewHasher()
 			src = io.TeeReader(cr, hasher)
 		}
 		if err := d.store.Put(ctx, path, src); err != nil {
@@ -83,15 +83,15 @@ func (d *writer) openStream(ctx context.Context, id SnapshotID, role string) (*d
 	}
 
 	var sink io.Writer = &s.count
-	if d.components.checksum != nil {
-		s.hasher = d.components.checksum.NewHasher()
+	if d.writes.checksum != nil {
+		s.hasher = d.writes.checksum.NewHasher()
 		sink = io.MultiWriter(&s.count, s.hasher)
 	}
 
 	putCtx, cancel := context.WithCancel(ctx)
 	s.cancelPut = cancel
 	s.put.start(putCtx, ctx, d.store, path, pr)
-	comp, err := d.components.compressor.Compress(sink)
+	comp, err := d.writes.compressor.Compress(sink)
 	if err != nil {
 		fromPut, cause := s.put.rootCause(err)
 		s.abort(cause)

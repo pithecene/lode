@@ -69,7 +69,9 @@ ordered Hive keys, and `WithFlatPaths()`.
   in place of those that `WithCompressor` and `WithChecksum` configure. It
   reconstructs a bundled component by name, uses a configured component whose
   name matches, and MUST otherwise fail to open with `ErrSettingsMismatch`. A
-  manifest without a checksum gives the writer none. The option takes effect
+  manifest without a checksum gives the writer none. Reads through the handle
+  still resolve each snapshot's recorded components against the configured
+  ones. The option takes effect
   wherever it appears among the options, and a writer without it keeps the
   check of its configured components. It changes neither the codec nor the
   layout check. With no head, the configured components apply, and a writer

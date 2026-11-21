@@ -2725,6 +2725,58 @@ type renamedChecksum struct{ Checksum }
 
 func (renamedChecksum) Name() string { return "custom-md5" }
 
+// unnamedChecksum is a checksum without a name, which no manifest can record.
+type unnamedChecksum struct{ Checksum }
+
+func (unnamedChecksum) Name() string { return "" }
+
+// noIOStore is a Store whose every method panics, for tests that require
+// argument validation before any store call.
+type noIOStore struct{ Store }
+
+// A writer or view refuses a checksum without a name before any store call,
+// because no manifest could record it. RemoveDataset skips this name check,
+// since removal records no checksum.
+func TestWithChecksum_RequiresAName(t *testing.T) {
+	t.Parallel()
+	unnamed := WithChecksum(unnamedChecksum{SHA256()})
+	opens := []struct {
+		name string
+		open func(ctx context.Context, store Store) error
+	}{
+		{"records writer", func(ctx context.Context, store Store) error {
+			_, err := Open(Use(store)).Records(ctx, "events", jsonl, unnamed)
+			return err
+		}},
+		{"blobs writer", func(ctx context.Context, store Store) error {
+			_, err := Open(Use(store)).Blobs(ctx, "files", unnamed)
+			return err
+		}},
+		{"records view", func(ctx context.Context, store Store) error {
+			_, err := OpenReadOnly(Use(store)).Records(ctx, "events", jsonl, unnamed)
+			return err
+		}},
+		{"blobs view", func(ctx context.Context, store Store) error {
+			_, err := OpenReadOnly(Use(store)).Blobs(ctx, "files", unnamed)
+			return err
+		}},
+	}
+	for _, tc := range opens {
+		t.Run(tc.name, func(t *testing.T) {
+			// noIOStore embeds a nil Store, so any store call panics and fails the
+			// test: the refusal must come before every kind of store I/O.
+			if err := tc.open(t.Context(), noIOStore{}); !errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("got %v, want ErrInvalidArgument", err)
+			}
+		})
+	}
+	t.Run("dataset removal skips the name check", func(t *testing.T) {
+		if err := Open(Use(NewMemory())).RemoveDataset(t.Context(), "events", unnamed); err != nil {
+			t.Fatalf("remove: %v, want success", err)
+		}
+	})
+}
+
 func TestBlobs_Read_CustomChecksumIsPassedToTheView(t *testing.T) {
 	t.Parallel()
 	assertCustomBlobComponentRequired(t, "custom-md5", WithChecksum(renamedChecksum{MD5()}))

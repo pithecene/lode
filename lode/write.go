@@ -174,7 +174,7 @@ func stageRecords[T any](ctx context.Context, r *Records[T], p *pendingSnapshot,
 }
 
 func (d *writer) filePath(id SnapshotID, partition, role string) string {
-	return d.layout.dataFilePath(d.id, id, partition, role+d.components.compressor.Extension())
+	return d.layout.dataFilePath(d.id, id, partition, role+d.writes.compressor.Extension())
 }
 
 func (d *writer) putObject(ctx context.Context, path string, content objectContent) (ObjectRef, error) {
@@ -187,7 +187,7 @@ func (d *writer) putObject(ctx context.Context, path string, content objectConte
 
 func (d *writer) storeObject(ctx context.Context, path string, content objectContent) (ObjectRef, error) {
 	var buf bytes.Buffer
-	comp, err := d.components.compressor.Compress(&buf)
+	comp, err := d.writes.compressor.Compress(&buf)
 	if err != nil {
 		return ObjectRef{}, err
 	}
@@ -207,10 +207,10 @@ func (d *writer) storeObject(ctx context.Context, path string, content objectCon
 }
 
 func (d *writer) checksumBytes(data []byte) string {
-	if d.components.checksum == nil {
+	if d.writes.checksum == nil {
 		return ""
 	}
-	hasher := d.components.checksum.NewHasher()
+	hasher := d.writes.checksum.NewHasher()
 	errs.IgnoreResult(hasher.Write(data))
 	return hasher.Sum()
 }

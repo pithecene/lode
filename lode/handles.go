@@ -207,12 +207,16 @@ func (r *Root) newWriter(id DatasetID, opts []DatasetOption) (*writer, *datasetC
 	if err != nil {
 		return nil, nil, err
 	}
+	if err := checkChecksumName(cfg.checksum); err != nil {
+		return nil, nil, err
+	}
 	scheme, err := cfg.layout.scheme()
 	if err != nil {
 		return nil, nil, err
 	}
 	d := &writer{dataset: newDataset(id, r.store, newPathLayout(r.flat, scheme)), retry: cfg.retry, recorded: cfg.recorded}
 	d.components = components{compressor: cfg.compressor, checksum: cfg.checksum}
+	d.writes = d.components
 	return d, cfg, nil
 }
 
@@ -245,7 +249,7 @@ func (d *writer) adoptRecordedComponents(m *Manifest) error {
 			return err
 		}
 	}
-	d.components = components{compressor: compressor, checksum: checksum}
+	d.writes = components{compressor: compressor, checksum: checksum}
 	return nil
 }
 
@@ -304,6 +308,9 @@ func (r *ReadRoot) openView(ctx context.Context, id DatasetID, opts []ViewOption
 	}
 	cfg, err := resolveViewConfig(opts)
 	if err != nil {
+		return nil, err
+	}
+	if err := checkChecksumName(cfg.components.checksum); err != nil {
 		return nil, err
 	}
 	opened, err := resolveAnchor(ctx, r.store, id, viewCandidates(r.store, r.flat, id, cfg.layout), cfg.anchor)

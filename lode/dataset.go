@@ -123,8 +123,9 @@ func WithLayout(l Layout) ComponentOption {
 // WithCompressor sets the compressor of a writer handle (default:
 // Uncompressed) or supplies a custom compressor to a view. Under
 // WithRecordedComponents, a writer of a dataset with a head uses the head's
-// compressor, and this option only supplies a custom one that the head names
-// (CONTRACT_WRITE_API §Settings).
+// compressor for writes, and this option only supplies a custom one that the
+// head names. Reads still resolve each snapshot's recorded compressor against
+// this option (CONTRACT_WRITE_API §Settings).
 func WithCompressor(c Compressor) ComponentOption {
 	return componentOption{
 		dataset: func(cfg *datasetConfig) error {
@@ -151,8 +152,10 @@ func WithCompressor(c Compressor) ComponentOption {
 // or supplies a custom checksum algorithm to a view. Bundled algorithms
 // (SHA256, CRC32C, MD5) are reconstructed automatically by name on read. Under
 // WithRecordedComponents, a writer of a dataset with a head uses the head's
-// checksum, or none when the head records none, and this option only supplies
-// a custom one that the head names (CONTRACT_WRITE_API §Settings).
+// checksum for writes, or none when the head records none, and this option
+// only supplies a custom one that the head names. Reads still resolve each
+// snapshot's recorded checksum against this option (CONTRACT_WRITE_API
+// §Settings).
 func WithChecksum(c Checksum) ComponentOption {
 	set := func(dst *Checksum) error {
 		if c != nil && validate.Nil(c) {
@@ -167,11 +170,23 @@ func WithChecksum(c Checksum) ComponentOption {
 	}
 }
 
+// checkChecksumName rejects a checksum without a name when a writer or view
+// opens: a manifest records the algorithm by name, so an unnamed checksum would
+// write digests that no manifest attributes. RemoveDataset ignores the checksum
+// and does not check it.
+func checkChecksumName(c Checksum) error {
+	if c != nil && c.Name() == "" {
+		return validate.Argument("WithChecksum: checksum must have a non-empty name")
+	}
+	return nil
+}
+
 // WithRecordedComponents makes a writer handle adopt the compressor and checksum
 // that the dataset's head records, published or staged, in place of those that
-// WithCompressor and WithChecksum configure. Those options then set the
-// components of a dataset without a head, and otherwise only supply a custom
-// component that the head names. Bundled components are reconstructed by name. A
+// WithCompressor and WithChecksum configure, for writes. Those options then set
+// the components of a dataset without a head, and otherwise only supply a
+// custom component that the head names. Reads resolve each snapshot's recorded
+// components against those options, as without this option. Bundled components are reconstructed by name. A
 // custom component the head records must be configured with WithCompressor or
 // WithChecksum, or the handle fails to open with ErrSettingsMismatch.
 func WithRecordedComponents() DatasetOption {
@@ -264,8 +279,12 @@ type dataset struct {
 
 type writer struct {
 	*dataset
-	retry    retry.Config
-	settled  bool
+	retry   retry.Config
+	settled bool
+	// writes are the components a write uses: the caller's, or the head's
+	// under WithRecordedComponents. The dataset's components stay the
+	// caller's, which resolve a snapshot's recorded names for reads.
+	writes   components
 	recorded bool
 }
 

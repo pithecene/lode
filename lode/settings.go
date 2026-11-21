@@ -29,12 +29,12 @@ func (d *writer) settings() settings {
 	s := settings{
 		codec:            d.codec.name,
 		codecDescription: d.codec.description,
-		compressor:       d.components.compressor.Name(),
+		compressor:       d.writes.compressor.Name(),
 		partitioning:     d.layout.partitioning(),
 		flat:             d.layout.isFlat(),
 	}
-	if d.components.checksum != nil {
-		s.checksum = d.components.checksum.Name()
+	if d.writes.checksum != nil {
+		s.checksum = d.writes.checksum.Name()
 	}
 	return s
 }
