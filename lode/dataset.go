@@ -31,6 +31,8 @@ type datasetConfig struct {
 	compressor Compressor
 	checksum   Checksum
 	retry      retry.Config
+	// recorded adopts the head's components in place of compressor and checksum.
+	recorded bool
 }
 
 type components struct {
@@ -119,7 +121,10 @@ func WithLayout(l Layout) ComponentOption {
 }
 
 // WithCompressor sets the compressor of a writer handle (default:
-// Uncompressed) or supplies a custom compressor to a view.
+// Uncompressed) or supplies a custom compressor to a view. Under
+// WithRecordedComponents, a writer of a dataset with a head uses the head's
+// compressor, and this option only supplies a custom one that the head names
+// (CONTRACT_WRITE_API §Settings).
 func WithCompressor(c Compressor) ComponentOption {
 	return componentOption{
 		dataset: func(cfg *datasetConfig) error {
@@ -144,7 +149,10 @@ func WithCompressor(c Compressor) ComponentOption {
 
 // WithChecksum sets the checksum algorithm of a writer handle (default: none)
 // or supplies a custom checksum algorithm to a view. Bundled algorithms
-// (SHA256, CRC32C, MD5) are reconstructed automatically by name on read.
+// (SHA256, CRC32C, MD5) are reconstructed automatically by name on read. Under
+// WithRecordedComponents, a writer of a dataset with a head uses the head's
+// checksum, or none when the head records none, and this option only supplies
+// a custom one that the head names (CONTRACT_WRITE_API §Settings).
 func WithChecksum(c Checksum) ComponentOption {
 	set := func(dst *Checksum) error {
 		if c != nil && validate.Nil(c) {
@@ -157,6 +165,20 @@ func WithChecksum(c Checksum) ComponentOption {
 		dataset: func(cfg *datasetConfig) error { return set(&cfg.checksum) },
 		view:    func(cfg *viewConfig) error { return set(&cfg.components.checksum) },
 	}
+}
+
+// WithRecordedComponents makes a writer handle adopt the compressor and checksum
+// that the dataset's head records, published or staged, in place of those that
+// WithCompressor and WithChecksum configure. Those options then set the
+// components of a dataset without a head, and otherwise only supply a custom
+// component that the head names. Bundled components are reconstructed by name. A
+// custom component the head records must be configured with WithCompressor or
+// WithChecksum, or the handle fails to open with ErrSettingsMismatch.
+func WithRecordedComponents() DatasetOption {
+	return datasetOption(func(cfg *datasetConfig) error {
+		cfg.recorded = true
+		return nil
+	})
 }
 
 func retryOption(name string, set func(r *retry.Config) error) DatasetOption {
@@ -242,8 +264,9 @@ type dataset struct {
 
 type writer struct {
 	*dataset
-	retry   retry.Config
-	settled bool
+	retry    retry.Config
+	settled  bool
+	recorded bool
 }
 
 type codecIdentity struct {

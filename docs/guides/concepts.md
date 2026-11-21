@@ -138,7 +138,7 @@ Lode guarantees the following:
 | **Immutable snapshots** | Once written, data objects and manifests never change |
 | **Atomic commits** | The presence of a canonical manifest signifies a commit, and nothing is partially visible |
 | **Explicit metadata** | Every snapshot carries metadata that the caller supplies, and Lode never infers metadata |
-| **End-to-end integrity** | When configured with `WithChecksum`, `Read` verifies stored bytes against the manifest's digest and returns `ErrChecksumMismatch` on corruption |
+| **End-to-end integrity** | When a manifest records a checksum, which `WithChecksum` configures or `WithRecordedComponents()` adopts, `Read` verifies stored bytes against the manifest's digest and returns `ErrChecksumMismatch` on corruption |
 | **Safe writes** | Lode prevents overwrites atomically for standard writes on every built-in adapter. Large uploads (above 5 GiB) are atomic when the backend supports conditional multipart-upload completion, and best-effort otherwise ([details](../../PUBLIC_API.md#large-upload-guarantees)). |
 | **Backend independence** | The same semantics on the filesystem, in memory, or on S3 |
 

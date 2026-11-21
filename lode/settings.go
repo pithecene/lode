@@ -156,6 +156,10 @@ func (d *writer) checkSettings(ctx context.Context, parent SnapshotID) error {
 	if err != nil {
 		return err
 	}
+	return d.checkManifestSettings(ctx, head)
+}
+
+func (d *writer) checkManifestSettings(ctx context.Context, head *Manifest) error {
 	mine := d.settings()
 	recorded, err := recordedSettings(head, mine.flat)
 	if err != nil {

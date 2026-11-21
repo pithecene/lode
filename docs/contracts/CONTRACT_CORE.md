@@ -166,8 +166,9 @@ Optional and conditional fields:
   `Timestamped`, omitted otherwise)
 - `codec` and `codec_description` (present when a codec is configured;
   `codec_description` records `Codec.Describe()` and is omitted when empty)
-- `checksum_algorithm` (present when `WithChecksum` is configured, omitted
-  otherwise)
+- `checksum_algorithm` (present when the writer computes a checksum, which
+  `WithChecksum` configures or `WithRecordedComponents()` adopts from the head,
+  omitted otherwise)
 - `partition_keys` (ordered Hive keys when `partitioner == "hive"`, omitted
   when unpartitioned)
 - `flat` (`true` when persisted under `WithFlatPaths()`, omitted when
@@ -204,15 +205,18 @@ the codec:
 ### Checksum Rules
 
 - Checksum computation is explicit and disabled by default.
-- When configured via `WithChecksum` (`SHA256`, `CRC32C`, `MD5`, or a custom
-  `Checksum`), manifests MUST record `checksum_algorithm` and a lowercase
+- When a writer computes a checksum (`SHA256`, `CRC32C`, `MD5`, or a custom
+  `Checksum`), whether `WithChecksum` configures it or
+  `WithRecordedComponents()` adopts it from the head, manifests MUST record `checksum_algorithm` and a lowercase
   hex-encoded `checksum` on every `ObjectRef` computed over the exact stored
   bytes (after compression, if any).
 - When `checksum_algorithm` is recorded on a manifest, `Read` on handles and
   views MUST recompute the digest over the complete stored object bytes and
   return `ErrChecksumMismatch` if an object's `Checksum` is empty or does not
   match.
-- When no checksum is configured, checksum fields MUST be omitted.
+- When the writer computes no checksum, checksum fields MUST be omitted.
+  Under `WithRecordedComponents()`, a head that records no checksum gives the
+  writer none, whatever `WithChecksum` configures.
 
 Manifests are immutable once written.
 
