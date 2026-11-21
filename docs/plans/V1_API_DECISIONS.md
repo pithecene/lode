@@ -844,9 +844,8 @@ snapshot's recorded components against the configured ones, as before. A
 caller that sets defaults for new datasets thereby keeps an existing
 dataset's components without reading the head itself.
 
-This refinement rejects two alternatives. A view that reports a staged head
-would show readers a commit before its canonical manifest exists, against
-atomic commits. A writer that reports the components it resolved would still
+Two alternatives fail. A view that reports a staged head would show readers
+a commit before its canonical manifest exists, against atomic commits. A writer that reports the components it resolved would still
 require the caller to open twice and choose defaults between the two reads.
 
 ---
