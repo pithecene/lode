@@ -8,11 +8,14 @@ import (
 	"iter"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/pithecene/lode/internal/history"
 	"github.com/pithecene/lode/internal/testutil"
+
+	"github.com/go-openapi/testify/v2/assert"
 )
 
 // -----------------------------------------------------------------------------
@@ -229,28 +232,32 @@ func TestStreamWrite_PutFailure(t *testing.T) {
 		})
 
 		commitDone := make(chan error, 1)
-		go func() {
-			_, err := ds.StreamWrite(ctx, strings.NewReader("data"), nil)
-			commitDone <- err
-		}()
+		assert.NoGoRoutineLeak(t, func() {
+			var wg sync.WaitGroup
+			wg.Go(func() {
+				_, err := ds.StreamWrite(ctx, strings.NewReader("data"), nil)
+				commitDone <- err
+			})
 
-		select {
-		case <-pointerCASEntered:
-		case <-time.After(2 * time.Second):
-			t.Fatal("commit did not reach pointer CAS")
-		}
-
-		cancel()
-		close(casBlock)
-
-		select {
-		case err = <-commitDone:
-			if err == nil {
-				t.Fatal("expected error from blocked commit with canceled context")
+			select {
+			case <-pointerCASEntered:
+			case <-time.After(2 * time.Second):
+				t.Fatal("commit did not reach pointer CAS")
 			}
-		case <-time.After(2 * time.Second):
-			t.Fatal("commit did not complete after unblock")
-		}
+
+			cancel()
+			close(casBlock)
+
+			select {
+			case err = <-commitDone:
+				if err == nil {
+					t.Fatal("expected error from blocked commit with canceled context")
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("commit did not complete after unblock")
+			}
+			wg.Wait()
+		})
 
 		if _, err := ds.Latest(t.Context()); !errors.Is(err, ErrNoSnapshots) {
 			t.Errorf("expected ErrNoSnapshots after blocked+canceled Put, got: %v", err)
@@ -341,15 +348,19 @@ func TestStreamWrite_ErrorPrecedence(t *testing.T) {
 
 func awaitOrFail(t *testing.T, op func() error) error {
 	t.Helper()
-	done := make(chan error, 1)
-	go func() { done <- op() }()
-	select {
-	case err := <-done:
-		return err
-	case <-time.After(10 * time.Second):
-		t.Fatal("stream write blocked after fast Put failure")
-		return nil
-	}
+	var err error
+	assert.NoGoRoutineLeak(t, func() {
+		done := make(chan error, 1)
+		var wg sync.WaitGroup
+		wg.Go(func() { done <- op() })
+		select {
+		case err = <-done:
+		case <-time.After(10 * time.Second):
+			t.Fatal("stream write blocked after fast Put failure")
+		}
+		wg.Wait()
+	})
+	return err
 }
 
 func TestStreamWriteRecords_PutFailure(t *testing.T) {
@@ -411,18 +422,22 @@ func TestStreamWriteRecords_PutFailure(t *testing.T) {
 			t.Fatal(err)
 		}
 		gate := make(chan struct{})
-		go func() {
-			<-putReturned
-			time.Sleep(10 * time.Millisecond)
-			close(gate)
-		}()
-		err = awaitOrFail(t, func() error {
-			_, werr := ds.StreamWrite(t.Context(), oneThenGate(gate, errIterator), nil)
-			return werr
+		assert.NoGoRoutineLeak(t, func() {
+			var wg sync.WaitGroup
+			wg.Go(func() {
+				<-putReturned
+				time.Sleep(10 * time.Millisecond)
+				close(gate)
+			})
+			err = awaitOrFail(t, func() error {
+				_, werr := ds.StreamWrite(t.Context(), oneThenGate(gate, errIterator), nil)
+				return werr
+			})
+			if !errors.Is(err, ErrPathExists) {
+				t.Fatalf("got %v, want ErrPathExists to take precedence", err)
+			}
+			wg.Wait()
 		})
-		if !errors.Is(err, ErrPathExists) {
-			t.Fatalf("got %v, want ErrPathExists to take precedence", err)
-		}
 	})
 
 	t.Run("reported when the iterator ends after the failure", func(t *testing.T) {

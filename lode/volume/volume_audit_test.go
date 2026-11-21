@@ -14,6 +14,8 @@ import (
 	"github.com/pithecene/lode/internal/history"
 	"github.com/pithecene/lode/lode"
 	"github.com/pithecene/lode/lode/volume"
+
+	"github.com/go-openapi/testify/v2/assert"
 )
 
 type gatedRangeStore struct {
@@ -135,37 +137,40 @@ func TestAudit_VolumeCommit_PostPublicationFence(t *testing.T) {
 		return putErr
 	})
 
-	commitErrCh := make(chan error, 1)
-	go func() {
-		_, cerr := vol.Commit(ctx, []volume.BlockRef{blk}, nil)
-		commitErrCh <- cerr
-	}()
+	assert.NoGoRoutineLeak(t, func() {
+		commitErrCh := make(chan error, 1)
+		var wg sync.WaitGroup
+		wg.Go(func() {
+			_, cerr := vol.Commit(ctx, []volume.BlockRef{blk}, nil)
+			commitErrCh <- cerr
+		})
 
-	manifest := <-entered
-	id := volume.SnapshotID(strings.TrimSuffix(strings.TrimPrefix(manifest, "volumes/vol-1/snapshots/"), "/manifest.json"))
-	if err := volume.Remove(ctx, "vol-1", factory); !errors.Is(err, lode.ErrHeadUncommitted) {
-		t.Fatalf("first volume.Remove = %v, want ErrHeadUncommitted", err)
-	}
-	if err := volume.Remove(ctx, "vol-1", factory); err != nil {
-		t.Fatalf("second volume.Remove = %v, want nil", err)
-	}
-	if exists, err := mem.Exists(ctx, blk.Path); exists || err != nil {
-		t.Fatalf("Exists(staged block) after removal = %v, %v, want false, nil", exists, err)
-	}
-	resume()
-
-	err := <-commitErrCh
-	for _, want := range []error{volume.ErrRemoved, history.ErrManifestUncertain, putErr} {
-		if !errors.Is(err, want) {
-			t.Errorf("Commit after removal = %v, want it to match %v", err, want)
+		manifest := <-entered
+		id := volume.SnapshotID(strings.TrimSuffix(strings.TrimPrefix(manifest, "volumes/vol-1/snapshots/"), "/manifest.json"))
+		if err := volume.Remove(ctx, "vol-1", factory); !errors.Is(err, lode.ErrHeadUncommitted) {
+			t.Fatalf("first volume.Remove = %v, want ErrHeadUncommitted", err)
 		}
-	}
-	if _, err := vol.Snapshot(ctx, id); !errors.Is(err, volume.ErrRemoved) && !errors.Is(err, lode.ErrNotFound) {
-		t.Errorf("Snapshot(%s) after removal = %v, want ErrRemoved or ErrNotFound", id, err)
-	}
-	if keys, err := mem.List(ctx, "volumes/vol-1/"); err != nil || !slices.Equal(keys, []string{"volumes/vol-1/latest"}) {
-		t.Fatalf("remaining keys = %v (err=%v), want only volumes/vol-1/latest", keys, err)
-	}
+		if err := volume.Remove(ctx, "vol-1", factory); err != nil {
+			t.Fatalf("second volume.Remove = %v, want nil", err)
+		}
+		if exists, err := mem.Exists(ctx, blk.Path); exists || err != nil {
+			t.Fatalf("Exists(staged block) after removal = %v, %v, want false, nil", exists, err)
+		}
+		resume()
+		wg.Wait()
+		err := <-commitErrCh
+		for _, want := range []error{volume.ErrRemoved, history.ErrManifestUncertain, putErr} {
+			if !errors.Is(err, want) {
+				t.Errorf("Commit after removal = %v, want it to match %v", err, want)
+			}
+		}
+		if _, err := vol.Snapshot(ctx, id); !errors.Is(err, volume.ErrRemoved) && !errors.Is(err, lode.ErrNotFound) {
+			t.Errorf("Snapshot(%s) after removal = %v, want ErrRemoved or ErrNotFound", id, err)
+		}
+		if keys, err := mem.List(ctx, "volumes/vol-1/"); err != nil || !slices.Equal(keys, []string{"volumes/vol-1/latest"}) {
+			t.Fatalf("remaining keys = %v (err=%v), want only volumes/vol-1/latest", keys, err)
+		}
+	})
 }
 
 func TestAudit_VolumePendingCompletion_PostPublicationFence(t *testing.T) {

@@ -8,6 +8,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.7
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.97.3
 	github.com/aws/smithy-go v1.24.2
+	github.com/go-openapi/testify/v2 v2.5.1
 	github.com/klauspost/compress v1.18.7
 	github.com/parquet-go/parquet-go v0.27.0
 	golang.org/x/sys v0.38.0

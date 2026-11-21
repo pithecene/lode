@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/pithecene/lode/internal/testutil"
+
+	"github.com/go-openapi/testify/v2/assert"
 )
 
 // TestSingleProcess_NilStore checks that nil and typed-nil stores return nil,
@@ -176,25 +178,29 @@ func TestSingleProcess_ReadsWaitForReplacement(t *testing.T) {
 			}
 
 			replaced := make(chan error, 1)
-			go func() { replaced <- store.CompareAndSwap(ctx, "ptr/latest", "snap-1", "snap-2") }()
-			<-inner.deleted
-			observed := make(chan string, 1)
-			go func() { observed <- r.read(ctx, store) }()
+			assert.NoGoRoutineLeak(t, func() {
+				var wg sync.WaitGroup
+				wg.Go(func() { replaced <- store.CompareAndSwap(ctx, "ptr/latest", "snap-1", "snap-2") })
+				<-inner.deleted
+				observed := make(chan string, 1)
+				wg.Go(func() { observed <- r.read(ctx, store) })
 
-			// A read that returns while the path is deleted observed the gap.
-			select {
-			case got := <-observed:
+				// A read that returns while the path is deleted observed the gap.
+				select {
+				case got := <-observed:
+					close(inner.release)
+					t.Fatalf("%s returned during the replacement and observed %q", r.name, got)
+				case <-time.After(50 * time.Millisecond):
+				}
 				close(inner.release)
-				t.Fatalf("%s returned during the replacement and observed %q", r.name, got)
-			case <-time.After(50 * time.Millisecond):
-			}
-			close(inner.release)
-			if err := <-replaced; err != nil {
-				t.Fatal(err)
-			}
-			if got := <-observed; got != want[r.name] {
-				t.Errorf("%s observed %q after the replacement, want %q", r.name, got, want[r.name])
-			}
+				if err := <-replaced; err != nil {
+					t.Fatal(err)
+				}
+				if got := <-observed; got != want[r.name] {
+					t.Errorf("%s observed %q after the replacement, want %q", r.name, got, want[r.name])
+				}
+				wg.Wait()
+			})
 		})
 	}
 }
@@ -216,33 +222,37 @@ func TestSingleProcess_PreOpenedReaderAtWaitsForReplacement(t *testing.T) {
 	}
 
 	replaced := make(chan error, 1)
-	go func() { replaced <- store.CompareAndSwap(ctx, "ptr/latest", "snap-1", "snap-2") }()
-	<-inner.deleted
+	assert.NoGoRoutineLeak(t, func() {
+		var wg sync.WaitGroup
+		wg.Go(func() { replaced <- store.CompareAndSwap(ctx, "ptr/latest", "snap-1", "snap-2") })
+		<-inner.deleted
 
-	readDone := make(chan string, 1)
-	go func() {
-		buf := make([]byte, 6)
-		if _, err := ra.ReadAt(buf, 0); err != nil && !errors.Is(err, io.EOF) {
-			readDone <- "err:" + err.Error()
-			return
+		readDone := make(chan string, 1)
+		wg.Go(func() {
+			buf := make([]byte, 6)
+			if _, err := ra.ReadAt(buf, 0); err != nil && !errors.Is(err, io.EOF) {
+				readDone <- "err:" + err.Error()
+				return
+			}
+			readDone <- string(buf)
+		})
+
+		select {
+		case got := <-readDone:
+			close(inner.release)
+			t.Fatalf("pre-opened ReaderAt.ReadAt returned during replacement gap: %q", got)
+		case <-time.After(50 * time.Millisecond):
 		}
-		readDone <- string(buf)
-	}()
 
-	select {
-	case got := <-readDone:
 		close(inner.release)
-		t.Fatalf("pre-opened ReaderAt.ReadAt returned during replacement gap: %q", got)
-	case <-time.After(50 * time.Millisecond):
-	}
-
-	close(inner.release)
-	if err := <-replaced; err != nil {
-		t.Fatal(err)
-	}
-	if got := <-readDone; got != "snap-2" {
-		t.Fatalf("pre-opened ReaderAt.ReadAt = %q, want snap-2", got)
-	}
+		if err := <-replaced; err != nil {
+			t.Fatal(err)
+		}
+		if got := <-readDone; got != "snap-2" {
+			t.Fatalf("pre-opened ReaderAt.ReadAt = %q, want snap-2", got)
+		}
+		wg.Wait()
+	})
 }
 
 // failingPointerStore injects Put failures on a target key so we can test both
@@ -328,89 +338,93 @@ func TestSingleProcess_FailedReplacementPreservesCommittedHead(t *testing.T) {
 				err  error
 			}
 			aDone := make(chan writeRes, 1)
-			go func() {
-				s, werr := dsA.Write(ctx, R(D{"writer": "A"}), nil)
-				aDone <- writeRes{s, werr}
-			}()
+			assert.NoGoRoutineLeak(t, func() {
+				var wg sync.WaitGroup
+				wg.Go(func() {
+					s, werr := dsA.Write(ctx, R(D{"writer": "A"}), nil)
+					aDone <- writeRes{s, werr}
+				})
 
-			<-writerAEntered
-			// Ensure Writer B gets a strictly larger SnapshotID timestamp.
-			time.Sleep(2 * time.Millisecond)
-			snapB, err := dsB.Write(ctx, R(D{"writer": "B"}), nil)
-			if err != nil {
-				close(releaseWriterA)
-				t.Fatalf("Writer B commit: %v", err)
-			}
-			close(releaseWriterA)
-
-			resA := <-aDone
-			if resA.err != nil {
-				t.Fatalf("Writer A commit: %v", resA.err)
-			}
-			snapA := resA.snap
-			if snapA.ID >= snapB.ID {
-				t.Fatalf("expected snapA.ID (%s) < snapB.ID (%s) to exercise scan inversion", snapA.ID, snapB.ID)
-			}
-			if snapA.ParentSnapshotID != snapB.ID {
-				t.Fatalf("snapA parent = %q, want snapB %q", snapA.ParentSnapshotID, snapB.ID)
-			}
-
-			// Writer C attempts to advance latest, failing on Put("datasets/events/latest").
-			if sustainedOutage {
-				raw.setFailPuts(-1) // fail both replacement Put and immediate restore Put
-			} else {
-				raw.setFailPuts(1) // fail replacement Put; immediate restore Put succeeds
-			}
-			dsC, err := Open(Use(shared)).Records(ctx, "events", JSONL[D]())
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := dsC.Write(ctx, R(D{"writer": "C"}), nil); err == nil {
-				t.Fatal("expected Writer C commit to fail when pointer Put fails")
-			}
-
-			// Simulate a fresh handle (and under sustainedOutage, a brand-new
-			// SingleProcess instance after process restart once storage recovers).
-			checkStore := shared
-			if sustainedOutage {
-				checkStore = SingleProcess(raw).(RangeStore)
-			}
-			freshView, err := OpenReadOnly(Use(checkStore)).Records(ctx, "events", JSONL[D]())
-			if err != nil {
-				t.Fatal(err)
-			}
-			head, err := freshView.Latest(ctx)
-			if err != nil {
-				t.Fatalf("fresh Latest after failed replacement: %v", err)
-			}
-			if head.ID != snapA.ID {
-				t.Fatalf("fresh Latest selected %s (writer B=%s), want committed head A=%s", head.ID, snapB.ID, snapA.ID)
-			}
-
-			// Clear storage fault and verify the next commit parents on A, not B.
-			raw.setFailPuts(0)
-			dsD, err := Open(Use(checkStore)).Records(ctx, "events", JSONL[D]())
-			if err != nil {
-				t.Fatal(err)
-			}
-			snapD, err := dsD.Write(ctx, R(D{"writer": "D"}), nil)
-			if err != nil {
-				t.Fatalf("Writer D commit after recovery: %v", err)
-			}
-			if snapD.ParentSnapshotID != snapA.ID {
-				t.Fatalf("history forked: Writer D parented on %q, want %q", snapD.ParentSnapshotID, snapA.ID)
-			}
-
-			// Verify journal object is cleaned up and invisible to List.
-			keys, err := checkStore.List(ctx, "")
-			if err != nil {
-				t.Fatal(err)
-			}
-			for _, k := range keys {
-				if strings.HasSuffix(k, casJournalSuffix) {
-					t.Errorf("leaked CAS journal key in List: %q", k)
+				<-writerAEntered
+				// Ensure Writer B gets a strictly larger SnapshotID timestamp.
+				time.Sleep(2 * time.Millisecond)
+				snapB, err := dsB.Write(ctx, R(D{"writer": "B"}), nil)
+				if err != nil {
+					close(releaseWriterA)
+					t.Fatalf("Writer B commit: %v", err)
 				}
-			}
+				close(releaseWriterA)
+
+				resA := <-aDone
+				if resA.err != nil {
+					t.Fatalf("Writer A commit: %v", resA.err)
+				}
+				snapA := resA.snap
+				if snapA.ID >= snapB.ID {
+					t.Fatalf("expected snapA.ID (%s) < snapB.ID (%s) to exercise scan inversion", snapA.ID, snapB.ID)
+				}
+				if snapA.ParentSnapshotID != snapB.ID {
+					t.Fatalf("snapA parent = %q, want snapB %q", snapA.ParentSnapshotID, snapB.ID)
+				}
+
+				// Writer C attempts to advance latest, failing on Put("datasets/events/latest").
+				if sustainedOutage {
+					raw.setFailPuts(-1) // fail both replacement Put and immediate restore Put
+				} else {
+					raw.setFailPuts(1) // fail replacement Put; immediate restore Put succeeds
+				}
+				dsC, err := Open(Use(shared)).Records(ctx, "events", JSONL[D]())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := dsC.Write(ctx, R(D{"writer": "C"}), nil); err == nil {
+					t.Fatal("expected Writer C commit to fail when pointer Put fails")
+				}
+
+				// Simulate a fresh handle (and under sustainedOutage, a brand-new
+				// SingleProcess instance after process restart once storage recovers).
+				checkStore := shared
+				if sustainedOutage {
+					checkStore = SingleProcess(raw).(RangeStore)
+				}
+				freshView, err := OpenReadOnly(Use(checkStore)).Records(ctx, "events", JSONL[D]())
+				if err != nil {
+					t.Fatal(err)
+				}
+				head, err := freshView.Latest(ctx)
+				if err != nil {
+					t.Fatalf("fresh Latest after failed replacement: %v", err)
+				}
+				if head.ID != snapA.ID {
+					t.Fatalf("fresh Latest selected %s (writer B=%s), want committed head A=%s", head.ID, snapB.ID, snapA.ID)
+				}
+
+				// Clear storage fault and verify the next commit parents on A, not B.
+				raw.setFailPuts(0)
+				dsD, err := Open(Use(checkStore)).Records(ctx, "events", JSONL[D]())
+				if err != nil {
+					t.Fatal(err)
+				}
+				snapD, err := dsD.Write(ctx, R(D{"writer": "D"}), nil)
+				if err != nil {
+					t.Fatalf("Writer D commit after recovery: %v", err)
+				}
+				if snapD.ParentSnapshotID != snapA.ID {
+					t.Fatalf("history forked: Writer D parented on %q, want %q", snapD.ParentSnapshotID, snapA.ID)
+				}
+
+				// Verify journal object is cleaned up and invisible to List.
+				keys, err := checkStore.List(ctx, "")
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, k := range keys {
+					if strings.HasSuffix(k, casJournalSuffix) {
+						t.Errorf("leaked CAS journal key in List: %q", k)
+					}
+				}
+				wg.Wait()
+			})
 		})
 	}
 }
@@ -475,17 +489,21 @@ func TestSingleProcess_ReviewRegressions(t *testing.T) {
 			t.Fatal(err)
 		}
 		done := make(chan error, 1)
-		go func() {
-			done <- store.Put(ctx, "dst/blob", io.NewSectionReader(ra, 0, int64(len("payload-bytes"))))
-		}()
-		select {
-		case err := <-done:
-			if err != nil {
-				t.Fatalf("Put from ReaderAt = %v", err)
+		assert.NoGoRoutineLeak(t, func() {
+			var wg sync.WaitGroup
+			wg.Go(func() {
+				done <- store.Put(ctx, "dst/blob", io.NewSectionReader(ra, 0, int64(len("payload-bytes"))))
+			})
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatalf("Put from ReaderAt = %v", err)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("Put deadlocked while reading from SingleProcess.ReaderAt")
 			}
-		case <-time.After(3 * time.Second):
-			t.Fatal("Put deadlocked while reading from SingleProcess.ReaderAt")
-		}
+			wg.Wait()
+		})
 	})
 
 	t.Run("closed ReaderAt propagates error instead of reopening", func(t *testing.T) {
@@ -746,46 +764,50 @@ func TestSingleProcess_CancelWhileWaitingForExclusiveLock(t *testing.T) {
 					t.Fatal(err)
 				}
 				replaced := make(chan error, 1)
-				go func() { replaced <- store.CompareAndSwap(ctx, raw.targetKey, "old", "new") }()
-				release := sync.OnceFunc(func() { close(raw.release) })
-				defer release()
-				synctest.Wait()
-				select {
-				case <-raw.deleted:
-				default:
-					t.Fatal("CAS never reached the target delete")
-				}
-
-				// Use a different key so the operation waits for the store-wide lock.
-				const other = "ptr/other"
-				waitCtx, cancel := context.WithCancel(ctx)
-				defer cancel()
-				done := make(chan error, 1)
-				go func() { done <- op.run(store, waitCtx, other) }()
-				synctest.Wait()
-				select {
-				case err := <-done:
-					t.Fatalf("contended %s returned before cancellation: %v", op.name, err)
-				default:
-				}
-				cancel()
-				synctest.Wait()
-				select {
-				case err := <-done:
-					if !errors.Is(err, context.Canceled) {
-						t.Errorf("contended %s = %v, want context.Canceled", op.name, err)
+				assert.NoGoRoutineLeak(t, func() {
+					var wg sync.WaitGroup
+					wg.Go(func() { replaced <- store.CompareAndSwap(ctx, raw.targetKey, "old", "new") })
+					release := sync.OnceFunc(func() { close(raw.release) })
+					defer release()
+					synctest.Wait()
+					select {
+					case <-raw.deleted:
+					default:
+						t.Fatal("CAS never reached the target delete")
 					}
-				default:
-					t.Fatalf("contended %s waited for the lock after cancellation", op.name)
-				}
 
-				release()
-				if err := <-replaced; err != nil {
-					t.Fatalf("CAS holding the lock: %v", err)
-				}
-				if err := store.CompareAndSwap(ctx, other, "", "created"); err != nil {
-					t.Errorf("CAS after canceled %s = %v, want nil", op.name, err)
-				}
+					// Use a different key so the operation waits for the store-wide lock.
+					const other = "ptr/other"
+					waitCtx, cancel := context.WithCancel(ctx)
+					defer cancel()
+					done := make(chan error, 1)
+					wg.Go(func() { done <- op.run(store, waitCtx, other) })
+					synctest.Wait()
+					select {
+					case err := <-done:
+						t.Fatalf("contended %s returned before cancellation: %v", op.name, err)
+					default:
+					}
+					cancel()
+					synctest.Wait()
+					select {
+					case err := <-done:
+						if !errors.Is(err, context.Canceled) {
+							t.Errorf("contended %s = %v, want context.Canceled", op.name, err)
+						}
+					default:
+						t.Fatalf("contended %s waited for the lock after cancellation", op.name)
+					}
+
+					release()
+					if err := <-replaced; err != nil {
+						t.Fatalf("CAS holding the lock: %v", err)
+					}
+					if err := store.CompareAndSwap(ctx, other, "", "created"); err != nil {
+						t.Errorf("CAS after canceled %s = %v, want nil", op.name, err)
+					}
+					wg.Wait()
+				})
 			})
 		})
 	}
@@ -801,43 +823,47 @@ func TestSingleProcess_CanceledWriterUnblocksReaders(t *testing.T) {
 		ctx, cancel := context.WithCancel(t.Context())
 		defer cancel()
 		writer := make(chan error, 1)
-		go func() {
-			err := lock.Lock(ctx)
-			if err == nil {
-				lock.Unlock()
-			}
-			writer <- err
-		}()
-		synctest.Wait()
+		assert.NoGoRoutineLeak(t, func() {
+			var wg sync.WaitGroup
+			wg.Go(func() {
+				err := lock.Lock(ctx)
+				if err == nil {
+					lock.Unlock()
+				}
+				writer <- err
+			})
+			synctest.Wait()
 
-		reader := make(chan struct{})
-		go func() {
-			lock.RLock()
-			close(reader)
-			lock.RUnlock()
-		}()
-		synctest.Wait()
-		select {
-		case <-reader:
-			t.Error("reader bypassed a waiting writer")
-		default:
-		}
-
-		cancel()
-		synctest.Wait()
-		select {
-		case err := <-writer:
-			if !errors.Is(err, context.Canceled) {
-				t.Errorf("writer lock = %v, want context.Canceled", err)
+			reader := make(chan struct{})
+			wg.Go(func() {
+				lock.RLock()
+				close(reader)
+				lock.RUnlock()
+			})
+			synctest.Wait()
+			select {
+			case <-reader:
+				t.Error("reader bypassed a waiting writer")
+			default:
 			}
-		default:
-			t.Error("canceled writer still waiting for the lock")
-		}
-		select {
-		case <-reader:
-		default:
-			t.Error("canceled writer still blocking the reader")
-		}
+
+			cancel()
+			synctest.Wait()
+			select {
+			case err := <-writer:
+				if !errors.Is(err, context.Canceled) {
+					t.Errorf("writer lock = %v, want context.Canceled", err)
+				}
+			default:
+				t.Error("canceled writer still waiting for the lock")
+			}
+			select {
+			case <-reader:
+			default:
+				t.Error("canceled writer still blocking the reader")
+			}
+			wg.Wait()
+		})
 	})
 }
 

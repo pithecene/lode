@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/parquet-go/parquet-go"
+
+	"github.com/go-openapi/testify/v2/assert"
 )
 
 // newParquet returns the Parquet codec and the schema error it records,
@@ -1401,38 +1403,38 @@ func TestParquetCodec_ConcurrentSharedCodec(t *testing.T) {
 	codec := Parquet[parquetInteropEvent](schema)
 	sc := codec.(StatisticalCodec[parquetInteropEvent])
 
-	var wg sync.WaitGroup
-	for g := range 16 {
-		wg.Add(1)
-		go func(worker int) {
-			defer wg.Done()
-			base := int64(worker * 100)
-			note := "worker"
-			in := []parquetInteropEvent{
-				{ID: base + 1, Tag: "x", Note: &note},
-				{ID: base + 2, Tag: "y", Note: nil},
-			}
-			var buf bytes.Buffer
-			stats, err := sc.EncodeWithStats(&buf, in)
-			if err != nil {
-				t.Errorf("worker %d EncodeWithStats: %v", worker, err)
-				return
-			}
-			if stats.RowCount != 2 || stats.Columns[0].Min != base+1 || stats.Columns[0].Max != base+2 || stats.Columns[2].NullCount != 1 {
-				t.Errorf("worker %d stats = %+v", worker, stats)
-				return
-			}
-			out, err := codec.Decode(&buf)
-			if err != nil {
-				t.Errorf("worker %d Decode: %v", worker, err)
-				return
-			}
-			if len(out) != 2 || out[0].ID != base+1 || out[1].ID != base+2 || out[1].Note != nil {
-				t.Errorf("worker %d decoded = %+v", worker, out)
-			}
-		}(g)
-	}
-	wg.Wait()
+	assert.NoGoRoutineLeak(t, func() {
+		var wg sync.WaitGroup
+		for worker := range 16 {
+			wg.Go(func() {
+				base := int64(worker * 100)
+				note := "worker"
+				in := []parquetInteropEvent{
+					{ID: base + 1, Tag: "x", Note: &note},
+					{ID: base + 2, Tag: "y", Note: nil},
+				}
+				var buf bytes.Buffer
+				stats, err := sc.EncodeWithStats(&buf, in)
+				if err != nil {
+					t.Errorf("worker %d EncodeWithStats: %v", worker, err)
+					return
+				}
+				if stats.RowCount != 2 || stats.Columns[0].Min != base+1 || stats.Columns[0].Max != base+2 || stats.Columns[2].NullCount != 1 {
+					t.Errorf("worker %d stats = %+v", worker, stats)
+					return
+				}
+				out, err := codec.Decode(&buf)
+				if err != nil {
+					t.Errorf("worker %d Decode: %v", worker, err)
+					return
+				}
+				if len(out) != 2 || out[0].ID != base+1 || out[1].ID != base+2 || out[1].Note != nil {
+					t.Errorf("worker %d decoded = %+v", worker, out)
+				}
+			})
+		}
+		wg.Wait()
+	})
 }
 
 func TestParquetCodec_EmbeddedPointerAndDefinedScalars(t *testing.T) {

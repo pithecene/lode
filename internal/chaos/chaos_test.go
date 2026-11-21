@@ -7,10 +7,13 @@ import (
 	"fmt"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/pithecene/lode/lode"
+
+	"github.com/go-openapi/testify/v2/assert"
 )
 
 var (
@@ -266,17 +269,22 @@ func TestChaos_RemoveDatasetFence(t *testing.T) {
 		handles[i] = handle
 	}
 	done := make(chan error, writers)
-	for worker, handle := range handles {
-		go func() {
-			done <- writeUntilRemoved(ctx, handle, worker)
-		}()
-	}
-	removeErr := root.RemoveDataset(ctx, "fenced", lode.WithRetry(8))
-	for range writers {
-		if err := <-done; err != nil && !errors.Is(err, lode.ErrRemoved) && !errors.Is(err, lode.ErrHeadUncommitted) {
-			t.Errorf("concurrent write: %v", err)
+	var removeErr error
+	assert.NoGoRoutineLeak(t, func() {
+		var wg sync.WaitGroup
+		for worker, handle := range handles {
+			wg.Go(func() {
+				done <- writeUntilRemoved(ctx, handle, worker)
+			})
 		}
-	}
+		removeErr = root.RemoveDataset(ctx, "fenced", lode.WithRetry(8))
+		for range writers {
+			if err := <-done; err != nil && !errors.Is(err, lode.ErrRemoved) && !errors.Is(err, lode.ErrHeadUncommitted) {
+				t.Errorf("concurrent write: %v", err)
+			}
+		}
+		wg.Wait()
+	})
 	if removeErr != nil && !errors.Is(removeErr, lode.ErrHeadUncommitted) {
 		t.Fatalf("concurrent removal: %v", removeErr)
 	}
