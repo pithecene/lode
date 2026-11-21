@@ -23,10 +23,11 @@ func snapshotOf(t *testing.T, store lode.Store) map[string]string {
 			t.Fatal(err)
 		}
 		var b bytes.Buffer
-		if _, err := b.ReadFrom(rc); err != nil {
-			t.Fatal(err)
-		}
+		_, readErr := b.ReadFrom(rc)
 		errs.DiscardClose(rc)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
 		out[k] = b.String()
 	}
 	return out

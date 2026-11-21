@@ -95,11 +95,11 @@ func TestStore_MapsPreconditionCodes(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			t.Cleanup(func() { errs.DiscardClose(tmp) })
 			if _, err := tmp.Write(data); err != nil {
 				t.Fatal(err)
 			}
 			err = store.putMultipartFromFile(ctx, "large.bin", tmp, int64(len(data)))
-			errs.DiscardClose(tmp)
 			wantExists := code == "PreconditionFailed" || code == "412"
 			if errors.Is(err, lode.ErrPathExists) != wantExists || err == nil {
 				t.Errorf("code %s: got %v, want ErrPathExists=%v", code, err, wantExists)
