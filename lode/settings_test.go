@@ -812,9 +812,6 @@ func TestWrite_DefaultNamedManifestsWithoutAPointer(t *testing.T) {
 // configured ones for a dataset without a head.
 func TestRecordedComponents_Adoption(t *testing.T) {
 	t.Parallel()
-	// With WithRecordedComponents, a writer takes the compressor and checksum of
-	// the head, published or pending, and uses the configured ones only for a
-	// dataset without a head.
 	t.Run("the head's components or the configured ones", func(t *testing.T) {
 		configured := []DatasetOption{WithCompressor(Zstd()), WithChecksum(SHA256()), WithRecordedComponents()}
 		cases := []struct {
@@ -826,7 +823,7 @@ func TestRecordedComponents_Adoption(t *testing.T) {
 		}{
 			{"a dataset without a head uses the configured components", nil, false, "zstd", "sha256"},
 			{"a published head keeps its components", []DatasetOption{}, false, "noop", ""},
-			{"a pending first head keeps its components", []DatasetOption{}, true, "noop", ""},
+			{"a staged first head keeps its components", []DatasetOption{}, true, "noop", ""},
 			{"a head with other bundled components keeps them", []DatasetOption{WithCompressor(Gzip()), WithChecksum(CRC32C())}, false, "gzip", "crc32c"},
 		}
 		for _, tc := range cases {
