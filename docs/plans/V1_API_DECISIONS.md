@@ -837,16 +837,16 @@ prior to v1.0.0 by D12 below.
 
 **Refinement (unreleased, lode#419).** A writer opened with
 `WithRecordedComponents()` takes its compressor and checksum from the
-manifest that its settings check selects, published or staged, so its
-configured ones set the components of an empty dataset and otherwise only
+manifest that its settings check selects, published or staged. Its
+configured components set those of an empty dataset. Otherwise they only
 supply a custom component that the head names for writes. Reads resolve each
-snapshot's recorded components against the configured ones, as before. A caller that sets defaults
-for new datasets thereby keeps an existing dataset's components without
-reading the head itself. Two alternatives were rejected: a view that reports
-a staged head would show readers a commit before its canonical manifest
-exists, against atomic commits, and a writer that reports the components it
-resolved would still require the caller to open twice and choose defaults
-between the two reads.
+snapshot's recorded components against the configured ones, as before. A
+caller that sets defaults for new datasets thereby keeps an existing
+dataset's components without reading the head itself.
+
+Two alternatives fail. A view that reports a staged head would show readers
+a commit before its canonical manifest exists, against atomic commits. A writer that reports the components it resolved would still
+require the caller to open twice and choose defaults between the two reads.
 
 ---
 
