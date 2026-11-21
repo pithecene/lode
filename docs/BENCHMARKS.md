@@ -68,6 +68,21 @@ fifty-six kibibytes it allocates 11 and 2 percent more bytes, in the same
 time. Avoiding both costs would require a buffer pool shared across decodes,
 which would be package-level state.
 
+The zstd compressor reuses its encoders, each of which runs on one
+goroutine. `BenchmarkZstd_Compress` measures one stream of a reused
+compressor. Before the change, each stream built a new encoder:
+
+| Stream | Before | After |
+|---|---|---|
+| 1 KiB | 222–230 µs, 2.35 MB, 45 allocations | 4–6 µs, 9 KB, 1 allocation |
+| 64 MiB | 2.4–3.8 GB/s, 19.2 MB, 1,593 allocations | 3.6–3.8 GB/s, 93 KB, 3 allocations |
+
+The runs took three samples each on an Apple M5, the earlier with four
+processors and the later with two. A dataset that commits one small record
+at a time paid the full encoder on every write, so zstd cost such a writer
+about twenty times the time of an uncompressed write. It now costs about
+one and a half times.
+
 ## Allocation Gates
 
 `TestAllocationGates` in `lode/alloc_test.go` and `lode/volume/alloc_test.go`
@@ -208,6 +223,7 @@ commit to thirteen requests, which is the figure above.
 | `BenchmarkParquetCodec_Decode` | `lode/bench_test.go` | In-memory | Done |
 | `BenchmarkJSONLCodec_Decode` | `lode/bench_test.go` | In-memory (three, one thousand, and one hundred thousand records) | Done |
 | `BenchmarkJSONLCodec_DecodeLineLength` | `lode/bench_test.go` | In-memory (lines of 1, 16, 48, and 256 KiB) | Done |
+| `BenchmarkZstd_Compress` | `lode/bench_test.go` | None (1 KiB and 64 MiB streams) | Done |
 | `BenchmarkFindCoveringBlocks` | `lode/volume/volume_test.go` | In-memory | Done |
 | `BenchmarkMergeBlocks` | `lode/volume/volume_test.go` | In-memory | Done |
 
