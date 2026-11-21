@@ -20,19 +20,40 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  changelog:
-    name: 🧾 Changelog
-    # The release check is private to the maintainers. A pull request that a
-    # fork or Dependabot opens creates no job, rather than a job that fails
-    # for want of access to the check.
+  bosun-release:
+    name: 📌 Bosun Release
+    # Fork and Dependabot pull requests skip both this job and the changelog
+    # job that depends on it because they cannot access the private check.
     if: >-
       github.event_name != 'pull_request' ||
       (github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.user.login != 'dependabot[bot]')
+    # mise.toml pins the release of the internal check, which every caller
+    # reads (Bosun DISTRIBUTION §3.3), so CI runs the release that
+    # workstations run.
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.pin.outputs.version }}
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: 📌 Read Pin
+        id: pin
+        run: |
+          version=$(sed -n 's/^"github:pithecene\/bosun" = "\(.*\)"$/\1/p' mise.toml)
+          test -n "$version" || { echo "mise.toml pins no github:pithecene/bosun" >&2; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  changelog:
+    name: 🧾 Changelog
+    needs: bosun-release
     runs-on: ubuntu-latest
     # The job runs inside the image of the internal check's pinned release.
     container:
-      image: ghcr.io/pithecene/bosun:0.26.3
+      image: ghcr.io/pithecene/bosun:${{ needs.bosun-release.outputs.version }}
       credentials:
         username: bosun
         password: ${{ secrets.BOSUN_REGISTRY_TOKEN }}
