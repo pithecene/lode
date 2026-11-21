@@ -26,6 +26,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 
 	"github.com/pithecene/lode/lode"
+
+	"github.com/go-openapi/testify/v2/assert"
 )
 
 // -----------------------------------------------------------------------------
@@ -1286,28 +1288,27 @@ func TestStore_ReaderAt(t *testing.T) {
 		}
 
 		// Read different offsets concurrently
-		done := make(chan bool, 2)
+		assert.NoGoRoutineLeak(t, func() {
+			var wg sync.WaitGroup
 
-		go func() {
-			buf := make([]byte, 3)
-			n, err := ra.ReadAt(buf, 0)
-			if err != nil || n != 3 || string(buf) != "012" {
-				t.Errorf("read at 0: expected '012', got %q (err=%v)", string(buf[:n]), err)
-			}
-			done <- true
-		}()
+			wg.Go(func() {
+				buf := make([]byte, 3)
+				n, err := ra.ReadAt(buf, 0)
+				if err != nil || n != 3 || string(buf) != "012" {
+					t.Errorf("read at 0: expected '012', got %q (err=%v)", string(buf[:n]), err)
+				}
+			})
 
-		go func() {
-			buf := make([]byte, 3)
-			n, err := ra.ReadAt(buf, 7)
-			if err != nil || n != 3 || string(buf) != "789" {
-				t.Errorf("read at 7: expected '789', got %q (err=%v)", string(buf[:n]), err)
-			}
-			done <- true
-		}()
+			wg.Go(func() {
+				buf := make([]byte, 3)
+				n, err := ra.ReadAt(buf, 7)
+				if err != nil || n != 3 || string(buf) != "789" {
+					t.Errorf("read at 7: expected '789', got %q (err=%v)", string(buf[:n]), err)
+				}
+			})
 
-		<-done
-		<-done
+			wg.Wait()
+		})
 	})
 
 	assertMissingAndEmptyKeyErrors(t, "not found", func(st *Store, k string) error { _, err := st.ReaderAt(t.Context(), k); return err })

@@ -9,6 +9,7 @@ import (
 	"io"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"testing/iotest"
 	"time"
@@ -16,6 +17,8 @@ import (
 	"github.com/pithecene/lode/internal/errs"
 
 	"github.com/pithecene/lode/internal/testutil"
+
+	"github.com/go-openapi/testify/v2/assert"
 )
 
 // -----------------------------------------------------------------------------
@@ -471,43 +474,47 @@ func TestBlobs_StreamWrite_Visibility(t *testing.T) {
 			err  error
 		}
 		done := make(chan result, 1)
-		go func() {
-			snap, err := ds.StreamWrite(t.Context(), pr, D{"test": "value"})
-			done <- result{snap: snap, err: err}
-		}()
+		assert.NoGoRoutineLeak(t, func() {
+			var wg sync.WaitGroup
+			wg.Go(func() {
+				snap, err := ds.StreamWrite(t.Context(), pr, D{"test": "value"})
+				done <- result{snap: snap, err: err}
+			})
 
-		// Write data into the unbuffered pipe so StreamWrite is mid-flight,
-		// blocked awaiting EOF before writing the manifest.
-		if _, err := pw.Write([]byte("streaming data before commit")); err != nil {
-			t.Fatal(err)
-		}
+			// Write data into the unbuffered pipe so StreamWrite is mid-flight,
+			// blocked awaiting EOF before writing the manifest.
+			if _, err := pw.Write([]byte("streaming data before commit")); err != nil {
+				t.Fatal(err)
+			}
 
-		if _, err := ds.Latest(t.Context()); !errors.Is(err, ErrNoSnapshots) {
-			t.Errorf("expected ErrNoSnapshots before EOF, got: %v", err)
-		}
-		snapshots, err := ds.Snapshots(t.Context())
-		if err != nil {
-			t.Fatalf("Snapshots() failed: %v", err)
-		}
-		if len(snapshots) != 0 {
-			t.Errorf("expected 0 snapshots before EOF, got %d", len(snapshots))
-		}
+			if _, err := ds.Latest(t.Context()); !errors.Is(err, ErrNoSnapshots) {
+				t.Errorf("expected ErrNoSnapshots before EOF, got: %v", err)
+			}
+			snapshots, err := ds.Snapshots(t.Context())
+			if err != nil {
+				t.Fatalf("Snapshots() failed: %v", err)
+			}
+			if len(snapshots) != 0 {
+				t.Errorf("expected 0 snapshots before EOF, got %d", len(snapshots))
+			}
 
-		if err := pw.Close(); err != nil {
-			t.Fatal(err)
-		}
-		res := <-done
-		if res.err != nil {
-			t.Fatalf("StreamWrite failed: %v", res.err)
-		}
+			if err := pw.Close(); err != nil {
+				t.Fatal(err)
+			}
+			res := <-done
+			if res.err != nil {
+				t.Fatalf("StreamWrite failed: %v", res.err)
+			}
 
-		latest, err := ds.Latest(t.Context())
-		if err != nil {
-			t.Fatalf("Latest() failed after commit: %v", err)
-		}
-		if latest.ID != res.snap.ID {
-			t.Errorf("expected latest ID %s, got %s", res.snap.ID, latest.ID)
-		}
+			latest, err := ds.Latest(t.Context())
+			if err != nil {
+				t.Fatalf("Latest() failed after commit: %v", err)
+			}
+			if latest.ID != res.snap.ID {
+				t.Errorf("expected latest ID %s, got %s", res.snap.ID, latest.ID)
+			}
+			wg.Wait()
+		})
 	})
 
 	t.Run("not visible before commit with existing snapshot", func(t *testing.T) {
@@ -527,46 +534,50 @@ func TestBlobs_StreamWrite_Visibility(t *testing.T) {
 			err  error
 		}
 		done := make(chan result, 1)
-		go func() {
-			snap, err := ds.StreamWrite(t.Context(), pr, nil)
-			done <- result{snap: snap, err: err}
-		}()
+		assert.NoGoRoutineLeak(t, func() {
+			var wg sync.WaitGroup
+			wg.Go(func() {
+				snap, err := ds.StreamWrite(t.Context(), pr, nil)
+				done <- result{snap: snap, err: err}
+			})
 
-		if _, err := pw.Write([]byte("new streaming data")); err != nil {
-			t.Fatal(err)
-		}
+			if _, err := pw.Write([]byte("new streaming data")); err != nil {
+				t.Fatal(err)
+			}
 
-		latest, err := ds.Latest(t.Context())
-		if err != nil {
-			t.Fatalf("Latest() failed: %v", err)
-		}
-		if latest.ID != existingSnap.ID {
-			t.Errorf("expected latest to be existing snapshot %s, got %s", existingSnap.ID, latest.ID)
-		}
+			latest, err := ds.Latest(t.Context())
+			if err != nil {
+				t.Fatalf("Latest() failed: %v", err)
+			}
+			if latest.ID != existingSnap.ID {
+				t.Errorf("expected latest to be existing snapshot %s, got %s", existingSnap.ID, latest.ID)
+			}
 
-		snapshots, err := ds.Snapshots(t.Context())
-		if err != nil {
-			t.Fatalf("Snapshots() failed: %v", err)
-		}
-		if len(snapshots) != 1 {
-			t.Errorf("expected 1 snapshot before EOF, got %d", len(snapshots))
-		}
+			snapshots, err := ds.Snapshots(t.Context())
+			if err != nil {
+				t.Fatalf("Snapshots() failed: %v", err)
+			}
+			if len(snapshots) != 1 {
+				t.Errorf("expected 1 snapshot before EOF, got %d", len(snapshots))
+			}
 
-		if err := pw.Close(); err != nil {
-			t.Fatal(err)
-		}
-		res := <-done
-		if res.err != nil {
-			t.Fatal(res.err)
-		}
+			if err := pw.Close(); err != nil {
+				t.Fatal(err)
+			}
+			res := <-done
+			if res.err != nil {
+				t.Fatal(res.err)
+			}
 
-		latest, err = ds.Latest(t.Context())
-		if err != nil {
-			t.Fatalf("Latest() failed after commit: %v", err)
-		}
-		if latest.ID != res.snap.ID {
-			t.Errorf("expected latest to be new snapshot %s, got %s", res.snap.ID, latest.ID)
-		}
+			latest, err = ds.Latest(t.Context())
+			if err != nil {
+				t.Fatalf("Latest() failed after commit: %v", err)
+			}
+			if latest.ID != res.snap.ID {
+				t.Errorf("expected latest to be new snapshot %s, got %s", res.snap.ID, latest.ID)
+			}
+			wg.Wait()
+		})
 	})
 }
 
@@ -587,20 +598,24 @@ func TestBlobs_StreamWrite_Abort(t *testing.T) {
 		ctx, cancel := context.WithCancel(t.Context())
 		pr, pw := io.Pipe()
 		done := make(chan error, 1)
-		go func() {
-			_, err := ds.StreamWrite(ctx, pr, nil)
-			done <- err
-		}()
+		assert.NoGoRoutineLeak(t, func() {
+			var wg sync.WaitGroup
+			wg.Go(func() {
+				_, err := ds.StreamWrite(ctx, pr, nil)
+				done <- err
+			})
 
-		if _, err := pw.Write([]byte("partial data")); err != nil {
-			t.Fatalf("Write failed: %v", err)
-		}
-		cancel()
-		errs.IgnoreError(pw.CloseWithError(ctx.Err()))
+			if _, err := pw.Write([]byte("partial data")); err != nil {
+				t.Fatalf("Write failed: %v", err)
+			}
+			cancel()
+			errs.IgnoreError(pw.CloseWithError(ctx.Err()))
 
-		if err := <-done; err == nil {
-			t.Fatal("expected error after context cancellation")
-		}
+			if err := <-done; err == nil {
+				t.Fatal("expected error after context cancellation")
+			}
+			wg.Wait()
+		})
 
 		if _, err := ds.Latest(t.Context()); !errors.Is(err, ErrNoSnapshots) {
 			t.Errorf("expected ErrNoSnapshots after cancellation, got: %v", err)
@@ -670,48 +685,52 @@ func TestBlobs_StreamWrite_ManifestPresenceIsCommitSignal(t *testing.T) {
 
 	pr, pw := io.Pipe()
 	done := make(chan error, 1)
-	go func() {
-		_, err := ds.StreamWrite(t.Context(), pr, nil)
-		done <- err
-	}()
+	assert.NoGoRoutineLeak(t, func() {
+		var wg sync.WaitGroup
+		wg.Go(func() {
+			_, err := ds.StreamWrite(t.Context(), pr, nil)
+			done <- err
+		})
 
-	if _, err := pw.Write([]byte("test data")); err != nil {
-		t.Fatal(err)
-	}
-
-	// Before EOF: check that no manifest exists in store
-	paths, err := store.List(t.Context(), "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, p := range paths {
-		if strings.Contains(p, "manifest.json") {
-			t.Errorf("manifest should not exist before EOF, found: %s", p)
+		if _, err := pw.Write([]byte("test data")); err != nil {
+			t.Fatal(err)
 		}
-	}
 
-	if err := pw.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := <-done; err != nil {
-		t.Fatal(err)
-	}
-
-	// After commit: manifest must exist
-	paths, err = store.List(t.Context(), "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	hasManifest := false
-	for _, p := range paths {
-		if strings.Contains(p, "manifest.json") {
-			hasManifest = true
-			break
+		// Before EOF: check that no manifest exists in store
+		paths, err := store.List(t.Context(), "")
+		if err != nil {
+			t.Fatal(err)
 		}
-	}
-	if !hasManifest {
-		t.Error("manifest should exist after commit")
-	}
+		for _, p := range paths {
+			if strings.Contains(p, "manifest.json") {
+				t.Errorf("manifest should not exist before EOF, found: %s", p)
+			}
+		}
+
+		if err := pw.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+
+		// After commit: manifest must exist
+		paths, err = store.List(t.Context(), "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		hasManifest := false
+		for _, p := range paths {
+			if strings.Contains(p, "manifest.json") {
+				hasManifest = true
+				break
+			}
+		}
+		if !hasManifest {
+			t.Error("manifest should exist after commit")
+		}
+		wg.Wait()
+	})
 }
 
 func TestRecords_StreamWrite_ManifestPresenceIsCommitSignal(t *testing.T) {

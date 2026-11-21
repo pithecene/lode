@@ -11,6 +11,8 @@ import (
 
 	"github.com/pithecene/lode/internal/testutil"
 	"github.com/pithecene/lode/lode"
+
+	"github.com/go-openapi/testify/v2/assert"
 )
 
 // readerAtFixture is a volume of 30 bytes whose snapshot commits [0, 10)
@@ -160,22 +162,22 @@ func TestReaderAt_ConcurrentReads(t *testing.T) {
 	}
 	const readers = 8
 	errs := make(chan error, readers)
-	var wg sync.WaitGroup
-	for i := range readers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			p := make([]byte, 10)
-			off := int64(i%2) * 10
-			if _, err := r.ReadAt(p, off); err != nil {
-				errs <- err
-				return
-			}
-			_ = r.Blocks()
-			errs <- nil
-		}()
-	}
-	wg.Wait()
+	assert.NoGoRoutineLeak(t, func() {
+		var wg sync.WaitGroup
+		for i := range readers {
+			wg.Go(func() {
+				p := make([]byte, 10)
+				off := int64(i%2) * 10
+				if _, err := r.ReadAt(p, off); err != nil {
+					errs <- err
+					return
+				}
+				_ = r.Blocks()
+				errs <- nil
+			})
+		}
+		wg.Wait()
+	})
 	close(errs)
 	for err := range errs {
 		if err != nil {

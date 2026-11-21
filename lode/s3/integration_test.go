@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"slices"
 	"testing"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"github.com/pithecene/lode/internal/errs"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -55,35 +57,54 @@ var s3Backends = []s3Backend{
 
 // newLocalStackClient creates an S3 client for LocalStack (integration tests only).
 func newLocalStackClient(ctx context.Context) (*s3.Client, error) {
-	cfg, err := config.LoadDefaultConfig(ctx,
-		config.WithRegion("us-east-1"),
-		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider("test", "test", "")),
-	)
-	if err != nil {
-		return nil, err
-	}
-	return s3.NewFromConfig(cfg, func(o *s3.Options) {
-		o.BaseEndpoint = aws.String("http://localhost:4566")
-		o.UsePathStyle = true
-	}), nil
+	return newIntegrationClient(ctx, "http://localhost:4566", "test")
 }
 
 // newRustFSClient creates an S3 client for RustFS (integration tests only).
 func newRustFSClient(ctx context.Context) (*s3.Client, error) {
+	return newIntegrationClient(ctx, "http://localhost:9000", "rustfsadmin")
+}
+
+// newIntegrationClient creates a path-style S3 client for the local service
+// at endpoint, whose access key and secret are both credential.
+func newIntegrationClient(ctx context.Context, endpoint, credential string) (*s3.Client, error) {
 	cfg, err := config.LoadDefaultConfig(ctx,
 		config.WithRegion("us-east-1"),
-		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider("rustfsadmin", "rustfsadmin", "")),
+		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(credential, credential, "")),
 	)
 	if err != nil {
 		return nil, err
 	}
 	return s3.NewFromConfig(cfg, func(o *s3.Options) {
-		o.BaseEndpoint = aws.String("http://localhost:9000")
+		o.BaseEndpoint = aws.String(endpoint)
 		o.UsePathStyle = true
+		o.HTTPClient = newIntegrationHTTPClient()
 	}), nil
 }
 
 // setupTestBucket creates a unique bucket and registers cleanup via t.Cleanup.
+// newIntegrationHTTPClient returns an HTTP client with the SDK's default
+// transport whose idle connections a test can close, so that pooled
+// keep-alive connections do not outlive a goroutine leak assertion.
+func newIntegrationHTTPClient() *http.Client {
+	return &http.Client{Transport: awshttp.NewBuildableClient().GetTransport()}
+}
+
+// closeIdleConnections closes the keep-alive connections that store's
+// integration client pools.
+func closeIdleConnections(t *testing.T, store *Store) {
+	t.Helper()
+	client, ok := store.client.(*s3.Client)
+	if !ok {
+		t.Fatalf("store client is %T, want *s3.Client", store.client)
+	}
+	httpClient, ok := client.Options().HTTPClient.(*http.Client)
+	if !ok {
+		t.Fatalf("store HTTP client is %T, want *http.Client", client.Options().HTTPClient)
+	}
+	httpClient.CloseIdleConnections()
+}
+
 func setupTestBucket(t *testing.T, backend s3Backend) *Store {
 	t.Helper()
 	skipIfNoS3(t)

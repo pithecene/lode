@@ -5,8 +5,11 @@ import (
 	"net/http/httptest"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/go-openapi/testify/v2/assert"
 
 	"github.com/pithecene/lode/internal/testutil"
 )
@@ -16,11 +19,17 @@ import (
 func TestMemoryBaseline_DetectsLeaks(t *testing.T) {
 	testutil.Serial(t, "counts the process's goroutines and measures its heap")
 	t.Run("a goroutine that outlives the run", func(t *testing.T) {
-		baseline := TakeMemoryBaseline()
-		release := make(chan struct{})
-		go func() { <-release }()
-		err := baseline.goroutinesReleased(100*time.Millisecond, nil)
-		close(release)
+		var baseline MemoryBaseline
+		var err error
+		assert.NoGoRoutineLeak(t, func() {
+			baseline = TakeMemoryBaseline()
+			release := make(chan struct{})
+			var wg sync.WaitGroup
+			wg.Go(func() { <-release })
+			err = baseline.goroutinesReleased(100*time.Millisecond, nil)
+			close(release)
+			wg.Wait()
+		})
 		if err == nil || !strings.HasPrefix(err.Error(), "goroutines-released") {
 			t.Fatalf("goroutinesReleased = %v, want a goroutines-released error", err)
 		}
@@ -30,16 +39,21 @@ func TestMemoryBaseline_DetectsLeaks(t *testing.T) {
 	})
 
 	t.Run("a leak masked by an exiting goroutine", func(t *testing.T) {
-		exit := make(chan struct{})
-		exited := make(chan struct{})
-		go func() { <-exit; close(exited) }()
-		baseline := TakeMemoryBaseline()
-		close(exit) // a goroutine of the baseline exits ...
-		<-exited
-		release := make(chan struct{})
-		go func() { <-release }() // ... while one started since leaks
-		err := baseline.goroutinesReleased(100*time.Millisecond, nil)
-		close(release)
+		var err error
+		assert.NoGoRoutineLeak(t, func() {
+			exit := make(chan struct{})
+			var exited sync.WaitGroup
+			exited.Go(func() { <-exit })
+			baseline := TakeMemoryBaseline()
+			close(exit) // a goroutine of the baseline exits ...
+			exited.Wait()
+			release := make(chan struct{})
+			var leaked sync.WaitGroup
+			leaked.Go(func() { <-release }) // ... while one started since leaks
+			err = baseline.goroutinesReleased(100*time.Millisecond, nil)
+			close(release)
+			leaked.Wait()
+		})
 		if err == nil || !strings.HasPrefix(err.Error(), "goroutines-released") {
 			t.Fatalf("goroutinesReleased = %v, want a goroutines-released error", err)
 		}
@@ -102,10 +116,33 @@ func assertLingeringAccepted(t *testing.T, baseline MemoryBaseline, lingering fu
 	if err := baseline.goroutinesReleased(time.Second, lingering); err != nil {
 		t.Fatalf("an idle connection's goroutines: %v", err)
 	}
-	release := make(chan struct{})
-	go func() { <-release }()
-	err := baseline.goroutinesReleased(100*time.Millisecond, lingering)
-	close(release)
+	// The leak assertion's own goroutine starts after the baseline; accept
+	// it as lingering so that the error must come from the leaked goroutine.
+	// The predicate runs on the leak assertion's goroutine, which the
+	// assertion joins before it returns.
+	assertionSeen := false
+	wrapped := func(stack string) bool {
+		if lingering(stack) {
+			return true
+		}
+		if strings.Contains(stack, "github.com/go-openapi/testify/v2/internal/leak.") {
+			assertionSeen = true
+			return true
+		}
+		return false
+	}
+	var err error
+	assert.NoGoRoutineLeak(t, func() {
+		release := make(chan struct{})
+		var wg sync.WaitGroup
+		wg.Go(func() { <-release })
+		err = baseline.goroutinesReleased(100*time.Millisecond, wrapped)
+		close(release)
+		wg.Wait()
+	})
+	if !assertionSeen {
+		t.Fatal("no goroutine stack named testify's leak package; the lingering filter no longer excludes the leak assertion's goroutine")
+	}
 	if err == nil || !strings.HasPrefix(err.Error(), "goroutines-released") {
 		t.Fatalf("goroutinesReleased = %v, want a goroutines-released error", err)
 	}

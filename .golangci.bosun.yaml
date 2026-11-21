@@ -10,6 +10,7 @@ linters:
   enable:
     - errdiscard
     - errjoin
+    - leakcheck
     - mapboolset
     - osexitscope
     - spawnscope
@@ -29,6 +30,8 @@ linters:
       mapboolset:
         type: module
       errjoin:
+        type: module
+      leakcheck:
         type: module
       osexitscope:
         type: module

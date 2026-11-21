@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	"github.com/pithecene/lode/lode"
+
+	"github.com/go-openapi/testify/v2/assert"
 )
 
 // Each backend runs conditionalRounds races of conditionalWriters writers.
@@ -82,16 +84,20 @@ func runConditionalRace(t *testing.T, base *Store, race conditionalRace, key str
 	t.Helper()
 	errs := make([]error, conditionalWriters)
 	start := make(chan struct{})
-	var wg sync.WaitGroup
-	for i := range conditionalWriters {
-		writer := writerStore(t, base)
-		wg.Go(func() {
-			<-start
-			errs[i] = race.write(t.Context(), writer, key, fmt.Sprintf("writer-%d", i))
-		})
-	}
-	close(start)
-	wg.Wait()
+	assert.NoGoRoutineLeak(t, func() {
+		var wg sync.WaitGroup
+		for i := range conditionalWriters {
+			writer := writerStore(t, base)
+			wg.Go(func() {
+				<-start
+				errs[i] = race.write(t.Context(), writer, key, fmt.Sprintf("writer-%d", i))
+			})
+		}
+		close(start)
+		wg.Wait()
+		// The writers dialed pooled connections; close them before the leak check.
+		closeIdleConnections(t, base)
+	})
 
 	winner := -1
 	for i, err := range errs {

@@ -17,6 +17,8 @@ import (
 	"github.com/pithecene/lode/internal/history"
 	"github.com/pithecene/lode/internal/testutil"
 	"github.com/pithecene/lode/lode"
+
+	"github.com/go-openapi/testify/v2/assert"
 )
 
 type gatedStore struct {
@@ -152,12 +154,15 @@ func finishRemovalAndAwaitWrite(t *testing.T, h gatedHarness, release func(), wr
 	return err
 }
 
-func startPausedCanonicalWriteAndFence(t *testing.T, cancelAfterPut bool, putErr error) (gatedHarness, func(), <-chan error) {
+// preparePausedCanonicalWrite opens a harness whose canonical manifest Put
+// pauses until release is called. The caller starts write, waits on entered,
+// and fences the dataset with fenceFirstRemoval.
+func preparePausedCanonicalWrite(t *testing.T, cancelAfterPut bool, putErr error) (h gatedHarness, entered <-chan struct{}, release func(), write func() error) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(t.Context())
 	t.Cleanup(cancel)
-	h := openGatedHarness(t)
-	entered, release := pauseFirstPut(t, h.gs, func(key string) bool {
+	h = openGatedHarness(t)
+	entered, release = pauseFirstPut(t, h.gs, func(key string) bool {
 		return strings.HasPrefix(key, "datasets/events/snapshots/") && strings.HasSuffix(key, "/manifest.json")
 	}, func() error {
 		if cancelAfterPut {
@@ -166,42 +171,64 @@ func startPausedCanonicalWriteAndFence(t *testing.T, cancelAfterPut bool, putErr
 		return putErr
 	})
 
-	writeErrCh := make(chan error, 1)
-	go func() {
-		_, werr := h.ds.Write(ctx, lode.R(lode.D{"k": "v"}), nil)
-		writeErrCh <- werr
-	}()
+	write = func() error {
+		_, err := h.ds.Write(ctx, lode.R(lode.D{"k": "v"}), nil)
+		return err
+	}
+	return h, entered, release, write
+}
 
-	<-entered
+// fenceFirstRemoval requires the first RemoveDataset during a paused write to
+// report ErrHeadUncommitted.
+func fenceFirstRemoval(t *testing.T, h gatedHarness) {
+	t.Helper()
 	if err := h.root.RemoveDataset(t.Context(), "events"); !errors.Is(err, lode.ErrHeadUncommitted) {
 		t.Fatalf("first RemoveDataset = %v, want ErrHeadUncommitted", err)
 	}
-	return h, release, writeErrCh
 }
 
 func TestAudit_AdvancePostPublicationFence_DatasetAndHive(t *testing.T) {
 	t.Parallel()
 
-	t.Run("unpartitioned dataset write paused before canonical manifest", func(t *testing.T) {
-		h, release, writeErrCh := startPausedCanonicalWriteAndFence(t, false, nil)
-		if err := finishRemovalAndAwaitWrite(t, h, release, writeErrCh); !errors.Is(err, lode.ErrRemoved) {
-			t.Fatalf("Write after removal = %v, want ErrRemoved", err)
-		}
-	})
-
-	t.Run("dataset manifest persisted before Put failed", func(t *testing.T) {
-		putErr := errors.New("manifest Put response lost")
-		h, release, writeErrCh := startPausedCanonicalWriteAndFence(t, false, putErr)
-		err := finishRemovalAndAwaitWrite(t, h, release, writeErrCh)
-		assertRemovedPublicationError(t, err, putErr)
-	})
-
-	t.Run("caller canceled after publication", func(t *testing.T) {
-		h, release, writeErrCh := startPausedCanonicalWriteAndFence(t, true, nil)
-		if err := finishRemovalAndAwaitWrite(t, h, release, writeErrCh); !errors.Is(err, lode.ErrRemoved) {
-			t.Fatalf("Write after removal and cancellation = %v, want ErrRemoved", err)
-		}
-	})
+	manifestPutLost := errors.New("manifest Put response lost")
+	for _, tc := range []struct {
+		name           string
+		cancelAfterPut bool
+		putErr         error
+		check          func(t *testing.T, err error)
+	}{
+		{"unpartitioned dataset write paused before canonical manifest", false, nil, func(t *testing.T, err error) {
+			t.Helper()
+			if !errors.Is(err, lode.ErrRemoved) {
+				t.Fatalf("Write after removal = %v, want ErrRemoved", err)
+			}
+		}},
+		{"dataset manifest persisted before Put failed", false, manifestPutLost, func(t *testing.T, err error) {
+			t.Helper()
+			assertRemovedPublicationError(t, err, manifestPutLost)
+		}},
+		{"caller canceled after publication", true, nil, func(t *testing.T, err error) {
+			t.Helper()
+			if !errors.Is(err, lode.ErrRemoved) {
+				t.Fatalf("Write after removal and cancellation = %v, want ErrRemoved", err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, entered, release, write := preparePausedCanonicalWrite(t, tc.cancelAfterPut, tc.putErr)
+			var err error
+			assert.NoGoRoutineLeak(t, func() {
+				writeErrCh := make(chan error, 1)
+				var wg sync.WaitGroup
+				wg.Go(func() { writeErrCh <- write() })
+				<-entered
+				fenceFirstRemoval(t, h)
+				err = finishRemovalAndAwaitWrite(t, h, release, writeErrCh)
+				wg.Wait()
+			})
+			tc.check(t, err)
+		})
+	}
 
 	t.Run("hive dataset write paused before partition manifest", func(t *testing.T) {
 		h := openGatedHarness(t, lode.WithLayout(lode.Hive("run_id")))
@@ -211,14 +238,18 @@ func TestAudit_AdvancePostPublicationFence_DatasetAndHive(t *testing.T) {
 		}, func() error { return putErr })
 
 		writeErrCh := make(chan error, 1)
-		go func() {
-			_, werr := h.ds.Write(t.Context(), lode.R(lode.D{"run_id": "a", "n": 1}), nil)
-			writeErrCh <- werr
-		}()
+		assert.NoGoRoutineLeak(t, func() {
+			var wg sync.WaitGroup
+			wg.Go(func() {
+				_, werr := h.ds.Write(t.Context(), lode.R(lode.D{"run_id": "a", "n": 1}), nil)
+				writeErrCh <- werr
+			})
 
-		<-entered
-		err := finishRemovalAndAwaitWrite(t, h, release, writeErrCh)
-		assertRemovedPublicationError(t, err, putErr)
+			<-entered
+			err := finishRemovalAndAwaitWrite(t, h, release, writeErrCh)
+			assertRemovedPublicationError(t, err, putErr)
+			wg.Wait()
+		})
 	})
 
 	t.Run("sweep reindex cleans up late partition manifest after removal", func(t *testing.T) {
@@ -242,18 +273,24 @@ func TestAudit_AdvancePostPublicationFence_DatasetAndHive(t *testing.T) {
 			err    error
 		}
 		sweepCh := make(chan sweepRes, 1)
-		go func() {
-			rep, serr := h.ds.Sweep(ctx, lode.SweepRequest{Grace: time.Nanosecond})
-			sweepCh <- sweepRes{report: rep, err: serr}
-		}()
+		testCtx := t.Context()
+		var res sweepRes
+		assert.NoGoRoutineLeak(t, func() {
+			var wg sync.WaitGroup
+			wg.Go(func() {
+				rep, serr := h.ds.Sweep(ctx, lode.SweepRequest{Grace: time.Nanosecond})
+				sweepCh <- sweepRes{report: rep, err: serr}
+			})
 
-		<-entered
-		if err := h.root.RemoveDataset(t.Context(), "events"); err != nil {
-			t.Fatalf("RemoveDataset = %v, want nil", err)
-		}
-		release()
+			<-entered
+			if err := h.root.RemoveDataset(testCtx, "events"); err != nil {
+				t.Fatalf("RemoveDataset = %v, want nil", err)
+			}
+			release()
 
-		res := <-sweepCh
+			res = <-sweepCh
+			wg.Wait()
+		})
 		assertDatasetFencedOnly(t, h.mem)
 		if !errors.Is(res.err, lode.ErrRemoved) || !errors.Is(res.err, putErr) {
 			t.Fatalf("Sweep after removal = %v, want ErrRemoved and %v", res.err, putErr)
@@ -394,25 +431,29 @@ func TestAudit_StreamWrite_PipeInitNoDeadlock(t *testing.T) {
 			}
 			done := make(chan error, 1)
 			var snap *lode.Snapshot
-			go func() {
-				var werr error
-				snap, werr = ds.StreamWrite(ctx, func(yield func(lode.D, error) bool) {
-					yield(lode.D{"id": "1"}, nil)
-				}, nil)
-				done <- werr
-			}()
-			select {
-			case err := <-done:
-				if err != nil {
-					t.Fatalf("StreamWrite(%s) = %v", comp.Name(), err)
+			assert.NoGoRoutineLeak(t, func() {
+				var wg sync.WaitGroup
+				wg.Go(func() {
+					var werr error
+					snap, werr = ds.StreamWrite(ctx, func(yield func(lode.D, error) bool) {
+						yield(lode.D{"id": "1"}, nil)
+					}, nil)
+					done <- werr
+				})
+				select {
+				case err := <-done:
+					if err != nil {
+						t.Fatalf("StreamWrite(%s) = %v", comp.Name(), err)
+					}
+				case <-time.After(5 * time.Second):
+					t.Fatalf("StreamWrite(%s) deadlocked during header write", comp.Name())
 				}
-			case <-time.After(5 * time.Second):
-				t.Fatalf("StreamWrite(%s) deadlocked during header write", comp.Name())
-			}
-			got, err := ds.Read(ctx, snap.ID)
-			if err != nil || len(got) != 1 || got[0]["id"] != "1" {
-				t.Fatalf("Read(%s) = %v, %v", comp.Name(), got, err)
-			}
+				got, err := ds.Read(ctx, snap.ID)
+				if err != nil || len(got) != 1 || got[0]["id"] != "1" {
+					t.Fatalf("Read(%s) = %v, %v", comp.Name(), got, err)
+				}
+				wg.Wait()
+			})
 		}
 	})
 
@@ -425,20 +466,24 @@ func TestAudit_StreamWrite_PipeInitNoDeadlock(t *testing.T) {
 			t.Fatal(err)
 		}
 		done := make(chan error, 1)
-		go func() {
-			_, werr := ds.StreamWrite(ctx, func(yield func(lode.D, error) bool) {
-				yield(lode.D{"id": "1"}, nil)
-			}, nil)
-			done <- werr
-		}()
-		select {
-		case err := <-done:
-			if !errors.Is(err, errInit) {
-				t.Fatalf("StreamWrite = %v, want %v", err, errInit)
+		assert.NoGoRoutineLeak(t, func() {
+			var wg sync.WaitGroup
+			wg.Go(func() {
+				_, werr := ds.StreamWrite(ctx, func(yield func(lode.D, error) bool) {
+					yield(lode.D{"id": "1"}, nil)
+				}, nil)
+				done <- werr
+			})
+			select {
+			case err := <-done:
+				if !errors.Is(err, errInit) {
+					t.Fatalf("StreamWrite = %v, want %v", err, errInit)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("StreamWrite deadlocked closing Gzip after NewStreamEncoder failure")
 			}
-		case <-time.After(5 * time.Second):
-			t.Fatal("StreamWrite deadlocked closing Gzip after NewStreamEncoder failure")
-		}
+			wg.Wait()
+		})
 	})
 
 	t.Run("header-writing Compress and canceled stalled Put unblock cleanly", func(t *testing.T) {
@@ -461,22 +506,26 @@ func TestAudit_StreamWrite_PipeInitNoDeadlock(t *testing.T) {
 			t.Fatal(err)
 		}
 		done := make(chan error, 1)
-		go func() {
-			_, werr := ds.StreamWrite(ctx, func(yield func(lode.D, error) bool) {
-				yield(lode.D{"id": "1"}, nil)
-			}, nil)
-			done <- werr
-		}()
-		<-stalled
-		cancel()
-		select {
-		case err := <-done:
-			if !errors.Is(err, context.Canceled) {
-				t.Fatalf("StreamWrite = %v, want context.Canceled", err)
+		assert.NoGoRoutineLeak(t, func() {
+			var wg sync.WaitGroup
+			wg.Go(func() {
+				_, werr := ds.StreamWrite(ctx, func(yield func(lode.D, error) bool) {
+					yield(lode.D{"id": "1"}, nil)
+				}, nil)
+				done <- werr
+			})
+			<-stalled
+			cancel()
+			select {
+			case err := <-done:
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("StreamWrite = %v, want context.Canceled", err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("StreamWrite deadlocked when stalled Put context was canceled")
 			}
-		case <-time.After(5 * time.Second):
-			t.Fatal("StreamWrite deadlocked when stalled Put context was canceled")
-		}
+			wg.Wait()
+		})
 	})
 }
 
@@ -508,28 +557,32 @@ func TestAudit_StreamWrite_InitFailureCancelsPut(t *testing.T) {
 				t.Fatal(err)
 			}
 			done := make(chan error, 1)
-			go func() {
-				_, err := ds.StreamWrite(ctx, func(yield func(lode.D, error) bool) {
-					yield(lode.D{"id": "1"}, nil)
-				}, nil)
-				done <- err
-			}()
-			select {
-			case err := <-done:
-				if !errors.Is(err, errInit) {
-					t.Errorf("StreamWrite = %v, want %v", err, errInit)
+			assert.NoGoRoutineLeak(t, func() {
+				var wg sync.WaitGroup
+				wg.Go(func() {
+					_, err := ds.StreamWrite(ctx, func(yield func(lode.D, error) bool) {
+						yield(lode.D{"id": "1"}, nil)
+					}, nil)
+					done <- err
+				})
+				select {
+				case err := <-done:
+					if !errors.Is(err, errInit) {
+						t.Errorf("StreamWrite = %v, want %v", err, errInit)
+					}
+					if err := ctx.Err(); err != nil {
+						t.Errorf("caller context = %v, want live context", err)
+					}
+				case <-time.After(time.Second):
+					t.Fatal("StreamWrite waited for Put after constructor failure")
 				}
-				if err := ctx.Err(); err != nil {
-					t.Errorf("caller context = %v, want live context", err)
+				select {
+				case <-putCanceled:
+				default:
+					t.Fatal("Put did not observe cancellation before StreamWrite returned")
 				}
-			case <-time.After(time.Second):
-				t.Fatal("StreamWrite waited for Put after constructor failure")
-			}
-			select {
-			case <-putCanceled:
-			default:
-				t.Fatal("Put did not observe cancellation before StreamWrite returned")
-			}
+				wg.Wait()
+			})
 		})
 	}
 }
@@ -710,21 +763,30 @@ func TestAudit_ReviewRegressions_PR395(t *testing.T) {
 
 	t.Run("late manifest cleanup delete failure joins with ErrRemoved", func(t *testing.T) {
 		putErr := errors.New("manifest Put response lost")
-		h, release, writeErrCh := startPausedCanonicalWriteAndFence(t, false, putErr)
-		if err := h.root.RemoveDataset(t.Context(), "events"); err != nil {
-			t.Fatalf("second RemoveDataset = %v, want nil", err)
-		}
-
+		h, entered, release, write := preparePausedCanonicalWrite(t, false, putErr)
 		errDelBoom := errors.New("cleanup delete boom")
-		h.gs.setOnDelete(func(_ context.Context, key string) error {
-			if strings.HasSuffix(key, "/manifest.json") {
-				return errDelBoom
+		var err error
+		assert.NoGoRoutineLeak(t, func() {
+			writeErrCh := make(chan error, 1)
+			var wg sync.WaitGroup
+			wg.Go(func() { writeErrCh <- write() })
+			<-entered
+			fenceFirstRemoval(t, h)
+			if err := h.root.RemoveDataset(t.Context(), "events"); err != nil {
+				t.Fatalf("second RemoveDataset = %v, want nil", err)
 			}
-			return nil
-		})
-		release()
 
-		err := <-writeErrCh
+			h.gs.setOnDelete(func(_ context.Context, key string) error {
+				if strings.HasSuffix(key, "/manifest.json") {
+					return errDelBoom
+				}
+				return nil
+			})
+			release()
+
+			err = <-writeErrCh
+			wg.Wait()
+		})
 		assertRemovedPublicationError(t, err, putErr)
 		if !errors.Is(err, errDelBoom) {
 			t.Errorf("Write after removal = %v, want it to match %v", err, errDelBoom)

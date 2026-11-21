@@ -8,7 +8,10 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
+
+	"github.com/go-openapi/testify/v2/assert"
 
 	"github.com/pithecene/lode/internal/errs"
 )
@@ -156,22 +159,26 @@ func TestFSStore_Put_PublishesAtomically(t *testing.T) {
 		t.Fatal(err)
 	}
 	pr, pw := io.Pipe()
-	done := make(chan error, 1)
-	go func() { done <- store.Put(t.Context(), "obj", pr) }()
-	if _, err := pw.Write([]byte("first half ")); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.Get(t.Context(), "obj"); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("Get during a Put = %v, want ErrNotFound", err)
-	}
-	if keys, err := store.List(t.Context(), ""); err != nil || len(keys) != 0 {
-		t.Fatalf("List during a Put = %v, %v; want nothing", keys, err)
-	}
-	errs.IgnoreResult(pw.Write([]byte("second half")))
-	errs.DiscardClose(pw)
-	if err := <-done; err != nil {
-		t.Fatal(err)
-	}
+	assert.NoGoRoutineLeak(t, func() {
+		done := make(chan error, 1)
+		var wg sync.WaitGroup
+		wg.Go(func() { done <- store.Put(t.Context(), "obj", pr) })
+		if _, err := pw.Write([]byte("first half ")); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.Get(t.Context(), "obj"); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("Get during a Put = %v, want ErrNotFound", err)
+		}
+		if keys, err := store.List(t.Context(), ""); err != nil || len(keys) != 0 {
+			t.Fatalf("List during a Put = %v, %v; want nothing", keys, err)
+		}
+		errs.IgnoreResult(pw.Write([]byte("second half")))
+		errs.DiscardClose(pw)
+		wg.Wait()
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	})
 	rc, err := store.Get(t.Context(), "obj")
 	if err != nil {
 		t.Fatal(err)
