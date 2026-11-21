@@ -13,6 +13,7 @@ import (
 // A prefixed store writes every object under its prefix in the inner store,
 // lists only its own objects, and returns keys without the prefix.
 func TestPrefixed_KeepsObjectsUnderThePrefix(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	inner := NewMemory()
 	store, err := Prefixed(Use(inner), "datasets/d/runs/r1")()
@@ -70,6 +71,7 @@ func TestPrefixed_KeepsObjectsUnderThePrefix(t *testing.T) {
 // A key that would leave the prefix is refused before the inner store sees
 // it, by every operation.
 func TestPrefixed_RefusesKeysThatLeaveThePrefix(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	inner := NewMemory()
 	if err := inner.Put(ctx, "secret", bytes.NewReader([]byte("x"))); err != nil {
@@ -105,6 +107,7 @@ func TestPrefixed_RefusesKeysThatLeaveThePrefix(t *testing.T) {
 // A prefix that names no location inside the root is refused when the
 // factory is called, before the inner factory runs.
 func TestPrefixed_RefusesAnInvalidPrefix(t *testing.T) {
+	t.Parallel()
 	called := false
 	inner := func() (RangeStore, error) { called = true; return NewMemory(), nil }
 	for _, p := range []string{"", ".", "/", "..", "../x", `a\b`} {
@@ -122,6 +125,7 @@ func TestPrefixed_RefusesAnInvalidPrefix(t *testing.T) {
 
 // An error from the inner factory is returned as it is.
 func TestPrefixed_ReturnsTheFactoryError(t *testing.T) {
+	t.Parallel()
 	boom := errors.New("boom")
 	if _, err := Prefixed(func() (RangeStore, error) { return nil, boom }, "a")(); !errors.Is(err, boom) {
 		t.Fatalf("got %v, want the factory's error", err)
@@ -139,6 +143,7 @@ func TestPrefixed_ReturnsTheFactoryError(t *testing.T) {
 // A factory of a concrete store type, as Use returns for a store the caller
 // holds, is accepted without a conversion.
 func TestPrefixed_AcceptsAConcreteStoreFactory(t *testing.T) {
+	t.Parallel()
 	inner := &memoryStore{data: map[string][]byte{}}
 	store, err := Prefixed(Use(inner), "p")()
 	if err != nil {

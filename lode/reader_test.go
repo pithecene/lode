@@ -94,6 +94,7 @@ func manifestErr(t *testing.T, store Store, ref ManifestRef) error {
 // -----------------------------------------------------------------------------
 
 func TestView_GetManifest_InvalidManifest(t *testing.T) {
+	t.Parallel()
 	mutCases := []struct {
 		name   string
 		mutate func(*Manifest)
@@ -160,6 +161,7 @@ func TestView_GetManifest_InvalidManifest(t *testing.T) {
 }
 
 func TestView_ListManifests(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct{ name, part string }{
 		{"invalid manifest with partition filter returns error", "some-partition"},
 		{"invalid manifest without partition filter returns error", ""},
@@ -216,6 +218,7 @@ func TestView_ListManifests(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestView_ListDatasets(t *testing.T) {
+	t.Parallel()
 	assertNoDatasets := func(t *testing.T, store RangeStore) {
 		t.Helper()
 		reader, err := newTestReader(Use(store))
@@ -372,6 +375,7 @@ func verifyListDatasetsStore(t *testing.T, store Store) {
 }
 
 func TestListDatasets_PrefixListerAndFallback(t *testing.T) {
+	t.Parallel()
 	t.Run("memory", func(t *testing.T) {
 		verifyListDatasetsStore(t, NewMemory())
 	})
@@ -423,6 +427,7 @@ func TestListDatasets_PrefixListerAndFallback(t *testing.T) {
 // (0 Gets when indexed), and loads canonical manifests only for unindexed
 // snapshots (1 Get per unindexed snapshot).
 func TestView_ListPartitions_SingleManifestLoad(t *testing.T) {
+	t.Parallel()
 	inner := NewMemory()
 	fs := testutil.NewFaultStore(inner)
 	factory := Use(fs)
@@ -481,6 +486,7 @@ func TestView_ListPartitions_SingleManifestLoad(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestValidateManifest_PathsNameEveryDirectory(t *testing.T) {
+	t.Parallel()
 	complete := defaultLegacyPaths(false)
 	flat := defaultLegacyPaths(true)
 	flatWithDatasets := flat
@@ -510,6 +516,7 @@ func TestValidateManifest_PathsNameEveryDirectory(t *testing.T) {
 }
 
 func TestRead_RejectsMisplacedManifestAndForeignDataPaths(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	store := NewMemory()
 	root := Open(Use(store))

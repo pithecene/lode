@@ -34,6 +34,7 @@ import (
 // -----------------------------------------------------------------------------
 
 func TestNew(t *testing.T) {
+	t.Parallel()
 	t.Run("requires client", func(t *testing.T) {
 		_, err := New(nil, "test")
 		if !errors.Is(err, lode.ErrInvalidArgument) || !strings.HasPrefix(err.Error(), "s3: ") {
@@ -73,6 +74,7 @@ func TestNew(t *testing.T) {
 }
 
 func TestBucket(t *testing.T) {
+	t.Parallel()
 	t.Run("creates RangeStore and PrefixLister", func(t *testing.T) {
 		store, err := Bucket(NewMockS3Client(), "test")()
 		if err != nil {
@@ -137,6 +139,7 @@ func TestBucket(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestStore_Put(t *testing.T) {
+	t.Parallel()
 	t.Run("success", func(t *testing.T) {
 		ctx := t.Context()
 		store, _ := New(NewMockS3Client(), "test")
@@ -253,6 +256,7 @@ func TestStore_Put(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestStore_PutAtomic(t *testing.T) {
+	t.Parallel()
 	t.Run("should use atomic path", func(t *testing.T) {
 		tests := []struct {
 			name     string
@@ -398,6 +402,7 @@ func TestStore_PutAtomic(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestStore_PutMultipartFromFile(t *testing.T) {
+	t.Parallel()
 	t.Run("success", func(t *testing.T) {
 		ctx := t.Context()
 		mock := NewMockS3Client()
@@ -709,6 +714,7 @@ func (tr *tempFileTracker) assertAllCleaned(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestStore_Get(t *testing.T) {
+	t.Parallel()
 	t.Run("success", func(t *testing.T) {
 		ctx := t.Context()
 		store, _ := New(NewMockS3Client(), "test")
@@ -736,6 +742,7 @@ func TestStore_Get(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestStore_Exists(t *testing.T) {
+	t.Parallel()
 	t.Run("true", func(t *testing.T) {
 		ctx := t.Context()
 		store, _ := New(NewMockS3Client(), "test")
@@ -780,6 +787,7 @@ func TestStore_Exists(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestStore_Delete(t *testing.T) {
+	t.Parallel()
 	t.Run("exists", func(t *testing.T) {
 		ctx := t.Context()
 		store, _ := New(NewMockS3Client(), "test")
@@ -824,6 +832,7 @@ func TestStore_Delete(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestStore_List(t *testing.T) {
+	t.Parallel()
 	t.Run("empty", func(t *testing.T) {
 		ctx := t.Context()
 		store, _ := New(NewMockS3Client(), "test")
@@ -957,6 +966,7 @@ func (p *pagedPrefixClient) ListObjectsV2(_ context.Context, params *s3api.ListO
 }
 
 func TestStore_ListPrefixes(t *testing.T) {
+	t.Parallel()
 	t.Run("empty", func(t *testing.T) {
 		ctx := t.Context()
 		store, _ := New(NewMockS3Client(), "test")
@@ -1108,6 +1118,7 @@ func TestStore_ListPrefixes(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestStore_ReadRange(t *testing.T) {
+	t.Parallel()
 	t.Run("basic", func(t *testing.T) {
 		ctx := t.Context()
 		store, _ := New(NewMockS3Client(), "test")
@@ -1192,6 +1203,7 @@ func TestStore_ReadRange(t *testing.T) {
 }
 
 func TestStore_ReadRange_Bounds(t *testing.T) {
+	t.Parallel()
 	t.Run("negative offset", func(t *testing.T) {
 		ctx := t.Context()
 		store, _ := New(NewMockS3Client(), "test")
@@ -1244,6 +1256,7 @@ func TestStore_ReadRange_Bounds(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestStore_ReaderAt(t *testing.T) {
+	t.Parallel()
 	t.Run("basic", func(t *testing.T) {
 		ra, err := mockStoreWith(t, map[string]string{"test.txt": "hello world"}).ReaderAt(t.Context(), "test.txt")
 		if err != nil {
@@ -1348,6 +1361,7 @@ func (m *racingMockS3Client) CompleteMultipartUpload(ctx context.Context, params
 // -----------------------------------------------------------------------------
 
 func TestStore_CompareAndSwap(t *testing.T) {
+	t.Parallel()
 	t.Run("create when empty", func(t *testing.T) {
 		store := mockStoreWith(t, nil)
 		mustCAS(t, store, "ptr/latest", "", "snap-1")
@@ -1511,6 +1525,7 @@ func assertPointer(t *testing.T, store *Store, want string) {
 // unknown, and a precondition that proves wrong falls back to that read, so
 // every outcome matches the read-first behavior.
 func TestStore_CompareAndSwap_Requests(t *testing.T) {
+	t.Parallel()
 	newPair := func(t *testing.T) (*casClient, *Store) {
 		t.Helper()
 		client := &casClient{MockS3Client: NewMockS3Client()}

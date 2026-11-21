@@ -63,7 +63,6 @@ func TestWithAnchor_OpensAtTheNamedSnapshot(t *testing.T) {
 	}
 	for name, opts := range layouts {
 		t.Run(name, func(t *testing.T) {
-			t.Parallel()
 			f := newAnchorFixture(t, opts...)
 			view, keys, err := f.open(t, WithAnchor(f.older.ID))
 			if err != nil {
@@ -135,7 +134,6 @@ func TestWithAnchor_HiveLookupRequestBudget(t *testing.T) {
 func TestWithAnchor_ReportsAnAbsentOrExpiredSnapshot(t *testing.T) {
 	t.Parallel()
 	t.Run("absent", func(t *testing.T) {
-		t.Parallel()
 		f := newAnchorFixture(t)
 		absent := SnapshotID(strings.Replace(string(f.older.ID), "-", "0-", 1))
 		if _, _, err := f.open(t, WithAnchor(absent)); !errors.Is(err, ErrNotFound) {
@@ -143,7 +141,6 @@ func TestWithAnchor_ReportsAnAbsentOrExpiredSnapshot(t *testing.T) {
 		}
 	})
 	t.Run("expired", func(t *testing.T) {
-		t.Parallel()
 		f := newAnchorFixture(t, WithLayout(Hive("k")))
 		view, _, err := f.open(t, WithAnchor(f.older.ID))
 		if err != nil {

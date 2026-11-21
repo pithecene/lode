@@ -91,6 +91,7 @@ func assertStringPrefixSemantics(t *testing.T, store RangeStore) {
 }
 
 func TestFSStore_List(t *testing.T) {
+	t.Parallel()
 	t.Run("empty prefix returns empty", func(t *testing.T) {
 		ctx := t.Context()
 		tmpDir, err := os.MkdirTemp("", "lode-test-*")

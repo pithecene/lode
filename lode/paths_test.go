@@ -11,6 +11,7 @@ import (
 )
 
 func TestRootPaths_Flat(t *testing.T) {
+	t.Parallel()
 	store := NewMemory()
 	root := Open(Use(store), WithFlatPaths())
 
@@ -86,6 +87,7 @@ func TestRootPaths_Flat(t *testing.T) {
 }
 
 func TestRootPaths_InvalidOptions(t *testing.T) {
+	t.Parallel()
 	root := Open(Memory(), nil)
 	if _, err := root.Records(t.Context(), "events", jsonl); !errors.Is(err, ErrInvalidArgument) {
 		t.Errorf("Records: got %v, want ErrInvalidArgument", err)
@@ -137,6 +139,7 @@ func readAnchoredFormat11(t *testing.T, store Store, opts []RootOption, snapID S
 }
 
 func TestRootPaths_ManifestFormat11Compat(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name      string
 		dataFmt   string

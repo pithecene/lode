@@ -7,11 +7,14 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/pithecene/lode/internal/testutil"
 )
 
 // The memory checks must fail on the leaks they exist to catch: a goroutine
 // that outlives the run, and heap that the run retains.
 func TestMemoryBaseline_DetectsLeaks(t *testing.T) {
+	testutil.Serial(t, "counts the process's goroutines and measures its heap")
 	t.Run("a goroutine that outlives the run", func(t *testing.T) {
 		baseline := TakeMemoryBaseline()
 		release := make(chan struct{})

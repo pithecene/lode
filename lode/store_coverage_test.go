@@ -20,6 +20,7 @@ import (
 // -----------------------------------------------------------------------------
 
 func TestFSStore_SafePath(t *testing.T) {
+	t.Parallel()
 	store, err := NewFS(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -76,6 +77,7 @@ func TestFSStore_SafePath(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestMemoryStore_List_EmptyPrefix(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	store := NewMemory()
 
@@ -95,6 +97,7 @@ func TestMemoryStore_List_EmptyPrefix(t *testing.T) {
 }
 
 func TestCanceledPrefixScanStopsBeforeOpeningChild(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	if _, err := hasAnyObject(ctx, t.TempDir()); !errors.Is(err, context.Canceled) {

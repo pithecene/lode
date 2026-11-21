@@ -45,6 +45,7 @@ func refPaths(refs []PartitionPath) []string {
 }
 
 func TestView_ListPartitions_Order(t *testing.T) {
+	t.Parallel()
 	// TestView_ListPartitions_Sorted verifies results are lexicographic
 	// by Path regardless of write or store order (the memory store is map-ordered).
 	t.Run("sorted", func(t *testing.T) {
@@ -111,6 +112,7 @@ func TestView_ListPartitions_Order(t *testing.T) {
 }
 
 func TestView_ListPartitions_Prefix(t *testing.T) {
+	t.Parallel()
 	// TestView_ListPartitions_Prefix verifies a raw path prefix narrows
 	// results, including a partial final token (no key boundary implied).
 	t.Run("prefix", func(t *testing.T) {
@@ -249,6 +251,7 @@ func TestView_ListPartitions_Prefix(t *testing.T) {
 }
 
 func TestView_ListManifests_Order(t *testing.T) {
+	t.Parallel()
 	// TestView_ListManifests_SortedAndDeterministicPartition verifies
 	// (Partition, ID) ordering and that a multi-partition snapshot resolves to its
 	// lexicographically smallest partition regardless of store order.
@@ -373,6 +376,7 @@ func TestView_ListManifests_Order(t *testing.T) {
 }
 
 func TestView_ListManifests_Paging(t *testing.T) {
+	t.Parallel()
 	// TestView_ListManifests_StartAfter_Pages verifies Limit + StartAfter
 	// over manifests using the previous page's last ref as the cursor.
 	t.Run("start after pages", func(t *testing.T) {
@@ -449,6 +453,7 @@ func writeDatasets(t *testing.T, ids ...DatasetID) *testReader {
 }
 
 func TestView_ListDatasets_Order(t *testing.T) {
+	t.Parallel()
 	// TestView_ListDatasets_Sorted verifies results are lexicographic by
 	// ID regardless of write or store order.
 	t.Run("sorted", func(t *testing.T) {
@@ -521,6 +526,7 @@ func partitionPath(t *testing.T, s string) PartitionPath {
 }
 
 func TestPartitionPath_Text(t *testing.T) {
+	t.Parallel()
 	opts := PartitionListOptions{StartAfter: partitionPath(t, "day=2024-01-15")}
 	data, err := json.Marshal(opts)
 	if err != nil {
@@ -557,6 +563,7 @@ func (s extraListStore) List(ctx context.Context, prefix string) ([]string, erro
 }
 
 func TestView_ListPartitions_RejectsNoncanonicalPartitions(t *testing.T) {
+	t.Parallel()
 	t.Run("canonical manifest fallback", func(t *testing.T) {
 		store, ds, snap := writeSingleDayHive(t)
 		// Remove the partition manifest copy so ListPartitions loads the canonical
@@ -610,6 +617,7 @@ func rewriteObject(t *testing.T, store Store, key string, edit func(string) stri
 }
 
 func TestParsePartitionPath(t *testing.T) {
+	t.Parallel()
 	valid := []string{"", "day=2024-01-15", "source=a/day=d1", "a"}
 	for _, s := range valid {
 		p, err := ParsePartitionPath(s)
@@ -637,6 +645,7 @@ func TestParsePartitionPath(t *testing.T) {
 // unfiltered listings report it through the canonical manifest; a listing
 // filtered by partition reflects only the partition manifests that exist.
 func TestView_ListManifests_CanonicalOnly(t *testing.T) {
+	t.Parallel()
 	store := NewMemory()
 	ds, err := Open(Use(store)).Records(t.Context(), "test-ds", JSONL[D](), hive("day"))
 	if err != nil {
@@ -732,6 +741,7 @@ func TestView_ListManifests_CanonicalOnly(t *testing.T) {
 // with no objects, which has no partition manifest, is listed under the
 // dataset root rather than omitted.
 func TestView_ListManifests_EmptyHiveSnapshot(t *testing.T) {
+	t.Parallel()
 	ds, err := Open(Use(NewMemory())).Records(t.Context(), "test-ds", JSONL[D](), hive("day"))
 	if err != nil {
 		t.Fatal(err)

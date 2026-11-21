@@ -14,6 +14,7 @@ import (
 )
 
 func TestFSCAS_HonorsContextCancellationWhileContended(t *testing.T) {
+	testutil.Serial(t, "bounds the wall-clock time of a contended CompareAndSwap")
 	tmpDir := t.TempDir()
 	store, err := NewFS(tmpDir)
 	if err != nil {
@@ -70,6 +71,7 @@ func TestFSCAS_HonorsContextCancellationWhileContended(t *testing.T) {
 }
 
 func TestStore_IntermediateTempNamedDirListedAcrossBackends(t *testing.T) {
+	t.Parallel()
 	forEachStore(t, func(t *testing.T, store RangeStore) {
 		ctx := t.Context()
 		if err := store.Put(ctx, ".lode-tmp-dir/payload", bytes.NewReader([]byte("ok"))); err != nil {
@@ -96,6 +98,7 @@ func TestStore_IntermediateTempNamedDirListedAcrossBackends(t *testing.T) {
 }
 
 func TestStore_DirectoryPrefixIsNotAnObject(t *testing.T) {
+	t.Parallel()
 	forEachStore(t, func(t *testing.T, store RangeStore) {
 		ctx := t.Context()
 		if err := store.Put(ctx, "parent/child", bytes.NewReader([]byte("leaf"))); err != nil {
@@ -125,6 +128,7 @@ func TestStore_DirectoryPrefixIsNotAnObject(t *testing.T) {
 }
 
 func TestFS_RootContainmentBoundary(t *testing.T) {
+	t.Parallel()
 	rootPath := string(filepath.Separator)
 	if vol := filepath.VolumeName(os.TempDir()); vol != "" {
 		rootPath = vol + string(filepath.Separator)
@@ -179,6 +183,7 @@ func assertKeyOpsRejectInvalidPath(t *testing.T, store RangeStore, key string) {
 }
 
 func TestStore_CanonicalPathRejectionParity(t *testing.T) {
+	t.Parallel()
 	backends := append(slices.Clone(casBackends), storeBackend{
 		name: "single-process non-cas fs",
 		open: func(t *testing.T) RangeStore {

@@ -6,6 +6,7 @@ import (
 )
 
 func TestArgument(t *testing.T) {
+	t.Parallel()
 	err := Argument("offset %d must be non-negative", -1)
 	if !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("got %v, want ErrInvalidArgument", err)
@@ -16,6 +17,7 @@ func TestArgument(t *testing.T) {
 }
 
 func TestFirstInvalid(t *testing.T) {
+	t.Parallel()
 	if err := FirstInvalid([]Check{{Invalid: false, Field: "a", Message: "x"}}); err != nil {
 		t.Fatalf("all valid: got %v", err)
 	}
@@ -33,6 +35,7 @@ func TestFirstInvalid(t *testing.T) {
 }
 
 func TestSentinelMessages(t *testing.T) {
+	t.Parallel()
 	if ErrInvalidArgument.Error() != "invalid argument" || ErrManifestInvalid.Error() != "invalid manifest" {
 		t.Fatalf("messages changed: %q, %q", ErrInvalidArgument, ErrManifestInvalid)
 	}

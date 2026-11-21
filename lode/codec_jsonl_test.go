@@ -15,6 +15,7 @@ import (
 // longer than the ten mebibytes that earlier releases refused: Decode reads
 // every file that Encode wrote.
 func TestJSONLCodec_Decode_LineLength(t *testing.T) {
+	t.Parallel()
 	codec := JSONL[D]()
 
 	t.Run("a line of one mebibyte decodes", func(t *testing.T) {
@@ -54,6 +55,7 @@ func TestJSONLCodec_Decode_LineLength(t *testing.T) {
 // error, a value cut short, a line that holds no value, and a record that
 // is not an object when the record type is a map.
 func TestJSONLCodec_Decode_Ends(t *testing.T) {
+	t.Parallel()
 	codec := JSONL[D]()
 	errRead := errors.New("read failed")
 
@@ -104,6 +106,7 @@ type jsonlEvent struct {
 // a struct keeps its field types, and a record of type any decodes as JSON's
 // types.
 func TestJSONLCodec_RoundTrip(t *testing.T) {
+	t.Parallel()
 	t.Run("struct records keep their field types", func(t *testing.T) {
 		codec := JSONL[jsonlEvent]()
 		want := []jsonlEvent{{"a", 1}, {"b", 2}}
@@ -168,6 +171,7 @@ type pointerMarshaler struct{ V int }
 func (*pointerMarshaler) MarshalJSON() ([]byte, error) { return []byte(`"pointer"`), nil }
 
 func TestJSONL_EncodesRecordsByValueAsStreamsDo(t *testing.T) {
+	t.Parallel()
 	codec := JSONL[pointerMarshaler]()
 	var batch bytes.Buffer
 	if err := codec.Encode(&batch, []pointerMarshaler{{V: 1}}); err != nil {

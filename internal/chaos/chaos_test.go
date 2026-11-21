@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/pithecene/lode/internal/errs"
+	"github.com/pithecene/lode/internal/testutil"
 
 	"github.com/pithecene/lode/lode"
 )
@@ -34,6 +35,7 @@ var (
 // unless -chaos is passed. A failure logs the seed and the command that
 // repeats the run's random choices.
 func TestChaos(t *testing.T) {
+	testutil.Serial(t, "counts the process's goroutines and measures its heap")
 	if !*flagChaos {
 		t.Skip("skipping the chaos harness; use -chaos to enable")
 	}
@@ -199,6 +201,7 @@ func splitList(s string) []string {
 // views, Retention, Faults, and Volume) in brief in-memory runs during the
 // regular test suite.
 func TestChaos_Workloads(t *testing.T) {
+	testutil.Serial(t, "gives writers a short wall-clock window to start a commit")
 	if *flagChaos {
 		t.Skip("skipping brief smoke runs when full -chaos suite is enabled")
 	}

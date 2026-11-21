@@ -36,6 +36,7 @@ func snapshotOf(t *testing.T, store lode.Store) map[string]string {
 // Head names the head pointer's snapshot, committed or pending, without
 // the volume's length, and writes nothing.
 func TestHead(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// setup writes the volume and returns the snapshot Head must name.
@@ -99,6 +100,7 @@ func TestHead(t *testing.T) {
 // A pointer that holds no snapshot ID names no head, and Head says so
 // rather than returning its content.
 func TestHead_RefusesACorruptPointer(t *testing.T) {
+	t.Parallel()
 	mem := lode.NewMemory()
 	if err := mem.Put(t.Context(), volumeLatestPointerPath("v"), bytes.NewReader([]byte("../x"))); err != nil {
 		t.Fatal(err)
@@ -111,6 +113,7 @@ func TestHead_RefusesACorruptPointer(t *testing.T) {
 
 // Head checks its arguments before it creates the store.
 func TestHead_InvalidArguments(t *testing.T) {
+	t.Parallel()
 	created := false
 	factory := func() (lode.RangeStore, error) { created = true; return lode.NewMemory(), nil }
 	for _, tc := range []struct {

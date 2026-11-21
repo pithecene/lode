@@ -13,6 +13,7 @@ import (
 // public API (lode/testdata/v0.11.0, beside the datasets of the same
 // release) and requires this release to read its blocks and commit onto it.
 func TestCompat_v0_11_0(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	if err := os.CopyFS(dir, os.DirFS("../testdata/v0.11.0")); err != nil {
 		t.Fatal(err)

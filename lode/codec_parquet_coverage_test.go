@@ -6,6 +6,7 @@ import (
 )
 
 func TestToInt64(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		val  any
@@ -34,6 +35,7 @@ func TestToInt64(t *testing.T) {
 }
 
 func TestToFloat64(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		val  any
@@ -59,6 +61,7 @@ func TestToFloat64(t *testing.T) {
 }
 
 func TestToTimestamp(t *testing.T) {
+	t.Parallel()
 	fixed := time.Date(2024, 6, 15, 12, 0, 0, 0, time.UTC)
 
 	tests := []struct {

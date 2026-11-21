@@ -102,6 +102,7 @@ func commitBlocks(t *testing.T, vol Volume, blocks []BlockRef, meta any) *Snapsh
 // =============================================================================
 
 func TestNewVolume(t *testing.T) {
+	t.Parallel()
 	t.Run("success", func(t *testing.T) {
 		vol, err := New("test-vol", lode.Memory(), 1024)
 		if err != nil {
@@ -164,6 +165,7 @@ func TestNewVolume(t *testing.T) {
 }
 
 func TestVolume_EndToEnd(t *testing.T) {
+	t.Parallel()
 	t.Run("stage commit read at end to end", func(t *testing.T) {
 		vol, err := New("test-vol", lode.Memory(), 100)
 		if err != nil {
@@ -227,6 +229,7 @@ func TestVolume_EndToEnd(t *testing.T) {
 }
 
 func TestVolume_Cumulative(t *testing.T) {
+	t.Parallel()
 	t.Run("cumulative manifest", func(t *testing.T) {
 		vol, err := New("test-vol", lode.Memory(), 100)
 		if err != nil {
@@ -374,6 +377,7 @@ func TestVolume_Cumulative(t *testing.T) {
 }
 
 func TestVolume_ReadAt(t *testing.T) {
+	t.Parallel()
 	t.Run("spanning blocks", func(t *testing.T) {
 		vol, err := New("test-vol", lode.Memory(), 100)
 		if err != nil {
@@ -546,6 +550,7 @@ func TestVolume_ReadAt(t *testing.T) {
 }
 
 func TestVolume_Commit_Manifest(t *testing.T) {
+	t.Parallel()
 	t.Run("empty metadata succeeds", func(t *testing.T) {
 		vol := newTestVolume(t, "test-vol", lode.Memory(), 100)
 		blk := stageBlock(t, vol, 0, bytes.Repeat([]byte("A"), 10))
@@ -659,6 +664,7 @@ func TestVolume_Commit_Manifest(t *testing.T) {
 }
 
 func TestVolume_Commit_Blocks(t *testing.T) {
+	t.Parallel()
 	t.Run("adjacent blocks valid", func(t *testing.T) {
 		vol := newTestVolume(t, "test-vol", lode.Memory(), 100)
 		// [0, 10) and [10, 20) are adjacent, not overlapping.
@@ -794,6 +800,7 @@ func TestVolume_Commit_Blocks(t *testing.T) {
 }
 
 func TestVolume_Commit_Overlaps(t *testing.T) {
+	t.Parallel()
 	t.Run("overlapping blocks returns err overlapping blocks", func(t *testing.T) {
 		vol, err := New("test-vol", lode.Memory(), 100)
 		if err != nil {
@@ -860,6 +867,7 @@ func TestVolume_Commit_Overlaps(t *testing.T) {
 }
 
 func TestVolume_Snapshots(t *testing.T) {
+	t.Parallel()
 	t.Run("latest empty volume returns err no snapshots", func(t *testing.T) {
 		vol, err := New("test-vol", lode.Memory(), 100)
 		if err != nil {
@@ -1041,6 +1049,7 @@ func testManifestRoundTrip(t *testing.T) {
 }
 
 func TestVolume_StageWriteAt(t *testing.T) {
+	t.Parallel()
 	t.Run("with checksum", func(t *testing.T) {
 		vol, err := New("test-vol", lode.Memory(), 100,
 			WithChecksum(lode.MD5()),
@@ -1139,6 +1148,7 @@ func TestVolume_StageWriteAt(t *testing.T) {
 }
 
 func TestStageWriteAt_NoncedPathsAllowRetryAfterAbortedStage(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	vol := newTestVolume(t, "my-vol", lode.Memory(), 100)
 
@@ -1184,6 +1194,7 @@ func TestStageWriteAt_NoncedPathsAllowRetryAfterAbortedStage(t *testing.T) {
 // =============================================================================
 
 func TestVolume_Resume(t *testing.T) {
+	t.Parallel()
 	t.Run("new instance loads latest", func(t *testing.T) {
 		store := lode.NewMemory()
 		factory := memoryFactoryFrom(store)
@@ -1247,6 +1258,7 @@ func TestVolume_Resume(t *testing.T) {
 // =============================================================================
 
 func TestVolume_Snapshot_InvalidManifest(t *testing.T) {
+	t.Parallel()
 	t.Run("missing schema name", func(t *testing.T) {
 		store := lode.NewMemory()
 		m := validVolumeManifest("test-vol", 100)
@@ -1437,6 +1449,7 @@ func TestVolume_Snapshot_InvalidManifest(t *testing.T) {
 // =============================================================================
 
 func TestVolume_ValidateNoOverlaps(t *testing.T) {
+	t.Parallel()
 	t.Run("overflow prev end no false positive", func(t *testing.T) {
 		// Two non-overlapping blocks where prevEnd = Offset + Length would overflow.
 		// Block 1 starts at offset 0; block 2 starts near MaxInt64.
@@ -1516,6 +1529,7 @@ func TestVolume_ValidateNoOverlaps(t *testing.T) {
 // =============================================================================
 
 func TestVolume_LatestPointer(t *testing.T) {
+	t.Parallel()
 	t.Run("read after commit", func(t *testing.T) {
 		// After Commit, the pointer file must exist and Latest() must resolve
 		// via pointer without calling List.
@@ -1620,6 +1634,7 @@ func TestVolume_LatestPointer(t *testing.T) {
 // uses binary search on sorted blocks. Tests cover exact matches, partial overlaps,
 // gaps, and large block counts.
 func TestFindCoveringBlocks_BinarySearch(t *testing.T) {
+	t.Parallel()
 	contiguous := []BlockRef{
 		{Offset: 0, Length: 10},
 		{Offset: 10, Length: 10},
@@ -1715,6 +1730,7 @@ func BenchmarkFindCoveringBlocks(b *testing.B) {
 // TestMergeBlocks verifies that mergeBlocks produces a correctly sorted result
 // from a pre-sorted slice and an unsorted slice of new blocks.
 func TestMergeBlocks(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		sorted   []BlockRef
@@ -1769,6 +1785,7 @@ func TestMergeBlocks(t *testing.T) {
 // cannot be merged, and that once the manifest is persisted the commit
 // adopts it as parent.
 func TestVolume_Commit_PendingCommit(t *testing.T) {
+	t.Parallel()
 	mem := lode.NewMemory()
 	open := func() Volume {
 		vol := newTestVolume(t, "test-vol", memoryFactoryFrom(mem), 1024*1024)
@@ -1825,6 +1842,7 @@ func TestVolume_Commit_PendingCommit(t *testing.T) {
 // stall the volume: the next commit, from another handle, loads the staged
 // copy, adopts the abandoned snapshot as parent, and merges its blocks.
 func TestVolume_Commit_AbandonedCommit(t *testing.T) {
+	t.Parallel()
 	mem := lode.NewMemory()
 	fs := testutil.NewFaultStore(mem)
 	abandoning := newTestVolume(t, "test-vol", newFaultStoreFactory(fs), 100)
@@ -1863,6 +1881,7 @@ func TestVolume_Commit_AbandonedCommit(t *testing.T) {
 // manifest, and removes the staged copy. Before, the retry found its
 // blocks in the pending parent and failed as a commit without new blocks.
 func TestVolume_Commit_RetryCompletesPendingCommit(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// retrier returns the handle that retries, given the one that failed.
@@ -1919,6 +1938,7 @@ func TestVolume_Commit_RetryCompletesPendingCommit(t *testing.T) {
 // the pending commit on its retry, which resolves the head from storage.
 // A second retry, once the commit is complete, has no new block.
 func TestVolume_Commit_StaleHandleCompletesPendingCommitOnRetry(t *testing.T) {
+	t.Parallel()
 	mem := lode.NewMemory()
 	fs := testutil.NewFaultStore(mem)
 	failing := newTestVolume(t, "test-vol", newFaultStoreFactory(fs), 100)
@@ -1944,6 +1964,7 @@ func TestVolume_Commit_StaleHandleCompletesPendingCommitOnRetry(t *testing.T) {
 // and that completion of a pending commit can be retried after its own
 // manifest write fails.
 func TestVolume_Commit_RetryOfCommittedBlocksIsRefused(t *testing.T) {
+	t.Parallel()
 	mem := lode.NewMemory()
 	fs := testutil.NewFaultStore(mem)
 	vol := newTestVolume(t, "test-vol", newFaultStoreFactory(fs), 100)
@@ -1977,6 +1998,7 @@ func lodeGet(t *testing.T, store lode.RangeStore, path string) (string, error) {
 }
 
 func TestVolume_Commit_Pointer(t *testing.T) {
+	t.Parallel()
 	// TestVolume_Commit_StaleButExistingPointer_UsesInMemoryCache verifies that
 	// when the pointer is externally modified after a successful commit, CAS
 	// detects the external modification and returns lode.ErrSnapshotConflict.
@@ -2083,6 +2105,7 @@ func TestVolume_Commit_Pointer(t *testing.T) {
 }
 
 func TestVolume_Commit_ColdStart(t *testing.T) {
+	t.Parallel()
 	// TestVolume_Commit_ColdStart_CorruptPointer_FallsBackToScan verifies that
 	// a new Volume instance (cold start) with a corrupt pointer correctly falls
 	// back to scan.
@@ -2181,6 +2204,7 @@ func BenchmarkMergeBlocks(b *testing.B) {
 // -----------------------------------------------------------------------------
 
 func TestVolume_Commit_Conflict(t *testing.T) {
+	t.Parallel()
 	// TestVolume_Commit_ConcurrentConflict verifies that two volume instances
 	// sharing the same store detect concurrent commits via lode.ErrSnapshotConflict.
 	// Memory store implements lode.ConditionalWriter, enabling CAS.
@@ -2289,6 +2313,7 @@ func TestVolume_Commit_Conflict(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestVolume_Commit_RetryOptions(t *testing.T) {
+	t.Parallel()
 	// TestVolume_Commit_WithRetry_Zero_CurrentBehavior verifies that
 	// WithRetry(0) preserves the default behavior (no retry).
 	t.Run("with retry count zero current behavior", func(t *testing.T) {

@@ -84,6 +84,7 @@ func assertPutAllOrNothing(t *testing.T, store RangeStore) {
 // when the directory turns read-only mid-write: the object is published only
 // after it is complete, and a leftover temporary file is never listed.
 func TestFSStore_Put_FailureLeavesNothingVisible(t *testing.T) {
+	t.Parallel()
 	if os.Geteuid() == 0 {
 		t.Skip("directory permissions do not bind root")
 	}
@@ -122,6 +123,7 @@ func TestFSStore_Put_FailureLeavesNothingVisible(t *testing.T) {
 // adapter rejects a key that uses it, not only the filesystem adapter whose
 // List would hide it (CONTRACT_STORAGE §Put).
 func TestStore_Put_RejectsReservedNames(t *testing.T) {
+	t.Parallel()
 	stores := map[string]func(t *testing.T) Store{
 		"fs": func(t *testing.T) Store {
 			store, err := NewFS(t.TempDir())
@@ -147,6 +149,7 @@ func TestStore_Put_RejectsReservedNames(t *testing.T) {
 // A reader never sees a partially written object: while a Put is still
 // streaming, Get reports ErrNotFound and List omits the object.
 func TestFSStore_Put_PublishesAtomically(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	store, err := NewFS(root)
 	if err != nil {

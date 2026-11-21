@@ -35,7 +35,6 @@ func TestStreamWrite_CanceledCommitDeletesStagedObject(t *testing.T) {
 	t.Parallel()
 
 	t.Run("records", func(t *testing.T) {
-		t.Parallel()
 		mem := lode.NewMemory()
 		ctx, cancel := context.WithCancel(t.Context())
 		defer cancel()
@@ -66,7 +65,6 @@ func TestStreamWrite_CanceledCommitDeletesStagedObject(t *testing.T) {
 	})
 
 	t.Run("blobs", func(t *testing.T) {
-		t.Parallel()
 		mem := lode.NewMemory()
 		ctx, cancel := context.WithCancel(t.Context())
 		defer cancel()

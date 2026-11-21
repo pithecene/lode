@@ -8,6 +8,7 @@ import (
 // TestSnapshotID covers the ID form, uniqueness and order (CONTRACT_CORE
 // §Snapshot ID).
 func TestSnapshotID(t *testing.T) {
+	t.Parallel()
 	t.Run("instant only from the generated form", func(t *testing.T) {
 		for id, want := range map[string]bool{
 			"1792459022524750970":                   true,

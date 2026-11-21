@@ -131,7 +131,6 @@ func TestKeyScope_EveryEntryPoint(t *testing.T) {
 	}
 	for name, check := range cases {
 		t.Run(name, func(t *testing.T) {
-			t.Parallel()
 			check(t, newKeyScopeFixture(t))
 		})
 	}

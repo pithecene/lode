@@ -80,6 +80,7 @@ var prefixPattern = regexp.MustCompile(`^([a-z0-9]+): `)
 // TestErrorPrefixes enforces the error message prefix rule of
 // CONTRACT_ERRORS.md on every package under lode/ and internal/.
 func TestErrorPrefixes(t *testing.T) {
+	t.Parallel()
 	packages, err := packageDirs()
 	if err != nil {
 		t.Fatal(err)
@@ -97,6 +98,7 @@ func TestErrorPrefixes(t *testing.T) {
 // violating lines carry a "// violation" comment, so a defect in the check
 // that would let the rule pass vacuously fails here instead.
 func TestRuleCatchesEachViolation(t *testing.T) {
+	t.Parallel()
 	const sample = "internal/errprefix/testdata/sample"
 	want, err := markedLines(filepath.Join(root, sample, "sample.go"))
 	if err != nil {

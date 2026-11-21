@@ -183,7 +183,6 @@ func TestAudit_AdvancePostPublicationFence_DatasetAndHive(t *testing.T) {
 	t.Parallel()
 
 	t.Run("unpartitioned dataset write paused before canonical manifest", func(t *testing.T) {
-		t.Parallel()
 		h, release, writeErrCh := startPausedCanonicalWriteAndFence(t, false, nil)
 		if err := finishRemovalAndAwaitWrite(t, h, release, writeErrCh); !errors.Is(err, lode.ErrRemoved) {
 			t.Fatalf("Write after removal = %v, want ErrRemoved", err)
@@ -191,7 +190,6 @@ func TestAudit_AdvancePostPublicationFence_DatasetAndHive(t *testing.T) {
 	})
 
 	t.Run("dataset manifest persisted before Put failed", func(t *testing.T) {
-		t.Parallel()
 		putErr := errors.New("manifest Put response lost")
 		h, release, writeErrCh := startPausedCanonicalWriteAndFence(t, false, putErr)
 		err := finishRemovalAndAwaitWrite(t, h, release, writeErrCh)
@@ -199,7 +197,6 @@ func TestAudit_AdvancePostPublicationFence_DatasetAndHive(t *testing.T) {
 	})
 
 	t.Run("caller canceled after publication", func(t *testing.T) {
-		t.Parallel()
 		h, release, writeErrCh := startPausedCanonicalWriteAndFence(t, true, nil)
 		if err := finishRemovalAndAwaitWrite(t, h, release, writeErrCh); !errors.Is(err, lode.ErrRemoved) {
 			t.Fatalf("Write after removal and cancellation = %v, want ErrRemoved", err)
@@ -207,7 +204,6 @@ func TestAudit_AdvancePostPublicationFence_DatasetAndHive(t *testing.T) {
 	})
 
 	t.Run("hive dataset write paused before partition manifest", func(t *testing.T) {
-		t.Parallel()
 		h := openGatedHarness(t, lode.WithLayout(lode.Hive("run_id")))
 		putErr := errors.New("partition manifest Put response lost")
 		entered, release := pauseFirstPut(t, h.gs, func(key string) bool {
@@ -226,7 +222,6 @@ func TestAudit_AdvancePostPublicationFence_DatasetAndHive(t *testing.T) {
 	})
 
 	t.Run("sweep reindex cleans up late partition manifest after removal", func(t *testing.T) {
-		t.Parallel()
 		h := openGatedHarness(t, lode.WithLayout(lode.Hive("run_id")))
 		snap := mustWriteDoc(t, h.ds, lode.D{"run_id": "a", "n": 1})
 		testutil.AwaitClockPast(t, string(snap.ID))
@@ -286,7 +281,6 @@ func TestAudit_SweepReportsRetainedCopyAfterPutError(t *testing.T) {
 			name = "write persisted before failure"
 		}
 		t.Run(name, func(t *testing.T) {
-			t.Parallel()
 			ctx := t.Context()
 			h := openGatedHarness(t, lode.WithLayout(lode.Hive("run_id")))
 			snap := mustWriteDoc(t, h.ds, lode.D{"run_id": "a", "k": "v"})
@@ -391,7 +385,6 @@ func TestAudit_StreamWrite_PipeInitNoDeadlock(t *testing.T) {
 	t.Parallel()
 
 	t.Run("header-writing NewStreamEncoder succeeds without deadlock", func(t *testing.T) {
-		t.Parallel()
 		for _, comp := range []lode.Compressor{lode.Uncompressed(), lode.Gzip()} {
 			ctx := t.Context()
 			var codec lode.Codec[lode.D] = headerStreamCodec{headerBytes: 256 * 1024}
@@ -424,7 +417,6 @@ func TestAudit_StreamWrite_PipeInitNoDeadlock(t *testing.T) {
 	})
 
 	t.Run("failing NewStreamEncoder with Gzip does not deadlock on Close", func(t *testing.T) {
-		t.Parallel()
 		ctx := t.Context()
 		errInit := errors.New("encoder init boom")
 		var codec lode.Codec[lode.D] = headerStreamCodec{initErr: errInit}
@@ -450,7 +442,6 @@ func TestAudit_StreamWrite_PipeInitNoDeadlock(t *testing.T) {
 	})
 
 	t.Run("header-writing Compress and canceled stalled Put unblock cleanly", func(t *testing.T) {
-		t.Parallel()
 		mem := lode.NewMemory()
 		stalled := make(chan struct{})
 		gs := &gatedStore{
@@ -502,7 +493,6 @@ func TestAudit_StreamWrite_InitFailureCancelsPut(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			ctx := t.Context()
 			putCanceled := make(chan struct{})
 			store := &gatedStore{
@@ -719,7 +709,6 @@ func TestAudit_ReviewRegressions_PR395(t *testing.T) {
 	t.Parallel()
 
 	t.Run("late manifest cleanup delete failure joins with ErrRemoved", func(t *testing.T) {
-		t.Parallel()
 		putErr := errors.New("manifest Put response lost")
 		h, release, writeErrCh := startPausedCanonicalWriteAndFence(t, false, putErr)
 		if err := h.root.RemoveDataset(t.Context(), "events"); err != nil {
@@ -743,7 +732,6 @@ func TestAudit_ReviewRegressions_PR395(t *testing.T) {
 	})
 
 	t.Run("Snapshots skips tombstone Get when canonical manifest is listed", func(t *testing.T) {
-		t.Parallel()
 		var tombGets int
 		var mu sync.Mutex
 		mem := lode.NewMemory()

@@ -57,6 +57,7 @@ func readAll(t *testing.T, ds *Records[D]) []D {
 }
 
 func TestCompat_v0_11_0_HiveRecords(t *testing.T) {
+	t.Parallel()
 	ds, err := Open(FS(copyFixture(t, v011Fixture))).Records(t.Context(), "events", JSONL[D](), hive("day"))
 	if err != nil {
 		t.Fatal(err)
@@ -123,6 +124,7 @@ func TestCompat_v0_11_0_HiveRecords(t *testing.T) {
 }
 
 func TestCompat_v0_11_0_CompressedRecords(t *testing.T) {
+	t.Parallel()
 	dir := copyFixture(t, v011Fixture)
 
 	t.Run("a view takes the compressor from the manifests", func(t *testing.T) {
@@ -166,6 +168,7 @@ func TestCompat_v0_11_0_CompressedRecords(t *testing.T) {
 }
 
 func TestCompat_v0_11_0_Blob(t *testing.T) {
+	t.Parallel()
 	blobs, err := Open(FS(copyFixture(t, v011Fixture))).Blobs(t.Context(), "artifacts")
 	if err != nil {
 		t.Fatal(err)
@@ -184,6 +187,7 @@ func TestCompat_v0_11_0_Blob(t *testing.T) {
 }
 
 func TestManifestLegacyFieldsAreVersionScoped(t *testing.T) {
+	t.Parallel()
 	for _, version := range []string{"1.0.0", "1.1.0", "1.2.0"} {
 		t.Run(version, func(t *testing.T) {
 			var m Manifest

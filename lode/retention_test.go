@@ -252,6 +252,7 @@ func legacyize(t *testing.T, store Store, snaps ...*Snapshot) {
 // -----------------------------------------------------------------------------
 
 func TestExpire_Validation(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		hive bool
@@ -290,6 +291,7 @@ func TestExpire_Validation(t *testing.T) {
 }
 
 func TestExpire_Selection(t *testing.T) {
+	t.Parallel()
 	t.Run("by ID removes manifest and data", func(t *testing.T) {
 		store := NewMemory()
 		ds := newDefaultRetention(t, store)
@@ -400,6 +402,7 @@ func TestExpire_Selection(t *testing.T) {
 }
 
 func TestExpire_Partition(t *testing.T) {
+	t.Parallel()
 	t.Run("matches whole segments", func(t *testing.T) {
 		store := NewMemory()
 		ds := newHiveRetention(t, store)
@@ -523,6 +526,7 @@ func TestExpire_Partition(t *testing.T) {
 }
 
 func TestExpire_DryRun(t *testing.T) {
+	t.Parallel()
 	// A manifest under an ID Lode never generates cannot be tombstoned, so
 	// the real run fails on it; the dry run must report the same failure.
 	t.Run("fails where the real run would on an ID it cannot tombstone", func(t *testing.T) {
@@ -582,6 +586,7 @@ func TestExpire_DryRun(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestExpire_Head(t *testing.T) {
+	t.Parallel()
 	t.Run("retained and reported", func(t *testing.T) {
 		store := NewMemory()
 		ds := newDefaultRetention(t, store)
@@ -697,6 +702,7 @@ func TestExpire_Head(t *testing.T) {
 // only the pointer names it, so a dataset with snapshots and no pointer is
 // refused until a commit writes one.
 func TestExpire_HeadResolution(t *testing.T) {
+	t.Parallel()
 	t.Run("a pointer-less dataset is refused", func(t *testing.T) {
 		mem := NewMemory()
 		ds := newDefaultRetention(t, mem)
@@ -827,6 +833,7 @@ func TestExpire_HeadResolution(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestExpire_Tombstone(t *testing.T) {
+	t.Parallel()
 	t.Run("records the inventory", func(t *testing.T) {
 		store := NewMemory()
 		ds := newDefaultRetention(t, store)
@@ -952,6 +959,7 @@ func TestExpire_Tombstone(t *testing.T) {
 // TestExpire_InvalidManifest covers manifests that decode but break the
 // manifest invariants: nothing is recorded or deleted from them.
 func TestExpire_InvalidManifest(t *testing.T) {
+	t.Parallel()
 	for name, corrupt := range map[string]func(*Manifest){
 		"zero created at":  func(m *Manifest) { m.CreatedAt = time.Time{} },
 		"negative size":    func(m *Manifest) { m.Objects[0].SizeBytes = -1 },
@@ -981,6 +989,7 @@ func TestExpire_InvalidManifest(t *testing.T) {
 // TestExpire_CorruptTombstone covers tombstones no manifest can stand in
 // for: each fails the run rather than steering a delete.
 func TestExpire_CorruptTombstone(t *testing.T) {
+	t.Parallel()
 	t.Run("zero length with no manifest left", func(t *testing.T) {
 		for _, dryRun := range []bool{true, false} {
 			mem := NewMemory()
@@ -1068,6 +1077,7 @@ func TestExpire_CorruptTombstone(t *testing.T) {
 // A tombstone left by an earlier snapshot with the same ID never steers
 // deletes of a later one.
 func TestExpire_ReusedID(t *testing.T) {
+	t.Parallel()
 	t.Run("same files with another commit instant is refused", func(t *testing.T) {
 		mem := NewMemory()
 		ds := newDefaultRetention(t, mem)
@@ -1185,6 +1195,7 @@ func TestExpire_ReusedID(t *testing.T) {
 }
 
 func TestExpire_Resumption(t *testing.T) {
+	t.Parallel()
 	t.Run("from a tombstone with no manifest left", func(t *testing.T) {
 		mem := NewMemory()
 		hs := &hookStore{Store: mem}
@@ -1269,6 +1280,7 @@ func TestExpire_Resumption(t *testing.T) {
 }
 
 func TestExpire_PathSafety(t *testing.T) {
+	t.Parallel()
 	t.Run("traversal in an ObjectRef deletes nothing outside", func(t *testing.T) {
 		store := NewMemory()
 		ds := newHiveRetention(t, store)
@@ -1415,6 +1427,7 @@ func TestExpire_PathSafety(t *testing.T) {
 }
 
 func TestSnapshot_IDNotInGeneratedForm_IsNotExpired(t *testing.T) {
+	t.Parallel()
 	ds := newDefaultRetention(t, NewMemory())
 	writeRecord(t, ds, 1)
 	// "../latest" would resolve to the pointer if it reached a store path.
@@ -1429,6 +1442,7 @@ func TestSnapshot_IDNotInGeneratedForm_IsNotExpired(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestEnumeration_ToleratesDeletion(t *testing.T) {
+	t.Parallel()
 	t.Run("listings skip a manifest deleted after listing", func(t *testing.T) {
 		mem := NewMemory()
 		hs := &hookStore{Store: mem}
@@ -1488,6 +1502,7 @@ func TestEnumeration_ToleratesDeletion(t *testing.T) {
 // TestLatestScan covers the pointer-less Latest scan: it tolerates
 // deletion during the scan and never serves an expired snapshot.
 func TestLatestScan(t *testing.T) {
+	t.Parallel()
 	t.Run("falls back to another copy of a snapshot", func(t *testing.T) {
 		mem := NewMemory()
 		hs := &hookStore{Store: mem}
