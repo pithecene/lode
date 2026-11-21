@@ -7,6 +7,7 @@ extends: ghcr.io/pithecene/bosun-config:v2
 prose:
   documents:
     - CHANGELOG.md
+    - docs/plans/V1_READINESS.md
 changelog:
   file: CHANGELOG.md
 # The check runs Bosun's Go analyzers that .golangci.bosun.yaml enables; the stock linters stay in .golangci.yaml.

@@ -1,97 +1,65 @@
-# V1_READINESS.md — v1.0 Release Criteria
+# Release Criteria for v1.0
 
 This document defines the **non-negotiable criteria** that must all pass
-before Lode can be tagged v1.0.
+before Lode receives the v1.0 tag.
 
-Stability is proven by **usage and time**, not design review.
+**Usage and time** prove stability, not design review.
 
 ---
 
 ## Gate Rule
 
-- Every criterion below must be checked off with recorded evidence.
+- Each criterion in the Criteria section needs recorded evidence and a checkmark before it passes.
 - Evidence must reference a real downstream project (or redacted alias), real data, and a real observer.
-- No criterion may be waived — if it cannot be met, it must be renegotiated and this document updated.
-- The v1.0 tag is blocked until all criteria pass, except §4: it is the Volume stability gate (`V1_API_DECISIONS.md` D9), which gates Volume leaving experimental, not the v1.0 tag.
+- No one may waive a criterion. A criterion that cannot pass requires renegotiation and an update to this document.
+- Every criterion blocks the v1.0 tag until it passes, except §4: it is the Volume stability gate (`V1_API_DECISIONS.md` D9), which gates Volume leaving experimental, not the v1.0 tag.
 
 ---
 
-## Current Assessment (2026-11-19)
+## Current Assessment (2026-11-21)
 
-[Stack #382](https://github.com/pithecene/lode/stack/382) merged on 2026-11-19.
-The [merge commit](https://github.com/pithecene/lode/commit/0b07f506a4ddc93f97eb0cdcd1d4b91fef404c8c)
-has the same Git tree as the tested head of [#392](https://github.com/pithecene/lode/pull/392).
-GitHub recorded 194 passing checks across the 15 PR heads, including 77 on
-#376–#381. All seven review threads on those six PRs were resolved at merge.
-All 13 checks on the merge commit also passed.
-
-The production evidence below comes from the [October audit](dogfood_audit_2026-10.md).
-The latest published release at merge was v0.17.1. The D12 freeze windows
-start with a release containing the unified API and manifest format.
-
-- **Holds:** no corruption detected and zero manifest decode failures across 96,478
-  snapshots over 8 months on R2; manifest format `1.2.0` (`objects` and
-  `flat`) reads `1.0.0` and `1.1.0` datasets with standard internal names.
-  Datasets with custom names require the migration in `PUBLIC_API.md`.
-- **Blocker, addressed in v0.11.0 and awaiting verification:** one history
-  fork under CAS + retry (2026-08-25, §10). The cause is identified: a failed
-  read of a valid head was treated as a stale pointer, and the scan fallback
-  then selected the head's parent, because snapshot ID order is not commit
-  order. v0.11.0 removes every path to that outcome
-  ([#208](https://github.com/pithecene/lode/issues/208)); the criterion
-  remains unmet until v0.11.0+ is observed in production. [#392](https://github.com/pithecene/lode/pull/392)
-  also verified that an applied CAS keeps its original parent when another
-  writer publishes descendants before the first writer receives its response.
-- **Not yet met, time-gated:** the API surface, sentinel, option, and
-  manifest format (`1.2.0`) freeze windows restart with the v1.0.0 API
-  unification release (D12, §1 and §2). No API decision remains open.
-- **Not yet met, evidence missing:** native AWS S3 (§6), steady-state snapshot
-  reads (§3), checksum-backed corruption checks in production (§10; read-time
-  checksum verification returning `ErrChecksumMismatch` is now implemented via
-  D12).
-- **Renegotiated (D9):** Volume is experimental for v1.0. Volume dogfooding
-  (§4) and `volume.Manifest` stability (§2) gate Volume leaving experimental,
-  not the v1.0 tag. The boundary has shipped: package `lode/volume`, marked
-  experimental in `PUBLIC_API.md` (D9).
-- **Addressed performance and GC items:** `Sweep` reclaims unreferenced data
-  objects; `ListDatasets` now uses delimiter listing on S3, and
-  `ListPartitions` derives Hive partitions directly from listed keys with zero
-  manifest `Get` calls (D12). The standard and flat path grammars retain read compatibility.
+- **Holds:** The [October audit](dogfood_audit_2026-10.md) detected no corruption and zero manifest decode failures across 96,478 snapshots over 8 months on R2. Manifest format `1.2.0` reads `1.0.0` and `1.1.0` datasets with standard internal names.
+- **Blocks (§10):** One history fork happened under CAS + retry on 2026-08-25. v0.11.0 removes its cause ([#208](https://github.com/pithecene/lode/issues/208)), and the criterion stays unmet until production observation covers v0.11.0 or later.
+- **Blocks (evidence missing):** No evidence exists yet for native AWS S3 (§6), steady-state snapshot reads (§3), or checksum-backed corruption checks in production (§10).
+- **Blocks (pending):** Three items remain open: the owner sign-off on the wire format (§2), the README status (§8), and the v1.0 CHANGELOG entry (§8). §3's "no Dataset API changes" fails as worded.
+- **Time-gated:** v0.18.0 released the D12 unification on 2026-11-20 and restarted the API surface, sentinel, option, and manifest format (`1.2.0`) freeze windows, which pass on 2026-12-18 absent another reset (§1, §2). Releasing `WithRecordedComponents()` (lode#419) restarts the API surface and option windows.
+- **Renegotiated (D9):** Volume is experimental for v1.0. Volume dogfooding (§4) and `volume.Manifest` stability (§2) gate Volume leaving experimental, not the v1.0 tag.
+- **Reclassified (§9):** Blob file completeness is out of scope, because the manifest tracks only the files that Lode writes.
 
 ---
 
 ## Dogfooding Registry
 
-Each downstream project that integrates Lode gets a subsection here.
+Each downstream project that integrates Lode receives a subsection here.
 Use the template to add new projects as they begin integration.
 
-**Privacy rule:** Only public projects are listed by name. Private projects
+**Privacy rule:** The registry lists only public projects by name. Private projects
 use a redacted alias (e.g. `private-A`, `private-B`) and must not reveal
 internal project names, repo URLs, domain-specific details, or
 implementation specifics that could identify the project or its purpose.
 Usage profiles and evidence summaries should describe Lode-level behavior
 only (e.g. "Dataset round-trip over S3"), not the consumer's architecture
-or data model. Aggregate usage counts (snapshots, runs, events,
-partitions, bytes) are allowed: they show scale without revealing purpose.
+or data model. Contributors may report aggregate usage counts (snapshots, runs, events,
+partitions, bytes): they show scale without revealing purpose.
 If a linked issue lives in a private tracker, reference it as `(private)`
 instead of by number.
 
-### quarry
+### Quarry
 
 - **Integration date:** 2026-02-10
 - **Contact:** @pithecene
 - **Usage profile:** Dataset
 - **Storage backend:** AWS S3 (S3 adapter targeting Cloudflare R2)
-- **Status:** Active — Lode v0.10.0 since Quarry v0.13.6 (2026-10-19); ~8 months of production operation through `private-A`
+- **Status:** Active, on Lode v0.10.0 since Quarry v0.13.6 (2026-10-19)
 - **Visibility:** Public
 - **Last audited:** 2026-10-19
 
 | Criterion | Validated | Date | Notes |
 |-----------|:---------:|------|-------|
 | Dataset write round-trip | ✅ | 2026-02-23 | Hive-partitioned writes and reads over S3-compatible backend at >100k object scale |
-| Volume write round-trip | N/A | — | Dataset-only integration (no Volume API referenced in Quarry's Lode client) |
-| Error sentinels observed | ✅ | 2026-03-22 | All 3 sentinels validated: `ErrNoSnapshots` (production), `ErrPathExists` (integration test), `ErrNotFound` (integration test). `quarry/lode/sentinel_test.go` still present at v0.13.6. |
-| API friction (none = pass) | ⚠️ | 2026-10-19 | Upgrades v0.9.0 → v0.9.1 → v0.10.0 needed no call-site changes beyond adopting new options (v0.10.0 bump was dependency-only; Quarry matches on sentinels, so v0.10.0 error-text changes were behavior-neutral; Quarry CI green on v0.10.0). Open friction: no retention/delete primitive (lode#174, filed from this workload) gates Quarry's planned `gc`; Quarry's v0.14 run reader still pages `Store.List` client-side (no storage-native continuation). Earlier friction resolved: sidecar inventory via snapshot `Metadata["sidecar_files"]` (Quarry v0.13.4); CAS via `WithRetryCount(3)` + `WithRetryObserver` (Quarry v0.13.5, Lode v0.9.1, lode#169); listing prefix/cursor (lode#175, v0.10.0). |
+| Volume write round-trip | N/A | — | Dataset-only integration |
+| Error sentinels observed | ✅ | 2026-03-22 | `ErrNoSnapshots` in production, `ErrPathExists` and `ErrNotFound` in integration tests (`quarry/lode/sentinel_test.go`) |
+| API friction (none = pass) | ⚠️ | 2026-10-19 | Open at the audit: no retention or delete primitive (lode#174) for Quarry's planned `gc`. Quarry's v0.14 run reader pages `Store.List` client-side. |
 
 **Lode APIs exercised (Quarry v0.13.6):** `NewDataset`, `WithHiveLayout`,
 `WithCodec(NewJSONLCodec())`, `WithRetryCount`, `WithRetryObserver`,
@@ -101,13 +69,13 @@ instead of by number.
 
 ### private-A
 
-- **Integration date:** 2026-02-10 (indirect — writes through Quarry's embedded Lode)
+- **Integration date:** 2026-02-10 (indirect: writes through Quarry's embedded Lode)
 - **Contact:** @pithecene
 - **Usage profile:** Dataset
 - **Storage backend:** Cloudflare R2 via the S3 adapter
-- **Status:** Active production since 2026-02-07; runs Quarry 0.13.4 → Lode v0.9.0 (CAS + retry since 2026-03-08; not on v0.9.1/v0.10.0)
-- **Visibility:** Private (alias — see privacy rule above)
-- **Last audited:** 2026-10-20 — full-history read-only audit, [`dogfood_audit_2026-10.md`](dogfood_audit_2026-10.md)
+- **Status:** Active production since 2026-02-07. Runs Quarry 0.13.4 with Lode v0.9.0 (CAS + retry since 2026-03-08).
+- **Visibility:** Private (alias under the privacy rule)
+- **Last audited:** 2026-10-20: full-history read-only audit, [`dogfood_audit_2026-10.md`](dogfood_audit_2026-10.md)
 
 **Scale (audit, 2026-10-20):** 96,478 snapshots over 8 months, 10,858 runs,
 4.73M events persisted, 143k referenced data objects (1.78 GB), 32,830
@@ -115,10 +83,10 @@ partitions, one dataset on R2.
 
 | Criterion | Validated | Date | Notes |
 |-----------|:---------:|------|-------|
-| Dataset write round-trip | ⚠️ | 2026-10-20 | Writes: ✅ no corruption detected across all 96,478 snapshots (audit F1). Reads: Lode's reader is not exercised in production (F8). Lode's reader was exercised by the audit: `Latest`/`Read` in ~130 ms; `ListManifests`/`ListPartitions` took 2–3 h (F6). |
+| Dataset write round-trip | ⚠️ | 2026-10-20 | Writes show no corruption across all 96,478 snapshots (audit F1). Production does not read through Lode (F8). |
 | Volume write round-trip | N/A | — | Dataset-only |
-| Error sentinels observed | N/A | — | Sentinels surface inside Quarry; covered by the quarry entry |
-| API friction (none = pass) | ❌ | 2026-10-20 | (1) One history fork under CAS (F3). (2) 48k unreferenced data objects, 2.07 GB, and no reference-aware sweep in Lode to find or remove them (F5, lode#174). (3) Cold listing unusable at this size (F6), so the consumer couples to the path grammar (F8, `V1_API_DECISIONS.md` D8). The earlier sidecar-manifest friction no longer applies to this consumer. |
+| Error sentinels observed | N/A | — | Sentinels surface inside Quarry, and the quarry entry covers them |
+| API friction (none = pass) | ❌ | 2026-10-20 | One history fork under CAS (F3). 48k unreferenced data objects, 2.07 GB (F5, lode#174). Cold listing was unusable at this size (F6), so the consumer couples to the path grammar (F8, `V1_API_DECISIONS.md` D8). |
 
 <!--
 ### <project-name or redacted alias>
@@ -142,177 +110,75 @@ partitions, one dataset on R2.
 
 ## Criteria
 
+In these criteria, @pithecene observed every recorded evidence entry.
+
 ### 1. API Surface Freeze
 
 - [ ] No public type, function, or method signature in the v1.0-promised surface has changed for 4+ weeks after first downstream integration (experimental Volume excluded, D9)
+  - **Status:** Time-gated. v0.18.0 released the D12 surface on 2026-11-20, so the window passes on 2026-12-18. Releasing the option `WithRecordedComponents()` (lode#419, requested by Quarry) restarts it.
+  - **Evidence:** v0.18.0 releases D12, which introduces concrete `*Records[T]`, `*Blobs`, `*RecordView[T]`, and `*BlobView` handles, `Snapshot`, `SnapshotID`, `ObjectRef`, generic `Parquet[T]`, `Root.RemoveDataset`, and `s3.Bucket`/`s3.New`. It removes `ListManifests`, `GetManifest`, `PartitionRef`, `StreamWriter`, and the `With*Dir` options. (2026-11-20, lode)
+  - **Issue:** lode#175
 
-> **Evidence:** Window open. Last release change: v0.10.0 (2026-10-19) added `DatasetListOptions.StartAfter`, `PartitionListOptions.Prefix`/`StartAfter`, `ManifestListOptions.StartAfter`. Unreleased: D9 removes the Volume types, `NewVolume` and `ErrOptionNotValidForVolume` from `lode` (moved to experimental `lode/volume`), which restarts the window when it is released. Quarry took v0.10.0 with no call-site changes and uses no Volume API.
-> Date: 2026-10-20 | Observer: @pithecene | Project: lode, quarry
->
-> **Evidence:** Window restarted by v0.11.0 (2026-10-22). `Store` is now `ObjectStore` together with `ConditionalWriter`, so every store must implement `CompareAndSwap`; `SingleProcess` is added; `Dataset` gains `Expire` and `Sweep` with `ExpireRequest`, `ExpireReport`, `SweepRequest`, and `SweepReport`; D9 removes the Volume types, `NewVolume`, and `ErrOptionNotValidForVolume` from `lode`; and the module path becomes `github.com/pithecene/lode`. Earliest pass: 2026-11-19.
-> Date: 2026-10-22 | Observer: @pithecene | Project: lode
->
-> **Evidence:** Unreleased: D11 replaces the construction and record surface. `NewDataset`, `NewDatasetReader`, and the store factories give way to `Open`, `OpenReadOnly`, `FS`, `Memory`, and `Use`; records are typed (`Records[T]`, `Codec[T]`), blobs have their own handle (`Blobs`), metadata is any JSON object, and options are typed by target. The window restarts when it is released.
-> Date: 2026-10-22 | Observer: @pithecene | Project: lode, Quarry
->
-> **Evidence:** Window restarted by v0.12.0 (2026-10-23), which releases the D11 surface and, besides, `PartitionPath` and `ParsePartitionPath` (D4), `RangeReader` and `RangeStore` in place of the range methods of `ObjectStore` (D5), the removal of `s3.MockS3Client` (D7), and `SweepReport.Reindexed` (D10b). A symbol-by-symbol comparison with v0.11.0 finds every removed or changed signature in the changelog. Earliest pass: 2026-11-20.
-> Date: 2026-10-23 | Observer: @pithecene | Project: lode
->
-> **Evidence:** Window restarted by v0.13.0 (2026-11-01), which adds `Prefixed`, a factory whose store keeps every object under a prefix. The release also adds `volume.Remove` and `volume.ErrRemoved`, which the criterion excludes as part of the experimental Volume. No signature changes. Earliest pass: 2026-11-29.
-> Date: 2026-11-01 | Observer: @pithecene | Project: lode
-> **Evidence:** Window restarted by v0.15.0 (2026-11-03), which adds `Manifests` to `SnapshotReader` and the type `LoadedManifest`. A type that implements `SnapshotReader` outside Lode must add the method. No existing signature changes. Earliest pass: 2026-12-01.
-> Date: 2026-11-03 | Observer: @pithecene | Project: lode, quarry
-> **Evidence:** Window restarted by v0.16.0 (2026-11-05), which adds the view option `WithPinnedSnapshot`. No existing signature changes. The release also adds `volume.Reader.ReaderAt` and `volume.SnapshotReaderAt`, which the criterion excludes as part of the experimental Volume (D9). Earliest pass: 2026-12-03.
-> Date: 2026-11-05 | Observer: @pithecene | Project: lode, quarry
-> **Evidence:** Window restarted by v0.17.0 (2026-11-06), which changes the result type of `WithLayout` from `DatasetOption` to `ComponentOption`. Every call that passed `WithLayout` to a writer still compiles. No other signature changes, and Lode has no open pull request or issue that changes the v1.0-promised surface. Earliest pass: 2026-12-04.
-> Date: 2026-11-06 | Observer: @pithecene | Project: lode, quarry
-> **Evidence:** Unreleased (2026-11-18): D12 (`feat/v1-api-unification`) unifies the v1.0.0 surface—concrete `*Records[T]`, `*Blobs`, `*RecordView[T]`, `*BlobView` handles; `Snapshot`, `SnapshotID`, `ObjectRef`, `ObjectStats`; single-call `Blobs.StreamWrite`; generic `Parquet[T]`; `PrefixLister` and `ListPartitions` with one fence read and zero manifest reads on a fully indexed Hive layout; `Uncompressed`/`Gzip`/`Zstd` and `SHA256`/`CRC32C`/`MD5`; `Root.RemoveDataset`; `s3.Bucket`/`s3.New`; and removal of `ListManifests`, `GetManifest`, `PartitionRef`, `StreamWriter`, and `With*Dir` options. The 4-week window restarts when released.
-> Date: 2026-11-18 | Observer: @pithecene | Project: lode
-> Summary: Not met; window restarts on every API change.
-> Issue: lode#175
+- [ ] No new sentinel errors added to the v1.0-promised surface for 4+ weeks after first downstream integration (experimental Volume excluded, D9. Freeze window reset: v0.11.0 added `ErrSnapshotExpired` and `ErrHeadUncommitted`)
+  - **Status:** Time-gated. v0.18.0 released the D12 sentinels on 2026-11-20 and restarted the window, which passes on 2026-12-18.
+  - **Evidence:** v0.18.0 (D12) adds `ErrChecksumMismatch`, `ErrNotPartitioned`, and `ErrRemoved` (shared with `volume.ErrRemoved`). It removes `ErrNoManifests`, `ErrNilIterator`, and `ErrPartitionPrefixNotSupported`. (2026-11-20, lode)
+  - **Issue:** none
 
-- [ ] No new sentinel errors added to the v1.0-promised surface for 4+ weeks after first downstream integration (experimental Volume excluded, D9; freeze window reset: v0.11.0 added `ErrSnapshotExpired` and `ErrHeadUncommitted`)
-
-> **Evidence:** Window open. v0.10.0 (2026-10-19) added `ErrInvalidArgument` and `ErrPartitionPrefixNotSupported`. Earliest pass: 2026-11-16.
-> Date: 2026-10-20 | Observer: @pithecene | Project: lode
->
-> **Evidence:** Unreleased: D11 adds `ErrSettingsMismatch` and `ErrReadOnly` and removes `ErrCodecConfigured`, `ErrOptionNotValidForDataset`, and `ErrOptionNotValidForDatasetReader`. The window restarts when it is released.
-> Date: 2026-10-22 | Observer: @pithecene | Project: lode
->
-> **Evidence:** Window restarted by v0.11.0 (2026-10-22), which adds `ErrSnapshotExpired` and `ErrHeadUncommitted` for snapshot expiry. Earliest pass: 2026-11-19.
-> Date: 2026-10-22 | Observer: @pithecene | Project: lode
->
-> **Evidence:** Window restarted by v0.12.0 (2026-10-23), which adds `ErrSettingsMismatch` and `ErrReadOnly` and removes `ErrCodecConfigured`, `ErrOptionNotValidForDataset`, and `ErrOptionNotValidForDatasetReader` (D11). Earliest pass: 2026-11-20.
-> Date: 2026-10-23 | Observer: @pithecene | Project: lode
->
-> **Evidence:** Unreleased (2026-11-18): D12 adds `ErrChecksumMismatch`, `ErrNotPartitioned`, and `ErrRemoved` (shared with `volume.ErrRemoved`), and removes `ErrNoManifests`, `ErrNilIterator`, and `ErrPartitionPrefixNotSupported`. The window restarts when released.
-> Date: 2026-11-18 | Observer: @pithecene | Project: lode
-> Summary: Not met.
-> Issue: —
-
-- [x] Every candidate in `docs/plans/V1_API_DECISIONS.md` is marked accepted (and shipped) or rejected; none is left open
-
-> **Evidence:** D1–D8 all Open. D9 accepted and shipped: Volume is experimental in package `lode/volume`, and `PUBLIC_API.md` / `CONTRACT_VOLUME.md` say so. Dogfooding now bears on D8: `private-A` reads the on-disk path grammar directly (audit F8), so the path-compatibility policy has a real consumer.
-> Date: 2026-10-20 | Observer: @pithecene | Project: lode, private-A
->
-> **Evidence:** D10a–D10c, D10f, and D11 Open. D10d accepted and shipped: every `Store` implements `CompareAndSwap`. D10e superseded by #260: a Volume commit adopts an abandoned one from its staged manifest. D10 follows from the history fork investigated in #208 (audit F3); D11 follows from Quarry's call sites (three constructions of one dataset, a second store value for sidecar files, and untyped records).
-> Date: 2026-10-22 | Observer: @pithecene | Project: lode, Quarry
->
-> **Evidence:** D11 accepted (owner decision, 2026-10-22) and implemented, unreleased: the persisted format in #279 and the surface in the pull request that follows it. D11 decides D1–D3, and D8 is accepted as D11 revised it: the names within a dataset's paths are root options, and the default names, the flat paths, and the path grammar are persisted format that no release changes. D4–D7, D10a–D10c, and D10f remain open.
-> Date: 2026-10-22 | Observer: @pithecene | Project: lode
->
-> **Evidence:** D11 is on `main`, unreleased: the format in #279, the surface in #280, and two refactors in #282 and #283. D10a, D10c, and D10f accepted (owner decision, 2026-10-23); they change contract text only. D7 accepted and implemented: the S3 test double is no longer exported. D4 accepted and implemented: partition paths are a `PartitionPath`. D5 accepted and implemented: range reads are the optional `RangeReader`. The 2026-10-20 entry above predates D11: D1–D3 and D8 are no longer open.
-> Date: 2026-10-23 | Observer: @pithecene | Project: lode
->
-> **Evidence:** D6 accepted (owner decision, 2026-10-23) and implemented, unreleased: an error's source prefix is added where the error originates, and wrapping sites add context only. The rule is in CONTRACT_ERRORS §Error Messages, and the test in `internal/errprefix` enforces it.
-> Date: 2026-10-23 | Observer: @pithecene | Project: lode
->
-> **Evidence:** D10b accepted (owner decision, 2026-10-23) and implemented, unreleased: the canonical manifest is the commit and the partition manifests are its index. An unfiltered listing reports a snapshot without partition manifests under the empty partition, and `Sweep` restores the index once the snapshot is older than the grace period. The read-only check of the six F6 snapshots remains open; it no longer decides D10b.
-> Date: 2026-10-23 | Observer: @pithecene | Project: lode
->
-> **Evidence:** v0.12.0 (2026-10-23) ships every accepted decision: D1–D3, D8, and D11 (the surface and format 1.1.0), D4, D5, D6, D7, and D10b in code, and D10a, D10c, and D10f as contract text. D9 and D10d shipped earlier, and D10e is superseded. None is open or unreleased.
-> Date: 2026-10-23 | Observer: @pithecene | Project: lode
->
-> **Evidence:** D12 accepted and implemented (2026-11-18, `feat/v1-api-unification`): unifies the v1.0.0 surface and format `1.2.0` across `lode`, `lode/s3`, and `lode/volume`. None is open.
-> Date: 2026-11-18 | Observer: @pithecene | Project: lode
-> Summary: Met.
-> Issue: —
+- [x] Every candidate in `docs/plans/V1_API_DECISIONS.md` carries the mark accepted (and shipped) or rejected, and none stays open
+  - **Status:** Met. Every decision through D12 has the status accepted or superseded, and none is open.
+  - **Evidence:** D12 has the status accepted and implemented. It unifies the v1.0.0 surface and format `1.2.0` across `lode`, `lode/s3`, and `lode/volume`. (2026-11-18, lode)
+  - **Issue:** none
 
 - [x] `PUBLIC_API.md` matches exported symbols in `lode/api.go` with zero discrepancies
+  - **Status:** Met. `internal/apidoc` enforces the parity in both directions.
+  - **Evidence:** `PUBLIC_API.md` documents every exported top-level identifier of `lode`, `lode/s3`, and `lode/volume` and names no removed identifier. `TestEveryExportIsDocumented`, `TestEveryQualifiedNameExists`, and `TestEveryContractIsIndexedAndTypesExist` check it, updated in lockstep with D12. (2026-11-18, lode)
+  - **Issue:** none
 
-> **Evidence:** `PUBLIC_API.md` documents every exported top-level identifier of `lode`, `lode/s3`, and `lode/volume`, and names zero removed identifiers; `internal/apidoc` enforces bidirectional parity (`TestEveryExportIsDocumented`, `TestEveryQualifiedNameExists`, and `TestEveryContractIsIndexedAndTypesExist`). Updated in lockstep with D12 (2026-11-18).
-> Date: 2026-11-18 | Observer: @pithecene | Project: lode
-> Summary: Met; `internal/apidoc` enforces it.
-> Issue: —
-
-- [ ] Option surface of the v1.0-promised API has not expanded since v0.9.1 (experimental Volume options excluded, D9; freeze window reset: v0.9.1 added WithRetryObserver; v0.9.0 added WithRetryCount/BaseDelay/MaxDelay/Jitter, ErrOptionNotValidForVolume; removed VolumeOption, WithVolumeChecksum)
-
-> **Evidence:** No option added in v0.10.0. Window since v0.9.1 (2026-10-18) passes 4 weeks on 2026-11-15. Both downstream-driven additions (`WithRetryCount`, `WithRetryObserver`) came from Quarry requests (lode#163, lode#169).
-> Date: 2026-10-20 | Observer: @pithecene | Project: lode, quarry
-> Summary: On track; not yet met.
-> Issue: lode#169
->
-> **Evidence:** Unreleased: D11 types options by target (`RootOption`, `DatasetOption`, `ViewOption`, `ComponentOption`), removes `WithCodec` and `WithHiveLayout` (the codec is a parameter; `WithLayout` takes `Hive(...)`), renames `WithRetryCount` to `WithRetry`, and adds the path-name options `WithDatasetsDir`, `WithSnapshotsDir`, `WithPartitionsDir`, `WithSegmentsDir`, `WithManifestFile`, `WithDataDir`, `WithExpiredDir`, `WithStagedDir`, and `WithFlatPaths`. The window restarts when it is released.
-> Date: 2026-10-22 | Observer: @pithecene | Project: lode
->
-> **Evidence:** Window restarted by v0.12.0 (2026-10-23), which releases the option surface of D11. Earliest pass: 2026-11-20.
-> Date: 2026-10-23 | Observer: @pithecene | Project: lode
->
-> **Evidence:** Window restarted by v0.16.0 (2026-11-05), which adds the view option `WithPinnedSnapshot`, for a reader that holds a snapshot ID (Quarry's commit index). Earliest pass: 2026-12-03.
-> Date: 2026-11-05 | Observer: @pithecene | Project: lode, quarry
->
-> **Evidence:** Window restarted by v0.17.0 (2026-11-06), which makes `WithLayout` an option of views as well as writers. A caller now states a view's layout as it states a writer's. When a caller opens a view with `WithPinnedSnapshot` and `WithLayout`, the view reads only the manifest directory of the layout that `WithLayout` names. The maintainers plan no further option changes before v1.0. Earliest pass: 2026-12-04.
-> Date: 2026-11-06 | Observer: @pithecene | Project: lode, quarry
->
-> **Evidence:** Unreleased (2026-11-18): D12 removes the eight `With*Dir` and `WithManifestFile` root options (leaving `WithFlatPaths()`), renames `WithPinnedSnapshot` to `WithAnchor`, adds `FSOption` (`WithSync()`), adds `s3.Option`, and renames `volume.WithRetryCount` to `volume.WithRetry`. The window restarts when released.
-> Date: 2026-11-18 | Observer: @pithecene | Project: lode
-> Summary: Not met.
+- [ ] Option surface of the v1.0-promised API has not expanded since v0.9.1 (experimental Volume options excluded, D9. Freeze window reset: v0.9.1 added WithRetryObserver, and v0.9.0 added WithRetryCount/BaseDelay/MaxDelay/Jitter and ErrOptionNotValidForVolume and removed VolumeOption and WithVolumeChecksum)
+  - **Status:** Time-gated. v0.18.0 released the D12 option surface on 2026-11-20, so the window passes on 2026-12-18. Releasing the option `WithRecordedComponents()` (lode#419, requested by Quarry) restarts it. The manifest format is unchanged by it.
+  - **Evidence:** v0.18.0 (D12) removes the eight root path options (seven `With*Dir` options and `WithManifestFile`) and keeps `WithFlatPaths()`. It renames `WithPinnedSnapshot` to `WithAnchor` and `volume.WithRetryCount` to `volume.WithRetry`, and it adds `FSOption` (`WithSync()`) and `s3.Option`. (2026-11-20, lode)
+  - **Issue:** none
 
 ### 2. Manifest Format Freeze
 
 - [ ] `Manifest` struct fields unchanged for 4+ weeks
-
-> **Evidence:** `Manifest` fields unchanged since 2026-02-06 (#94); `FileRef` fields unchanged since 2026-02-06 (#103, which added `FileRef.Stats`). All 233,815 production manifest objects are `lode-manifest@1.0.0` and decode cleanly ([`dogfood_audit_2026-10.md`](dogfood_audit_2026-10.md) F1).
-> Date: 2026-10-20 | Observer: @pithecene | Project: lode, private-A
-> Summary: Met; >8 months stable, 96,478 snapshots in production.
-> Issue: —
->
-> **Evidence:** Unreleased: manifest format 1.1.0 (#279, D11) adds `CodecDescription`, `PartitionKeys`, and `Paths`, so that every setting a writer must share is persisted. Every 1.0.0 manifest remains readable. The window restarts when it is released.
-> Date: 2026-10-22 | Observer: @pithecene | Project: lode
->
-> **Evidence:** Window restarted by v0.12.0 (2026-10-23), which releases format 1.1.0. Every 1.0.0 manifest remains readable: data that v0.11.0 wrote reads back in every dataset and the volume, accepts new commits in the record datasets and the volume, and lists, expires, and sweeps in the Hive dataset (`TestCompat_v0_11_0_*`). Earliest pass: 2026-11-20.
-> Date: 2026-10-23 | Observer: @pithecene | Project: lode
->
-> **Evidence:** Unreleased (2026-11-18): manifest format `1.2.0` (D12) replaces `files` (`[]FileRef`) with `objects` (`[]ObjectRef`) and `paths` (`ManifestPaths`) with `flat` (`bool`), and reads legacy manifest formats `1.0.0` and `1.1.0` in place for standard or flat layouts with standard internal names. Readers also accept pre-`1.2.0` tombstone inventories. Datasets with custom internal names require [migration](../../PUBLIC_API.md#upgrading-a-dataset-with-custom-internal-names). The window restarts when released.
-> Date: 2026-11-18 | Observer: @pithecene | Project: lode
-> Summary: Not met.
-> Issue: —
+  - **Status:** Time-gated. v0.18.0 released manifest format `1.2.0` (D12) on 2026-11-20, so the window passes on 2026-12-18.
+  - **Evidence:** Format `1.2.0`, released in v0.18.0, replaces `files` (`[]FileRef`) with `objects` (`[]ObjectRef`) and `paths` (`ManifestPaths`) with `flat` (`bool`). It reads formats `1.0.0` and `1.1.0` in place for standard or flat layouts with standard internal names, and datasets with custom internal names require [migration](../../PUBLIC_API.md#upgrading-a-dataset-with-custom-internal-names). (2026-11-20, lode)
+  - **Issue:** none
 
 - [x] ~~`VolumeManifest` struct fields unchanged for 4+ weeks~~ Reclassified: Volume stability gate (`V1_API_DECISIONS.md` D9)
-
-> **Evidence:** Fields unchanged in source since 2026-02-06 (#94). No downstream Volume data (§4). Volume is experimental for v1.0 (D9), so the v1.0 tag does not freeze the `volume.Manifest` type; persisted Volume manifests stay readable (D8). This criterion moves to the gate for Volume leaving experimental.
-> Date: 2026-10-20 | Observer: @pithecene | Project: lode
-> Summary: Not a v1.0 blocker. Still unmet for Volume's own gate: no consumer writes Volumes.
-> Issue: —
+  - **Status:** Reclassified. Volume is experimental for v1.0 (D9), so this criterion gates Volume leaving experimental and stays unmet there because no consumer writes Volumes.
+  - **Evidence:** No downstream Volume data exists (§4). Persisted Volume manifests stay readable (D8). (2026-10-20, lode)
+  - **Issue:** none
 
 - [ ] Owner sign-off on manifest JSON schema as v1.0 wire format
-
-> **Evidence:** Inputs for the sign-off from the audit: Hive layout writes one byte-identical manifest copy per touched partition (~2.4× objects in production, F2); no production file carries a checksum (F1). Both are part of what v1.0 freezes.
-> Date: 2026-10-20 | Observer: @pithecene | Project: private-A
-> Summary: Pending owner decision.
-> Issue: —
+  - **Status:** Not met. The owner decision is pending.
+  - **Evidence:** The audit found that the Hive layout writes one byte-identical manifest copy per touched partition (~2.4× objects in production, F2). No production file carries a checksum (F1). (2026-10-20, private-A)
+  - **Issue:** none
 
 ### 3. Dataset Dogfooding
 
 - [x] At least one consumer writing Dataset snapshots to S3 for 2+ weeks
-
-> **Evidence:** `private-A` (through Quarry) has written to R2 from 2026-02-07 to 2026-10-10: 96,478 snapshots, 10,858 runs, 4.73M events ([`dogfood_audit_2026-10.md`](dogfood_audit_2026-10.md)).
-> Date: 2026-10-20 | Observer: @pithecene | Project: private-A, quarry
-> Summary: Met; ~8 months.
-> Issue: —
+  - **Status:** Met for about 8 months.
+  - **Evidence:** `private-A` (through Quarry) wrote to R2 from 2026-02-07 to 2026-10-10: 96,478 snapshots, 10,858 runs, and 4.73M events ([`dogfood_audit_2026-10.md`](dogfood_audit_2026-10.md)). (2026-10-20, private-A and quarry)
+  - **Issue:** none
 
 - [ ] At least one consumer reading Dataset snapshots back (round-trip) for 2+ weeks
-
-> **Evidence:** In production, `private-A` data is read back by Lode's on-disk path grammar, not through Lode's read API (audit F8). Quarry reads through Lode only for metrics and sidecar queries. The audit exercised Lode's reader once over the full dataset: `Latest`/`Read` ~130 ms, `ListManifests` 2 h 05 m, `ListPartitions` 2 h 40 m (F6).
-> Date: 2026-10-20 | Observer: @pithecene | Project: private-A, quarry
-> Summary: Not met. Reading data objects by path skips snapshots, so it is not a snapshot round-trip. Quarry's `Dataset.Read`/`Latest` calls (metrics and sidecar queries) have no evidence of 2+ weeks of production use.
-> Issue: —
+  - **Status:** Not met. Production reads data objects by path, which skips snapshots, and Quarry's Lode reads have no evidence of 2+ weeks of production use.
+  - **Evidence:** `private-A` reads its data back through Lode's on-disk path grammar, not Lode's read API (audit F8). Quarry reads through Lode only for metrics and sidecar queries. (2026-10-20, private-A and quarry)
+  - **Issue:** none
 
 - [x] At least 100 Dataset snapshots committed and read with no corruption
-
-> **Evidence:** 96,478 snapshots; every manifest decoded and every referenced data file downloaded: 0 missing, 0 size mismatches, 0 unparseable lines, 0 row-count mismatches (row counts checkable for single-file snapshots only) ([`dogfood_audit_2026-10.md`](dogfood_audit_2026-10.md) F1).
-> Date: 2026-10-20 | Observer: @pithecene | Project: private-A
-> Summary: Met by ~965×.
-> Issue: —
+  - **Status:** Met by about 965×.
+  - **Evidence:** Every manifest of 96,478 snapshots decoded, and every referenced data file downloaded with 0 missing, 0 size mismatches, 0 unparseable lines, and 0 row-count mismatches ([`dogfood_audit_2026-10.md`](dogfood_audit_2026-10.md) F1). Row counts are checkable for single-file snapshots only. (2026-10-20, private-A)
+  - **Issue:** none
 
 - [ ] No Dataset API changes required to support integration
+  - **Status:** Not met as worded. The API grew additively to support the integration, so the criterion needs rewording to "no breaking changes" or acceptance that the window resets.
+  - **Evidence:** Quarry's zstd and SHA-256 writers (quarry#424) required the unreleased dataset option `WithRecordedComponents()` (lode#419), an addition that breaks no caller. (2026-11-21, quarry)
+  - **Issue:** lode#174
 
-> **Evidence:** Integration drove three additive API changes: CAS retry options (v0.9.0, lode#163), `WithRetryObserver` (v0.9.1, lode#169), listing `Prefix`/`StartAfter` (v0.10.0, lode#175). None broke Quarry. lode#174 (retention) is open from the same workload, but GC is out of scope for v1.0.
-> Date: 2026-10-20 | Observer: @pithecene | Project: quarry
-> Summary: Not met as worded: the API grew to support the integration, additively. Re-word to "no breaking changes", or accept that the window resets.
-> Issue: lode#174
-
-### 4. Volume Dogfooding — Volume stability gate (not a v1.0 blocker)
+### 4. Volume Dogfooding (Volume Stability Gate, Not a v1.0 Blocker)
 
 Volume is experimental for v1.0 (`V1_API_DECISIONS.md` D9). The criteria in
 this section gate Volume leaving experimental, not the v1.0 tag. They stay
@@ -320,190 +186,136 @@ unchanged so evidence lands in one place when a consumer appears. The
 nearest candidate is pithecene/quarry#255.
 
 - [ ] At least one consumer using StageWriteAt + Commit with real data
-
-> **Evidence:** _not yet recorded_
-> Date: — | Observer: — | Project: —
-> Summary: —
-> Issue: #___
+  - **Status:** Not met. No consumer writes Volumes.
+  - **Evidence:** None recorded.
+  - **Issue:** none
 
 - [ ] At least one consumer using ReadAt on committed ranges
-
-> **Evidence:** _not yet recorded_
-> Date: — | Observer: — | Project: —
-> Summary: —
-> Issue: #___
+  - **Status:** Not met. No consumer writes Volumes.
+  - **Evidence:** None recorded.
+  - **Issue:** none
 
 - [ ] At least 3 Volume snapshots committed with cumulative manifests in a real workflow
-
-> **Evidence:** _not yet recorded_
-> Date: — | Observer: — | Project: —
-> Summary: —
-> Issue: #___
+  - **Status:** Not met. No consumer writes Volumes.
+  - **Evidence:** None recorded.
+  - **Issue:** none
 
 - [ ] No Volume API changes required to support integration
-
-> **Evidence:** _not yet recorded_
-> Date: — | Observer: — | Project: —
-> Summary: —
-> Issue: #___
+  - **Status:** Not met. No consumer writes Volumes.
+  - **Evidence:** None recorded.
+  - **Issue:** none
 
 - [ ] Volume writes/reads on AWS S3 during dogfooding with no adapter errors (moved from §6, D9)
-
-> **Evidence:** _not yet recorded_
-> Date: — | Observer: — | Project: —
-> Summary: —
-> Issue: #___
+  - **Status:** Not met. No consumer writes Volumes.
+  - **Evidence:** None recorded.
+  - **Issue:** none
 
 - [ ] Zero silent data corruption in Volume data during dogfooding, verified with checksums (moved from §10, D9)
-
-> **Evidence:** _not yet recorded_
-> Date: — | Observer: — | Project: —
-> Summary: —
-> Issue: #___
+  - **Status:** Not met. No consumer writes Volumes.
+  - **Evidence:** None recorded.
+  - **Issue:** none
 
 - [ ] `VolumeManifest` struct fields unchanged for 4+ weeks with real downstream data (moved from §2, D9)
-
-> **Evidence:** Fields unchanged in source since 2026-02-06 (#94). No downstream Volume data.
-> Date: 2026-10-20 | Observer: @pithecene | Project: lode
-> Summary: Not met.
-> Issue: —
+  - **Status:** Not met. No downstream Volume data exists.
+  - **Evidence:** No consumer writes Volumes. (2026-10-20, lode)
+  - **Issue:** none
 
 ### 5. Error Path Validation
 
 - [x] ErrNoSnapshots observed and handled correctly by a downstream consumer
-
-> **Evidence:** Quarry handles `ErrNoSnapshots` on cold start (empty dataset, no committed snapshots).
-> Date: 2026-02-23 | Observer: @pithecene | Project: quarry
-> Summary: Sentinel correctly returned and handled. Latest-pointer self-healing scan fallback exercised on first access.
-> Issue: (private)
+  - **Status:** Met in production.
+  - **Evidence:** Quarry handles `ErrNoSnapshots` on cold start against an empty dataset. The latest-pointer scan fallback ran on first access. (2026-02-23, quarry)
+  - **Issue:** (private)
 
 - [x] ErrPathExists observed in real storage confirming immutability enforcement
-
-> **Evidence:** Not observed in production — validated via targeted integration test (`TestPutFile_ErrPathExists_DoubleWrite` in `quarry/lode/sentinel_test.go`). Double-write via `LodeClient.PutFile()` to memory store confirms `lode.ErrPathExists` returned and classified as `StorageError` with `ErrPathExists` kind. Exercises Quarry's actual sidecar file write path.
-> Date: 2026-03-22 | Observer: @pithecene | Project: quarry
-> Summary: Immutability enforcement confirmed via integration test exercising Quarry's production write path against Lode's storage layer.
-> Issue: (private)
+  - **Status:** Met by an integration test on Quarry's production write path.
+  - **Evidence:** `TestPutFile_ErrPathExists_DoubleWrite` in `quarry/lode/sentinel_test.go` writes one sidecar file twice through `LodeClient.PutFile()` and receives `lode.ErrPathExists`, classified as a `StorageError`. (2026-03-22, quarry)
+  - **Issue:** (private)
 
 - [x] ErrNotFound observed and handled correctly for a missing snapshot lookup
-
-> **Evidence:** Not observed in production — validated via targeted integration test (`TestQueryLatestMetrics_ErrNotFound_StaleSnapshotID` in `quarry/lode/sentinel_test.go`). Fabricated snapshot ID passed to `ds.Read()` confirms `lode.ErrNotFound` returned. Exercises the exact code path in `QueryLatestMetrics` where a snapshot could be GC'd between list and read.
-> Date: 2026-03-22 | Observer: @pithecene | Project: quarry
-> Summary: Missing-snapshot sentinel confirmed via integration test exercising Quarry's stale-snapshot-ID recovery path.
-> Issue: (private)
+  - **Status:** Met by an integration test on Quarry's stale-snapshot recovery path.
+  - **Evidence:** `TestQueryLatestMetrics_ErrNotFound_StaleSnapshotID` in `quarry/lode/sentinel_test.go` passes a fabricated snapshot ID to `ds.Read()` and receives `lode.ErrNotFound`. (2026-03-22, quarry)
+  - **Issue:** (private)
 
 ### 6. S3 Backend Verification
 
 - [ ] AWS S3 used for Dataset writes/reads during dogfooding with no adapter errors (Volume half moved to §4, D9)
-
-> **Evidence:** R2 only. Reads: 0 errors over ~0.5M `GetObject` calls and the full listing during the audit. Writes: Quarry recorded `lode_write_failure` at 1.8% of writes since May (F7), unclassified, so adapter errors cannot be ruled in or out. Native AWS S3 not exercised.
-> Date: 2026-10-20 | Observer: @pithecene | Project: private-A
-> Summary: Partial. Needs AWS S3 and classified write failures.
-> Issue: —
+  - **Status:** Not met. Dogfooding exercises only R2, and write failures are unclassified.
+  - **Evidence:** Reads showed 0 errors over ~0.5M `GetObject` calls and the full listing during the audit. Quarry recorded `lode_write_failure` at 1.8% of writes since May without classification (F7), so the evidence neither rules adapter errors in nor rules them out. (2026-10-20, private-A)
+  - **Issue:** none
 
 - [x] Non-AWS backend caveat documented in README and PUBLIC_API.md as known v1.0 limitation
-
-> **Evidence:** `PUBLIC_API.md` §Other S3-Compatible Services states the caveat as a known limitation of v1.0: the guarantees rest on strong read-after-write consistency, on `If-None-Match: *` for `PutObject` and `CompleteMultipartUpload`, and on an atomic `If-Match` for `PutObject`. It names the services that Lode verifies: `TestIntegration_ConditionalWrites` races sixteen writers on `CompareAndSwap` and `Put` against LocalStack and RustFS, and Cloudflare R2 serves a production consumer. It states that SeaweedFS requires 4.29 or later: before 4.18 several concurrent conditional writes of one object succeed, and from 4.18 through 4.28 conditional writes stall under contention, as a scan of each release with the same race showed. README names the limitation and links to that section.
-> Date: 2026-10-24 | Observer: @pithecene | Project: lode
-> Summary: Met.
-> Issue: —
+  - **Status:** Met.
+  - **Evidence:** `PUBLIC_API.md` §Other S3-Compatible Services states the consistency and conditional-write requirements, names the services that `TestIntegration_ConditionalWrites` verifies (LocalStack, RustFS) and Cloudflare R2 in production, and states that SeaweedFS requires 4.29 or later. README names the limitation and links to that section. (2026-10-24, lode)
+  - **Issue:** none
 
 ### 7. Known Limitations Accepted
 
-- [x] Concurrency model documented in README + PUBLIC_API.md + contracts (single-writer when store lacks `ConditionalWriter`; CAS-based optimistic concurrency when available)
-
-> **Evidence:** CAS optimistic concurrency shipped in v0.8.0 (#135). Contracts, PUBLIC_API.md, and README document `ConditionalWriter`, `ErrSnapshotConflict`, and the adapter CAS capability matrix. PR #156 added the adapter CAS capability table to PUBLIC_API.md.
-> Date: 2026-02-25 | Observer: @pithecene | Project: lode
-> Summary: Concurrency model fully documented across README, PUBLIC_API.md, CONTRACT_WRITE_API.md, and CONTRACT_VOLUME.md. Adapter CAS capability matrix in PUBLIC_API.md.
-> Issue: #135
->
-> **Evidence:** v0.11.0 changed the model that this criterion names: `Store` requires `ConditionalWriter`, and a backend without a conditional write is wrapped in `SingleProcess`, which serves writers in one process only. `PUBLIC_API.md` §Concurrency and CAS, CONTRACT_STORAGE §ConditionalWriter Capability, CONTRACT_WRITE_API §Concurrency, and CONTRACT_VOLUME §Concurrency state that model. README now states the limitation and links to `PUBLIC_API.md`.
-> Date: 2026-10-24 | Observer: @pithecene | Project: lode
-> Summary: Met for the model of v0.11.0 and later.
-> Issue: —
+- [x] Concurrency model documented in README + PUBLIC_API.md + contracts (single-writer when store lacks `ConditionalWriter`, CAS-based optimistic concurrency when available)
+  - **Status:** Met for the model of v0.11.0 and later.
+  - **Evidence:** `Store` requires `ConditionalWriter`, and `SingleProcess` wraps a backend without a conditional write for writers in one process. `PUBLIC_API.md` §Concurrency and CAS, CONTRACT_STORAGE, CONTRACT_WRITE_API, and CONTRACT_VOLUME state that model, and README links to `PUBLIC_API.md`. (2026-10-24, lode)
+  - **Issue:** none
 
 - [x] Context cancellation cleanup nondeterminism documented as best-effort, no correctness impact
-
-> **Evidence:** `PUBLIC_API.md` §Cleanup Behavior states that the removal of partial objects is best-effort, that whether removal completes after a cancellation depends on the timing of the adapter, and that the difference has no effect on correctness, because an object that no manifest references belongs to no snapshot.
-> Date: 2026-10-24 | Observer: @pithecene | Project: lode
-> Summary: Met.
-> Issue: —
+  - **Status:** Met.
+  - **Evidence:** `PUBLIC_API.md` §Cleanup Behavior states that removal of partial objects is best-effort and timing-dependent, and that an unreferenced object belongs to no snapshot. (2026-10-24, lode)
+  - **Issue:** none
 
 - [x] Deferred test gaps (ITER-LIFECYCLE, COMP-WRAPPER-ORDER, ERR-RANGE-NOT-SUPPORTED) accepted as non-blocking
-
-> **Evidence:** ITER-LIFECYCLE and COMP-WRAPPER-ORDER test `ObjectIterator` and store composition, neither of which belongs to the v1.0 surface, so v1.0 accepts both as non-blocking. ERR-RANGE-NOT-SUPPORTED is closed rather than deferred: v0.12.0 made `RangeReader` optional (D5), and `TestRangeReader_IsOptional/ReaderAt_without_range_reads` checks that a handle or view over a store without range reads returns `ErrRangeReadNotSupported`.
-> Date: 2026-10-24 | Observer: @pithecene | Project: lode
-> Summary: Met; one gap closed and two accepted.
-> Issue: —
+  - **Status:** Met. A test closes one gap, and two remain accepted.
+  - **Evidence:** ITER-LIFECYCLE and COMP-WRAPPER-ORDER cover `ObjectIterator` and store composition, which are outside the v1.0 surface. `TestRangeReader_IsOptional/ReaderAt_without_range_reads` closes ERR-RANGE-NOT-SUPPORTED. (2026-10-24, lode)
+  - **Issue:** none
 
 ### 8. Documentation Completeness
 
 - [ ] README "Status" section updated to v1.0 language
+  - **Status:** Not met.
+  - **Evidence:** None recorded.
+  - **Issue:** none
 
-> **Evidence:** _not yet recorded_
-> Date: — | Observer: — | Project: —
-> Summary: —
-> Issue: #___
-
-- [x] All twelve contract files reviewed — no "planned"/"draft"/"future" language for shipped features
-
-> **Evidence:** All twelve active contract files in `docs/contracts/` (`CONTRACT_COMPLEXITY`, `CONTRACT_COMPOSITION`, `CONTRACT_CORE`, `CONTRACT_ERRORS`, `CONTRACT_EXAMPLES`, `CONTRACT_LAYOUT`, `CONTRACT_PARQUET`, `CONTRACT_READ_API`, `CONTRACT_RETENTION`, `CONTRACT_STORAGE`, `CONTRACT_VOLUME`, and `CONTRACT_WRITE_API`) state invariants only and reflect the unified D12 v1.0.0 surface and format `1.2.0`; `internal/apidoc` (`TestEveryContractIsIndexedAndTypesExist`) enforces that every contract is indexed in `docs/ARCH_INDEX.md` and declares only live exported types.
-> Date: 2026-11-18 | Observer: @pithecene | Project: lode
-> Summary: Met.
-> Issue: —
+- [x] All twelve contract files reviewed: no "planned"/"draft"/"future" language for shipped features
+  - **Status:** Met.
+  - **Evidence:** All twelve contract files in `docs/contracts/` state invariants only and reflect the D12 surface and format `1.2.0`. `TestEveryContractIsIndexedAndTypesExist` in `internal/apidoc` checks that `docs/ARCH_INDEX.md` indexes each contract and that each contract declares only live exported types. (2026-11-18, lode)
+  - **Issue:** none
 
 - [x] All examples pass (`task examples`)
-
-> **Evidence:** `task examples` passes all 11 examples (`default_layout`, `hive_layout`, `blob_upload`, `manifest_driven`, `stream_write_records`, `parquet`, `volume_sparse`, `vector_artifacts`, `optimistic_concurrency`, `retention`, and `s3`), updated to the unified D12 v1.0.0 surface.
-> Date: 2026-11-18 | Observer: @pithecene | Project: lode
-> Summary: All examples compile and run against the public API.
+  - **Status:** Met.
+  - **Evidence:** `task examples` passes all 12 programs it runs: `default_layout`, `hive_layout`, `vessel_positions`, `blob_upload`, `manifest_driven`, `stream_write_records`, `parquet`, `optimistic_concurrency`, `volume_sparse`, `depth_grid`, `vector_artifacts`, and `retention`. (2026-11-21, lode)
+  - **Issue:** none
 
 - [ ] CHANGELOG includes v1.0 entry summarizing stability commitment
-
-> **Evidence:** _not yet recorded_
-> Date: — | Observer: — | Project: —
-> Summary: —
-> Issue: #___
+  - **Status:** Not met.
+  - **Evidence:** None recorded.
+  - **Issue:** none
 
 ### 9. Blob File Completeness
 
-- [x] ~~Blob files written alongside structured data within a snapshot are enumerable without prefix-scanning storage~~ Reclassified: out of scope (see below)
+- [x] ~~Blob files written alongside structured data within a snapshot are enumerable without prefix-scanning storage~~ Reclassified: out of scope (see its Status)
+  - **Status:** Reclassified out of scope. Manifests list the blobs of committed snapshots, and caller-managed sidecar files are the caller's responsibility.
+  - **Evidence:** Files written through `Store.Put()` bypass the Dataset write path. Callers write blobs through `StreamWrite` or track file inventories in snapshot metadata (`PUBLIC_API.md` §Sidecar Files and Store Access). (2026-03-22, lode)
+  - **Issue:** none
 
-> **Evidence:** Reclassified as out-of-scope. Files written via `Store.Put()` directly — bypassing the Dataset write path — are not tracked by manifests by design. The manifest describes files Lode wrote; caller-managed sidecar files are the caller's responsibility. Correct patterns: use `StreamWrite` to write blobs through Lode, or track file inventories in snapshot `Metadata`. See `PUBLIC_API.md` §Sidecar Files and Store Access.
-> Date: 2026-03-22 | Observer: @pithecene | Project: lode
-> Summary: Design analysis confirmed this is a caller-side usage pattern, not a Lode gap. Manifest self-description integrity preserved.
-> Issue: —
-
-- [x] ~~Consumers can verify which blob files were successfully persisted for a given commit~~ Reclassified: out of scope (see above)
-
-> **Evidence:** Same reclassification. Blobs written through Lode's write path (`Write`, `StreamWrite`, `StreamWriteRecords`) are tracked in `Manifest.Files` and verifiable. Blobs written outside Lode are outside the manifest's scope.
-> Date: 2026-03-22 | Observer: @pithecene | Project: lode
-> Summary: Completeness verification is available for all files written through Lode's API. Files bypassing the API are the caller's concern.
-> Issue: —
+- [x] ~~Consumers can verify which blob files were successfully persisted for a given commit~~ Reclassified: out of scope (see the enumeration criterion)
+  - **Status:** Reclassified out of scope. Manifests list the blobs of committed snapshots, and caller-managed sidecar files are the caller's responsibility.
+  - **Evidence:** Each committed snapshot's manifest lists the blobs of that commit, so a caller can enumerate them. A blob whose commit failed, and whose best-effort delete also failed, appears in no committed snapshot's manifest, and blobs written outside Lode are outside its scope. (2026-03-22, lode)
+  - **Issue:** none
 
 ### 10. Data Correctness
 
 - [ ] Zero silent data corruption in Dataset data during dogfooding (Volume half moved to §4, D9)
-
-> **Evidence:** Full-history verification of 96,478 snapshots: every referenced data file matches its manifest size and parses as JSONL; row counts match where the manifest records them per file (single-file snapshots) ([`dogfood_audit_2026-10.md`](dogfood_audit_2026-10.md) F1). Limit: no file carries a checksum, so byte-level flips that keep size and JSON validity are not excluded.
-> Date: 2026-10-20 | Observer: @pithecene | Project: private-A
-> Summary: Partial. No corruption detected by size, row-count and parse checks (Dataset). Silent corruption cannot be ruled out until a consumer writes with `WithChecksum`.
-> Issue: —
+  - **Status:** Not met. Size, row-count, and parse checks found no corruption, but those checks cannot rule out silent corruption.
+  - **Evidence:** Every referenced data file of 96,478 snapshots matches its manifest size and parses as JSONL ([`dogfood_audit_2026-10.md`](dogfood_audit_2026-10.md) F1). No file carries a checksum. (2026-10-20, private-A)
+  - **Issue:** none
 
 - [x] Zero manifest deserialization failures on same-version data
-
-> **Evidence:** 0 of 233,815 manifest objects fail to decode; all `lode-manifest@1.0.0`, written across Lode releases up to v0.9.0 and read by v0.9.0 ([`dogfood_audit_2026-10.md`](dogfood_audit_2026-10.md) F1).
-> Date: 2026-10-20 | Observer: @pithecene | Project: private-A
-> Summary: Met.
-> Issue: —
+  - **Status:** Met.
+  - **Evidence:** 0 of 233,815 manifest objects fail to decode. All are `lode-manifest@1.0.0`, written by releases up to v0.9.0 and read by v0.9.0 ([`dogfood_audit_2026-10.md`](dogfood_audit_2026-10.md) F1). (2026-10-20, private-A)
+  - **Issue:** none
 
 - [ ] Zero snapshot history inconsistencies (forked history, missing parent, duplicate ID)
-
-> **Evidence:** 0 duplicate IDs. 2 missing parents (2026-02-12, Lode v0.7.3). 1,113 forks, of which 1,112 predate the consumer's CAS adoption (2026-03-08) and are expected without concurrency control. **1 fork happened under Lode v0.9.0 CAS + retry (2026-08-25)** ([`dogfood_audit_2026-10.md`](dogfood_audit_2026-10.md) F3). The same fork shows a child whose ID precedes its parent's: ID order is not commit order, which breaks the assumption in the latest-by-scan fallback (`history.go` `scan`, unchanged in v0.10.0).
->
-> **Root cause (2026-10-20):** a read-only replay of the 34,642 snapshots committed since CAS adoption shows that the forking commit adopted the snapshot with the largest ID, the head's parent, while its CAS matched the pointer; 289 comparable commits adopted the head. In v0.9.0 that outcome requires a failed read of a valid head to be treated as a stale pointer, either by the forking writer or by another writer's retry refresh, which then replaced the pointer. Which of the two occurred is inferred, not observed, because the store error was not recorded (audit F3). v0.11.0 removes both paths and returns any failed read other than not-found to the caller.
-> Date: 2026-10-20 | Observer: @pithecene | Project: private-A
-> Summary: Not met. The cause is identified and removed in v0.11.0; the criterion requires a clean observation period on v0.11.0.
-> Issue: [#208](https://github.com/pithecene/lode/issues/208)
+  - **Status:** Not met. One fork happened under v0.9.0 CAS + retry, and v0.11.0 removes its cause, so the criterion needs a clean observation period on v0.11.0 or later.
+  - **Evidence:** The audit found 0 duplicate IDs, 2 missing parents (Lode v0.7.3), and 1,113 forks, of which 1,112 predate CAS adoption and one happened under CAS on 2026-08-25 ([`dogfood_audit_2026-10.md`](dogfood_audit_2026-10.md) F3). Lode treated a failed read of a valid head as a stale pointer, and the scan fallback then selected the head's parent, because snapshot ID order is not commit order. (2026-10-20, private-A)
+  - **Issue:** [#208](https://github.com/pithecene/lode/issues/208)
 
 ---
 
@@ -520,7 +332,7 @@ The following are explicitly **not blockers** for the v1.0 release:
 - Distributed coordination (consensus, lock management)
 - Query planning or execution
 - Volume API and `VolumeManifest` stability: Volume is experimental for
-  v1.0 (`V1_API_DECISIONS.md` D9; §4 is its own gate)
+  v1.0 (`V1_API_DECISIONS.md` D9, and §4 is its own gate)
 
 These may become goals for v1.1+ but must not gate the initial stability release.
 
@@ -528,12 +340,12 @@ These may become goals for v1.1+ but must not gate the initial stability release
 
 ## References
 
-- `PUBLIC_API.md` — public API shape and defaults
-- `docs/plans/V1_API_DECISIONS.md` — breaking API candidates held for v1.0
-- `docs/plans/dogfood_audit_2026-10.md` — full-history production audit (evidence for §2, §3, §6, §10)
-- `docs/contracts/CONTRACT_CORE.md` — core model invariants
-- `docs/contracts/CONTRACT_WRITE_API.md` — write API semantics
-- `docs/contracts/CONTRACT_READ_API.md` — read API contract
-- `docs/contracts/CONTRACT_VOLUME.md` — Volume persistence model
-- `docs/contracts/CONTRACT_ERRORS.md` — error taxonomy
-- `docs/contracts/CONTRACT_STORAGE.md` — storage adapter obligations
+- `PUBLIC_API.md`: public API shape and defaults
+- `docs/plans/V1_API_DECISIONS.md`: breaking API candidates held for v1.0
+- `docs/plans/dogfood_audit_2026-10.md`: full-history production audit (evidence for §2, §3, §6, §10)
+- `docs/contracts/CONTRACT_CORE.md`: core model invariants
+- `docs/contracts/CONTRACT_WRITE_API.md`: write API semantics
+- `docs/contracts/CONTRACT_READ_API.md`: read API contract
+- `docs/contracts/CONTRACT_VOLUME.md`: Volume persistence model
+- `docs/contracts/CONTRACT_ERRORS.md`: error taxonomy
+- `docs/contracts/CONTRACT_STORAGE.md`: storage adapter obligations
