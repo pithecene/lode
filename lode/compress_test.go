@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
+	"weak"
 
 	"github.com/go-openapi/testify/v2/assert"
 )
@@ -70,6 +72,29 @@ func TestZstd_ClosedWriterRefusesWrites(t *testing.T) {
 	if err := w.Close(); err != nil {
 		t.Errorf("second close = %v, want nil", err)
 	}
+}
+
+func TestZstd_ClosedEncoderReleasesSink(t *testing.T) {
+	t.Parallel()
+	sink := new(bytes.Buffer)
+	sinkRef := weak.Make(sink)
+	w, err := Zstd().Compress(sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Keep the encoder alive even if the pool drops it during collection.
+	enc := w.(*zstdWriter).enc
+	if _, err := w.Write([]byte("payload")); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	runtime.GC()
+	if sinkRef.Value() != nil {
+		t.Error("closed encoder still holds its output writer")
+	}
+	runtime.KeepAlive(enc)
 }
 
 // failingWriter refuses every write.

@@ -88,11 +88,15 @@ func (w *zstdWriter) Close() error {
 		return nil
 	}
 	enc := w.enc
+	pool := w.pool
 	w.enc = nil
+	w.pool = nil
 	if err := enc.Close(); err != nil {
 		return err
 	}
-	w.pool.Put(enc)
+	// Close leaves the output writer attached to the encoder.
+	enc.Reset(nil)
+	pool.Put(enc)
 	return nil
 }
 
