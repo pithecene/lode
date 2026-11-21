@@ -9,6 +9,10 @@ and Lode adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+---
+
+## [0.18.2] - 2026-11-21
+
 ### Changed
 
 - **The zstd compressor reuses its encoders**: `lode.Zstd()` keeps the encoders of finished streams for later streams, and each encoder runs on one goroutine. A stream of one kibibyte takes about 5 µs and 9 KB in place of 225 µs and 2.35 MB. A dataset that commits one small record at a time no longer pays for a new encoder on every write. A writer that `Close` returned refuses further writes. `docs/BENCHMARKS.md` records the measurements.
@@ -596,7 +600,8 @@ and Lode adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 <!-- jscpd:ignore-start -->
 
-[Unreleased]: https://github.com/pithecene/lode/compare/v0.18.1...HEAD
+[Unreleased]: https://github.com/pithecene/lode/compare/v0.18.2...HEAD
+[0.18.2]: https://github.com/pithecene/lode/compare/v0.18.1...v0.18.2
 [0.18.1]: https://github.com/pithecene/lode/compare/v0.18.0...v0.18.1
 [0.18.0]: https://github.com/pithecene/lode/compare/v0.17.1...v0.18.0
 [0.17.1]: https://github.com/pithecene/lode/compare/v0.17.0...v0.17.1
