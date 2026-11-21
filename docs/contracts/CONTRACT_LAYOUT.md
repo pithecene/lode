@@ -113,12 +113,14 @@ Auxiliary control paths on every dataset layout (`<dataset dir>` is
 ### Checksum
 - Bundled constructors: `SHA256()` (`"sha256"`), `CRC32C()` (`"crc32c"`), and
   `MD5()` (`"md5"`).
-- Custom `Checksum` implementations provide `Name()` and `NewHasher()
-  HashWriter`.
-- When a writer computes a checksum, which `WithChecksum` configures or
-  `WithRecordedComponents()` adopts from the head, manifests record
-  `checksum_algorithm` and per-object hex digests over stored bytes; when the
-  writer computes none, no checksum fields are written.
+- Custom `Checksum` implementations MUST return a non-empty `Name()`
+  (`ErrInvalidArgument` when a writer or view opens otherwise) and provide
+  `NewHasher() HashWriter`.
+- A writer's checksum is the one that `WithChecksum` configures or, under
+  `WithRecordedComponents()` with a head, the one that the head records, which
+  may be none. A writer with a checksum records `checksum_algorithm` on its
+  manifests, even on a snapshot that stores no object, and a hex digest over
+  the stored bytes of each object. A writer without a checksum writes neither.
 
 ### Codec
 - Bundled constructors: `JSONL[T]()` (`"jsonl"`) and `Parquet[T](schema,

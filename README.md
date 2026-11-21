@@ -131,6 +131,8 @@ A **Dataset**, which holds structured collections, follows these rules:
   metadata.
 - A caller chooses storage, format, compression, checksums, and partitioning
   independently of one another.
+- A writer of an existing dataset can adopt the compression and checksum that
+  its head records, with `WithRecordedComponents()`.
 
 A **Volume**, which stores sparse byte ranges and resides in the
 experimental package `lode/volume`, follows these rules:

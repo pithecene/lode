@@ -11,7 +11,11 @@ and Lode adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- **Writers can adopt the head's components**: `lode.WithRecordedComponents()` makes a writer handle take the compressor and checksum that the dataset's head records, including the staged manifest of an interrupted first commit. `WithCompressor` and `WithChecksum` then set the components of a dataset without a head, and otherwise only supply a custom component that the head names. A caller that sets defaults for new datasets no longer has to read the head itself, which a read-only view cannot do for a pending first commit. `CONTRACT_WRITE_API.md` § Settings states the rule.
+- **Writers can adopt the head's components**: `lode.WithRecordedComponents()` makes a writer handle take the compressor and checksum that the dataset's head records, including the staged manifest of an interrupted first commit. `WithCompressor` and `WithChecksum` then set the components of a dataset without a head, and otherwise only supply a custom component that the head names for writes. Reads still resolve each snapshot's components against them. A caller that sets defaults for new datasets no longer has to read the head itself. `CONTRACT_WRITE_API.md` § Settings states the rule.
+
+### Changed
+
+- **A custom checksum needs a name**: a writer or view opened with a custom `Checksum` whose `Name()` is empty fails with `ErrInvalidArgument`. A manifest records the checksum by name, so such a checksum wrote digests that no manifest named. `RemoveDataset` still ignores the checksum. `CONTRACT_LAYOUT.md` § Checksum states the rule.
 
 ---
 

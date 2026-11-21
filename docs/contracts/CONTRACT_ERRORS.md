@@ -87,7 +87,7 @@ purpose so callers can handle them deterministically with `errors.Is` and
 | Error | Source | Meaning |
 |-------|--------|---------|
 | `lode.ErrInvalidArgument` | `Open`, `OpenReadOnly`, `FS`, `NewFS`, `Prefixed`, `s3.New`, `s3.Bucket` | `nil` factory, `nil` store, `nil` option, missing S3 client/bucket, or invalid `Prefixed` prefix |
-| `lode.ErrInvalidArgument` | `Records`, `Blobs`, `RemoveDataset`, `WithAnchor` | Non-segment `DatasetID` or `WithAnchor` `SnapshotID`; `nil` codec, option, layout, compressor, or typed-nil checksum; empty codec name; partitioned `Blobs`; invalid Hive keys or `By` binding; invalid compressor extension; out-of-range retry option |
+| `lode.ErrInvalidArgument` | `Records`, `Blobs`, `RemoveDataset`, `WithAnchor` | Non-segment `DatasetID` or `WithAnchor` `SnapshotID`; `nil` codec, option, layout, compressor, or typed-nil checksum; empty codec name; empty checksum name on a writer or view; partitioned `Blobs`; invalid Hive keys or `By` binding; invalid compressor extension; out-of-range retry option |
 | `lode.ErrInvalidArgument` | `Write`, `StreamWrite`, `NewMetadata`, `volume.Writer.Commit` | `nil` `io.Reader` (`Blobs.StreamWrite`), `nil` iterator (`Records.StreamWrite`), or metadata that does not encode as a JSON object |
 | `lode.ErrInvalidArgument` | `Expire`, `Sweep` | `ExpireRequest` with all selectors unset, or `SweepRequest.Grace <= 0` |
 | `lode.ErrInvalidArgument` | `volume.New`, `volume.Remove`, `volume.Head`, `StageWriteAt`, `Commit`, `ReadAt` | Non-segment `volume.ID`, non-positive `totalLength`, `nil` option/factory/checksum, negative offset, non-positive length, empty or out-of-bounds block, foreign block path, or commit with zero new blocks |

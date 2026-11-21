@@ -150,6 +150,25 @@ func run() error {
 	}
 	fmt.Printf("  Content: %q\n", string(streamBlob))
 
+	// -------------------------------------------------------------------------
+	// REOPEN: Keep an existing dataset's components
+	// -------------------------------------------------------------------------
+	fmt.Println("\n=== REOPEN ===")
+
+	// A writer whose defaults for new datasets differ from an existing head
+	// adopts the head's compressor and checksum with WithRecordedComponents.
+	// Without it, CRC32C here would fail the open with ErrSettingsMismatch,
+	// because "artifacts" records SHA-256.
+	reopened, err := root.Blobs(ctx, "artifacts", lode.WithChecksum(lode.CRC32C()), lode.WithRecordedComponents())
+	if err != nil {
+		return fmt.Errorf("failed to reopen dataset: %w", err)
+	}
+	next, err := reopened.Write(ctx, []byte("A later blob."), blobInfo{ContentType: "text/plain", Filename: "later.txt"})
+	if err != nil {
+		return fmt.Errorf("failed to write through the reopened dataset: %w", err)
+	}
+	fmt.Printf("Created snapshot: %s (checksum %s, the head's)\n", next.ID, next.ChecksumAlgorithm)
+
 	fmt.Println("\n=== SUCCESS ===")
 	fmt.Println("Raw blob upload and read complete!")
 
