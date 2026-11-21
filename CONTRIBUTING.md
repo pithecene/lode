@@ -5,7 +5,11 @@
 - [mise](https://mise.jdx.dev/), which manages Go, the task runner, and the
   linters
 
+Bosun is a private maintainer tool. For regular development, disable it in
+your development shell before installing the public tools.
+
 ```bash
+export MISE_DISABLE_TOOLS=github:pithecene/bosun
 mise install
 ```
 
@@ -17,6 +21,11 @@ This command installs:
 - [gremlins](https://github.com/go-gremlins/gremlins) 0.6.0
 - [yamllint](https://yamllint.readthedocs.io/) 1.38.0
 - [benchstat](https://pkg.go.dev/golang.org/x/perf/cmd/benchstat)
+
+Maintainers who use Bosun locally need a GitHub token with read access to
+its private release. In a shell with Bosun enabled, supply the token to mise
+through `MISE_GITHUB_TOKEN` and run `mise install github:pithecene/bosun`.
+Then `mise exec -- bosun` selects the version pinned in `mise.toml`.
 
 ## Development Tasks
 
