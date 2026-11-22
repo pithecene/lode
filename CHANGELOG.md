@@ -9,6 +9,10 @@ and Lode adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+---
+
+## [0.18.3] - 2026-11-21
+
 ### Added
 
 - **Writers can adopt the head's components**: `lode.WithRecordedComponents()` makes a writer handle take the compressor and checksum that the dataset's head records, including the staged manifest of an interrupted first commit. `WithCompressor` and `WithChecksum` then set the components of a dataset without a head, and otherwise only supply a custom component that the head names for writes. Reads still resolve each snapshot's components against them. A caller that sets defaults for new datasets no longer has to read the head itself. `CONTRACT_WRITE_API.md` § Settings states the rule.
@@ -608,7 +612,8 @@ and Lode adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 <!-- jscpd:ignore-start -->
 
-[Unreleased]: https://github.com/pithecene/lode/compare/v0.18.2...HEAD
+[Unreleased]: https://github.com/pithecene/lode/compare/v0.18.3...HEAD
+[0.18.3]: https://github.com/pithecene/lode/compare/v0.18.2...v0.18.3
 [0.18.2]: https://github.com/pithecene/lode/compare/v0.18.1...v0.18.2
 [0.18.1]: https://github.com/pithecene/lode/compare/v0.18.0...v0.18.1
 [0.18.0]: https://github.com/pithecene/lode/compare/v0.17.1...v0.18.0
