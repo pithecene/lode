@@ -1122,7 +1122,8 @@ func pendingBackoff(n int) time.Duration {
 // awaitAncestor reads ancestor id again until deadline or the end of ctx. A
 // writer that won the CAS persists its manifest only after the
 // pointer, so the chain below a live winner is incomplete for a moment. An
-// expired ancestor never returns, so it ends the wait at once.
+// expired ancestor never returns, so it ends the wait at once. Every cause is
+// reported: a read that the deadline interrupts matches DeadlineExceeded.
 func (h *History[ID, M]) awaitAncestor(ctx context.Context, deadline time.Time, id ID, missing error) (*Snapshot[ID, M], error) {
 	waitCtx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
@@ -1144,26 +1145,7 @@ func (h *History[ID, M]) awaitAncestor(ctx context.Context, deadline time.Time, 
 			err = nil
 		}
 	}
-	if ctx.Err() == nil && waitCtx.Err() != nil {
-		err = withoutDeadline(err) // the wait's own end is not a failure to report
-	}
 	return nil, errors.Join(missing, err, ctx.Err())
-}
-
-// withoutDeadline drops the branches of err that only report a deadline.
-func withoutDeadline(err error) error {
-	if !errors.Is(err, context.DeadlineExceeded) {
-		return err
-	}
-	joined, ok := err.(interface{ Unwrap() []error }) //nolint:errorlint // the walk inspects each node itself
-	if !ok {
-		return withoutDeadline(errors.Unwrap(err))
-	}
-	var kept []error
-	for _, child := range joined.Unwrap() {
-		kept = append(kept, withoutDeadline(child))
-	}
-	return errors.Join(kept...)
 }
 
 // containsAttempt follows persisted parent links to the attempted ID,

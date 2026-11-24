@@ -1155,23 +1155,23 @@ func TestAdvanceReportsWhatEndsTheWait(t *testing.T) {
 		return nil, ctx.Err()
 	}
 	for _, tc := range []struct {
-		name         string
-		get          map[string]func(context.Context) (io.ReadCloser, error)
-		want, refuse error
+		name string
+		get  map[string]func(context.Context) (io.ReadCloser, error)
+		want []error
 	}{
-		{"a blocked read ends at the deadline, which is not the caller's", map[string]func(context.Context) (io.ReadCloser, error){winner: misses(blocked)}, errNotFound, context.DeadlineExceeded},
+		{"a blocked read ends at the deadline", map[string]func(context.Context) (io.ReadCloser, error){winner: misses(blocked)}, []error{errNotFound, context.DeadlineExceeded}},
 		{"a read that fails after the deadline keeps its error", map[string]func(context.Context) (io.ReadCloser, error){winner: misses(func(ctx context.Context) (io.ReadCloser, error) {
 			<-ctx.Done()
 			return nil, errBoom
-		})}, errBoom, nil},
+		})}, []error{errNotFound, errBoom}},
 		{"a joined failure keeps its other cause", map[string]func(context.Context) (io.ReadCloser, error){winner: misses(func(ctx context.Context) (io.ReadCloser, error) {
 			<-ctx.Done()
 			return nil, fmt.Errorf("read: %w", errors.Join(ctx.Err(), errBoom))
-		})}, errBoom, context.DeadlineExceeded},
+		})}, []error{errNotFound, errBoom, context.DeadlineExceeded}},
 		{"a failed fence check is reported", map[string]func(context.Context) (io.ReadCloser, error){
 			winner:  func(context.Context) (io.ReadCloser, error) { return nil, errNotFound },
 			pointer: blocked,
-		}, errBoom, nil},
+		}, []error{errNotFound, errBoom}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
@@ -1190,11 +1190,10 @@ func TestAdvanceReportsWhatEndsTheWait(t *testing.T) {
 				}
 				h := New(blockingStore{s, tc.get}, testKind{}, pointer, "test manifest", removable)
 				err := h.Advance(t.Context(), "4", "5", &manifest{}, []string{testKind{}.ManifestPath("5")})
-				if !errors.Is(err, ErrManifestUncertain) || !errors.Is(err, errConflict) || !errors.Is(err, tc.want) {
-					t.Errorf("Advance = %v, want an uncertain conflict with %v", err, tc.want)
-				}
-				if tc.refuse != nil && errors.Is(err, tc.refuse) {
-					t.Errorf("Advance = %v, want no %v", err, tc.refuse)
+				for _, want := range append(tc.want, ErrManifestUncertain, errConflict) {
+					if !errors.Is(err, want) {
+						t.Errorf("Advance = %v, want %v", err, want)
+					}
 				}
 				if waited := time.Since(start); waited > pendingWait {
 					t.Errorf("waited %v, want at most %v", waited, pendingWait)
