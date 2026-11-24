@@ -11,7 +11,7 @@ and Lode adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
-- **Concurrent writers wait for a pending winner**: a writer that lost the pointer swap failed with an uncertain commit while the winner had not yet persisted its manifest, and `WithRetry` never retried it. Such a writer now reads the missing ancestor again for up to two seconds, so a commit that did not take effect becomes a conflict that `WithRetry` retries. An ancestor that stays unreadable for that time, or that retention expired, still leaves the outcome uncertain, and the data stays. The fault dates from v0.18.0. `CONTRACT_CORE.md` § Head Pointer states the rule.
+- **Concurrent writers wait for a pending winner**: a writer that lost the pointer swap failed with an uncertain commit while the winner had not yet persisted its manifest. `WithRetry` never retried that error. Such a writer now reads the missing ancestor again for about two seconds, so a commit that did not take effect becomes a conflict that `WithRetry` retries. An ancestor that stays missing, or that retention expired, still leaves the outcome uncertain, and the data stays. The fault dates from v0.18.0. `CONTRACT_CORE.md` § Head Pointer states the rule.
 
 ---
 

@@ -116,10 +116,12 @@ One-time cold/first-commit additions:
 After a failed Dataset or Volume pointer CAS, reconciliation reads the pointer.
 For a different head, it reads at most two manifest paths per ancestor it
 examines and retains one visited ID per ancestor. For an ancestor
-without a manifest it makes at most one `Exists` call, then repeats that
-ancestor's read with a backoff from 10 ms to 250 ms. One commit attempt spends
-at most two seconds on those waits and reads, and one pointer `Get` when the
-ancestor stays missing. A successful CAS adds no ancestry reads.
+without a manifest, a dataset first reads its tombstone (1 `Get`, plus 1
+`Exists` when it has one). The walk then repeats that ancestor's read with a
+backoff from 10 ms to 250 ms. One two-second context deadline covers the waits
+and repeated reads of an attempt: a store that ignores its context can finish
+a read after it. An ancestor that stays missing costs one more pointer `Get`.
+A successful CAS adds no ancestry reads.
 
 ---
 
