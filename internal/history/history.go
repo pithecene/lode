@@ -1084,7 +1084,7 @@ func (h *History[ID, M]) advancePointer(ctx context.Context, expected string, id
 	}
 	if err == nil {
 		var applied bool
-		applied, err = h.containsAttempt(ctx, head, id, ID(expected))
+		applied, err = h.awaitAncestry(ctx, head, id, ID(expected))
 		if applied {
 			return head, nil
 		}
@@ -1097,6 +1097,33 @@ func (h *History[ID, M]) advancePointer(ctx context.Context, expected string, id
 	}
 	h.unstage(ctx, staged)
 	return "", fmt.Errorf("failed to update latest pointer: %w", writeErr)
+}
+
+// pendingReads bounds how often awaitAncestry reads an ancestry again. With
+// pendingBackoff the waits add up to about 1.6 seconds.
+const pendingReads = 10
+
+// pendingBackoff is the delay before each of those reads.
+func pendingBackoff(n int) time.Duration {
+	return min(10*time.Millisecond<<n, 250*time.Millisecond)
+}
+
+// awaitAncestry is containsAttempt with time for a pending ancestor: a writer
+// that won the CAS persists its manifest only after the pointer, so the chain
+// below a live winner is incomplete for a moment. A gap that outlasts the
+// waits leaves the outcome uncertain, as an abandoned commit does.
+func (h *History[ID, M]) awaitAncestry(ctx context.Context, head, attempt, expected ID) (bool, error) {
+	for n := 0; ; n++ {
+		applied, err := h.containsAttempt(ctx, head, attempt, expected)
+		if n == pendingReads || !errors.Is(err, h.errs.NotFound) {
+			return applied, err
+		}
+		select {
+		case <-ctx.Done():
+			return false, errors.Join(err, ctx.Err())
+		case <-time.After(pendingBackoff(n)):
+		}
+	}
 }
 
 // containsAttempt follows persisted parent links to the attempted ID,

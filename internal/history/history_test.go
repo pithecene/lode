@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/pithecene/lode/internal/retry"
@@ -1029,6 +1030,60 @@ func TestAdvancePreservesAnUncertainAttemptOnCyclicAncestry(t *testing.T) {
 	if _, ok := s.objects[stagingKind{}.StagedPath("5")]; !ok {
 		t.Fatal("lost staging while the ancestry was uncertain")
 	}
+}
+
+// The writer that won the CAS persists its manifest after the pointer, so a
+// loser can read the ancestry before the manifest exists.
+func TestAdvanceAwaitsAPendingWinner(t *testing.T) {
+	t.Parallel()
+	winner := testKind{}.ManifestPath("6")
+	paths := []string{testKind{}.ManifestPath("5")}
+	for _, tc := range []struct {
+		name      string
+		publishes time.Duration
+		uncertain bool
+	}{
+		{"a winner that publishes makes the loss a plain conflict", 100 * time.Millisecond, false},
+		{"a winner that never publishes leaves the outcome uncertain", time.Hour, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			synctest.Test(t, func(t *testing.T) {
+				start := time.Now()
+				s := newMemStore()
+				s.objects[pointer] = []byte("6")
+				s.fail = func(op, path string) error {
+					if op == "get" && path == winner && time.Since(start) >= tc.publishes {
+						s.objects[winner] = []byte(`{"parent":"4"}`)
+					}
+					return nil
+				}
+				h := New(s, testKind{}, pointer, "test manifest", testErrors)
+				err := h.Advance(t.Context(), "4", "5", &manifest{}, paths)
+				if !errors.Is(err, errConflict) || errors.Is(err, ErrManifestUncertain) != tc.uncertain {
+					t.Fatalf("Advance = %v, want a conflict with uncertain = %v", err, tc.uncertain)
+				}
+				if waited := time.Since(start); waited > 2*time.Second {
+					t.Fatalf("waited %v, want a bounded wait", waited)
+				}
+			})
+		})
+	}
+
+	t.Run("a canceled context ends the wait uncertain", func(t *testing.T) {
+		t.Parallel()
+		synctest.Test(t, func(t *testing.T) {
+			s := newMemStore()
+			s.objects[pointer] = []byte("6")
+			ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+			defer cancel()
+			h := New(s, testKind{}, pointer, "test manifest", testErrors)
+			err := h.Advance(ctx, "4", "5", &manifest{}, paths)
+			if !errors.Is(err, ErrManifestUncertain) || !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("Advance = %v, want uncertain with the context's error", err)
+			}
+		})
+	})
 }
 
 func TestAdvance_StagesOnlyAcceptedCommits(t *testing.T) {
