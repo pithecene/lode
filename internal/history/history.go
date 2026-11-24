@@ -1122,8 +1122,8 @@ func pendingBackoff(n int) time.Duration {
 // awaitAncestor reads ancestor id again until deadline or the end of ctx. A
 // writer that won the CAS persists its manifest only after the
 // pointer, so the chain below a live winner is incomplete for a moment. An
-// expired ancestor never returns, so it ends the wait at once. Every cause is
-// reported: a read that the deadline interrupts matches DeadlineExceeded.
+// expired ancestor never returns, so it ends the wait at once. It
+// returns the last gap with every other cause, and adds none for the deadline.
 func (h *History[ID, M]) awaitAncestor(ctx context.Context, deadline time.Time, id ID, missing error) (*Snapshot[ID, M], error) {
 	waitCtx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
@@ -1142,7 +1142,7 @@ func (h *History[ID, M]) awaitAncestor(ctx context.Context, deadline time.Time, 
 			return s, nil
 		}
 		if errors.Is(err, h.errs.NotFound) {
-			err = nil
+			missing, err = err, nil
 		}
 	}
 	return nil, errors.Join(missing, err, ctx.Err())

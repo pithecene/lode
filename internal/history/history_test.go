@@ -1168,6 +1168,10 @@ func TestAdvanceReportsWhatEndsTheWait(t *testing.T) {
 			<-ctx.Done()
 			return nil, fmt.Errorf("read: %w", errors.Join(ctx.Err(), errBoom))
 		})}, []error{errNotFound, errBoom, context.DeadlineExceeded}},
+		{"a last gap with another cause keeps it", map[string]func(context.Context) (io.ReadCloser, error){winner: misses(func(ctx context.Context) (io.ReadCloser, error) {
+			<-ctx.Done()
+			return nil, errors.Join(errNotFound, ctx.Err())
+		})}, []error{errNotFound, context.DeadlineExceeded}},
 		{"a failed fence check is reported", map[string]func(context.Context) (io.ReadCloser, error){
 			winner:  func(context.Context) (io.ReadCloser, error) { return nil, errNotFound },
 			pointer: blocked,
