@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"slices"
 	"strconv"
@@ -1163,6 +1164,10 @@ func TestAdvanceReportsWhatEndsTheWait(t *testing.T) {
 			<-ctx.Done()
 			return nil, errBoom
 		})}, errBoom, nil},
+		{"a joined failure keeps its other cause", map[string]func(context.Context) (io.ReadCloser, error){winner: misses(func(ctx context.Context) (io.ReadCloser, error) {
+			<-ctx.Done()
+			return nil, fmt.Errorf("read: %w", errors.Join(ctx.Err(), errBoom))
+		})}, errBoom, context.DeadlineExceeded},
 		{"a failed fence check is reported", map[string]func(context.Context) (io.ReadCloser, error){
 			winner:  func(context.Context) (io.ReadCloser, error) { return nil, errNotFound },
 			pointer: blocked,
@@ -1199,6 +1204,28 @@ func TestAdvanceReportsWhatEndsTheWait(t *testing.T) {
 	}
 }
 
+func TestAdvanceKeepsCancellationBesideALateReadError(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		s := newMemStore()
+		s.objects[pointer] = []byte("6")
+		winner, n := testKind{}.ManifestPath("6"), 0
+		store := blockingStore{s, map[string]func(context.Context) (io.ReadCloser, error){winner: func(context.Context) (io.ReadCloser, error) {
+			if n++; n == 1 {
+				return nil, errNotFound
+			}
+			cancel()
+			return nil, errBoom
+		}}}
+		h := New(store, testKind{}, pointer, "test manifest", testErrors)
+		err := h.Advance(ctx, "4", "5", &manifest{}, []string{testKind{}.ManifestPath("5")})
+		if !errors.Is(err, ErrManifestUncertain) || !errors.Is(err, context.Canceled) || !errors.Is(err, errBoom) {
+			t.Fatalf("Advance = %v, want uncertain with both causes", err)
+		}
+	})
+}
+
 func TestAdvanceResumesAtTheMissingAncestor(t *testing.T) {
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
@@ -1219,17 +1246,20 @@ func TestAdvanceResumesAtTheMissingAncestor(t *testing.T) {
 		if !errors.Is(err, ErrManifestUncertain) {
 			t.Fatalf("Advance = %v, want uncertain", err)
 		}
-		reads := 0
+		reads, missing := 0, 0
 		for _, op := range s.ops {
-			if op == headRead {
+			switch op {
+			case headRead:
 				reads++
+			case "get " + testKind{}.ManifestPath("6"):
+				missing++
 			}
 		}
-		if reads != 1 {
-			t.Errorf("read the head's manifest %d times, want once", reads)
+		if reads != 1 || missing < 2 {
+			t.Errorf("read the head %d times and the second gap %d times, want 1 and several", reads, missing)
 		}
-		if waited := time.Since(start); waited > pendingWait {
-			t.Errorf("waited %v over both gaps, want at most %v", waited, pendingWait)
+		if waited := time.Since(start); waited != pendingWait {
+			t.Errorf("waited %v over both gaps, want %v", waited, pendingWait)
 		}
 	})
 }

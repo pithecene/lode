@@ -1144,10 +1144,26 @@ func (h *History[ID, M]) awaitAncestor(ctx context.Context, deadline time.Time, 
 			err = nil
 		}
 	}
-	if ctx.Err() == nil && waitCtx.Err() != nil && errors.Is(err, waitCtx.Err()) {
-		return nil, missing // the wait's own end is not a failure to report
+	if ctx.Err() == nil && waitCtx.Err() != nil {
+		err = withoutDeadline(err) // the wait's own end is not a failure to report
 	}
-	return nil, errors.Join(missing, err)
+	return nil, errors.Join(missing, err, ctx.Err())
+}
+
+// withoutDeadline drops the branches of err that only report a deadline.
+func withoutDeadline(err error) error {
+	if !errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	joined, ok := err.(interface{ Unwrap() []error }) //nolint:errorlint // the walk inspects each node itself
+	if !ok {
+		return withoutDeadline(errors.Unwrap(err))
+	}
+	var kept []error
+	for _, child := range joined.Unwrap() {
+		kept = append(kept, withoutDeadline(child))
+	}
+	return errors.Join(kept...)
 }
 
 // containsAttempt follows persisted parent links to the attempted ID,
