@@ -1047,7 +1047,6 @@ func TestAdvanceAwaitsAPendingWinner(t *testing.T) {
 		{"a winner that never publishes leaves the outcome uncertain", time.Hour, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			synctest.Test(t, func(t *testing.T) {
 				start := time.Now()
 				s := newMemStore()
@@ -1071,7 +1070,6 @@ func TestAdvanceAwaitsAPendingWinner(t *testing.T) {
 	}
 
 	t.Run("a canceled context ends the wait uncertain", func(t *testing.T) {
-		t.Parallel()
 		synctest.Test(t, func(t *testing.T) {
 			s := newMemStore()
 			s.objects[pointer] = []byte("6")
