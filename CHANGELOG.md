@@ -9,6 +9,10 @@ and Lode adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **The source checksum names the archive**: the release's `.sha256` file named `dist/lode-vX.Y.Z.tar.gz`, so `sha256sum --check` failed beside a downloaded archive. It now names the archive alone.
+
 ---
 
 ## [0.18.3] - 2026-11-21
