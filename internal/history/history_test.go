@@ -1032,56 +1032,93 @@ func TestAdvancePreservesAnUncertainAttemptOnCyclicAncestry(t *testing.T) {
 	}
 }
 
+// expiredKind is testKind with every snapshot expired.
+type expiredKind struct{ testKind }
+
+func (expiredKind) NotExpired(context.Context, id) (bool, error) { return false, nil }
+
 // The writer that won the CAS persists its manifest after the pointer, so a
 // loser can read the ancestry before the manifest exists.
 func TestAdvanceAwaitsAPendingWinner(t *testing.T) {
 	t.Parallel()
+	const never = time.Hour
+	errRemoved := errors.New("removed")
+	removable := testErrors
+	removable.Removed = errRemoved
 	winner := testKind{}.ManifestPath("6")
-	paths := []string{testKind{}.ManifestPath("5")}
 	for _, tc := range []struct {
 		name      string
-		publishes time.Duration
+		kind      Kind[id, manifest]
+		publishes time.Duration // when the winner's manifest appears
+		parent    string
+		slow      time.Duration // how long each read of it takes
+		fence     time.Duration // when the removal fence appears
+		deadline  time.Duration // the caller's, 0 for none
+		want      []error       // none for a commit that took effect
 		uncertain bool
+		within    time.Duration
 	}{
-		{"a winner that publishes makes the loss a plain conflict", 100 * time.Millisecond, false},
-		{"a winner that never publishes leaves the outcome uncertain", time.Hour, true},
+		{"a winner above the predecessor makes the loss a plain conflict", testKind{}, 100 * time.Millisecond, "4", 0, never, 0, []error{errConflict}, false, 400 * time.Millisecond},
+		{"a winner above the attempt confirms it", testKind{}, 100 * time.Millisecond, "5", 0, never, 0, nil, false, 400 * time.Millisecond},
+		{"a winner that never publishes leaves the outcome uncertain", testKind{}, never, "", 0, never, 0, []error{errConflict, errNotFound}, true, pendingWait},
+		{"slow reads count against the bound", testKind{}, never, "", 700 * time.Millisecond, never, 0, []error{errConflict, errNotFound}, true, pendingWait + time.Second},
+		{"an expired ancestor is not awaited", expiredKind{}, never, "", 0, never, 0, []error{errConflict, errNotFound}, true, 0},
+		{"a fence that arrives meanwhile is reported", testKind{}, never, "", 0, 100 * time.Millisecond, 0, []error{errRemoved}, false, pendingWait},
+		{"the caller's deadline ends the wait", testKind{}, never, "", 0, never, 50 * time.Millisecond, []error{errConflict, context.DeadlineExceeded}, true, 50 * time.Millisecond},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				start := time.Now()
+				ctx := t.Context()
+				if tc.deadline > 0 {
+					var cancel context.CancelFunc
+					ctx, cancel = context.WithTimeout(ctx, tc.deadline)
+					defer cancel()
+				}
 				s := newMemStore()
 				s.objects[pointer] = []byte("6")
 				s.fail = func(op, path string) error {
-					if op == "get" && path == winner && time.Since(start) >= tc.publishes {
-						s.objects[winner] = []byte(`{"parent":"4"}`)
+					if op != "get" {
+						return nil
+					}
+					if path == pointer && time.Since(start) >= tc.fence {
+						s.objects[pointer] = []byte("lode:removed")
+					}
+					if path != winner {
+						return nil
+					}
+					time.Sleep(tc.slow)
+					if time.Since(start) >= tc.publishes {
+						s.objects[winner] = []byte(`{"parent":"` + tc.parent + `"}`)
 					}
 					return nil
 				}
-				h := New(s, testKind{}, pointer, "test manifest", testErrors)
-				err := h.Advance(t.Context(), "4", "5", &manifest{}, paths)
-				if !errors.Is(err, errConflict) || errors.Is(err, ErrManifestUncertain) != tc.uncertain {
-					t.Fatalf("Advance = %v, want a conflict with uncertain = %v", err, tc.uncertain)
+				h := New(s, tc.kind, pointer, "test manifest", removable)
+				err := h.Advance(ctx, "4", "5", &manifest{Tag: "five"}, []string{testKind{}.ManifestPath("5")})
+				if waited := time.Since(start); waited > tc.within {
+					t.Errorf("waited %v, want at most %v", waited, tc.within)
 				}
-				if waited := time.Since(start); waited > 2*time.Second {
-					t.Fatalf("waited %v, want a bounded wait", waited)
+				if errors.Is(err, ErrManifestUncertain) != tc.uncertain {
+					t.Errorf("Advance = %v, want uncertain = %v", err, tc.uncertain)
+				}
+				for _, want := range tc.want {
+					if !errors.Is(err, want) {
+						t.Errorf("Advance = %v, want %v", err, want)
+					}
+				}
+				if tc.deadline == 0 && errors.Is(err, context.DeadlineExceeded) {
+					t.Errorf("Advance = %v, want no deadline of the caller's", err)
+				}
+				_, published := s.objects[testKind{}.ManifestPath("5")]
+				if published != (tc.want == nil) || (tc.want == nil && err != nil) {
+					t.Errorf("published = %v with error %v", published, err)
+				}
+				if tc.fence == never && string(s.objects[pointer]) != "6" {
+					t.Errorf("pointer = %q, want the winner's", s.objects[pointer])
 				}
 			})
 		})
 	}
-
-	t.Run("a canceled context ends the wait uncertain", func(t *testing.T) {
-		synctest.Test(t, func(t *testing.T) {
-			s := newMemStore()
-			s.objects[pointer] = []byte("6")
-			ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
-			defer cancel()
-			h := New(s, testKind{}, pointer, "test manifest", testErrors)
-			err := h.Advance(ctx, "4", "5", &manifest{}, paths)
-			if !errors.Is(err, ErrManifestUncertain) || !errors.Is(err, context.DeadlineExceeded) {
-				t.Fatalf("Advance = %v, want uncertain with the context's error", err)
-			}
-		})
-	})
 }
 
 func TestAdvance_StagesOnlyAcceptedCommits(t *testing.T) {

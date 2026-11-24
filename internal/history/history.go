@@ -1084,9 +1084,19 @@ func (h *History[ID, M]) advancePointer(ctx context.Context, expected string, id
 	}
 	if err == nil {
 		var applied bool
-		applied, err = h.awaitAncestry(ctx, head, id, ID(expected))
+		applied, err = h.containsAttempt(ctx, head, id, ID(expected))
 		if applied {
 			return head, nil
+		}
+		// The fence can have arrived while the walk waited for an ancestor. A
+		// check that fails for another reason leaves the outcome uncertain.
+		if errors.Is(err, h.errs.NotFound) {
+			if fenceErr := h.checkRemoval(ctx, "after a lost pointer update"); h.errs.Removed != nil && errors.Is(fenceErr, h.errs.Removed) {
+				if stagedWrote {
+					h.unstage(context.WithoutCancel(ctx), staged)
+				}
+				return "", fenceErr
+			}
 		}
 	} else if errors.Is(err, h.errs.NotFound) && expected == "" {
 		// A missing pointer still matches the first commit's precondition.
@@ -1099,31 +1109,43 @@ func (h *History[ID, M]) advancePointer(ctx context.Context, expected string, id
 	return "", fmt.Errorf("failed to update latest pointer: %w", writeErr)
 }
 
-// pendingReads bounds how often awaitAncestry reads an ancestry again. With
-// pendingBackoff the waits add up to about 1.6 seconds.
-const pendingReads = 10
+// pendingWait bounds one walk's total wait for ancestors that have no
+// manifest yet, reads included.
+const pendingWait = 2 * time.Second
 
-// pendingBackoff is the delay before each of those reads.
+// pendingBackoff is the delay before read n of a missing ancestor.
 func pendingBackoff(n int) time.Duration {
-	return min(10*time.Millisecond<<n, 250*time.Millisecond)
+	return min(10*time.Millisecond<<min(n, 5), 250*time.Millisecond)
 }
 
-// awaitAncestry is containsAttempt with time for a pending ancestor: a writer
-// that won the CAS persists its manifest only after the pointer, so the chain
-// below a live winner is incomplete for a moment. A gap that outlasts the
-// waits leaves the outcome uncertain, as an abandoned commit does.
-func (h *History[ID, M]) awaitAncestry(ctx context.Context, head, attempt, expected ID) (bool, error) {
-	for n := 0; ; n++ {
-		applied, err := h.containsAttempt(ctx, head, attempt, expected)
-		if n == pendingReads || !errors.Is(err, h.errs.NotFound) {
-			return applied, err
-		}
+// awaitAncestor reads ancestor id again until waitCtx, which derives from ctx,
+// ends. A writer that won the CAS persists its manifest only after the
+// pointer, so the chain below a live winner is incomplete for a moment. An
+// expired ancestor never returns, so it ends the wait at once.
+func (h *History[ID, M]) awaitAncestor(ctx, waitCtx context.Context, id ID, missing error) (*Snapshot[ID, M], error) {
+	live, err := h.kind.NotExpired(waitCtx, id)
+	if err == nil && !live {
+		return nil, missing
+	}
+	var s *Snapshot[ID, M]
+	for n := 0; err == nil; n++ {
 		select {
-		case <-ctx.Done():
-			return false, errors.Join(err, ctx.Err())
+		case <-waitCtx.Done():
+			return nil, errors.Join(missing, ctx.Err())
 		case <-time.After(pendingBackoff(n)):
 		}
+		if s, err = h.ancestor(waitCtx, id); err == nil {
+			return s, nil
+		}
+		if errors.Is(err, h.errs.NotFound) {
+			err = nil
+		}
 	}
+	if waitCtx.Err() != nil {
+		// The wait ended the read: report the gap, and ctx's own end if any.
+		return nil, errors.Join(missing, ctx.Err())
+	}
+	return nil, errors.Join(missing, err)
 }
 
 // containsAttempt follows persisted parent links to the attempted ID,
@@ -1131,6 +1153,7 @@ func (h *History[ID, M]) awaitAncestry(ctx context.Context, head, attempt, expec
 // uncertain. Each kind identifies the copies that reliably record its parent.
 func (h *History[ID, M]) containsAttempt(ctx context.Context, head, attempt, expected ID) (bool, error) {
 	seen := make(map[ID]struct{})
+	var waitCtx context.Context
 	for id := head; id != expected && id != ""; {
 		if id == attempt {
 			return true, nil
@@ -1146,6 +1169,14 @@ func (h *History[ID, M]) containsAttempt(ctx context.Context, head, attempt, exp
 			return false, err
 		}
 		snapshot, err := h.ancestor(ctx, id)
+		if errors.Is(err, h.errs.NotFound) {
+			if waitCtx == nil {
+				var cancel context.CancelFunc
+				waitCtx, cancel = context.WithTimeout(ctx, pendingWait)
+				defer cancel()
+			}
+			snapshot, err = h.awaitAncestor(ctx, waitCtx, id, err)
+		}
 		if err != nil {
 			return false, fmt.Errorf("failed to read ancestor %s: %w", id, err)
 		}

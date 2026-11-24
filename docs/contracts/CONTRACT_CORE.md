@@ -124,7 +124,8 @@ an abandoned one, Lode applies uniform rules:
   its original manifest and preserves the current head. It may retry the same
   ID with a new parent only after ruling out the attempt from the head's
   ancestry. A chain can be incomplete because an ancestor is still pending, so
-  the writer MUST read it again for a bounded time. A chain that stays
+  the writer MUST read a missing ancestor again for a bounded time, unless
+  retention expired it. A chain that stays
   incomplete, or a cyclic one, leaves the outcome uncertain and
   the writer MUST preserve the attempt's data. Snapshot ancestry MUST be acyclic.
 - The pointer content `lode:removed` is reserved as the permanent removal
