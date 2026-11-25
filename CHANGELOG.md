@@ -9,6 +9,10 @@ and Lode adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+---
+
+## [0.18.4] - 2026-11-24
+
 ### Fixed
 
 - **Concurrent writers wait for a pending winner**: a writer that lost the pointer swap failed with an uncertain commit while the winner had not yet persisted its manifest. `WithRetry` never retried that error. Such a writer now reads the missing ancestor again for about two seconds, so a commit that did not take effect becomes a conflict that `WithRetry` retries. An ancestor that stays missing, or that retention expired, still leaves the outcome uncertain, and the data stays. The fault dates from v0.18.0. `CONTRACT_CORE.md` § Head Pointer states the rule.
@@ -616,7 +620,8 @@ and Lode adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 <!-- jscpd:ignore-start -->
 
-[Unreleased]: https://github.com/pithecene/lode/compare/v0.18.3...HEAD
+[Unreleased]: https://github.com/pithecene/lode/compare/v0.18.4...HEAD
+[0.18.4]: https://github.com/pithecene/lode/compare/v0.18.3...v0.18.4
 [0.18.3]: https://github.com/pithecene/lode/compare/v0.18.2...v0.18.3
 [0.18.2]: https://github.com/pithecene/lode/compare/v0.18.1...v0.18.2
 [0.18.1]: https://github.com/pithecene/lode/compare/v0.18.0...v0.18.1
