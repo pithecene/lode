@@ -164,7 +164,8 @@ validated as a single canonical path segment (non-empty, not `.` or `..`, no
 - Wraps an `ObjectStore` that lacks conditional writes with a process-local
   reader-writer lock implementing `CompareAndSwap`. Before deleting `<path>`,
   `CompareAndSwap` writes the verified prior content to `<path>.lode-cas`,
-  restores `<path>` on replacement `Put` failure, and serves `<path>.lode-cas`
+  restores `<path>` on replacement `Put` failure within a ten-second deadline
+  that the caller's cancellation does not shorten, and serves `<path>.lode-cas`
   across `Get`, `Exists`, `List`, `ReadRange`, `ReaderAt`, and subsequent
   `CompareAndSwap` calls whenever `<path>` is absent so neither replacement
   failures nor process termination lose the committed head. Keys ending in

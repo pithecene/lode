@@ -1078,7 +1078,7 @@ func (h *History[ID, M]) advancePointer(ctx context.Context, expected string, id
 	head, err := h.ReadPointer(ctx)
 	if h.errs.Removed != nil && errors.Is(err, h.errs.Removed) {
 		if stagedWrote {
-			h.unstage(context.WithoutCancel(ctx), staged)
+			h.unstagePublished(ctx, staged)
 		}
 		return "", err
 	}

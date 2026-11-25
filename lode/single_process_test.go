@@ -917,3 +917,77 @@ func TestSingleProcess_CancelBeforeReplacementPut(t *testing.T) {
 		})
 	}
 }
+
+// blockedStore fails the replacement of a swap and blocks one later step of it
+// until that step's context ends.
+type blockedStore struct {
+	ObjectStore
+	fails bool   // the replacement fails
+	block string // "restore" or "journal"
+	puts  int
+}
+
+func (s *blockedStore) Put(ctx context.Context, path string, r io.Reader) error {
+	if strings.HasSuffix(path, ".lode-cas") {
+		return s.ObjectStore.Put(ctx, path, r)
+	}
+	s.puts++
+	if s.puts == 1 && s.fails {
+		return errors.New("replacement refused")
+	}
+	if s.puts == 2 && s.block == "restore" {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	return s.ObjectStore.Put(ctx, path, r)
+}
+
+func (s *blockedStore) Delete(ctx context.Context, path string) error {
+	if s.block == "journal" && strings.HasSuffix(path, ".lode-cas") {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	return s.ObjectStore.Delete(ctx, path)
+}
+
+// A step that ignores the caller's cancellation ends by its own deadline, and
+// the journal it leaves serves the committed content.
+func TestSingleProcess_BoundsTheStepsAfterASwap(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, block string
+		fails       bool
+		want        string
+	}{
+		{"a blocked restore", "restore", true, "old"},
+		{"a blocked journal deletion after a restore", "journal", true, "old"},
+		{"a blocked journal deletion after a swap", "journal", false, "new"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				raw := &blockedStore{ObjectStore: NewMemory()}
+				if err := raw.ObjectStore.Put(t.Context(), "key", strings.NewReader("old")); err != nil {
+					t.Fatal(err)
+				}
+				raw.fails, raw.block = tc.fails, tc.block
+				store := SingleProcess(raw)
+				ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+				defer cancel()
+				start := time.Now()
+				if err := store.CompareAndSwap(ctx, "key", "old", "new"); (err != nil) != tc.fails {
+					t.Errorf("CompareAndSwap = %v, want an error = %t", err, tc.fails)
+				}
+				if waited := time.Since(start); waited != singleProcessCleanupTimeout {
+					t.Errorf("waited %v, want %v", waited, singleProcessCleanupTimeout)
+				}
+				raw.block = ""
+				if got := readObject(t, store, "key"); got != tc.want {
+					t.Errorf("key = %q, want %q", got, tc.want)
+				}
+				if err := store.CompareAndSwap(t.Context(), "key", tc.want, "next"); err != nil {
+					t.Errorf("next swap: %v", err)
+				}
+			})
+		})
+	}
+}

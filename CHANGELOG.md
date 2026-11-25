@@ -11,6 +11,7 @@ and Lode adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Cleanup after a failed swap has a deadline**: a commit that met a removal fence could wait without end for its staged copy to be deleted, and `SingleProcess` could hold its lock without end while it restored a key or deleted a journal. Each step now ends after ten seconds. A journal that remains serves the prior content. `CONTRACT_STORAGE.md` § `SingleProcess` states the rule.
 - **Histories with an old empty snapshot open again**: v0.9.0 recorded a write of no records with a null file list, and v0.18.0 to v0.18.4 refused that manifest. One such snapshot failed `Snapshots`, unfiltered listings, and expiry by date, and at the head it kept a writer from opening. Lode now reads it as a snapshot without objects. `CONTRACT_CORE.md` § Manifest Requirements states the rule.
 
 ---

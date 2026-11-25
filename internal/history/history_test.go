@@ -1418,6 +1418,33 @@ func TestAdvanceReconcilesAPublication(t *testing.T) {
 	}
 }
 
+// blockedDeleteStore's deletions end with their context.
+type blockedDeleteStore struct{ *memStore }
+
+func (blockedDeleteStore) Delete(ctx context.Context, _ string) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func TestAdvanceBoundsTheCleanupBehindAFence(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		start := time.Now()
+		s := newMemStore()
+		s.objects[pointer] = []byte(RemovedPointer)
+		removable := testErrors
+		removable.Removed = errors.New("removed")
+		h := New(blockedDeleteStore{s}, stagingKind{}, pointer, "test manifest", removable)
+		err := h.Advance(t.Context(), "4", "5", &manifest{}, []string{testKind{}.ManifestPath("5")})
+		if !errors.Is(err, removable.Removed) {
+			t.Errorf("Advance = %v, want the removal", err)
+		}
+		if waited := time.Since(start); waited != removalCleanupTimeout {
+			t.Errorf("waited %v, want %v", waited, removalCleanupTimeout)
+		}
+	})
+}
+
 func TestAdvance_StagesOnlyAcceptedCommits(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
