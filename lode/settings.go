@@ -1,9 +1,11 @@
 package lode
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"path"
 	"slices"
 	"strings"
@@ -196,9 +198,35 @@ func rejectForeignManifest(ctx context.Context, store Store, id DatasetID, layou
 		if slices.ContainsFunc(layouts, func(l *pathLayout) bool { return l.ownsObject(id, k) }) {
 			continue
 		}
+		// A caller's own file can have a manifest's name.
+		lodes, err := namesLodeManifest(ctx, store, k)
+		if err != nil {
+			return err
+		}
+		if !lodes {
+			continue
+		}
 		return fmt.Errorf("lode: layout mismatch: dataset holds the manifest %s, which the configured layout does not persist: %w", k, ErrSettingsMismatch)
 	}
 	return nil
+}
+
+// namesLodeManifest reports whether the object's bytes hold the schema name that
+// every Lode manifest records. A damaged manifest still holds it.
+func namesLodeManifest(ctx context.Context, store Store, key string) (bool, error) {
+	rc, err := store.Get(ctx, key)
+	if errors.Is(err, ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("lode: failed to read %s: %w", key, err)
+	}
+	defer func() { _ = rc.Close() }()
+	data, err := io.ReadAll(rc)
+	if err != nil {
+		return false, fmt.Errorf("lode: failed to read %s: %w", key, err)
+	}
+	return bytes.Contains(data, []byte(manifestSchemaName)), nil
 }
 
 func (d *writer) settingsManifest(ctx context.Context, parent SnapshotID) (*Manifest, error) {

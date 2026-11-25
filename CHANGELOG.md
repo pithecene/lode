@@ -15,6 +15,7 @@ and Lode adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A caller's `manifest.json` no longer blocks the first commit**: before a dataset's first commit, a writer took any file of that name for another layout's history and failed with `ErrSettingsMismatch`. Lode now reads the file and ignores one without the schema name of a Lode manifest. `CONTRACT_WRITE_API.md` § Settings states the rule.
 - **Cleanup behind a removal fence has a deadline**: a commit that met the fence could wait without end for the deletion of its staged copy. That deletion now has the ten-second deadline of the other cleanup behind the fence. `CONTRACT_WRITE_API.md` § Dataset Removal states the rule.
 - **Histories with an old empty snapshot open again**: v0.9.0 recorded a write of no records with a null file list, and v0.18.0 to v0.18.4 refused that manifest. One such snapshot failed `Snapshots`, unfiltered listings, and expiry by date, and at the head it kept a writer from opening. Lode now reads it as a snapshot without objects. `CONTRACT_CORE.md` § Manifest Requirements states the rule.
 

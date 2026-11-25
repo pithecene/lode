@@ -640,7 +640,7 @@ func TestWrite_ForeignManifestsAreAHistoryAndDataIsNot(t *testing.T) {
 		"datasets/events/segments/" + id + "/manifest.json",
 	} {
 		store := NewMemory()
-		putObject(t, store, key)
+		putForeignManifest(t, store, key)
 		if _, err := tryWrite(t, store, jsonl, R(D{"a": 1})); !errors.Is(err, ErrSettingsMismatch) {
 			t.Errorf("%s: got %v, want a manifest no layout of this writer persists treated as a foreign history", key, err)
 		}
@@ -798,11 +798,73 @@ func TestWrite_DefaultNamedManifestsWithoutAPointer(t *testing.T) {
 	id := string(idAt(time.Now()))
 	// A manifest at a foreign custom directory without a pointer is rejected by
 	// both writers and views rather than mistaken for an empty dataset.
-	putObject(t, store, "datasets/events/snaps/"+id+"/manifest.json")
+	putForeignManifest(t, store, "datasets/events/snaps/"+id+"/manifest.json")
 	if _, err := Open(Use(store)).Records(t.Context(), "events", jsonl); !errors.Is(err, ErrSettingsMismatch) {
 		t.Errorf("writer: got %v, want foreign manifest history rejected", err)
 	}
 	if _, err := OpenReadOnly(Use(store)).Records(t.Context(), "events", jsonl); !errors.Is(err, ErrSettingsMismatch) {
 		t.Errorf("view: got %v, want foreign manifest history rejected", err)
+	}
+}
+
+func putForeignManifest(t *testing.T, store Store, key string) {
+	t.Helper()
+	if err := store.Put(t.Context(), key, strings.NewReader(`{"schema_name":"lode-manifest"}`)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// failingGet fails the reads of one key.
+type failingGet struct {
+	Store
+	key string
+	err error
+}
+
+func (s failingGet) Get(ctx context.Context, p string) (io.ReadCloser, error) {
+	if p == s.key {
+		return nil, s.err
+	}
+	return s.Store.Get(ctx, p)
+}
+
+// A caller's file named manifest.json is no history, whatever it holds, while a
+// damaged manifest of Lode and an unreadable file still refuse the first write.
+func TestWrite_CallerFileNamedManifest(t *testing.T) {
+	t.Parallel()
+	key, boom := "datasets/events/partitions/a=x/files/manifest.json", errors.New("unreadable")
+	for _, tc := range []struct {
+		name, data string
+		get        error
+		want       error
+	}{
+		{"an object", `{"name":"app"}`, nil, nil},
+		{"an array", "[]", nil, nil},
+		{"no JSON", "x", nil, nil},
+		{"no bytes", "", nil, nil},
+		{"a Lode manifest", `{"schema_name":"lode-manifest"}`, nil, ErrSettingsMismatch},
+		{"a truncated Lode manifest", `{"schema_name":"lode-manifest","form`, nil, ErrSettingsMismatch},
+		{"an unreadable file", `{}`, boom, boom},
+		{"a file that is gone", `{}`, ErrNotFound, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := NewMemory()
+			if err := store.Put(t.Context(), key, strings.NewReader(tc.data)); err != nil {
+				t.Fatal(err)
+			}
+			var s Store = store
+			if tc.get != nil {
+				s = failingGet{store, key, tc.get}
+			}
+			_, err := tryWrite(t, s, jsonl, R(D{"a": "x"}), hive("a"))
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("Write = %v, want %v", err, tc.want)
+			}
+			if tc.want == nil {
+				if _, err := tryWrite(t, store, jsonl, R(D{"a": "y"}), hive("a")); err != nil {
+					t.Errorf("second write: %v", err)
+				}
+			}
+		})
 	}
 }

@@ -81,7 +81,9 @@ ordered Hive keys, and `WithFlatPaths()`.
 - With no pointer and no manifest under the writer's layout, the writer lists
   the dataset prefix and MUST reject with `ErrSettingsMismatch` if a
   `manifest.json` exists under another layout's topology (preventing parallel
-  histories in one dataset prefix). Otherwise, the dataset is empty and the
+  histories in one dataset prefix). The writer MUST read each such object. One
+  whose bytes do not contain `lode-manifest` is a caller's file and MUST be
+  ignored, and a failed read MUST fail the write. Otherwise, the dataset is empty and the
   first commit records the writer's settings.
 - Any mismatch between the writer's settings and the checked manifest—including
   a format `1.1.0` manifest that recorded non-default custom directory or
