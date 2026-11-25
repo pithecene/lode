@@ -18,7 +18,7 @@ before Lode receives the v1.0 tag.
 
 ## Current Assessment (2026-11-25)
 
-- **W1 baseline:** Lode v0.18.5 and Quarry v0.20.2 are published and verified, with Quarry pinned to Lode v0.18.5. W1 replayed a v0.9.0 history, checked crash recovery with confirmed kills, and ran S3 integration on LocalStack and RustFS. It satisfies no criterion below, and every status stands. AWS qualification and sustained observation of these versions remain open.
+- **Releases:** Quarry v0.20.2 pins Lode v0.18.5, and both released on 2026-11-25. Their release satisfies no criterion below. AWS qualification and two weeks of production use of these versions remain open.
 - **Holds:** The [October audit](dogfood_audit_2026-10.md) detected no corruption and zero manifest decode failures across 96,478 snapshots over 8 months on R2. Manifest format `1.2.0` reads `1.0.0` and `1.1.0` datasets with standard internal names.
 - **Blocks (§10):** One history fork happened under CAS + retry on 2026-08-25. v0.11.0 removes its cause ([#208](https://github.com/pithecene/lode/issues/208)), and the criterion stays unmet until production observation covers v0.11.0 or later.
 - **Blocks (evidence missing):** No evidence exists yet for native AWS S3 (§6), steady-state snapshot reads (§3), or checksum-backed corruption checks in production (§10).
@@ -49,16 +49,16 @@ instead of by number.
 
 - **Integration date:** 2026-02-10
 - **Contact:** @pithecene
-- **Usage profile:** Dataset
+- **Usage profile:** Dataset in the audited deployment. Quarry v0.20.2 also writes artifacts as Volumes.
 - **Storage backend:** AWS S3 (S3 adapter targeting Cloudflare R2)
-- **Status:** Active. Quarry v0.20.2 (2026-11-25) pins Lode v0.18.5. The production deployment runs Quarry 0.13.4 with Lode v0.9.0 (see private-A).
+- **Status:** Active. Quarry v0.20.2 (2026-11-25) pins Lode v0.18.5. At the audit on 2026-10-19, the production deployment ran Quarry 0.13.4 with Lode v0.9.0 (see private-A).
 - **Visibility:** Public
 - **Last audited:** 2026-10-19
 
 | Criterion | Validated | Date | Notes |
 |-----------|:---------:|------|-------|
 | Dataset write round-trip | ✅ | 2026-02-23 | Hive-partitioned writes and reads over S3-compatible backend at >100k object scale |
-| Volume write round-trip | N/A | — | Dataset-only integration |
+| Volume write round-trip | N/A | — | The audited deployment writes no Volumes |
 | Error sentinels observed | ✅ | 2026-03-22 | `ErrNoSnapshots` in production, `ErrPathExists` and `ErrNotFound` in integration tests (`quarry/lode/sentinel_test.go`) |
 | API friction (none = pass) | ⚠️ | 2026-10-19 | Open at the audit: no retention or delete primitive (lode#174) for Quarry's planned `gc`. Quarry's v0.14 run reader pages `Store.List` client-side. |
 
@@ -166,7 +166,7 @@ In these criteria, @pithecene observed every recorded evidence entry.
 
 - [ ] At least one consumer reading Dataset snapshots back (round-trip) for 2+ weeks
   - **Status:** Not met. Production reads data objects by path, which skips snapshots, and Quarry's Lode reads have no evidence of 2+ weeks of production use.
-  - **Evidence:** `private-A` reads its data back through Lode's on-disk path grammar, not Lode's read API (audit F8). Quarry reads through Lode only for metrics and sidecar queries. (2026-10-20, private-A and quarry) Quarry v0.20.2 reads events, artifacts and sidecar inventories through `Manifests` and `OpenDecompressed`, which no production deployment runs yet. (2026-11-25, quarry)
+  - **Evidence:** `private-A` reads its data back through Lode's on-disk path grammar, not Lode's read API (audit F8). Quarry v0.20.2 reads Dataset records through `Manifests` and `OpenDecompressed`, and no two-week production read period is recorded for it. (2026-11-25, private-A and quarry)
   - **Issue:** none
 
 - [x] At least 100 Dataset snapshots committed and read with no corruption
