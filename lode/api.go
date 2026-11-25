@@ -150,8 +150,13 @@ func (m *Manifest) UnmarshalJSON(data []byte) error {
 	if m.FormatVersion != legacyFormatVersion && m.FormatVersion != v11FormatVersion {
 		return nil
 	}
-	if m.Objects == nil && wire.LegacyFiles != nil {
+	if m.Objects == nil {
 		m.Objects = wire.LegacyFiles
+	}
+	// Writers before format 1.2.0 recorded no files as null. Rows without files
+	// are still invalid.
+	if m.Objects == nil && m.RowCount == 0 {
+		m.Objects = []ObjectRef{}
 	}
 	if wire.LegacyPaths != nil {
 		m.legacyPaths = wire.LegacyPaths
