@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -54,6 +55,141 @@ func readAll(t *testing.T, ds *Records[D]) []D {
 		all = append(all, rows...)
 	}
 	return all
+}
+
+// legacyManifest is a manifest of a writer before format 1.2.0, as its JSON fields.
+func legacyManifest(id, parent string, fields map[string]any) string {
+	m := map[string]any{
+		"schema_name": "lode-manifest", "format_version": "1.0.0", "dataset_id": "d", "snapshot_id": id,
+		"created_at": "2026-02-07T00:00:00Z", "metadata": map[string]any{}, "files": nil, "row_count": 0,
+		"codec": "jsonl", "compressor": "noop", "partitioner": "noop",
+	}
+	if parent != "" {
+		m["parent_snapshot_id"] = parent
+	}
+	for k, v := range fields {
+		if m[k] = v; v == absent {
+			delete(m, k)
+		}
+	}
+	data, err := json.Marshal(m)
+	if err != nil {
+		panic(err)
+	}
+	return string(data)
+}
+
+// absent as a field's value removes the field.
+const absent = "\x00absent"
+
+// Writers before format 1.2.0 recorded a write of no records with a null list.
+func TestCompat_LegacyEmptySnapshot(t *testing.T) {
+	t.Parallel()
+	const first, empty = "1770422400000000000", "1770422400000000001"
+	paths := map[string]any{"partitions": "partitions", "segments": "segments", "manifest": "manifest.json", "data": "data", "expired": "expired", "staged": "staged", "datasets": "datasets", "snapshots": "snapshots"}
+	for _, tc := range []struct {
+		name    string
+		fields  map[string]any
+		invalid bool
+	}{
+		{"null list", nil, false},
+		{"empty list", map[string]any{"files": []any{}}, false},
+		{"absent list", map[string]any{"files": absent}, false},
+		{"format 1.1.0", map[string]any{"format_version": "1.1.0", "paths": paths}, false},
+		{"format 1.1.0 without paths", map[string]any{"format_version": "1.1.0"}, true},
+		{"rows", map[string]any{"row_count": 1}, true},
+		{"rows and an absent list", map[string]any{"row_count": 1, "files": absent}, true},
+		{"absent row count", map[string]any{"row_count": absent}, true},
+		{"null row count", map[string]any{"row_count": nil}, true},
+		{"blob", map[string]any{"codec": absent}, true},
+		{"format 1.2.0", map[string]any{"format_version": "1.2.0"}, true},
+	} {
+		for _, atHead := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s, at the head %t", tc.name, atHead), func(t *testing.T) {
+				ctx, store := t.Context(), NewMemory()
+				head, want := empty, 2
+				putLegacy(t, store, "snapshots/"+first+"/data/data", "{\"n\":1}\n")
+				putLegacy(t, store, "snapshots/"+first+"/manifest.json", legacyManifest(first, "", map[string]any{
+					"files": []any{map[string]any{"path": "datasets/d/snapshots/" + first + "/data/data", "size_bytes": 8}}, "row_count": 1,
+				}))
+				putLegacy(t, store, "snapshots/"+empty+"/manifest.json", legacyManifest(empty, first, tc.fields))
+				if !atHead {
+					head, want = "1770422400000000002", 3
+					putLegacy(t, store, "snapshots/"+head+"/manifest.json", legacyManifest(head, empty, map[string]any{"files": []any{}}))
+				}
+				putLegacy(t, store, "latest", head)
+				view, err := OpenReadOnly(Use(store)).Records(ctx, "d", JSONL[D]())
+				var snaps []*Snapshot
+				if err == nil {
+					snaps, err = view.Snapshots(ctx)
+				}
+				if tc.invalid {
+					if !errors.Is(err, ErrManifestInvalid) {
+						t.Fatalf("Snapshots = %d, %v; want ErrManifestInvalid", len(snaps), err)
+					}
+					return
+				}
+				if err != nil || len(snaps) != want {
+					t.Fatalf("Snapshots = %d, %v; want %d", len(snaps), err, want)
+				}
+				for id, count := range map[SnapshotID]int{first: 1, empty: 0} {
+					if rows, err := view.Read(ctx, id); err != nil || len(rows) != count {
+						t.Errorf("Read %s = %v, %v; want %d rows", id, rows, err, count)
+					}
+				}
+				ds, err := Open(Use(store)).Records(ctx, "d", JSONL[D]())
+				if err != nil {
+					t.Fatal(err)
+				}
+				snap, err := ds.Write(ctx, R(D{"n": 2}), nil)
+				if err != nil || snap.ParentSnapshotID != SnapshotID(head) {
+					t.Fatalf("Write = %+v, %v; want parent %s", snap, err, head)
+				}
+				report, err := ds.Expire(ctx, ExpireRequest{IDs: []SnapshotID{empty}})
+				if err != nil || !slices.Equal(report.Expired, []SnapshotID{empty}) {
+					t.Errorf("Expire = %+v, %v; want %s expired", report, err, empty)
+				}
+				if _, err := ds.Snapshot(ctx, empty); !errors.Is(err, ErrSnapshotExpired) {
+					t.Errorf("Snapshot = %v, want ErrSnapshotExpired", err)
+				}
+			})
+		}
+	}
+}
+
+// putLegacy stores data at path of dataset d.
+func putLegacy(t *testing.T, store Store, path, data string) {
+	t.Helper()
+	if err := store.Put(t.Context(), "datasets/d/"+path, strings.NewReader(data)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Sweep settles an interrupted expiry of a legacy empty snapshot by its tombstone,
+// and a tombstone without an inventory authorizes nothing.
+func TestCompat_LegacyEmptySnapshot_Sweep(t *testing.T) {
+	t.Parallel()
+	const empty, head = "1770422400000000001", "1770422400000000002"
+	for files, settles := range map[string]bool{"[]": true, "null": false} {
+		t.Run("files "+files, func(t *testing.T) {
+			ctx, store := t.Context(), NewMemory()
+			putLegacy(t, store, "snapshots/"+empty+"/manifest.json", legacyManifest(empty, "", nil))
+			putLegacy(t, store, "snapshots/"+head+"/manifest.json", legacyManifest(head, empty, map[string]any{"files": []any{}}))
+			putLegacy(t, store, "latest", head)
+			putLegacy(t, store, "expired/"+empty, fmt.Sprintf(`{"snapshot_id": %q, "requested_at": "2026-02-08T00:00:00Z", "manifest_created_at": "2026-02-07T00:00:00Z", "files": %s}`, empty, files))
+			ds, err := Open(Use(store)).Records(ctx, "d", JSONL[D]())
+			if err != nil {
+				t.Fatal(err)
+			}
+			report, err := ds.Sweep(ctx, SweepRequest{Grace: time.Hour})
+			if err != nil || slices.Equal(report.Settled, []SnapshotID{empty}) != settles || (len(report.Unparseable) == 0) != settles {
+				t.Errorf("Sweep = %+v, %v; want settled = %t", report, err, settles)
+			}
+			if kept, err := store.Exists(ctx, "datasets/d/snapshots/"+empty+"/manifest.json"); err != nil || kept == settles {
+				t.Errorf("manifest kept = %t, %v; want %t", kept, err, !settles)
+			}
+		})
+	}
 }
 
 func TestCompat_v0_11_0_HiveRecords(t *testing.T) {

@@ -182,7 +182,10 @@ Backward-compatible manifest decoding:
 - Readers MUST support formats `"1.0.0"` and `"1.1.0"` in standard and flat
   layouts that use the fixed internal names.
 - When decoding pre-`1.2.0` manifests, `"files"` populates `Manifest.Objects`,
-  and `"paths"` populates `Manifest.Flat` from `paths.flat`.
+  and `"paths"` populates `Manifest.Flat` from `paths.flat`. When each of
+  `"objects"` and `"files"` is absent or `null`, a record snapshot with a recorded
+  `row_count` of zero MUST read as no objects, and any other MUST return
+  `ErrManifestInvalid`.
 - Format `"1.1.0"` manifests MUST contain a non-empty `paths` object (without
   `datasets` or `snapshots` when `paths.flat` is `true`, else
   `ErrManifestInvalid`). If a `"1.1.0"` manifest recorded custom directory or

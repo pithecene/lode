@@ -140,6 +140,7 @@ func (m *Manifest) UnmarshalJSON(data []byte) error {
 	type manifestAlias Manifest
 	var wire struct {
 		manifestAlias
+		RowCount    *int64               `json:"row_count"` // nil when absent or null
 		LegacyFiles []ObjectRef          `json:"files"`
 		LegacyPaths *legacyManifestPaths `json:"paths"`
 	}
@@ -147,11 +148,20 @@ func (m *Manifest) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	*m = Manifest(wire.manifestAlias)
+	if wire.RowCount != nil {
+		m.RowCount = *wire.RowCount
+	}
 	if m.FormatVersion != legacyFormatVersion && m.FormatVersion != v11FormatVersion {
 		return nil
 	}
-	if m.Objects == nil && wire.LegacyFiles != nil {
+	if m.Objects == nil {
 		m.Objects = wire.LegacyFiles
+	}
+	// A record writer before format 1.2.0 recorded no files as null. Any other
+	// manifest without an inventory stays invalid, as one whose count of rows is
+	// not recorded, and a blob, which always has an object.
+	if m.Objects == nil && m.Codec != "" && wire.RowCount != nil && *wire.RowCount == 0 {
+		m.Objects = []ObjectRef{}
 	}
 	if wire.LegacyPaths != nil {
 		m.legacyPaths = wire.LegacyPaths
