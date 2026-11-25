@@ -57,52 +57,67 @@ func readAll(t *testing.T, ds *Records[D]) []D {
 	return all
 }
 
-// legacyEmpty returns the manifest of a v0.9.0 write of no records, with files as
-// its file list, or without one when files is "".
-func legacyEmpty(id, parent, files string, rows int) string {
-	list := ""
-	if files != "" {
-		list = `"files": ` + files + `,`
+// legacyManifest is a manifest of a writer before format 1.2.0, as its JSON fields.
+func legacyManifest(id, parent string, fields map[string]any) string {
+	m := map[string]any{
+		"schema_name": "lode-manifest", "format_version": "1.0.0", "dataset_id": "d", "snapshot_id": id,
+		"created_at": "2026-02-07T00:00:00Z", "metadata": map[string]any{}, "files": nil, "row_count": 0,
+		"codec": "jsonl", "compressor": "noop", "partitioner": "noop",
 	}
-	return fmt.Sprintf(`{"schema_name": "lode-manifest", "format_version": "1.0.0", "dataset_id": "d",
-		"snapshot_id": %q, "parent_snapshot_id": %q, "created_at": "2026-02-07T00:00:00Z", "metadata": {}, %s
-		"row_count": %d, "codec": "jsonl", "compressor": "noop", "partitioner": "noop"}`, id, parent, list, rows)
+	if parent != "" {
+		m["parent_snapshot_id"] = parent
+	}
+	for k, v := range fields {
+		if m[k] = v; v == absent {
+			delete(m, k)
+		}
+	}
+	data, err := json.Marshal(m)
+	if err != nil {
+		panic(err)
+	}
+	return string(data)
 }
+
+// absent as a field's value removes the field.
+const absent = "\x00absent"
 
 // Writers before format 1.2.0 recorded a write of no records with a null list.
 func TestCompat_LegacyEmptySnapshot(t *testing.T) {
 	t.Parallel()
 	const first, empty = "1770422400000000000", "1770422400000000001"
+	paths := map[string]any{"partitions": "partitions", "segments": "segments", "manifest": "manifest.json", "data": "data", "expired": "expired", "staged": "staged", "datasets": "datasets", "snapshots": "snapshots"}
 	for _, tc := range []struct {
-		name, files string
-		rows        int
-		invalid     bool
+		name    string
+		fields  map[string]any
+		invalid bool
 	}{
-		{"null list", "null", 0, false},
-		{"empty list", "[]", 0, false},
-		{"absent list", "", 0, false},
-		{"null list with rows", "null", 1, true},
-		{"absent list with rows", "", 1, true},
+		{"null list", nil, false},
+		{"empty list", map[string]any{"files": []any{}}, false},
+		{"absent list", map[string]any{"files": absent}, false},
+		{"format 1.1.0", map[string]any{"format_version": "1.1.0", "paths": paths}, false},
+		{"format 1.1.0 without paths", map[string]any{"format_version": "1.1.0"}, true},
+		{"rows", map[string]any{"row_count": 1}, true},
+		{"rows and an absent list", map[string]any{"row_count": 1, "files": absent}, true},
+		{"absent row count", map[string]any{"row_count": absent}, true},
+		{"null row count", map[string]any{"row_count": nil}, true},
+		{"blob", map[string]any{"codec": absent}, true},
+		{"format 1.2.0", map[string]any{"format_version": "1.2.0"}, true},
 	} {
 		for _, atHead := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s, at the head %t", tc.name, atHead), func(t *testing.T) {
 				ctx, store := t.Context(), NewMemory()
-				put := func(path, data string) {
-					t.Helper()
-					if err := store.Put(ctx, path, strings.NewReader(data)); err != nil {
-						t.Fatal(err)
-					}
-				}
-				put("datasets/d/snapshots/"+first+"/data/data", "{\"n\":1}\n")
-				put("datasets/d/snapshots/"+first+"/manifest.json", legacyEmpty(first, "",
-					fmt.Sprintf(`[{"path": "datasets/d/snapshots/%s/data/data", "size_bytes": 8}]`, first), 1))
-				put("datasets/d/snapshots/"+empty+"/manifest.json", legacyEmpty(empty, first, tc.files, tc.rows))
 				head, want := empty, 2
+				putLegacy(t, store, "snapshots/"+first+"/data/data", "{\"n\":1}\n")
+				putLegacy(t, store, "snapshots/"+first+"/manifest.json", legacyManifest(first, "", map[string]any{
+					"files": []any{map[string]any{"path": "datasets/d/snapshots/" + first + "/data/data", "size_bytes": 8}}, "row_count": 1,
+				}))
+				putLegacy(t, store, "snapshots/"+empty+"/manifest.json", legacyManifest(empty, first, tc.fields))
 				if !atHead {
 					head, want = "1770422400000000002", 3
-					put("datasets/d/snapshots/"+head+"/manifest.json", legacyEmpty(head, empty, "[]", 0))
+					putLegacy(t, store, "snapshots/"+head+"/manifest.json", legacyManifest(head, empty, map[string]any{"files": []any{}}))
 				}
-				put("datasets/d/latest", head)
+				putLegacy(t, store, "latest", head)
 				view, err := OpenReadOnly(Use(store)).Records(ctx, "d", JSONL[D]())
 				var snaps []*Snapshot
 				if err == nil {
@@ -117,11 +132,10 @@ func TestCompat_LegacyEmptySnapshot(t *testing.T) {
 				if err != nil || len(snaps) != want {
 					t.Fatalf("Snapshots = %d, %v; want %d", len(snaps), err, want)
 				}
-				if rows, err := view.Read(ctx, empty); err != nil || len(rows) != 0 {
-					t.Errorf("Read = %v, %v; want no rows", rows, err)
-				}
-				if rows, err := view.Read(ctx, first); err != nil || len(rows) != 1 {
-					t.Errorf("Read of the first = %v, %v; want one row", rows, err)
+				for id, count := range map[SnapshotID]int{first: 1, empty: 0} {
+					if rows, err := view.Read(ctx, id); err != nil || len(rows) != count {
+						t.Errorf("Read %s = %v, %v; want %d rows", id, rows, err, count)
+					}
 				}
 				ds, err := Open(Use(store)).Records(ctx, "d", JSONL[D]())
 				if err != nil {
@@ -140,6 +154,41 @@ func TestCompat_LegacyEmptySnapshot(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// putLegacy stores data at path of dataset d.
+func putLegacy(t *testing.T, store Store, path, data string) {
+	t.Helper()
+	if err := store.Put(t.Context(), "datasets/d/"+path, strings.NewReader(data)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Sweep settles an interrupted expiry of a legacy empty snapshot by its tombstone,
+// and a tombstone without an inventory authorizes nothing.
+func TestCompat_LegacyEmptySnapshot_Sweep(t *testing.T) {
+	t.Parallel()
+	const empty, head = "1770422400000000001", "1770422400000000002"
+	for files, settles := range map[string]bool{"[]": true, "null": false} {
+		t.Run("files "+files, func(t *testing.T) {
+			ctx, store := t.Context(), NewMemory()
+			putLegacy(t, store, "snapshots/"+empty+"/manifest.json", legacyManifest(empty, "", nil))
+			putLegacy(t, store, "snapshots/"+head+"/manifest.json", legacyManifest(head, empty, map[string]any{"files": []any{}}))
+			putLegacy(t, store, "latest", head)
+			putLegacy(t, store, "expired/"+empty, fmt.Sprintf(`{"snapshot_id": %q, "requested_at": "2026-02-08T00:00:00Z", "manifest_created_at": "2026-02-07T00:00:00Z", "files": %s}`, empty, files))
+			ds, err := Open(Use(store)).Records(ctx, "d", JSONL[D]())
+			if err != nil {
+				t.Fatal(err)
+			}
+			report, err := ds.Sweep(ctx, SweepRequest{Grace: time.Hour})
+			if err != nil || slices.Equal(report.Settled, []SnapshotID{empty}) != settles || (len(report.Unparseable) == 0) != settles {
+				t.Errorf("Sweep = %+v, %v; want settled = %t", report, err, settles)
+			}
+			if kept, err := store.Exists(ctx, "datasets/d/snapshots/"+empty+"/manifest.json"); err != nil || kept == settles {
+				t.Errorf("manifest kept = %t, %v; want %t", kept, err, !settles)
+			}
+		})
 	}
 }
 
