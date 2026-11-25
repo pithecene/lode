@@ -33,9 +33,8 @@ jobs:
         uses: ./.github/actions/setup
 
       - name: 🧬 Mutation Tests
-        # A mutant can allocate without end, and two at once exhaust the runner,
-        # which then loses its connection. The limit is per process, in KiB: such a
-        # test process fails, and its mutant counts as killed.
+        # A mutant can allocate without end, which can exhaust the runner. The
+        # limit is per process, in KiB: such a test process fails alone.
         run: |
           ulimit -v 4194304
           task mutate
