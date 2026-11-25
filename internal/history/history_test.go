@@ -1305,6 +1305,92 @@ func (s *deadlineStore) Delete(ctx context.Context, path string) error {
 	return s.memStore.Delete(ctx, path)
 }
 
+// cancelingStore refuses a read whose context has ended, and counts the reads of
+// the pointer.
+type cancelingStore struct {
+	*memStore
+	reads int
+}
+
+func (s *cancelingStore) Get(ctx context.Context, path string) (io.ReadCloser, error) {
+	if path == pointer {
+		s.reads++
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return s.memStore.Get(ctx, path)
+}
+
+// What Advance reports and removes when the removal fence, a failure, or the
+// caller's cancellation meets a commit whose manifest is already written.
+func TestAdvanceReconcilesAPublication(t *testing.T) {
+	t.Parallel()
+	errRemoved := errors.New("removed")
+	removable := testErrors
+	removable.Removed = errRemoved
+	path, staged := testKind{}.ManifestPath("5"), stagingKind{}.StagedPath("5")
+	for _, tc := range []struct {
+		name       string
+		published  func(s *memStore, cancel func()) // runs as the manifest is written
+		fence      error                            // fails each fence read
+		failDelete bool                             // fails the deletion of the staged copy
+		want       []error
+		keeps      []string
+	}{
+		{"nothing meets it", nil, nil, false, nil, []string{path}},
+		{"a fence check that fails leaves it uncertain", nil, errBoom, false,
+			[]error{ErrManifestUncertain, errBoom}, []string{path, staged}},
+		{"a canceled caller is checked once, apart from its context", func(_ *memStore, cancel func()) { cancel() },
+			nil, false, nil, []string{path}},
+		{"a fence removes the manifest and the staged copy", func(s *memStore, _ func()) { s.objects[pointer] = []byte(RemovedPointer) },
+			nil, false, []error{errRemoved}, nil},
+		{"a staged copy that cannot be deleted is reported", func(s *memStore, _ func()) { s.objects[pointer] = []byte(RemovedPointer) },
+			nil, true, []error{errRemoved, errBoom}, []string{staged}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			s := newMemStore()
+			s.objects[pointer] = []byte("4")
+			store := &cancelingStore{memStore: s}
+			written := false
+			s.fail = func(op, p string) error {
+				switch {
+				case op == "put" && p == path:
+					written, store.reads = true, 0
+					if tc.published != nil {
+						tc.published(s, cancel)
+					}
+				case op == "get" && p == pointer && written:
+					return tc.fence
+				case op == "delete" && p == staged && tc.failDelete:
+					return errBoom
+				}
+				return nil
+			}
+			h := New(store, stagingKind{}, pointer, "test manifest", removable)
+			err := h.Advance(ctx, "4", "5", &manifest{Tag: "five"}, []string{path})
+			if (err == nil) != (tc.want == nil) {
+				t.Errorf("Advance = %v, want %v", err, tc.want)
+			}
+			for _, want := range tc.want {
+				if !errors.Is(err, want) {
+					t.Errorf("Advance = %v, want %v", err, want)
+				}
+			}
+			if store.reads != 1 {
+				t.Errorf("read the fence %d times, want once", store.reads)
+			}
+			for _, p := range []string{path, staged} {
+				if _, kept := s.objects[p]; kept != slices.Contains(tc.keeps, p) {
+					t.Errorf("%s kept = %v, want %v", p, kept, !kept)
+				}
+			}
+		})
+	}
+}
+
 func TestAdvance_StagesOnlyAcceptedCommits(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
