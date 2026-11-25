@@ -240,30 +240,11 @@ func isForeignManifest(ctx context.Context, store Store, id DatasetID, key strin
 func isBundledManifest(id DatasetID, key string, flat bool) bool {
 	for _, partitioned := range []bool{false, true} {
 		sp, ok := newPathGrammar(flat, partitioned).parse(key)
-		if ok && sp.kind == manifestLeaf && sp.dataset == id && isSnapshotID(sp.snapshot) && isHivePartition(sp.partition) {
+		if ok && sp.kind == manifestLeaf && sp.dataset == id && history.IsGeneratedID(sp.snapshot) && isHivePartition(sp.partition) {
 			return true
 		}
 	}
 	return false
-}
-
-// isSnapshotID reports whether an ID is one that Lode generates: an instant with
-// a nonce, or the instant alone of older releases.
-func isSnapshotID(id SnapshotID) bool {
-	return history.IsGeneratedID(id) || len(id) > 0 && strings.Trim(string(id), "0123456789") == ""
-}
-
-// isHivePartition reports whether each segment of a partition names a key.
-func isHivePartition(partition string) bool {
-	if partition == "" {
-		return true
-	}
-	for seg := range strings.SplitSeq(partition, "/") {
-		if key, _, ok := strings.Cut(seg, "="); !ok || key == "" {
-			return false
-		}
-	}
-	return true
 }
 
 // readProbe reads the start of an object, with a ranged read where the store

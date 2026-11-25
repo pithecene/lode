@@ -903,6 +903,10 @@ func TestIsBundledManifest(t *testing.T) {
 		{"datasets/d/partitions/segments/" + id + "/manifest.json", false, false},
 		{"datasets/d/partitions/a=x/c/segments/" + id + "/manifest.json", false, false},
 		{"datasets/d/partitions/=x/segments/" + id + "/manifest.json", false, false},
+		{"datasets/d/partitions/..=x/segments/" + id + "/manifest.json", false, false},
+		{"datasets/d/partitions/a=x y/segments/" + id + "/manifest.json", false, false},
+		{"datasets/d/partitions/a=x%20y/segments/" + id + "/manifest.json", false, true},
+		{"d/0001/manifest.json", true, false},
 		{"datasets/d/partitions/a=x/files/manifest.json", false, false},
 	} {
 		if got := isBundledManifest("d", tc.key, tc.flat); got != tc.want {
@@ -947,7 +951,7 @@ func TestReadProbe_Body(t *testing.T) {
 // rangeOnly records the length of a ranged read and refuses a whole one.
 type rangeOnly struct {
 	RangeStore
-	length int64
+	asked [][2]int64
 }
 
 func (s *rangeOnly) Get(context.Context, string) (io.ReadCloser, error) {
@@ -955,7 +959,7 @@ func (s *rangeOnly) Get(context.Context, string) (io.ReadCloser, error) {
 }
 
 func (s *rangeOnly) ReadRange(ctx context.Context, p string, offset, length int64) ([]byte, error) {
-	s.length = length
+	s.asked = append(s.asked, [2]int64{offset, length})
 	return s.RangeStore.ReadRange(ctx, p, offset, length)
 }
 
@@ -970,8 +974,8 @@ func TestReadProbe_Ranged(t *testing.T) {
 		t.Errorf("plain: %d bytes, %v; want %d", len(got), err, manifestProbe)
 	}
 	ranged := &rangeOnly{RangeStore: store}
-	if got, err := readProbe(t.Context(), ranged, "k"); err != nil || len(got) != manifestProbe || ranged.length != manifestProbe {
-		t.Errorf("ranged: %d bytes of %d asked, %v; want %d", len(got), ranged.length, err, manifestProbe)
+	if got, err := readProbe(t.Context(), ranged, "k"); err != nil || len(got) != manifestProbe || !slices.Equal(ranged.asked, [][2]int64{{0, 4096}}) {
+		t.Errorf("ranged: %d bytes of %v asked, %v; want the first 4096", len(got), ranged.asked, err)
 	}
 	if err := store.Put(t.Context(), "short", strings.NewReader("{}")); err != nil {
 		t.Fatal(err)
