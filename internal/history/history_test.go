@@ -1305,6 +1305,119 @@ func (s *deadlineStore) Delete(ctx context.Context, path string) error {
 	return s.memStore.Delete(ctx, path)
 }
 
+// cancelingStore refuses a read whose context has ended, and counts the reads of
+// the pointer.
+type cancelingStore struct {
+	*memStore
+	reads  int
+	onRead func() // runs once, as the first read of the pointer starts
+}
+
+func (s *cancelingStore) Get(ctx context.Context, path string) (io.ReadCloser, error) {
+	if path == pointer {
+		s.reads++
+		if f := s.onRead; f != nil {
+			s.onRead = nil
+			f()
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return s.memStore.Get(ctx, path)
+}
+
+// What Advance reports and removes when the removal fence, a failure, or the
+// caller's cancellation meets a commit whose manifest is already written.
+func TestAdvanceReconcilesAPublication(t *testing.T) {
+	t.Parallel()
+	errRemoved := errors.New("removed")
+	removable := testErrors
+	removable.Removed = errRemoved
+	path, staged := testKind{}.ManifestPath("5"), stagingKind{}.StagedPath("5")
+	for _, tc := range []struct {
+		name       string
+		published  func(s *cancelingStore, cancel func()) // runs as the manifest is written
+		fence      error                                  // fails each fence read
+		failDelete bool                                   // fails the deletion of the staged copy
+		want       []error
+		reads      int // of the fence, 0 for one
+		keeps      []string
+	}{
+		{name: "nothing meets it", keeps: []string{path}},
+		{
+			name: "a fence check that fails leaves it uncertain", fence: errBoom,
+			want: []error{ErrManifestUncertain, errBoom}, keeps: []string{path, staged},
+		},
+		{
+			name:      "a caller canceled before the check has the fence read once",
+			published: func(_ *cancelingStore, cancel func()) { cancel() },
+			keeps:     []string{path},
+		},
+		{
+			name: "a caller canceled during the check has the fence read again",
+			published: func(s *cancelingStore, cancel func()) {
+				s.onRead = func() {
+					cancel()
+					s.objects[pointer] = []byte(RemovedPointer)
+				}
+			},
+			want: []error{errRemoved}, reads: 2,
+		},
+		{
+			name:      "a fence removes the manifest and the staged copy",
+			published: func(s *cancelingStore, _ func()) { s.objects[pointer] = []byte(RemovedPointer) },
+			want:      []error{errRemoved},
+		},
+		{
+			name:      "a staged copy that cannot be deleted is reported",
+			published: func(s *cancelingStore, _ func()) { s.objects[pointer] = []byte(RemovedPointer) }, failDelete: true,
+			want: []error{errRemoved, errBoom}, keeps: []string{staged},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			s := newMemStore()
+			s.objects[pointer] = []byte("4")
+			store := &cancelingStore{memStore: s}
+			written := false
+			s.fail = func(op, p string) error {
+				switch {
+				case op == "put" && p == path:
+					written, store.reads = true, 0
+					if tc.published != nil {
+						tc.published(store, cancel)
+					}
+				case op == "get" && p == pointer && written:
+					return tc.fence
+				case op == "delete" && p == staged && tc.failDelete:
+					return errBoom
+				}
+				return nil
+			}
+			h := New(store, stagingKind{}, pointer, "test manifest", removable)
+			err := h.Advance(ctx, "4", "5", &manifest{Tag: "five"}, []string{path})
+			if (err == nil) != (tc.want == nil) {
+				t.Errorf("Advance = %v, want %v", err, tc.want)
+			}
+			for _, class := range []error{ErrManifestUncertain, errRemoved, errBoom, context.Canceled} {
+				if errors.Is(err, class) != slices.Contains(tc.want, class) {
+					t.Errorf("Advance = %v, want %v and no other", err, tc.want)
+				}
+			}
+			if store.reads != max(tc.reads, 1) {
+				t.Errorf("read the fence %d times, want %d", store.reads, max(tc.reads, 1))
+			}
+			for _, p := range []string{path, staged} {
+				if _, kept := s.objects[p]; kept != slices.Contains(tc.keeps, p) {
+					t.Errorf("%s kept = %v, want %v", p, kept, !kept)
+				}
+			}
+		})
+	}
+}
+
 func TestAdvance_StagesOnlyAcceptedCommits(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
