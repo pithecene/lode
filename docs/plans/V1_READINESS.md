@@ -18,7 +18,7 @@ before Lode receives the v1.0 tag.
 
 ## Current Assessment (2026-11-25)
 
-- **Releases:** Quarry v0.20.2 pins Lode v0.18.5. Both were released on 2026-11-25. Recording these versions does not change the status of any readiness criterion. Native AWS S3 qualification and two weeks of production Dataset snapshot reads remain open.
+- **Releases:** Quarry v0.20.2 pins Lode v0.18.5. Both released on 2026-11-25. Recording these versions does not change the status of any readiness criterion. Native AWS S3 qualification and two weeks of production Dataset snapshot reads remain open.
 - **Holds:** The [October audit](dogfood_audit_2026-10.md) detected no corruption and zero manifest decode failures across 96,478 snapshots over 8 months on R2. Manifest format `1.2.0` reads `1.0.0` and `1.1.0` datasets with standard internal names.
 - **Blocks (§10):** One history fork happened under CAS + retry on 2026-08-25. v0.11.0 removes its cause ([#208](https://github.com/pithecene/lode/issues/208)), and the criterion stays unmet until production observation covers v0.11.0 or later.
 - **Blocks (evidence missing):** No evidence exists yet for native AWS S3 (§6), steady-state snapshot reads (§3), or checksum-backed corruption checks in production (§10).
@@ -184,41 +184,41 @@ In these criteria, @pithecene observed every recorded evidence entry.
 Volume is experimental for v1.0 (`V1_API_DECISIONS.md` D9). These criteria
 govern Volume leaving experimental and do not block the v1.0 tag. Quarry v0.20.2
 includes a Volume writer, but this record contains no evidence of its use with
-real data. The criteria below remain unmet.
+real data. The criteria of this section remain unmet.
 
 - [ ] At least one consumer using StageWriteAt + Commit with real data
-  - **Status:** Not met. No qualifying evidence from Volume use with real data is recorded.
+  - **Status:** Not met. This record holds no qualifying evidence from Volume use with real data.
   - **Evidence:** None recorded.
   - **Issue:** none
 
 - [ ] At least one consumer using ReadAt on committed ranges
-  - **Status:** Not met. No qualifying evidence from Volume use with real data is recorded.
+  - **Status:** Not met. This record holds no qualifying evidence from Volume use with real data.
   - **Evidence:** None recorded.
   - **Issue:** none
 
 - [ ] At least 3 Volume snapshots committed with cumulative manifests in a real workflow
-  - **Status:** Not met. No qualifying evidence from Volume use with real data is recorded.
+  - **Status:** Not met. This record holds no qualifying evidence from Volume use with real data.
   - **Evidence:** None recorded.
   - **Issue:** none
 
 - [ ] No Volume API changes required to support integration
-  - **Status:** Not met. No qualifying evidence from Volume use with real data is recorded.
+  - **Status:** Not met. This record holds no qualifying evidence from Volume use with real data.
   - **Evidence:** None recorded.
   - **Issue:** none
 
 - [ ] Volume writes/reads on AWS S3 during dogfooding with no adapter errors (moved from §6, D9)
-  - **Status:** Not met. No qualifying evidence from Volume use with real data is recorded.
+  - **Status:** Not met. This record holds no qualifying evidence from Volume use with real data.
   - **Evidence:** None recorded.
   - **Issue:** none
 
 - [ ] Zero silent data corruption in Volume data during dogfooding, verified with checksums (moved from §10, D9)
-  - **Status:** Not met. No qualifying evidence from Volume use with real data is recorded.
+  - **Status:** Not met. This record holds no qualifying evidence from Volume use with real data.
   - **Evidence:** None recorded.
   - **Issue:** none
 
 - [ ] `VolumeManifest` struct fields unchanged for 4+ weeks with real downstream data (moved from §2, D9)
   - **Status:** Not met. No consumer has documented downstream Volume data.
-  - **Evidence:** No qualifying evidence from Volume use with real data is recorded. (2026-10-20, lode)
+  - **Evidence:** This record holds no qualifying evidence from Volume use with real data. (2026-10-20, lode)
   - **Issue:** none
 
 ### 5. Error Path Validation
