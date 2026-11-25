@@ -1336,17 +1336,45 @@ func TestAdvanceReconcilesAPublication(t *testing.T) {
 		fence      error                            // fails each fence read
 		failDelete bool                             // fails the deletion of the staged copy
 		want       []error
+		reads      int // of the fence, 0 for one
 		keeps      []string
 	}{
-		{"nothing meets it", nil, nil, false, nil, []string{path}},
-		{"a fence check that fails leaves it uncertain", nil, errBoom, false,
-			[]error{ErrManifestUncertain, errBoom}, []string{path, staged}},
-		{"a canceled caller is checked once, apart from its context", func(_ *memStore, cancel func()) { cancel() },
-			nil, false, nil, []string{path}},
-		{"a fence removes the manifest and the staged copy", func(s *memStore, _ func()) { s.objects[pointer] = []byte(RemovedPointer) },
-			nil, false, []error{errRemoved}, nil},
-		{"a staged copy that cannot be deleted is reported", func(s *memStore, _ func()) { s.objects[pointer] = []byte(RemovedPointer) },
-			nil, true, []error{errRemoved, errBoom}, []string{staged}},
+		{name: "nothing meets it", keeps: []string{path}},
+		{
+			name: "a fence check that fails leaves it uncertain", fence: errBoom,
+			want: []error{ErrManifestUncertain, errBoom}, keeps: []string{path, staged},
+		},
+		{
+			name:      "a caller canceled before the check has the fence read once",
+			published: func(_ *memStore, cancel func()) { cancel() },
+			keeps:     []string{path},
+		},
+		{
+			name: "a caller canceled during the check has the fence read again",
+			published: func(s *memStore, cancel func()) {
+				first, rest := true, s.fail
+				s.fail = func(op, p string) error {
+					if op == "get" && p == pointer && first {
+						first = false
+						cancel()
+						s.objects[pointer] = []byte(RemovedPointer)
+						return context.Canceled
+					}
+					return rest(op, p)
+				}
+			},
+			want: []error{errRemoved}, reads: 2,
+		},
+		{
+			name:      "a fence removes the manifest and the staged copy",
+			published: func(s *memStore, _ func()) { s.objects[pointer] = []byte(RemovedPointer) },
+			want:      []error{errRemoved},
+		},
+		{
+			name:      "a staged copy that cannot be deleted is reported",
+			published: func(s *memStore, _ func()) { s.objects[pointer] = []byte(RemovedPointer) }, failDelete: true,
+			want: []error{errRemoved, errBoom}, keeps: []string{staged},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(t.Context())
@@ -1374,13 +1402,13 @@ func TestAdvanceReconcilesAPublication(t *testing.T) {
 			if (err == nil) != (tc.want == nil) {
 				t.Errorf("Advance = %v, want %v", err, tc.want)
 			}
-			for _, want := range tc.want {
-				if !errors.Is(err, want) {
-					t.Errorf("Advance = %v, want %v", err, want)
+			for _, class := range []error{ErrManifestUncertain, errRemoved, errBoom} {
+				if errors.Is(err, class) != slices.Contains(tc.want, class) {
+					t.Errorf("Advance = %v, want %v and no other", err, tc.want)
 				}
 			}
-			if store.reads != 1 {
-				t.Errorf("read the fence %d times, want once", store.reads)
+			if store.reads != max(tc.reads, 1) {
+				t.Errorf("read the fence %d times, want %d", store.reads, max(tc.reads, 1))
 			}
 			for _, p := range []string{path, staged} {
 				if _, kept := s.objects[p]; kept != slices.Contains(tc.keeps, p) {
