@@ -201,7 +201,7 @@ func rejectForeignManifest(ctx context.Context, store Store, id DatasetID, layou
 			continue
 		}
 		// A caller's own file can have a manifest's name.
-		lodes, err := isForeignManifest(ctx, store, k)
+		lodes, err := isForeignManifest(ctx, store, k, strings.TrimPrefix(k, layouts[0].datasetPrefix(id)))
 		if err != nil {
 			return err
 		}
@@ -220,24 +220,47 @@ const manifestProbe = 4 << 10
 // isForeignManifest reports whether the object is a manifest of some layout: any
 // object in a bundled layout's manifest directory, so that a damaged manifest
 // counts, and elsewhere one that declares Lode's schema.
-func isForeignManifest(ctx context.Context, store Store, key string) (bool, error) {
-	switch path.Base(path.Dir(path.Dir(key))) {
-	case snapshotsDir, segmentsDir:
+func isForeignManifest(ctx context.Context, store Store, key, rel string) (bool, error) {
+	if isBundledManifest(rel) {
 		return true, nil
 	}
-	rc, err := store.Get(ctx, key)
+	head, err := readProbe(ctx, store, key)
 	if errors.Is(err, ErrNotFound) {
 		return false, nil
 	}
 	if err != nil {
 		return false, fmt.Errorf("failed to read %s: %w", key, err)
 	}
-	defer errs.DiscardClose(rc)
-	head, err := io.ReadAll(io.LimitReader(rc, manifestProbe))
-	if err != nil {
-		return false, fmt.Errorf("lode: failed to read %s: %w", key, err)
-	}
 	return declaresManifest(head), nil
+}
+
+// isBundledManifest reports whether a path relative to the dataset is a manifest
+// of a bundled layout (CONTRACT_LAYOUT §Canonical Path Grammars).
+func isBundledManifest(rel string) bool {
+	segs := strings.Split(rel, "/")
+	if len(segs) < 3 {
+		return false
+	}
+	dirs, dir := segs[:len(segs)-3], segs[len(segs)-3]
+	if len(dirs) == 0 {
+		return dir == snapshotsDir || dir == segmentsDir
+	}
+	return dir == segmentsDir && dirs[0] == partitionsDir && len(dirs) > 1 &&
+		!slices.ContainsFunc(dirs[1:], func(s string) bool { return !strings.Contains(s, "=") })
+}
+
+// readProbe reads the start of an object, with a ranged read where the store
+// has one.
+func readProbe(ctx context.Context, store Store, key string) ([]byte, error) {
+	if ranged, ok := store.(RangeReader); ok {
+		return ranged.ReadRange(ctx, key, 0, manifestProbe)
+	}
+	rc, err := store.Get(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	defer errs.DiscardClose(rc)
+	return io.ReadAll(io.LimitReader(rc, manifestProbe))
 }
 
 // declaresManifest reports whether the start of a JSON object has the top-level
@@ -258,7 +281,9 @@ func declaresManifest(head []byte) bool {
 		}
 		if key == "schema_name" {
 			var name string
-			return json.Unmarshal(value, &name) == nil && name == manifestSchemaName
+			if json.Unmarshal(value, &name) == nil && name == manifestSchemaName {
+				return true
+			}
 		}
 	}
 	return false

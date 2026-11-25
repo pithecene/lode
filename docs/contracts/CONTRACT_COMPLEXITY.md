@@ -93,8 +93,8 @@ page of one dataset can still inspect other candidates.
 | `ReadRoot.Records`, `ReadRoot.Blobs` with `WithLayout(l)` | 1 `Get` (pointer) + 1 `Get` (manifest in `l`'s directory; +1 `Exists` on miss) |
 | `ReadRoot.Records`, `ReadRoot.Blobs` with `WithAnchor(id)` | At most 2 `Get` calls for `id`'s canonical manifest (1 `Get` when combined with `WithLayout`), 1 pointer `Get` to check the removal fence, and retains a private manifest copy |
 
-A view that finds no head makes the same foreign-layout check, and so does each
-attempt of a first commit.
+A view that finds no head, or no snapshot of its `WithAnchor` ID, makes the same
+foreign-layout check, and so does each attempt of a first commit.
 
 Opening a handle or view writes nothing to storage.
 

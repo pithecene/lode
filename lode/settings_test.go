@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/pithecene/lode/internal/errs"
@@ -851,6 +852,7 @@ func TestWrite_CallerFileNamedManifest(t *testing.T) {
 		{"a truncated Lode manifest", `{"schema_name":"lode-manifest","form`, nil, ErrSettingsMismatch},
 		{"an escaped schema name", `{"schema_name":"lode\u002dmanifest"}`, nil, ErrSettingsMismatch},
 		{"a schema name after a field", `{"a":[1],"schema_name":"lode-manifest"}`, nil, ErrSettingsMismatch},
+		{"a repeated schema name", `{"schema_name":"app","schema_name":"lode-manifest"}`, nil, ErrSettingsMismatch},
 		{"another schema", `{"schema_name":"app-manifest"}`, nil, nil},
 		{"a mention", `{"description":"imports lode-manifest files"}`, nil, nil},
 		{"a nested schema name", `{"a":{"schema_name":"lode-manifest"}}`, nil, nil},
@@ -877,5 +879,67 @@ func TestWrite_CallerFileNamedManifest(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestIsBundledManifest(t *testing.T) {
+	t.Parallel()
+	for rel, want := range map[string]bool{
+		"snapshots/1/manifest.json":                   true,
+		"segments/1/manifest.json":                    true,
+		"partitions/a=x/segments/1/manifest.json":     true,
+		"partitions/a=x/b=y/segments/1/manifest.json": true,
+		"imports/segments/1/manifest.json":            false,
+		"partitions/segments/1/manifest.json":         false,
+		"partitions/a=x/c/segments/1/manifest.json":   false,
+		"partitions/a=x/snapshots/1/manifest.json":    false,
+		"partitions/a=x/files/manifest.json":          false,
+		"manifest.json":                               false,
+	} {
+		if got := isBundledManifest(rel); got != want {
+			t.Errorf("isBundledManifest(%q) = %t, want %t", rel, got, want)
+		}
+	}
+}
+
+// failingBody opens every object with a body whose reads fail.
+type failingBody struct {
+	Store
+	err error
+}
+
+func (s failingBody) Get(context.Context, string) (io.ReadCloser, error) {
+	return io.NopCloser(iotest.ErrReader(s.err)), nil
+}
+
+// A store without ranged reads is read through its body.
+func TestReadProbe_Body(t *testing.T) {
+	t.Parallel()
+	boom := errors.New("body")
+	for err, want := range map[error]error{ErrNotFound: nil, boom: boom} {
+		got, gotErr := isForeignManifest(t.Context(), failingBody{NewMemory(), err}, "datasets/d/x/manifest.json", "x/manifest.json")
+		if got || !errors.Is(gotErr, want) {
+			t.Errorf("body error %v: %t, %v; want false, %v", err, got, gotErr, want)
+		}
+	}
+}
+
+// The probe reads no more than its bound of an object.
+func TestReadProbe_Ranged(t *testing.T) {
+	t.Parallel()
+	store := NewMemory()
+	if err := store.Put(t.Context(), "k", strings.NewReader(strings.Repeat("x", manifestProbe+1))); err != nil {
+		t.Fatal(err)
+	}
+	for name, st := range map[string]Store{"ranged": store, "plain": struct{ Store }{store}} {
+		if got, err := readProbe(t.Context(), st, "k"); err != nil || len(got) != manifestProbe {
+			t.Errorf("%s: %d bytes, %v; want %d", name, len(got), err, manifestProbe)
+		}
+	}
+	if err := store.Put(t.Context(), "short", strings.NewReader("{}")); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := readProbe(t.Context(), store, "short"); err != nil || string(got) != "{}" {
+		t.Errorf("short: %q, %v", got, err)
 	}
 }
