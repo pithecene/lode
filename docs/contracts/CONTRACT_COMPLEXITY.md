@@ -88,10 +88,13 @@ page of one dataset can still inspect other candidates.
 | Operation | Store Calls |
 |-----------|-------------|
 | `Root.Records`, `Root.Blobs` (warm: pointer names committed manifest) | 1 `Get` (pointer) + 1 `Get` (manifest) |
-| `Root.Records`, `Root.Blobs` (empty dataset) | 1 `Get` (pointer) + scan fallback + 1 `List` (foreign-layout check) |
+| `Root.Records`, `Root.Blobs` (empty dataset) | 1 `Get` (pointer) + scan fallback + 1 `List` (foreign-layout check) + at most 1 `ReadRange` (4 KiB; a `Get` read to 4 KiB without `RangeReader`) per other `manifest.json` |
 | `ReadRoot.Records`, `ReadRoot.Blobs` (warm, without `WithLayout`) | 1 `Get` (pointer) + at most 2 `Get` calls (probing `snapshots/` then `segments/`) |
 | `ReadRoot.Records`, `ReadRoot.Blobs` with `WithLayout(l)` | 1 `Get` (pointer) + 1 `Get` (manifest in `l`'s directory; +1 `Exists` on miss) |
 | `ReadRoot.Records`, `ReadRoot.Blobs` with `WithAnchor(id)` | At most 2 `Get` calls for `id`'s canonical manifest (1 `Get` when combined with `WithLayout`), 1 pointer `Get` to check the removal fence, and retains a private manifest copy |
+
+A view that finds no head, or no snapshot of its `WithAnchor` ID, makes the same
+foreign-layout check, and so does each attempt of a first commit.
 
 Opening a handle or view writes nothing to storage.
 

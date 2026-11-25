@@ -101,6 +101,24 @@ func validateHiveKeys(keys []string) error {
 	return nil
 }
 
+// isHivePartition reports whether a Hive layout could write the partition path,
+// or it is empty.
+func isHivePartition(partition string) bool {
+	if partition == "" {
+		return true
+	}
+	for seg := range strings.SplitSeq(partition, "/") {
+		key, value, ok := strings.Cut(seg, "=")
+		if !ok || validateHiveKeys([]string{key}) != nil {
+			return false
+		}
+		if raw, err := url.PathUnescape(value); err != nil || escapeValue(raw) != value {
+			return false
+		}
+	}
+	return true
+}
+
 // -----------------------------------------------------------------------------
 // Partitioning (internal)
 // -----------------------------------------------------------------------------

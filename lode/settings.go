@@ -1,13 +1,18 @@
 package lode
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"path"
 	"slices"
 	"strings"
 
+	"github.com/pithecene/lode/internal/errs"
+	"github.com/pithecene/lode/internal/history"
 	"github.com/pithecene/lode/internal/storepath"
 	"github.com/pithecene/lode/internal/validate"
 )
@@ -196,9 +201,90 @@ func rejectForeignManifest(ctx context.Context, store Store, id DatasetID, layou
 		if slices.ContainsFunc(layouts, func(l *pathLayout) bool { return l.ownsObject(id, k) }) {
 			continue
 		}
+		// A caller's own file can have a manifest's name.
+		lodes, err := isForeignManifest(ctx, store, id, k, layouts[0].isFlat())
+		if err != nil {
+			return err
+		}
+		if !lodes {
+			continue
+		}
 		return fmt.Errorf("lode: layout mismatch: dataset holds the manifest %s, which the configured layout does not persist: %w", k, ErrSettingsMismatch)
 	}
 	return nil
+}
+
+// manifestProbe is how much of a candidate is read: a manifest's schema name is
+// its first field.
+const manifestProbe = 4 << 10
+
+// isForeignManifest reports whether the object is a manifest of some layout: any
+// object in a bundled layout's manifest directory, so that a damaged manifest
+// counts, and elsewhere one that declares Lode's schema.
+func isForeignManifest(ctx context.Context, store Store, id DatasetID, key string, flat bool) (bool, error) {
+	if isBundledManifest(id, key, flat) {
+		return true, nil
+	}
+	head, err := readProbe(ctx, store, key)
+	if errors.Is(err, ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("failed to read %s: %w", key, err)
+	}
+	return declaresManifest(head), nil
+}
+
+// isBundledManifest reports whether the key is a manifest path of the dataset in
+// either bundled layout of the root (CONTRACT_LAYOUT §Canonical Path Grammars).
+func isBundledManifest(id DatasetID, key string, flat bool) bool {
+	for _, partitioned := range []bool{false, true} {
+		sp, ok := newPathGrammar(flat, partitioned).parse(key)
+		if ok && sp.kind == manifestLeaf && sp.dataset == id && history.IsGeneratedID(sp.snapshot) && isHivePartition(sp.partition) {
+			return true
+		}
+	}
+	return false
+}
+
+// readProbe reads the start of an object, with a ranged read where the store
+// has one.
+func readProbe(ctx context.Context, store Store, key string) ([]byte, error) {
+	if ranged, ok := store.(RangeReader); ok {
+		return ranged.ReadRange(ctx, key, 0, manifestProbe)
+	}
+	rc, err := store.Get(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	defer errs.DiscardClose(rc)
+	return io.ReadAll(io.LimitReader(rc, manifestProbe))
+}
+
+// declaresManifest reports whether the start of a JSON object has the top-level
+// schema name of a manifest.
+func declaresManifest(head []byte) bool {
+	dec := json.NewDecoder(bytes.NewReader(head))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return false
+	}
+	for dec.More() {
+		key, err := dec.Token()
+		if err != nil {
+			return false
+		}
+		var value json.RawMessage
+		if err := dec.Decode(&value); err != nil {
+			return false
+		}
+		if key == "schema_name" {
+			var name string
+			if json.Unmarshal(value, &name) == nil && name == manifestSchemaName {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (d *writer) settingsManifest(ctx context.Context, parent SnapshotID) (*Manifest, error) {

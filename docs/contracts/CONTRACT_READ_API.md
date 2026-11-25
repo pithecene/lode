@@ -149,7 +149,8 @@ ReaderAt(ctx context.Context, obj ObjectRef) (io.ReaderAt, error)
   of `l`, returning `ErrSettingsMismatch` if the opened manifest records a
   different partitioner or Hive key list, if the head's canonical manifest
   exists in the excluded directory, or if a foreign manifest exists under the
-  dataset prefix. For format `1.0.0` Hive manifests, the view verifies
+  dataset prefix, by the rule of
+  [`CONTRACT_WRITE_API.md`](CONTRACT_WRITE_API.md) §Settings. For format `1.0.0` Hive manifests, the view verifies
   partition keys along the parent chain as a writer does
   ([`CONTRACT_WRITE_API.md`](CONTRACT_WRITE_API.md) §Settings).
 - Opening a view on a dataset with no committed snapshots MUST return

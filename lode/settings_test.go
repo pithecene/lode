@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/pithecene/lode/internal/errs"
@@ -638,9 +639,14 @@ func TestWrite_ForeignManifestsAreAHistoryAndDataIsNot(t *testing.T) {
 		"datasets/events/staged/x/manifest.json",
 		"datasets/events/expired/" + id + "/manifest.json",
 		"datasets/events/segments/" + id + "/manifest.json",
+		"datasets/events/partitions/a=x/segments/" + id + "/manifest.json",
 	} {
 		store := NewMemory()
-		putObject(t, store, key)
+		if strings.Contains(key, "/segments/") {
+			putObject(t, store, key) // a damaged manifest at a layout's own path
+		} else {
+			putForeignManifest(t, store, key)
+		}
 		if _, err := tryWrite(t, store, jsonl, R(D{"a": 1})); !errors.Is(err, ErrSettingsMismatch) {
 			t.Errorf("%s: got %v, want a manifest no layout of this writer persists treated as a foreign history", key, err)
 		}
@@ -798,11 +804,183 @@ func TestWrite_DefaultNamedManifestsWithoutAPointer(t *testing.T) {
 	id := string(idAt(time.Now()))
 	// A manifest at a foreign custom directory without a pointer is rejected by
 	// both writers and views rather than mistaken for an empty dataset.
-	putObject(t, store, "datasets/events/snaps/"+id+"/manifest.json")
+	putForeignManifest(t, store, "datasets/events/snaps/"+id+"/manifest.json")
 	if _, err := Open(Use(store)).Records(t.Context(), "events", jsonl); !errors.Is(err, ErrSettingsMismatch) {
 		t.Errorf("writer: got %v, want foreign manifest history rejected", err)
 	}
 	if _, err := OpenReadOnly(Use(store)).Records(t.Context(), "events", jsonl); !errors.Is(err, ErrSettingsMismatch) {
 		t.Errorf("view: got %v, want foreign manifest history rejected", err)
+	}
+}
+
+func putForeignManifest(t *testing.T, store Store, key string) {
+	t.Helper()
+	if err := store.Put(t.Context(), key, strings.NewReader(`{"schema_name":"lode-manifest"}`)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// failingGet fails the reads of one key.
+type failingGet struct {
+	Store
+	key string
+	err error
+}
+
+func (s failingGet) Get(ctx context.Context, p string) (io.ReadCloser, error) {
+	if p == s.key {
+		return nil, s.err
+	}
+	return s.Store.Get(ctx, p)
+}
+
+// A caller's file named manifest.json is no history, whatever it holds, while a
+// damaged manifest of Lode and an unreadable file still refuse the first write.
+func TestWrite_CallerFileNamedManifest(t *testing.T) {
+	t.Parallel()
+	key, boom := "datasets/events/partitions/a=x/files/manifest.json", errors.New("unreadable")
+	for _, tc := range []struct {
+		name, data string
+		get        error
+		want       error
+	}{
+		{"an object", `{"name":"app"}`, nil, nil},
+		{"an array", "[]", nil, nil},
+		{"no JSON", "x", nil, nil},
+		{"no bytes", "", nil, nil},
+		{"a Lode manifest", `{"schema_name":"lode-manifest"}`, nil, ErrSettingsMismatch},
+		{"a truncated Lode manifest", `{"schema_name":"lode-manifest","form`, nil, ErrSettingsMismatch},
+		{"an escaped schema name", `{"schema_name":"lode\u002dmanifest"}`, nil, ErrSettingsMismatch},
+		{"a schema name after a field", `{"a":[1],"schema_name":"lode-manifest"}`, nil, ErrSettingsMismatch},
+		{"a repeated schema name", `{"schema_name":"app","schema_name":"lode-manifest"}`, nil, ErrSettingsMismatch},
+		{"another schema", `{"schema_name":"app-manifest"}`, nil, nil},
+		{"a mention", `{"description":"imports lode-manifest files"}`, nil, nil},
+		{"a nested schema name", `{"a":{"schema_name":"lode-manifest"}}`, nil, nil},
+		{"a schema name beyond the probe", `{"a":"` + strings.Repeat("x", manifestProbe) + `","schema_name":"lode-manifest"}`, nil, nil},
+		{"an unreadable file", `{}`, boom, boom},
+		{"a file that is gone", `{}`, ErrNotFound, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := NewMemory()
+			if err := store.Put(t.Context(), key, strings.NewReader(tc.data)); err != nil {
+				t.Fatal(err)
+			}
+			var s Store = store
+			if tc.get != nil {
+				s = failingGet{store, key, tc.get}
+			}
+			_, err := tryWrite(t, s, jsonl, R(D{"a": "x"}), hive("a"))
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("Write = %v, want %v", err, tc.want)
+			}
+			if tc.want == nil {
+				if _, err := tryWrite(t, store, jsonl, R(D{"a": "y"}), hive("a")); err != nil {
+					t.Errorf("second write: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestIsBundledManifest(t *testing.T) {
+	t.Parallel()
+	id := string(idAt(time.Now()))
+	for _, tc := range []struct {
+		key  string
+		flat bool
+		want bool
+	}{
+		{"datasets/d/snapshots/" + id + "/manifest.json", false, true},
+		{"datasets/d/segments/1770422400000000000/manifest.json", false, true},
+		{"datasets/d/partitions/a=x/b=y/segments/" + id + "/manifest.json", false, true},
+		{"d/" + id + "/manifest.json", true, true},
+		{"d/segments/" + id + "/manifest.json", true, true},
+		{"d/snapshots/" + id + "/manifest.json", true, false},
+		{"d/files/manifest.json", true, false},
+		{"datasets/other/snapshots/" + id + "/manifest.json", false, false},
+		{"datasets/d/segments/files/manifest.json", false, false},
+		{"datasets/d/imports/segments/" + id + "/manifest.json", false, false},
+		{"datasets/d/partitions/segments/" + id + "/manifest.json", false, false},
+		{"datasets/d/partitions/a=x/c/segments/" + id + "/manifest.json", false, false},
+		{"datasets/d/partitions/=x/segments/" + id + "/manifest.json", false, false},
+		{"datasets/d/partitions/..=x/segments/" + id + "/manifest.json", false, false},
+		{"datasets/d/partitions/a=x y/segments/" + id + "/manifest.json", false, false},
+		{"datasets/d/partitions/a=x%20y/segments/" + id + "/manifest.json", false, true},
+		{"d/0001/manifest.json", true, false},
+		{"datasets/d/partitions/a=x/files/manifest.json", false, false},
+	} {
+		if got := isBundledManifest("d", tc.key, tc.flat); got != tc.want {
+			t.Errorf("isBundledManifest(%q, flat %t) = %t, want %t", tc.key, tc.flat, got, tc.want)
+		}
+	}
+}
+
+// A damaged flat manifest without a pointer is another layout's history.
+func TestWrite_FlatForeignManifest(t *testing.T) {
+	t.Parallel()
+	store := NewMemory()
+	putObject(t, store, "events/"+string(idAt(time.Now()))+"/manifest.json")
+	_, err := Open(Use(store), WithFlatPaths()).Records(t.Context(), "events", jsonl, hive("a"))
+	if !errors.Is(err, ErrSettingsMismatch) {
+		t.Fatalf("Records = %v, want ErrSettingsMismatch", err)
+	}
+}
+
+// failingBody opens every object with a body whose reads fail.
+type failingBody struct {
+	Store
+	err error
+}
+
+func (s failingBody) Get(context.Context, string) (io.ReadCloser, error) {
+	return io.NopCloser(iotest.ErrReader(s.err)), nil
+}
+
+// A store without ranged reads is read through its body.
+func TestReadProbe_Body(t *testing.T) {
+	t.Parallel()
+	boom := errors.New("body")
+	for err, want := range map[error]error{ErrNotFound: nil, boom: boom} {
+		got, gotErr := isForeignManifest(t.Context(), failingBody{NewMemory(), err}, "d", "datasets/d/x/manifest.json", false)
+		if got || !errors.Is(gotErr, want) {
+			t.Errorf("body error %v: %t, %v; want false, %v", err, got, gotErr, want)
+		}
+	}
+}
+
+// rangeOnly records the length of a ranged read and refuses a whole one.
+type rangeOnly struct {
+	RangeStore
+	asked [][2]int64
+}
+
+func (s *rangeOnly) Get(context.Context, string) (io.ReadCloser, error) {
+	return nil, errors.New("whole read")
+}
+
+func (s *rangeOnly) ReadRange(ctx context.Context, p string, offset, length int64) ([]byte, error) {
+	s.asked = append(s.asked, [2]int64{offset, length})
+	return s.RangeStore.ReadRange(ctx, p, offset, length)
+}
+
+// The probe asks for no more than its bound of an object.
+func TestReadProbe_Ranged(t *testing.T) {
+	t.Parallel()
+	store := NewMemory()
+	if err := store.Put(t.Context(), "k", strings.NewReader(strings.Repeat("x", manifestProbe+1))); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := readProbe(t.Context(), struct{ Store }{store}, "k"); err != nil || len(got) != manifestProbe {
+		t.Errorf("plain: %d bytes, %v; want %d", len(got), err, manifestProbe)
+	}
+	ranged := &rangeOnly{RangeStore: store}
+	if got, err := readProbe(t.Context(), ranged, "k"); err != nil || len(got) != manifestProbe || !slices.Equal(ranged.asked, [][2]int64{{0, 4096}}) {
+		t.Errorf("ranged: %d bytes of %v asked, %v; want the first 4096", len(got), ranged.asked, err)
+	}
+	if err := store.Put(t.Context(), "short", strings.NewReader("{}")); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := readProbe(t.Context(), store, "short"); err != nil || string(got) != "{}" {
+		t.Errorf("short: %q, %v", got, err)
 	}
 }

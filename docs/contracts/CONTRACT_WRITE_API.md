@@ -81,7 +81,12 @@ ordered Hive keys, and `WithFlatPaths()`.
 - With no pointer and no manifest under the writer's layout, the writer lists
   the dataset prefix and MUST reject with `ErrSettingsMismatch` if a
   `manifest.json` exists under another layout's topology (preventing parallel
-  histories in one dataset prefix). Otherwise, the dataset is empty and the
+  histories in one dataset prefix). An object at a
+  manifest path of a bundled layout, with a generated snapshot ID ([`CONTRACT_LAYOUT.md`](CONTRACT_LAYOUT.md)
+  §Canonical Path Grammars) is such a manifest whatever it holds. At any other path the writer MUST read the first
+  4 KiB, and an object without the top-level `schema_name` of a Lode manifest
+  there is a caller's file and MUST be ignored. A read that fails for another
+  reason than `ErrNotFound` MUST fail the operation. Otherwise, the dataset is empty and the
   first commit records the writer's settings.
 - Any mismatch between the writer's settings and the checked manifest—including
   a format `1.1.0` manifest that recorded non-default custom directory or
