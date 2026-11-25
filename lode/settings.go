@@ -3,6 +3,7 @@ package lode
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/pithecene/lode/internal/errs"
 	"github.com/pithecene/lode/internal/storepath"
 	"github.com/pithecene/lode/internal/validate"
 )
@@ -199,7 +201,7 @@ func rejectForeignManifest(ctx context.Context, store Store, id DatasetID, layou
 			continue
 		}
 		// A caller's own file can have a manifest's name.
-		lodes, err := namesLodeManifest(ctx, store, k)
+		lodes, err := isForeignManifest(ctx, store, k)
 		if err != nil {
 			return err
 		}
@@ -211,22 +213,55 @@ func rejectForeignManifest(ctx context.Context, store Store, id DatasetID, layou
 	return nil
 }
 
-// namesLodeManifest reports whether the object's bytes hold the schema name that
-// every Lode manifest records. A damaged manifest still holds it.
-func namesLodeManifest(ctx context.Context, store Store, key string) (bool, error) {
+// manifestProbe is how much of a candidate is read: a manifest's schema name is
+// its first field.
+const manifestProbe = 4 << 10
+
+// isForeignManifest reports whether the object is a manifest of some layout: any
+// object in a bundled layout's manifest directory, so that a damaged manifest
+// counts, and elsewhere one that declares Lode's schema.
+func isForeignManifest(ctx context.Context, store Store, key string) (bool, error) {
+	switch path.Base(path.Dir(path.Dir(key))) {
+	case snapshotsDir, segmentsDir:
+		return true, nil
+	}
 	rc, err := store.Get(ctx, key)
 	if errors.Is(err, ErrNotFound) {
 		return false, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("lode: failed to read %s: %w", key, err)
+		return false, fmt.Errorf("failed to read %s: %w", key, err)
 	}
-	defer func() { _ = rc.Close() }()
-	data, err := io.ReadAll(rc)
+	defer errs.DiscardClose(rc)
+	head, err := io.ReadAll(io.LimitReader(rc, manifestProbe))
 	if err != nil {
 		return false, fmt.Errorf("lode: failed to read %s: %w", key, err)
 	}
-	return bytes.Contains(data, []byte(manifestSchemaName)), nil
+	return declaresManifest(head), nil
+}
+
+// declaresManifest reports whether the start of a JSON object has the top-level
+// schema name of a manifest.
+func declaresManifest(head []byte) bool {
+	dec := json.NewDecoder(bytes.NewReader(head))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return false
+	}
+	for dec.More() {
+		key, err := dec.Token()
+		if err != nil {
+			return false
+		}
+		var value json.RawMessage
+		if err := dec.Decode(&value); err != nil {
+			return false
+		}
+		if key == "schema_name" {
+			var name string
+			return json.Unmarshal(value, &name) == nil && name == manifestSchemaName
+		}
+	}
+	return false
 }
 
 func (d *writer) settingsManifest(ctx context.Context, parent SnapshotID) (*Manifest, error) {

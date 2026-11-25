@@ -638,9 +638,14 @@ func TestWrite_ForeignManifestsAreAHistoryAndDataIsNot(t *testing.T) {
 		"datasets/events/staged/x/manifest.json",
 		"datasets/events/expired/" + id + "/manifest.json",
 		"datasets/events/segments/" + id + "/manifest.json",
+		"datasets/events/partitions/a=x/segments/" + id + "/manifest.json",
 	} {
 		store := NewMemory()
-		putForeignManifest(t, store, key)
+		if strings.Contains(key, "/segments/") {
+			putObject(t, store, key) // a damaged manifest at a layout's own path
+		} else {
+			putForeignManifest(t, store, key)
+		}
 		if _, err := tryWrite(t, store, jsonl, R(D{"a": 1})); !errors.Is(err, ErrSettingsMismatch) {
 			t.Errorf("%s: got %v, want a manifest no layout of this writer persists treated as a foreign history", key, err)
 		}
@@ -844,6 +849,12 @@ func TestWrite_CallerFileNamedManifest(t *testing.T) {
 		{"no bytes", "", nil, nil},
 		{"a Lode manifest", `{"schema_name":"lode-manifest"}`, nil, ErrSettingsMismatch},
 		{"a truncated Lode manifest", `{"schema_name":"lode-manifest","form`, nil, ErrSettingsMismatch},
+		{"an escaped schema name", `{"schema_name":"lode\u002dmanifest"}`, nil, ErrSettingsMismatch},
+		{"a schema name after a field", `{"a":[1],"schema_name":"lode-manifest"}`, nil, ErrSettingsMismatch},
+		{"another schema", `{"schema_name":"app-manifest"}`, nil, nil},
+		{"a mention", `{"description":"imports lode-manifest files"}`, nil, nil},
+		{"a nested schema name", `{"a":{"schema_name":"lode-manifest"}}`, nil, nil},
+		{"a schema name beyond the probe", `{"a":"` + strings.Repeat("x", manifestProbe) + `","schema_name":"lode-manifest"}`, nil, nil},
 		{"an unreadable file", `{}`, boom, boom},
 		{"a file that is gone", `{}`, ErrNotFound, nil},
 	} {
