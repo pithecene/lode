@@ -18,7 +18,7 @@ before Lode receives the v1.0 tag.
 
 ## Current Assessment (2026-11-25)
 
-- **Releases:** Quarry v0.20.2 pins Lode v0.18.5, and both released on 2026-11-25. Their release satisfies no criterion below. AWS qualification and two weeks of production use of these versions remain open.
+- **Releases:** Quarry v0.20.2 pins Lode v0.18.5, and both released on 2026-11-25. The releases satisfy no criterion of this record. AWS qualification and two weeks of production Dataset snapshot reads remain open.
 - **Holds:** The [October audit](dogfood_audit_2026-10.md) detected no corruption and zero manifest decode failures across 96,478 snapshots over 8 months on R2. Manifest format `1.2.0` reads `1.0.0` and `1.1.0` datasets with standard internal names.
 - **Blocks (§10):** One history fork happened under CAS + retry on 2026-08-25. v0.11.0 removes its cause ([#208](https://github.com/pithecene/lode/issues/208)), and the criterion stays unmet until production observation covers v0.11.0 or later.
 - **Blocks (evidence missing):** No evidence exists yet for native AWS S3 (§6), steady-state snapshot reads (§3), or checksum-backed corruption checks in production (§10).
@@ -148,7 +148,7 @@ In these criteria, @pithecene observed every recorded evidence entry.
   - **Issue:** none
 
 - [x] ~~`VolumeManifest` struct fields unchanged for 4+ weeks~~ Reclassified: Volume stability gate (`V1_API_DECISIONS.md` D9)
-  - **Status:** Reclassified. Volume is experimental for v1.0 (D9), so this criterion gates Volume leaving experimental and stays unmet there because no consumer writes Volumes.
+  - **Status:** Reclassified. Volume is experimental for v1.0 (D9), so this criterion gates Volume leaving experimental and stays unmet there because no production use of a Volume writer is recorded.
   - **Evidence:** No downstream Volume data exists (§4). Persisted Volume manifests stay readable (D8). (2026-10-20, lode)
   - **Issue:** none
 
@@ -166,7 +166,7 @@ In these criteria, @pithecene observed every recorded evidence entry.
 
 - [ ] At least one consumer reading Dataset snapshots back (round-trip) for 2+ weeks
   - **Status:** Not met. Production reads data objects by path, which skips snapshots, and Quarry's Lode reads have no evidence of 2+ weeks of production use.
-  - **Evidence:** `private-A` reads its data back through Lode's on-disk path grammar, not Lode's read API (audit F8). Quarry v0.20.2 reads Dataset records through `Manifests` and `OpenDecompressed`, and no two-week production read period is recorded for it. (2026-11-25, private-A and quarry)
+  - **Evidence:** `private-A` reads its data back through Lode's on-disk path grammar, not Lode's read API (audit F8). (2026-10-20, private-A) Quarry v0.20.2 reads Dataset records through `Manifests` and `OpenDecompressed`, and the record holds no two-week production read period of it. (2026-11-25, quarry)
   - **Issue:** none
 
 - [x] At least 100 Dataset snapshots committed and read with no corruption
@@ -187,38 +187,38 @@ unchanged so evidence lands in one place when a consumer appears. The
 nearest candidate is pithecene/quarry#255.
 
 - [ ] At least one consumer using StageWriteAt + Commit with real data
-  - **Status:** Not met. No consumer writes Volumes.
+  - **Status:** Not met. No production use of a Volume writer is recorded.
   - **Evidence:** None recorded.
   - **Issue:** none
 
 - [ ] At least one consumer using ReadAt on committed ranges
-  - **Status:** Not met. No consumer writes Volumes.
+  - **Status:** Not met. No production use of a Volume writer is recorded.
   - **Evidence:** None recorded.
   - **Issue:** none
 
 - [ ] At least 3 Volume snapshots committed with cumulative manifests in a real workflow
-  - **Status:** Not met. No consumer writes Volumes.
+  - **Status:** Not met. No production use of a Volume writer is recorded.
   - **Evidence:** None recorded.
   - **Issue:** none
 
 - [ ] No Volume API changes required to support integration
-  - **Status:** Not met. No consumer writes Volumes.
+  - **Status:** Not met. No production use of a Volume writer is recorded.
   - **Evidence:** None recorded.
   - **Issue:** none
 
 - [ ] Volume writes/reads on AWS S3 during dogfooding with no adapter errors (moved from §6, D9)
-  - **Status:** Not met. No consumer writes Volumes.
+  - **Status:** Not met. No production use of a Volume writer is recorded.
   - **Evidence:** None recorded.
   - **Issue:** none
 
 - [ ] Zero silent data corruption in Volume data during dogfooding, verified with checksums (moved from §10, D9)
-  - **Status:** Not met. No consumer writes Volumes.
+  - **Status:** Not met. No production use of a Volume writer is recorded.
   - **Evidence:** None recorded.
   - **Issue:** none
 
 - [ ] `VolumeManifest` struct fields unchanged for 4+ weeks with real downstream data (moved from §2, D9)
   - **Status:** Not met. No downstream Volume data exists.
-  - **Evidence:** No consumer writes Volumes. (2026-10-20, lode)
+  - **Evidence:** No production use of a Volume writer is recorded. (2026-10-20, lode)
   - **Issue:** none
 
 ### 5. Error Path Validation
