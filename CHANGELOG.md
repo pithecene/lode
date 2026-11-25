@@ -9,6 +9,10 @@ and Lode adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+---
+
+## [0.18.5] - 2026-11-25
+
 ### Fixed
 
 - **Cleanup behind a removal fence has a deadline**: a commit that met the fence could wait without end for the deletion of its staged copy. That deletion now has the ten-second deadline of the other cleanup behind the fence. `CONTRACT_WRITE_API.md` § Dataset Removal states the rule.
@@ -626,7 +630,8 @@ and Lode adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 <!-- jscpd:ignore-start -->
 
-[Unreleased]: https://github.com/pithecene/lode/compare/v0.18.4...HEAD
+[Unreleased]: https://github.com/pithecene/lode/compare/v0.18.5...HEAD
+[0.18.5]: https://github.com/pithecene/lode/compare/v0.18.4...v0.18.5
 [0.18.4]: https://github.com/pithecene/lode/compare/v0.18.3...v0.18.4
 [0.18.3]: https://github.com/pithecene/lode/compare/v0.18.2...v0.18.3
 [0.18.2]: https://github.com/pithecene/lode/compare/v0.18.1...v0.18.2
