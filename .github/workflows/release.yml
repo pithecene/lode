@@ -39,6 +39,28 @@ jobs:
       - name: 🏁 Race Tests
         run: task test:race
 
+  integration:
+    name: 🔌 Integration Tests
+    runs-on: ubuntu-latest
+    needs: [tag_check]
+    if: ${{ needs.tag_check.outputs.semver_match != '' }}
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v6
+
+      - name: 🧰 Setup
+        uses: ./.github/actions/setup
+
+      - name: 🐳 Start S3 Services
+        run: task s3:up
+
+      - name: 🧪 Integration Tests
+        run: task integration
+
+      - name: 🐳 Stop S3 Services
+        if: always()
+        run: task s3:down
+
   release_check:
     name: 🧾 Release Check
     runs-on: ubuntu-latest
@@ -73,7 +95,7 @@ jobs:
   package:
     name: 📦 Package
     runs-on: ubuntu-latest
-    needs: [tag_check, verify, release_check]
+    needs: [tag_check, verify, integration, release_check]
     if: ${{ needs.tag_check.outputs.semver_match != '' }}
     steps:
       - name: 📥 Checkout
@@ -84,7 +106,10 @@ jobs:
           mkdir -p dist
           VERSION="${GITHUB_REF_NAME}"
           git archive --format=tar.gz --output="dist/lode-${VERSION}.tar.gz" HEAD
-          sha256sum "dist/lode-${VERSION}.tar.gz" > "dist/lode-${VERSION}.tar.gz.sha256"
+          # The checksum names the archive alone, as a download holds it.
+          cd dist
+          sha256sum "lode-${VERSION}.tar.gz" > "lode-${VERSION}.tar.gz.sha256"
+          sha256sum --check "lode-${VERSION}.tar.gz.sha256"
 
       - name: ⬆️ Upload Artifacts
         uses: actions/upload-artifact@v4

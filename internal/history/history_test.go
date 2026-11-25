@@ -5,11 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/pithecene/lode/internal/retry"
@@ -1029,6 +1031,278 @@ func TestAdvancePreservesAnUncertainAttemptOnCyclicAncestry(t *testing.T) {
 	if _, ok := s.objects[stagingKind{}.StagedPath("5")]; !ok {
 		t.Fatal("lost staging while the ancestry was uncertain")
 	}
+}
+
+// expiredKind is testKind with every snapshot expired.
+type expiredKind struct{ testKind }
+
+func (expiredKind) NotExpired(context.Context, id) (bool, error) { return false, nil }
+
+// The writer that won the CAS persists its manifest after the pointer, so a
+// loser can read the ancestry before the manifest exists.
+func TestAdvanceAwaitsAPendingWinner(t *testing.T) {
+	t.Parallel()
+	const never = time.Hour
+	errRemoved := errors.New("removed")
+	removable := testErrors
+	removable.Removed = errRemoved
+	winner := testKind{}.ManifestPath("6")
+	for _, tc := range []struct {
+		name      string
+		kind      Kind[id, manifest]
+		publishes time.Duration // when the winner's manifest appears
+		parent    string
+		slow      time.Duration // how long each read of it takes
+		fence     time.Duration // when the removal fence appears
+		deadline  time.Duration // the caller's, 0 for none
+		want      []error       // none for a commit that took effect
+		uncertain bool
+		within    time.Duration
+	}{
+		{"a winner above the predecessor makes the loss a plain conflict", testKind{}, 100 * time.Millisecond, "4", 0, never, 0, []error{errConflict}, false, 400 * time.Millisecond},
+		{"a winner above the attempt confirms it", testKind{}, 100 * time.Millisecond, "5", 0, never, 0, nil, false, 400 * time.Millisecond},
+		{"a winner that never publishes leaves the outcome uncertain", testKind{}, never, "", 0, never, 0, []error{errConflict, errNotFound}, true, pendingWait},
+		{"slow reads count against the bound", testKind{}, never, "", 700 * time.Millisecond, never, 0, []error{errConflict, errNotFound}, true, pendingWait + time.Second},
+		{"an expired ancestor is not awaited", expiredKind{}, never, "", 0, never, 0, []error{errConflict, errNotFound}, true, 0},
+		{"a fence that arrives meanwhile is reported", testKind{}, never, "", 0, 100 * time.Millisecond, 0, []error{errRemoved}, false, pendingWait},
+		{"the caller's deadline ends the wait", testKind{}, never, "", 0, never, 50 * time.Millisecond, []error{errConflict, context.DeadlineExceeded}, true, 50 * time.Millisecond},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				start := time.Now()
+				ctx := t.Context()
+				if tc.deadline > 0 {
+					var cancel context.CancelFunc
+					ctx, cancel = context.WithTimeout(ctx, tc.deadline)
+					defer cancel()
+				}
+				s := newMemStore()
+				s.objects[pointer] = []byte("6")
+				s.fail = func(op, path string) error {
+					if op != "get" {
+						return nil
+					}
+					if path == pointer && time.Since(start) >= tc.fence {
+						s.objects[pointer] = []byte(RemovedPointer)
+					}
+					if path != winner {
+						return nil
+					}
+					time.Sleep(tc.slow)
+					if time.Since(start) >= tc.publishes {
+						s.objects[winner] = []byte(`{"parent":"` + tc.parent + `"}`)
+					}
+					return nil
+				}
+				h := New(s, tc.kind, pointer, "test manifest", removable)
+				err := h.Advance(ctx, "4", "5", &manifest{Tag: "five"}, []string{testKind{}.ManifestPath("5")})
+				if waited := time.Since(start); waited > tc.within {
+					t.Errorf("waited %v, want at most %v", waited, tc.within)
+				}
+				if errors.Is(err, ErrManifestUncertain) != tc.uncertain {
+					t.Errorf("Advance = %v, want uncertain = %v", err, tc.uncertain)
+				}
+				for _, want := range tc.want {
+					if !errors.Is(err, want) {
+						t.Errorf("Advance = %v, want %v", err, want)
+					}
+				}
+				if tc.deadline == 0 && errors.Is(err, context.DeadlineExceeded) {
+					t.Errorf("Advance = %v, want no deadline of the caller's", err)
+				}
+				_, published := s.objects[testKind{}.ManifestPath("5")]
+				if published != (tc.want == nil) || (tc.want == nil && err != nil) {
+					t.Errorf("published = %v with error %v", published, err)
+				}
+				if tc.fence == never && string(s.objects[pointer]) != "6" {
+					t.Errorf("pointer = %q, want the winner's", s.objects[pointer])
+				}
+			})
+		})
+	}
+}
+
+// blockingStore answers the paths in get from a function.
+type blockingStore struct {
+	*memStore
+	get map[string]func(context.Context) (io.ReadCloser, error)
+}
+
+func (s blockingStore) Get(ctx context.Context, path string) (io.ReadCloser, error) {
+	if f := s.get[path]; f != nil {
+		return f(ctx)
+	}
+	return s.memStore.Get(ctx, path)
+}
+
+func TestAdvanceReportsWhatEndsTheWait(t *testing.T) {
+	t.Parallel()
+	winner := testKind{}.ManifestPath("6")
+	removable := testErrors
+	removable.Removed = errors.New("removed")
+	// misses fails the first read with a gap and answers the next ones.
+	misses := func(next func(context.Context) (io.ReadCloser, error)) func(context.Context) (io.ReadCloser, error) {
+		n := 0
+		return func(ctx context.Context) (io.ReadCloser, error) {
+			if n++; n == 1 {
+				return nil, errNotFound
+			}
+			return next(ctx)
+		}
+	}
+	blocked := func(ctx context.Context) (io.ReadCloser, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	for _, tc := range []struct {
+		name string
+		get  map[string]func(context.Context) (io.ReadCloser, error)
+		want []error
+	}{
+		{"a blocked read ends at the deadline", map[string]func(context.Context) (io.ReadCloser, error){winner: misses(blocked)}, []error{errNotFound, context.DeadlineExceeded}},
+		{"a read that fails after the deadline keeps its error", map[string]func(context.Context) (io.ReadCloser, error){winner: misses(func(ctx context.Context) (io.ReadCloser, error) {
+			<-ctx.Done()
+			return nil, errBoom
+		})}, []error{errNotFound, errBoom}},
+		{"a joined failure keeps its other cause", map[string]func(context.Context) (io.ReadCloser, error){winner: misses(func(ctx context.Context) (io.ReadCloser, error) {
+			<-ctx.Done()
+			return nil, fmt.Errorf("read: %w", errors.Join(ctx.Err(), errBoom))
+		})}, []error{errNotFound, errBoom, context.DeadlineExceeded}},
+		{"a last gap with another cause keeps it", map[string]func(context.Context) (io.ReadCloser, error){winner: misses(func(ctx context.Context) (io.ReadCloser, error) {
+			<-ctx.Done()
+			return nil, errors.Join(errNotFound, ctx.Err())
+		})}, []error{errNotFound, context.DeadlineExceeded}},
+		{"a failed fence check is reported", map[string]func(context.Context) (io.ReadCloser, error){
+			winner:  func(context.Context) (io.ReadCloser, error) { return nil, errNotFound },
+			pointer: blocked,
+		}, []error{errNotFound, errBoom}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				start := time.Now()
+				s := newMemStore()
+				s.objects[pointer] = []byte("6")
+				if tc.get[pointer] != nil {
+					// The first read names the winner, and the fence check fails.
+					n := 0
+					tc.get[pointer] = func(ctx context.Context) (io.ReadCloser, error) {
+						if n++; n == 1 {
+							return s.Get(ctx, pointer)
+						}
+						return nil, errBoom
+					}
+				}
+				h := New(blockingStore{s, tc.get}, testKind{}, pointer, "test manifest", removable)
+				err := h.Advance(t.Context(), "4", "5", &manifest{}, []string{testKind{}.ManifestPath("5")})
+				for _, want := range append(tc.want, ErrManifestUncertain, errConflict) {
+					if !errors.Is(err, want) {
+						t.Errorf("Advance = %v, want %v", err, want)
+					}
+				}
+				if waited := time.Since(start); waited > pendingWait {
+					t.Errorf("waited %v, want at most %v", waited, pendingWait)
+				}
+			})
+		})
+	}
+}
+
+func TestAdvanceKeepsCancellationBesideALateReadError(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		s := newMemStore()
+		s.objects[pointer] = []byte("6")
+		winner, n := testKind{}.ManifestPath("6"), 0
+		store := blockingStore{s, map[string]func(context.Context) (io.ReadCloser, error){winner: func(context.Context) (io.ReadCloser, error) {
+			if n++; n == 1 {
+				return nil, errNotFound
+			}
+			cancel()
+			return nil, errBoom
+		}}}
+		h := New(store, testKind{}, pointer, "test manifest", testErrors)
+		err := h.Advance(ctx, "4", "5", &manifest{}, []string{testKind{}.ManifestPath("5")})
+		if !errors.Is(err, ErrManifestUncertain) || !errors.Is(err, context.Canceled) || !errors.Is(err, errBoom) {
+			t.Fatalf("Advance = %v, want uncertain with both causes", err)
+		}
+	})
+}
+
+func TestAdvanceResumesAtTheMissingAncestor(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		start := time.Now()
+		s := newMemStore()
+		s.objects[pointer] = []byte("8")
+		s.objects[testKind{}.ManifestPath("8")] = []byte(`{"parent":"7"}`)
+		// 7 appears late in the wait, and 6 never does.
+		seven, headRead := testKind{}.ManifestPath("7"), "get "+testKind{}.ManifestPath("8")
+		s.fail = func(op, path string) error {
+			if op == "get" && path == seven && time.Since(start) >= 1500*time.Millisecond {
+				s.objects[seven] = []byte(`{"parent":"6"}`)
+			}
+			return nil
+		}
+		h := newTestHistory(s)
+		err := h.Advance(t.Context(), "4", "5", &manifest{}, []string{testKind{}.ManifestPath("5")})
+		if !errors.Is(err, ErrManifestUncertain) {
+			t.Fatalf("Advance = %v, want uncertain", err)
+		}
+		reads, missing := 0, 0
+		for _, op := range s.ops {
+			switch op {
+			case headRead:
+				reads++
+			case "get " + testKind{}.ManifestPath("6"):
+				missing++
+			}
+		}
+		if reads != 1 || missing < 2 {
+			t.Errorf("read the head %d times and the second gap %d times, want 1 and several", reads, missing)
+		}
+		if waited := time.Since(start); waited != pendingWait {
+			t.Errorf("waited %v over both gaps, want %v", waited, pendingWait)
+		}
+	})
+}
+
+func TestAdvanceRemovesTheStagedCopyBehindALateFence(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		start := time.Now()
+		s := newMemStore()
+		s.objects[pointer] = []byte("6")
+		s.fail = func(op, path string) error {
+			if op == "get" && path == pointer && time.Since(start) > time.Second {
+				s.objects[pointer] = []byte(RemovedPointer)
+			}
+			return nil
+		}
+		removable := testErrors
+		removable.Removed = errors.New("removed")
+		deletes := &deadlineStore{memStore: s}
+		h := New(deletes, stagingKind{}, pointer, "test manifest", removable)
+		err := h.Advance(t.Context(), "4", "5", &manifest{}, []string{testKind{}.ManifestPath("5")})
+		if !errors.Is(err, removable.Removed) {
+			t.Fatalf("Advance = %v, want the removal", err)
+		}
+		_, staged := s.objects[stagingKind{}.StagedPath("5")]
+		if staged || !deletes.bounded {
+			t.Errorf("staged copy remains = %v, deletion bounded = %v", staged, deletes.bounded)
+		}
+	})
+}
+
+// deadlineStore records whether the last Delete had a deadline.
+type deadlineStore struct {
+	*memStore
+	bounded bool
+}
+
+func (s *deadlineStore) Delete(ctx context.Context, path string) error {
+	_, s.bounded = ctx.Deadline()
+	return s.memStore.Delete(ctx, path)
 }
 
 func TestAdvance_StagesOnlyAcceptedCommits(t *testing.T) {
