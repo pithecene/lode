@@ -1430,17 +1430,19 @@ func TestAdvanceBoundsTheCleanupBehindAFence(t *testing.T) {
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		start := time.Now()
+		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+		defer cancel()
 		s := newMemStore()
 		s.objects[pointer] = []byte(RemovedPointer)
 		removable := testErrors
 		removable.Removed = errors.New("removed")
 		h := New(blockedDeleteStore{s}, stagingKind{}, pointer, "test manifest", removable)
-		err := h.Advance(t.Context(), "4", "5", &manifest{}, []string{testKind{}.ManifestPath("5")})
+		err := h.Advance(ctx, "4", "5", &manifest{}, []string{testKind{}.ManifestPath("5")})
 		if !errors.Is(err, removable.Removed) {
 			t.Errorf("Advance = %v, want the removal", err)
 		}
-		if waited := time.Since(start); waited != removalCleanupTimeout {
-			t.Errorf("waited %v, want %v", waited, removalCleanupTimeout)
+		if waited := time.Since(start); waited != 10*time.Second {
+			t.Errorf("waited %v, want ten seconds", waited)
 		}
 	})
 }
