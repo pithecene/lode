@@ -884,21 +884,41 @@ func TestWrite_CallerFileNamedManifest(t *testing.T) {
 
 func TestIsBundledManifest(t *testing.T) {
 	t.Parallel()
-	for rel, want := range map[string]bool{
-		"snapshots/1/manifest.json":                   true,
-		"segments/1/manifest.json":                    true,
-		"partitions/a=x/segments/1/manifest.json":     true,
-		"partitions/a=x/b=y/segments/1/manifest.json": true,
-		"imports/segments/1/manifest.json":            false,
-		"partitions/segments/1/manifest.json":         false,
-		"partitions/a=x/c/segments/1/manifest.json":   false,
-		"partitions/a=x/snapshots/1/manifest.json":    false,
-		"partitions/a=x/files/manifest.json":          false,
-		"manifest.json":                               false,
+	id := string(idAt(time.Now()))
+	for _, tc := range []struct {
+		key  string
+		flat bool
+		want bool
+	}{
+		{"datasets/d/snapshots/" + id + "/manifest.json", false, true},
+		{"datasets/d/segments/1770422400000000000/manifest.json", false, true},
+		{"datasets/d/partitions/a=x/b=y/segments/" + id + "/manifest.json", false, true},
+		{"d/" + id + "/manifest.json", true, true},
+		{"d/segments/" + id + "/manifest.json", true, true},
+		{"d/snapshots/" + id + "/manifest.json", true, false},
+		{"d/files/manifest.json", true, false},
+		{"datasets/other/snapshots/" + id + "/manifest.json", false, false},
+		{"datasets/d/segments/files/manifest.json", false, false},
+		{"datasets/d/imports/segments/" + id + "/manifest.json", false, false},
+		{"datasets/d/partitions/segments/" + id + "/manifest.json", false, false},
+		{"datasets/d/partitions/a=x/c/segments/" + id + "/manifest.json", false, false},
+		{"datasets/d/partitions/=x/segments/" + id + "/manifest.json", false, false},
+		{"datasets/d/partitions/a=x/files/manifest.json", false, false},
 	} {
-		if got := isBundledManifest(rel); got != want {
-			t.Errorf("isBundledManifest(%q) = %t, want %t", rel, got, want)
+		if got := isBundledManifest("d", tc.key, tc.flat); got != tc.want {
+			t.Errorf("isBundledManifest(%q, flat %t) = %t, want %t", tc.key, tc.flat, got, tc.want)
 		}
+	}
+}
+
+// A damaged flat manifest without a pointer is another layout's history.
+func TestWrite_FlatForeignManifest(t *testing.T) {
+	t.Parallel()
+	store := NewMemory()
+	putObject(t, store, "events/"+string(idAt(time.Now()))+"/manifest.json")
+	_, err := Open(Use(store), WithFlatPaths()).Records(t.Context(), "events", jsonl, hive("a"))
+	if !errors.Is(err, ErrSettingsMismatch) {
+		t.Fatalf("Records = %v, want ErrSettingsMismatch", err)
 	}
 }
 
@@ -917,24 +937,41 @@ func TestReadProbe_Body(t *testing.T) {
 	t.Parallel()
 	boom := errors.New("body")
 	for err, want := range map[error]error{ErrNotFound: nil, boom: boom} {
-		got, gotErr := isForeignManifest(t.Context(), failingBody{NewMemory(), err}, "datasets/d/x/manifest.json", "x/manifest.json")
+		got, gotErr := isForeignManifest(t.Context(), failingBody{NewMemory(), err}, "d", "datasets/d/x/manifest.json", false)
 		if got || !errors.Is(gotErr, want) {
 			t.Errorf("body error %v: %t, %v; want false, %v", err, got, gotErr, want)
 		}
 	}
 }
 
-// The probe reads no more than its bound of an object.
+// rangeOnly records the length of a ranged read and refuses a whole one.
+type rangeOnly struct {
+	RangeStore
+	length int64
+}
+
+func (s *rangeOnly) Get(context.Context, string) (io.ReadCloser, error) {
+	return nil, errors.New("whole read")
+}
+
+func (s *rangeOnly) ReadRange(ctx context.Context, p string, offset, length int64) ([]byte, error) {
+	s.length = length
+	return s.RangeStore.ReadRange(ctx, p, offset, length)
+}
+
+// The probe asks for no more than its bound of an object.
 func TestReadProbe_Ranged(t *testing.T) {
 	t.Parallel()
 	store := NewMemory()
 	if err := store.Put(t.Context(), "k", strings.NewReader(strings.Repeat("x", manifestProbe+1))); err != nil {
 		t.Fatal(err)
 	}
-	for name, st := range map[string]Store{"ranged": store, "plain": struct{ Store }{store}} {
-		if got, err := readProbe(t.Context(), st, "k"); err != nil || len(got) != manifestProbe {
-			t.Errorf("%s: %d bytes, %v; want %d", name, len(got), err, manifestProbe)
-		}
+	if got, err := readProbe(t.Context(), struct{ Store }{store}, "k"); err != nil || len(got) != manifestProbe {
+		t.Errorf("plain: %d bytes, %v; want %d", len(got), err, manifestProbe)
+	}
+	ranged := &rangeOnly{RangeStore: store}
+	if got, err := readProbe(t.Context(), ranged, "k"); err != nil || len(got) != manifestProbe || ranged.length != manifestProbe {
+		t.Errorf("ranged: %d bytes of %d asked, %v; want %d", len(got), ranged.length, err, manifestProbe)
 	}
 	if err := store.Put(t.Context(), "short", strings.NewReader("{}")); err != nil {
 		t.Fatal(err)

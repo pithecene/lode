@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/pithecene/lode/internal/errs"
+	"github.com/pithecene/lode/internal/history"
 	"github.com/pithecene/lode/internal/storepath"
 	"github.com/pithecene/lode/internal/validate"
 )
@@ -201,7 +202,7 @@ func rejectForeignManifest(ctx context.Context, store Store, id DatasetID, layou
 			continue
 		}
 		// A caller's own file can have a manifest's name.
-		lodes, err := isForeignManifest(ctx, store, k, strings.TrimPrefix(k, layouts[0].datasetPrefix(id)))
+		lodes, err := isForeignManifest(ctx, store, id, k, layouts[0].isFlat())
 		if err != nil {
 			return err
 		}
@@ -220,8 +221,8 @@ const manifestProbe = 4 << 10
 // isForeignManifest reports whether the object is a manifest of some layout: any
 // object in a bundled layout's manifest directory, so that a damaged manifest
 // counts, and elsewhere one that declares Lode's schema.
-func isForeignManifest(ctx context.Context, store Store, key, rel string) (bool, error) {
-	if isBundledManifest(rel) {
+func isForeignManifest(ctx context.Context, store Store, id DatasetID, key string, flat bool) (bool, error) {
+	if isBundledManifest(id, key, flat) {
 		return true, nil
 	}
 	head, err := readProbe(ctx, store, key)
@@ -234,19 +235,35 @@ func isForeignManifest(ctx context.Context, store Store, key, rel string) (bool,
 	return declaresManifest(head), nil
 }
 
-// isBundledManifest reports whether a path relative to the dataset is a manifest
-// of a bundled layout (CONTRACT_LAYOUT §Canonical Path Grammars).
-func isBundledManifest(rel string) bool {
-	segs := strings.Split(rel, "/")
-	if len(segs) < 3 {
-		return false
+// isBundledManifest reports whether the key is a manifest path of the dataset in
+// either bundled layout of the root (CONTRACT_LAYOUT §Canonical Path Grammars).
+func isBundledManifest(id DatasetID, key string, flat bool) bool {
+	for _, partitioned := range []bool{false, true} {
+		sp, ok := newPathGrammar(flat, partitioned).parse(key)
+		if ok && sp.kind == manifestLeaf && sp.dataset == id && isSnapshotID(sp.snapshot) && isHivePartition(sp.partition) {
+			return true
+		}
 	}
-	dirs, dir := segs[:len(segs)-3], segs[len(segs)-3]
-	if len(dirs) == 0 {
-		return dir == snapshotsDir || dir == segmentsDir
+	return false
+}
+
+// isSnapshotID reports whether an ID is one that Lode generates: an instant with
+// a nonce, or the instant alone of older releases.
+func isSnapshotID(id SnapshotID) bool {
+	return history.IsGeneratedID(id) || len(id) > 0 && strings.Trim(string(id), "0123456789") == ""
+}
+
+// isHivePartition reports whether each segment of a partition names a key.
+func isHivePartition(partition string) bool {
+	if partition == "" {
+		return true
 	}
-	return dir == segmentsDir && dirs[0] == partitionsDir && len(dirs) > 1 &&
-		!slices.ContainsFunc(dirs[1:], func(s string) bool { return !strings.Contains(s, "=") })
+	for seg := range strings.SplitSeq(partition, "/") {
+		if key, _, ok := strings.Cut(seg, "="); !ok || key == "" {
+			return false
+		}
+	}
+	return true
 }
 
 // readProbe reads the start of an object, with a ranged read where the store

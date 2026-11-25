@@ -82,7 +82,7 @@ ordered Hive keys, and `WithFlatPaths()`.
   the dataset prefix and MUST reject with `ErrSettingsMismatch` if a
   `manifest.json` exists under another layout's topology (preventing parallel
   histories in one dataset prefix). An object at a
-  manifest path of a bundled layout ([`CONTRACT_LAYOUT.md`](CONTRACT_LAYOUT.md)
+  manifest path of a bundled layout, with a generated snapshot ID ([`CONTRACT_LAYOUT.md`](CONTRACT_LAYOUT.md)
   §Canonical Path Grammars) is such a manifest whatever it holds. At any other path the writer MUST read the first
   4 KiB, and an object without the top-level `schema_name` of a Lode manifest
   there is a caller's file and MUST be ignored. A read that fails for another
