@@ -1048,8 +1048,8 @@ func (h *History[ID, M]) stage(ctx context.Context, staged string, data []byte) 
 	return true, nil
 }
 
-// unstagePublished allows staged cleanup to finish even if the caller
-// cancels after a successful fence check.
+// unstagePublished allows staged cleanup to finish, within a limit, even if
+// the caller cancels after a fence check.
 func (h *History[ID, M]) unstagePublished(ctx context.Context, staged string) {
 	if staged == "" {
 		return
@@ -1088,6 +1088,17 @@ func (h *History[ID, M]) advancePointer(ctx context.Context, expected string, id
 		if applied {
 			return head, nil
 		}
+		// The fence can have arrived while the walk waited for an ancestor.
+		if errors.Is(err, h.errs.NotFound) {
+			fenceErr := h.checkRemoval(ctx, "after a lost pointer update")
+			if h.errs.Removed != nil && errors.Is(fenceErr, h.errs.Removed) {
+				if stagedWrote {
+					h.unstagePublished(ctx, staged)
+				}
+				return "", fenceErr
+			}
+			err = errors.Join(err, fenceErr)
+		}
 	} else if errors.Is(err, h.errs.NotFound) && expected == "" {
 		// A missing pointer still matches the first commit's precondition.
 		err = nil
@@ -1099,11 +1110,50 @@ func (h *History[ID, M]) advancePointer(ctx context.Context, expected string, id
 	return "", fmt.Errorf("failed to update latest pointer: %w", writeErr)
 }
 
+// pendingWait is the deadline of one walk's waits for ancestors that have no
+// manifest yet, and of the reads it repeats for them.
+const pendingWait = 2 * time.Second
+
+// pendingBackoff is the delay before read n of a missing ancestor.
+func pendingBackoff(n int) time.Duration {
+	return min(10*time.Millisecond<<min(n, 5), 250*time.Millisecond)
+}
+
+// awaitAncestor reads ancestor id again until deadline or the end of ctx. A
+// writer that won the CAS persists its manifest only after the
+// pointer, so the chain below a live winner is incomplete for a moment. An
+// expired ancestor never returns, so it ends the wait at once. It
+// returns the last gap with every other cause, and adds none for the deadline.
+func (h *History[ID, M]) awaitAncestor(ctx context.Context, deadline time.Time, id ID, missing error) (*Snapshot[ID, M], error) {
+	waitCtx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
+	live, err := h.kind.NotExpired(waitCtx, id)
+	if err == nil && !live {
+		return nil, missing
+	}
+	var s *Snapshot[ID, M]
+	for n := 0; err == nil; n++ {
+		select {
+		case <-waitCtx.Done():
+			return nil, errors.Join(missing, ctx.Err())
+		case <-time.After(pendingBackoff(n)):
+		}
+		if s, err = h.ancestor(waitCtx, id); err == nil {
+			return s, nil
+		}
+		if errors.Is(err, h.errs.NotFound) {
+			missing, err = err, nil
+		}
+	}
+	return nil, errors.Join(missing, err, ctx.Err())
+}
+
 // containsAttempt follows persisted parent links to the attempted ID,
 // its expected predecessor, or the root. A gap or cycle leaves the outcome
 // uncertain. Each kind identifies the copies that reliably record its parent.
 func (h *History[ID, M]) containsAttempt(ctx context.Context, head, attempt, expected ID) (bool, error) {
 	seen := make(map[ID]struct{})
+	var deadline time.Time // of every wait for a missing ancestor
 	for id := head; id != expected && id != ""; {
 		if id == attempt {
 			return true, nil
@@ -1119,6 +1169,12 @@ func (h *History[ID, M]) containsAttempt(ctx context.Context, head, attempt, exp
 			return false, err
 		}
 		snapshot, err := h.ancestor(ctx, id)
+		if errors.Is(err, h.errs.NotFound) {
+			if deadline.IsZero() {
+				deadline = time.Now().Add(pendingWait)
+			}
+			snapshot, err = h.awaitAncestor(ctx, deadline, id, err)
+		}
 		if err != nil {
 			return false, fmt.Errorf("failed to read ancestor %s: %w", id, err)
 		}
