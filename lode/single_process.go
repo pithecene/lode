@@ -8,7 +8,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/pithecene/lode/internal/storepath"
 	"github.com/pithecene/lode/internal/validate"
@@ -576,25 +575,16 @@ func (s *singleProcessStore) stageJournalLocked(ctx context.Context, jPath, expe
 	return nil
 }
 
-// singleProcessCleanupTimeout bounds each step after a swap that ignores the
-// caller's cancellation, because the store's lock is held for it. A step that
-// does not finish leaves the journal, which serves the prior content and which
-// the next swap resolves.
-const singleProcessCleanupTimeout = 10 * time.Second
-
 func (s *singleProcessStore) restoreAfterFailedPutLocked(ctx context.Context, cleaned, jPath, expected string) {
-	restoreCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), singleProcessCleanupTimeout)
-	defer cancel()
+	restoreCtx := context.WithoutCancel(ctx)
 	restoreErr := s.ObjectStore.Put(restoreCtx, cleaned, strings.NewReader(expected))
 	if restoreErr == nil || errors.Is(restoreErr, ErrPathExists) {
-		s.clearJournalLocked(ctx, cleaned, jPath)
+		s.clearJournalLocked(restoreCtx, cleaned, jPath)
 	}
 }
 
 func (s *singleProcessStore) clearJournalLocked(ctx context.Context, cleaned, jPath string) {
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), singleProcessCleanupTimeout)
-	defer cancel()
-	delErr := s.ObjectStore.Delete(ctx, jPath)
+	delErr := s.ObjectStore.Delete(context.WithoutCancel(ctx), jPath)
 	if delErr == nil || errors.Is(delErr, ErrNotFound) {
 		s.setJournaled(cleaned, false)
 	}
