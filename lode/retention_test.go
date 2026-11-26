@@ -7,11 +7,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -570,25 +569,41 @@ func TestExpire_DryRun(t *testing.T) {
 	})
 
 	// Planning loads one manifest copy of each candidate, and the check of
-	// every copy reuses it, so a dry run reads no manifest path twice.
+	// every copy reuses it for a new tombstone, so a dry run reads every
+	// copy of each candidate, canonical and partition, exactly once.
 	t.Run("reads each manifest copy once", func(t *testing.T) {
-		store := &getCountingStore{Store: NewMemory(), gets: map[string]int{}}
+		store := testutil.NewFaultStore(NewMemory())
 		ds := newHiveRetention(t, store)
 		var expired []SnapshotID
 		for range 3 {
 			expired = append(expired, writeRun(t, ds, "a", "x", "y").ID)
 		}
 		writeRun(t, ds, "b", "x") // the head
-		clear(store.gets)
+		want := map[string]int{}
+		for _, k := range storeKeys(t, store) {
+			for _, id := range expired {
+				if strings.HasSuffix(k, "/"+string(id)+"/manifest.json") {
+					want[k] = 1
+				}
+			}
+		}
+		if len(want) != 3*len(expired) {
+			t.Fatalf("fixture has %d manifest copies, want a canonical and two partition copies of each: %v", len(want), want)
+		}
+		store.Reset()
 
 		report, err := ds.Expire(t.Context(), ExpireRequest{Partition: "run_id=a", DryRun: true})
 		if err != nil || !slices.Equal(report.Expired, expired) {
 			t.Fatalf("Expire = %+v, %v; want %v expired", report, err, expired)
 		}
-		for path, n := range store.gets {
-			if strings.HasSuffix(path, "/manifest.json") && n > 1 {
-				t.Errorf("read %s %d times, want once", path, n)
+		got := map[string]int{}
+		for _, p := range store.GetCalls() {
+			if _, ok := want[p]; ok {
+				got[p]++
 			}
+		}
+		if !maps.Equal(got, want) {
+			t.Errorf("manifest copy reads = %v, want each once: %v", got, want)
 		}
 	})
 
@@ -1621,18 +1636,4 @@ func assertExpireRefusesTombstone(t *testing.T, ds *Records[D], snap *Snapshot) 
 		}
 	}
 	assertPresent(t, ds, snap)
-}
-
-// getCountingStore counts the Get requests for each path.
-type getCountingStore struct {
-	Store
-	mu   sync.Mutex
-	gets map[string]int
-}
-
-func (s *getCountingStore) Get(ctx context.Context, p string) (io.ReadCloser, error) {
-	s.mu.Lock()
-	s.gets[p]++
-	s.mu.Unlock()
-	return s.Store.Get(ctx, p)
 }

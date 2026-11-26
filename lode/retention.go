@@ -337,8 +337,9 @@ type expiryRun struct {
 type expiryPlan struct {
 	tomb     tombstone
 	recorded bool // an earlier or concurrent run recorded it
-	// loaded is the manifest copy that planning loaded, keyed by its path, so
-	// the check of every copy does not read that path again.
+	// loaded is the manifest copy that a new tombstone was built from, keyed by
+	// its path, so the check of every copy does not read that path again. A
+	// recorded tombstone leaves it nil.
 	loaded map[string]*Manifest
 }
 
@@ -445,7 +446,10 @@ func (r expiryRun) tombstonePlan(ctx context.Context, c expiryCandidate) (expiry
 	case err != nil:
 		return expiryPlan{}, err
 	}
-	return expiryPlan{tomb: t, recorded: true, loaded: loaded}, nil
+	// A recorded tombstone was read after the copy was loaded, so the copy
+	// may since have been deleted and another snapshot written under the ID.
+	// The check of every copy reads each path again.
+	return expiryPlan{tomb: t, recorded: true}, nil
 }
 
 // tombstoneFor is the candidate's recorded tombstone: the one selection
