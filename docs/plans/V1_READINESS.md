@@ -116,7 +116,7 @@ In these criteria, @pithecene observed every recorded evidence entry.
 ### 1. API Surface Freeze
 
 - [ ] No public type, function, or method signature in the v1.0-promised surface has changed for 4+ weeks after first downstream integration (experimental Volume excluded, D9)
-  - **Status:** Time-gated. v0.18.3 released the option `WithRecordedComponents()` (lode#419, requested by Quarry) on 2026-11-21 and restarted the window. v0.18.6 released the field `ManifestListOptions.Prefetch` (lode#436), which a downstream consumer needs to list a whole dataset in reasonable time (private), on 2026-11-26 and restarted it again, so the window passes on 2026-12-24.
+  - **Status:** Time-gated. v0.18.3 released the option `WithRecordedComponents()` (lode#419, requested by Quarry) on 2026-11-21 and restarted the window. v0.18.6 restarted it on 2026-11-26 with the field `ManifestListOptions.Prefetch` (lode#436). A downstream consumer needs that field to list a whole dataset quickly (private). The window now passes on 2026-12-24.
   - **Evidence:** v0.18.3 adds the dataset option `WithRecordedComponents()`, which Quarry's zstd and SHA-256 writers (quarry#424) needed. No existing signature changes. (2026-11-21, lode)
   - **Evidence:** lode#436 adds `ManifestListOptions.Prefetch`, a bounded prefetch of manifest loads. No existing signature changes, and the manifest format stays the same. (2026-11-26, lode)
   - **Issue:** lode#175
