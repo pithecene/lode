@@ -16,7 +16,7 @@ before Lode receives the v1.0 tag.
 
 ---
 
-## Current Assessment (2026-11-25)
+## Current Assessment (2026-11-26)
 
 - **Releases:** Quarry v0.20.2 pins Lode v0.18.5. Both released on 2026-11-25. Recording these versions does not change the status of any readiness criterion. Native AWS S3 qualification and two weeks of production Dataset snapshot reads remain open.
 - **Holds:** The [October audit](dogfood_audit_2026-10.md) detected no corruption and zero manifest decode failures across 96,478 snapshots over 8 months on R2. Manifest format `1.2.0` reads `1.0.0` and `1.1.0` datasets with standard internal names.
