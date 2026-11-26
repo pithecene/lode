@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"slices"
 	"strconv"
@@ -1636,4 +1637,109 @@ func assertExpireRefusesTombstone(t *testing.T, ds *Records[D], snap *Snapshot) 
 		}
 	}
 	assertPresent(t, ds, snap)
+}
+
+// reuseStore replaces a snapshot's canonical manifest with another snapshot
+// under the same ID at one moment of an expiry: after the plan reads the
+// recorded tombstone (onLookup), or just before the expiry writes its own
+// tombstone, when it also records a rival's matching tombstone (onCAS).
+type reuseStore struct {
+	Store
+	tombPath, canonical string
+	other               *Manifest
+	rival               []byte
+	onLookup, onCAS     bool
+	canonicalRead, done bool
+}
+
+func (s *reuseStore) Get(ctx context.Context, p string) (io.ReadCloser, error) {
+	if p == s.canonical {
+		s.canonicalRead = true
+	}
+	if s.onLookup && !s.done && s.canonicalRead && p == s.tombPath {
+		s.done = true
+		if err := s.replace(ctx); err != nil {
+			return nil, err
+		}
+	}
+	return s.Store.Get(ctx, p)
+}
+
+func (s *reuseStore) CompareAndSwap(ctx context.Context, p, expected, replacement string) error {
+	cw := s.Store.(ConditionalWriter)
+	if s.onCAS && !s.done && p == s.tombPath {
+		s.done = true
+		if err := cw.CompareAndSwap(ctx, p, "", string(s.rival)); err != nil {
+			return err
+		}
+		if err := s.replace(ctx); err != nil {
+			return err
+		}
+	}
+	return cw.CompareAndSwap(ctx, p, expected, replacement)
+}
+
+func (s *reuseStore) replace(ctx context.Context) error {
+	data, err := json.Marshal(s.other)
+	if err != nil {
+		return err
+	}
+	if err := s.Store.Delete(ctx, s.canonical); err != nil {
+		return err
+	}
+	return s.Store.Put(ctx, s.canonical, bytes.NewReader(data))
+}
+
+// A copy that the plan loaded is never trusted once another run's tombstone
+// stands: after the plan reads a recorded tombstone, or when a rival's
+// matching tombstone wins the create, expiry reads every copy again, refuses
+// the snapshot that reused the ID, and leaves its manifest in place.
+func TestExpire_RereadsCopiesUnderAnotherTombstone(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name            string
+		recorded, onCAS bool
+	}{
+		{"a recorded tombstone", true, false},
+		{"a rival tombstone that wins the create", false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mem := NewMemory()
+			setup := newDefaultRetention(t, mem)
+			first := writeRecord(t, setup, 1)
+			writeRecord(t, setup, 2) // the head
+			mine := newTombstone(first.ID, first.Manifest)
+			rival, err := json.Marshal(mine)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.recorded {
+				putTombstone(t, mem, first.ID, mine)
+			}
+			other := *first.Manifest
+			other.CreatedAt = other.CreatedAt.Add(-time.Hour)
+			store := &reuseStore{
+				Store:     mem,
+				tombPath:  "datasets/events/expired/" + string(first.ID),
+				canonical: "datasets/events/snapshots/" + string(first.ID) + "/manifest.json",
+				other:     &other, rival: rival,
+				onLookup: tc.recorded, onCAS: tc.onCAS,
+			}
+			ds := newDefaultRetention(t, store)
+
+			if _, err := ds.Expire(t.Context(), ExpireRequest{IDs: []SnapshotID{first.ID}}); err == nil {
+				t.Fatal("Expire deleted under a tombstone the manifest at its path contradicts")
+			}
+			if !store.done {
+				t.Fatal("the reuse never happened")
+			}
+			got, err := ds.Snapshot(t.Context(), first.ID)
+			if err == nil && !got.Manifest.CreatedAt.Equal(other.CreatedAt) {
+				t.Errorf("manifest at the path = %v, want the reusing snapshot's", got.Manifest.CreatedAt)
+			}
+			if kept, _ := mem.Exists(t.Context(), store.canonical); !kept {
+				t.Error("expiry deleted the manifest of the snapshot that reused the ID")
+			}
+		})
+	}
 }

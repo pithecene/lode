@@ -446,9 +446,9 @@ func (r expiryRun) tombstonePlan(ctx context.Context, c expiryCandidate) (expiry
 	case err != nil:
 		return expiryPlan{}, err
 	}
-	// A recorded tombstone was read after the copy was loaded, so the copy
-	// may since have been deleted and another snapshot written under the ID.
-	// The check of every copy reads each path again.
+	// A recorded tombstone was not built from the loaded copy, and its
+	// existence lets another run delete that copy and a writer reuse the ID,
+	// so the check of every copy reads each path again.
 	return expiryPlan{tomb: t, recorded: true}, nil
 }
 
@@ -476,12 +476,25 @@ func (r expiryRun) present(objects []ObjectRef) []ObjectRef {
 // a later step fails.
 func (r expiryRun) remove(ctx context.Context, c expiryCandidate, plan expiryPlan, split inventorySplit, out expiryOutcome) (expiryOutcome, error) {
 	d := r.ds
+	manifests := d.allManifestPaths(c.id, c.paths, plan.tomb.Objects)
 	if !plan.recorded {
-		if err := d.tombstones().record(ctx, plan.tomb); err != nil {
+		won, err := d.tombstones().record(ctx, plan.tomb)
+		if err != nil {
 			return out, err
 		}
+		// Another run recorded the tombstone, and may have finished its expiry
+		// since this plan checked a copy it had loaded, so every copy is read
+		// again before any is deleted.
+		if !won && plan.loaded != nil {
+			matches, err := d.describesEveryCopy(ctx, plan.tomb, manifests, nil)
+			if err != nil {
+				return out, err
+			}
+			if !matches {
+				return out, fmt.Errorf("lode: tombstone for %s records another snapshot than its manifest", c.id)
+			}
+		}
 	}
-	manifests := d.allManifestPaths(c.id, c.paths, plan.tomb.Objects)
 	if err := deleteObject(ctx, d.store, manifests[0]); err != nil {
 		return out, err
 	}
