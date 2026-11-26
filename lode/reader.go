@@ -414,6 +414,11 @@ func (d *dataset) yieldPrefetched(ctx context.Context, window []listedManifest, 
 			next++
 		}
 		if len(pending) == 0 {
+			// Nothing remains to load, as when the cursor follows the last
+			// manifest: a caller that cancelled still receives its error.
+			if err := caller.Err(); err != nil {
+				yield(LoadedManifest{}, err)
+			}
 			return
 		}
 		r := <-pending[0]

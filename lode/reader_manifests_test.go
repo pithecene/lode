@@ -663,6 +663,33 @@ func TestManifests_PrefetchHonoursCancellation(t *testing.T) {
 	}
 }
 
+// A caller that cancelled before its first advance receives the context's
+// error, also when the cursor follows the last manifest and nothing remains
+// to load.
+func TestManifests_PrefetchHonoursCancellationPastTheLastManifest(t *testing.T) {
+	t.Parallel()
+	store := NewMemory()
+	prefetchFixture(t, store, 2)
+	ds := openHive(t, store)
+	all := refsOf(collect(t, ds, partitionPath(t, "day=a"), ManifestListOptions{}))
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	var steps []string
+	for loaded, err := range ds.Manifests(ctx, partitionPath(t, "day=a"), ManifestListOptions{StartAfter: all[len(all)-1], Prefetch: 1}) {
+		switch {
+		case errors.Is(err, context.Canceled):
+			steps = append(steps, "canceled")
+		case err != nil:
+			steps = append(steps, "other: "+err.Error())
+		default:
+			steps = append(steps, string(loaded.Ref.ID))
+		}
+	}
+	if want := []string{"canceled"}; !slices.Equal(steps, want) {
+		t.Fatalf("yielded %v, want %v", steps, want)
+	}
+}
+
 // recheckStore changes the answer to the second Exists of path, the worker's
 // recheck after the listing's own check: it removes path first, or fails.
 type recheckStore struct {
