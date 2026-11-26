@@ -237,7 +237,8 @@ ReaderAt(ctx context.Context, obj ObjectRef) (io.ReaderAt, error)
   `opts.Limit`, whatever `opts.Prefetch` holds.
 - With `opts.Prefetch` above zero, `Manifests` MAY load up to that many
   manifests ahead of the caller, concurrently. For the same load outcomes it
-  MUST yield the sequence and errors of a lazy listing. A load observes
+  MUST yield the manifests and the load and validation errors of a lazy
+  listing, in the same order; only the cancellation rule below differs. A load observes
   storage when it runs, so a manifest removed after its load but before the
   caller reaches it is still yielded. `Manifests` MUST start a load only
   while the manifests yielded and in flight stay within `opts.Limit`, MUST

@@ -447,8 +447,9 @@ type prefetch struct {
 	loads      sync.WaitGroup
 }
 
-// startLoad starts loading m and returns the channel that receives its
-// outcome.
+// startLoad starts loading m. The outcome channel holds one value, so the
+// load can send its outcome after the listing stops receiving, and the
+// listing's wait for its loads never blocks on an unread send.
 func (p *prefetch) startLoad(m listedManifest) chan windowLoad {
 	done := make(chan windowLoad, 1)
 	p.loads.Go(func() { done <- p.d.loadWindowed(p.ctx, m, p.tombstoned) })
