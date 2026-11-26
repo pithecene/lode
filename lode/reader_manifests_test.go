@@ -3,11 +3,14 @@ package lode
 import (
 	"context"
 	"errors"
+	"io"
 	"iter"
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/pithecene/lode/internal/testutil"
 )
@@ -113,6 +116,14 @@ func listingWindows(refs []ManifestRef) []ManifestListOptions {
 	opts := []ManifestListOptions{{}, {Limit: 1}, {Limit: 2}, {Limit: len(refs)}}
 	for _, ref := range refs {
 		opts = append(opts, ManifestListOptions{StartAfter: ref}, ManifestListOptions{StartAfter: ref, Limit: 1})
+	}
+	// Each window again with loads running ahead of the caller, which
+	// changes nothing that the listing yields.
+	for _, o := range slices.Clone(opts) {
+		for _, prefetch := range []int{1, 2, 8} {
+			o.Prefetch = prefetch
+			opts = append(opts, o)
+		}
 	}
 	return opts
 }
@@ -351,5 +362,139 @@ func TestManifests_ValidatesOnlyTheWindow(t *testing.T) {
 	}
 	if errs != 1 {
 		t.Fatalf("Manifests(Limit: 2) yielded %d errors, want 1", errs)
+	}
+}
+
+// Loads that run ahead never read a manifest beyond Limit, and a caller that
+// stops early finds every load finished when the iterator returns.
+func TestManifests_PrefetchStaysWithinTheWindow(t *testing.T) {
+	t.Parallel()
+	fs := testutil.NewFaultStore(NewMemory())
+	ds := openHive(t, fs)
+	for range 6 {
+		writeEach(t, ds, D{"day": "a"})
+	}
+	day := partitionPath(t, "day=a")
+
+	fs.Reset()
+	if got := len(collect(t, ds, day, ManifestListOptions{Limit: 2, Prefetch: 4})); got != 2 {
+		t.Fatalf("yielded %d manifests, want 2", got)
+	}
+	if got := manifestGets(fs); got != 2 {
+		t.Errorf("Limit 2 with Prefetch 4 read %d manifests, want 2", got)
+	}
+
+	fs.Reset()
+	for _, err := range ds.Manifests(t.Context(), day, ManifestListOptions{Prefetch: 3}) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		break
+	}
+	stopped := manifestGets(fs)
+	if stopped > 3 {
+		t.Errorf("a caller that took one manifest with Prefetch 3 caused %d manifest reads, want at most 3", stopped)
+	}
+	time.Sleep(10 * time.Millisecond)
+	if got := manifestGets(fs); got != stopped {
+		t.Errorf("manifest reads went on after the iterator returned: %d, then %d", stopped, got)
+	}
+}
+
+// gatedStore holds each manifest Get until width of them are in flight at
+// once, or until the wait runs out.
+type gatedStore struct {
+	Store
+	width int
+	mu    sync.Mutex
+	inFly int
+	most  int
+	open  chan struct{}
+}
+
+func (g *gatedStore) Get(ctx context.Context, path string) (io.ReadCloser, error) {
+	if !strings.HasSuffix(path, "/manifest.json") || strings.Contains(path, "/latest") {
+		return g.Store.Get(ctx, path)
+	}
+	g.mu.Lock()
+	g.inFly++
+	g.most = max(g.most, g.inFly)
+	if g.inFly == g.width {
+		close(g.open)
+	}
+	g.mu.Unlock()
+	select {
+	case <-g.open:
+	case <-time.After(2 * time.Second):
+	}
+	g.mu.Lock()
+	g.inFly--
+	g.mu.Unlock()
+	return g.Store.Get(ctx, path)
+}
+
+// Prefetch loads that many manifests at once.
+func TestManifests_PrefetchLoadsConcurrently(t *testing.T) {
+	t.Parallel()
+	mem := NewMemory()
+	ds := openHive(t, mem)
+	for range 6 {
+		writeEach(t, ds, D{"day": "a"})
+	}
+	gated := &gatedStore{Store: mem, width: 3, open: make(chan struct{})}
+	view, err := Open(Use(gated)).Records(t.Context(), "test-ds", JSONL[D](), hive("day"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	if got := len(collect(t, view, partitionPath(t, "day=a"), ManifestListOptions{Prefetch: 3})); got != 6 {
+		t.Fatalf("yielded %d manifests, want 6", got)
+	}
+	if gated.most < 3 || time.Since(start) > time.Second {
+		t.Errorf("at most %d manifest loads ran at once in %v, want 3 at once", gated.most, time.Since(start))
+	}
+}
+
+// With loads running ahead, an invalid manifest is still yielded once as an
+// error, and nothing follows it.
+func TestManifests_PrefetchStopsAtAnInvalidManifest(t *testing.T) {
+	t.Parallel()
+	store := NewMemory()
+	ds := openHive(t, store)
+	ids := writeEach(t, ds, D{"day": "a"}, D{"day": "a"}, D{"day": "a"})
+	slices.Sort(ids)
+	bad := "datasets/test-ds/partitions/day=a/segments/" + string(ids[1]) + "/manifest.json"
+	if err := store.Delete(t.Context(), bad); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Put(t.Context(), bad, strings.NewReader("{")); err != nil {
+		t.Fatal(err)
+	}
+	var seen []SnapshotID
+	var errs int
+	for loaded, err := range ds.Manifests(t.Context(), partitionPath(t, "day=a"), ManifestListOptions{Prefetch: 3}) {
+		if err != nil {
+			errs++
+			continue
+		}
+		seen = append(seen, loaded.Ref.ID)
+	}
+	if errs != 1 || !slices.Equal(seen, ids[:1]) {
+		t.Fatalf("yielded %v and %d errors, want %v and 1", seen, errs, ids[:1])
+	}
+}
+
+// With loads running ahead, a manifest that went away after the listing is
+// skipped, as a lazy listing skips it.
+func TestManifests_PrefetchSkipsARemovedManifest(t *testing.T) {
+	t.Parallel()
+	fs := testutil.NewFaultStore(NewMemory())
+	ds := openHive(t, fs)
+	ids := writeEach(t, ds, D{"day": "a"}, D{"day": "a"}, D{"day": "a"})
+	slices.Sort(ids)
+	fs.SetGetError(ErrNotFound, "segments/"+string(ids[1])+"/manifest.json")
+	got := refsOf(collect(t, ds, partitionPath(t, "day=a"), ManifestListOptions{Prefetch: 3}))
+	if len(got) != 2 || got[0].ID != ids[0] || got[1].ID != ids[2] {
+		t.Fatalf("yielded %v, want %s and %s", got, ids[0], ids[2])
 	}
 }

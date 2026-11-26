@@ -234,6 +234,11 @@ ReaderAt(ctx context.Context, obj ObjectRef) (io.ReaderAt, error)
 - `Manifests` MUST load and validate each manifest lazily as the caller
   advances the iterator, and MUST NOT issue `Get` calls for manifests
   preceding `opts.StartAfter` or beyond `opts.Limit`.
+- With `opts.Prefetch` above zero, `Manifests` MAY load up to that many
+  manifests ahead of the caller, concurrently. It MUST yield the same
+  sequence and errors as a lazy listing, MUST start a load only while the
+  manifests yielded and in flight stay within `opts.Limit`, and MUST have
+  finished every load when the iterator returns.
 - If a listed manifest disappears before `Get` (`ErrNotFound` due to
   concurrent expiry), `Manifests` skips it without counting it toward
   `Limit`. Any other load or validation error (`ErrManifestInvalid`) is

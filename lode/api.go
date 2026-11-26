@@ -641,6 +641,13 @@ type ManifestListOptions struct {
 	// StartAfter resumes iteration after this reference (exclusive) in
 	// (Partition, ID) order.
 	StartAfter ManifestRef
+
+	// Prefetch is the number of manifests Manifests may load ahead of the
+	// caller, concurrently. Zero or less loads each manifest only when the
+	// caller advances. The order, the validation and the errors stay those
+	// of a lazy listing, and no manifest before StartAfter or beyond Limit
+	// is loaded.
+	Prefetch int
 }
 
 // ErrDatasetsNotModeled indicates that flat paths place datasets at the store

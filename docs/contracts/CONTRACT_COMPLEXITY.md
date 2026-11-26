@@ -158,7 +158,9 @@ A successful CAS adds no ancestry reads.
   partition-manifest keys, reading manifests only for unindexed canonical-only
   snapshots (`C = 0` in steady state).
 - `Manifests` loads and validates only the `M` manifests yielded within the
-  `(StartAfter, Limit)` window.
+  `(StartAfter, Limit)` window, plus at most `Prefetch` loads under way when
+  a caller stops early or a load fails. With `Prefetch` set, up to that many
+  `Get` calls run at once.
 - When tombstones exist, `Snapshots`, `ListPartitions`, and `Manifests` check
   tombstone validity and canonical manifest presence only for tombstoned
   snapshot IDs lacking a loaded canonical manifest.

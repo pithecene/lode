@@ -392,7 +392,8 @@ as an incomplete read. An absent inventory path returns `ErrInvalidArgument`.
   paired `(Ref, *Manifest)` yielded by `Manifests`
 - `DatasetListOptions`, `PartitionListOptions`, and `ManifestListOptions`:
   pagination (`Limit`, `StartAfter`) and prefix options for `ListDatasets`,
-  `ListPartitions`, and `Manifests`
+  `ListPartitions`, and `Manifests`, and `ManifestListOptions.Prefetch`,
+  the bound on manifests that `Manifests` loads ahead, concurrently
 
 **Codec extension interfaces:**
 - `Codec[T]`, `StreamingCodec[T]`, `StreamEncoder[T]`: batch and streaming

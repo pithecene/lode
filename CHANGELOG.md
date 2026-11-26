@@ -9,6 +9,10 @@ and Lode adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Manifests can load ahead**: `ManifestListOptions.Prefetch` lets `Manifests` load up to that many manifests ahead of the caller, concurrently. Without it, an unfiltered listing waits for one `Get` at a time, and 15,000 manifests on R2 took 43 minutes. The order, the validation and the errors stay those of a lazy listing. `Manifests` loads no manifest before `StartAfter` or beyond `Limit`, and every load has finished when the iterator returns. Zero, the default, keeps the lazy listing.
+
 ---
 
 ## [0.18.5] - 2026-11-25
