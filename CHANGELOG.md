@@ -9,6 +9,10 @@ and Lode adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+---
+
+## [0.18.6] - 2026-11-26
+
 ### Added
 
 - **Manifests can load ahead**: `ManifestListOptions.Prefetch` lets `Manifests` load up to that many manifests ahead of the caller, concurrently. Read one at a time, 15,000 manifests on R2 took 43 minutes. For the same load outcomes, the order and the load errors match a lazy listing, though a load observes storage when it runs, and a cancelled caller receives the context error at its next advance. It loads nothing before `StartAfter` or beyond `Limit`, and finishes every load before returning. Zero, the default, keeps the lazy listing.
@@ -635,7 +639,8 @@ and Lode adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 <!-- jscpd:ignore-start -->
 
-[Unreleased]: https://github.com/pithecene/lode/compare/v0.18.5...HEAD
+[Unreleased]: https://github.com/pithecene/lode/compare/v0.18.6...HEAD
+[0.18.6]: https://github.com/pithecene/lode/compare/v0.18.5...v0.18.6
 [0.18.5]: https://github.com/pithecene/lode/compare/v0.18.4...v0.18.5
 [0.18.4]: https://github.com/pithecene/lode/compare/v0.18.3...v0.18.4
 [0.18.3]: https://github.com/pithecene/lode/compare/v0.18.2...v0.18.3
