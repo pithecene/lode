@@ -16,6 +16,8 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/go-openapi/testify/v2/assert"
+
 	"github.com/pithecene/lode/internal/testutil"
 )
 
@@ -532,25 +534,30 @@ func TestManifests_PrefetchLoadsConcurrently(t *testing.T) {
 			t.Fatal(err)
 		}
 		gate.release = make(chan struct{})
-		yielded := make(chan int)
-		go func() {
-			n := 0
-			for _, err := range view.Manifests(t.Context(), partitionPath(t, "day=a"), ManifestListOptions{Prefetch: 3}) {
-				if err != nil {
-					t.Error(err)
+		day := partitionPath(t, "day=a")
+		assert.NoGoRoutineLeak(t, func() {
+			yielded := make(chan int, 1)
+			var wg sync.WaitGroup
+			defer wg.Wait()
+			wg.Go(func() {
+				n := 0
+				for _, err := range view.Manifests(t.Context(), day, ManifestListOptions{Prefetch: 3}) {
+					if err != nil {
+						t.Error(err)
+					}
+					n++
 				}
-				n++
+				yielded <- n
+			})
+			synctest.Wait()
+			if got := gate.entered.Load(); got != 3 {
+				t.Errorf("%d manifest loads started at once, want 3", got)
 			}
-			yielded <- n
-		}()
-		synctest.Wait()
-		if got := gate.entered.Load(); got != 3 {
-			t.Errorf("%d manifest loads started at once, want 3", got)
-		}
-		close(gate.release)
-		if n := <-yielded; n != 6 {
-			t.Errorf("yielded %d manifests, want 6", n)
-		}
+			close(gate.release)
+			if n := <-yielded; n != 6 {
+				t.Errorf("yielded %d manifests, want 6", n)
+			}
+		})
 	})
 }
 

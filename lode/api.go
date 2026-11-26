@@ -644,11 +644,12 @@ type ManifestListOptions struct {
 
 	// Prefetch is the number of manifests Manifests may load ahead of the
 	// caller, concurrently. Zero or less loads each manifest only when the
-	// caller advances. For the same load outcomes, the order, the validation
-	// and the errors stay those of a lazy listing, but a load observes storage
-	// when it runs, so a manifest removed after its load is still yielded.
-	// Manifests loads no manifest before StartAfter or beyond Limit, and a
-	// caller that cancels receives the context's error at its next advance.
+	// caller advances. For the same load outcomes, the order and the load and
+	// validation errors stay those of a lazy listing, but a load observes
+	// storage when it runs, so a manifest removed after its load is still
+	// yielded. Manifests loads no manifest before StartAfter or beyond Limit.
+	// With Prefetch above zero, a caller that cancels receives the context's
+	// error at its next advance, where a lazy listing may simply end.
 	Prefetch int
 }
 

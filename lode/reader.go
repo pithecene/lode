@@ -403,17 +403,14 @@ func (d *dataset) loadWindowed(ctx context.Context, m listedManifest, tombstoned
 func (d *dataset) yieldPrefetched(ctx context.Context, window []listedManifest, tombstoned map[SnapshotID]struct{}, opts ManifestListOptions, yield func(LoadedManifest, error) bool) {
 	caller := ctx
 	ctx, cancel := context.WithCancel(ctx)
-	var wg sync.WaitGroup
-	defer wg.Wait()
+	p := &prefetch{d: d, ctx: ctx, tombstoned: tombstoned}
+	defer p.loads.Wait()
 	defer cancel()
 	var pending []chan windowLoad
 	next, yielded := 0, 0
 	for {
 		for next < len(window) && len(pending) < opts.Prefetch && (opts.Limit <= 0 || yielded+len(pending) < opts.Limit) {
-			done := make(chan windowLoad, 1)
-			m := window[next]
-			wg.Go(func() { done <- d.loadWindowed(ctx, m, tombstoned) })
-			pending = append(pending, done)
+			pending = append(pending, p.startLoad(window[next]))
 			next++
 		}
 		if len(pending) == 0 {
@@ -439,6 +436,23 @@ func (d *dataset) yieldPrefetched(ctx context.Context, window []listedManifest, 
 			return
 		}
 	}
+}
+
+// prefetch runs the loads of one prefetched listing, which waits for every
+// load before it returns.
+type prefetch struct {
+	d          *dataset
+	ctx        context.Context
+	tombstoned map[SnapshotID]struct{}
+	loads      sync.WaitGroup
+}
+
+// startLoad starts loading m and returns the channel that receives its
+// outcome.
+func (p *prefetch) startLoad(m listedManifest) chan windowLoad {
+	done := make(chan windowLoad, 1)
+	p.loads.Go(func() { done <- p.d.loadWindowed(p.ctx, m, p.tombstoned) })
+	return done
 }
 
 func (d *dataset) loadRef(ctx context.Context, m listedManifest) (LoadedManifest, error) {
