@@ -9,6 +9,10 @@ and Lode adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **Expiry reads each manifest copy once**: `Expire` loaded a candidate's manifest to plan it, then read that same copy again to check that its tombstone describes every copy. It now checks the copy it already loaded, so a dry run or a real run makes one fewer read per snapshot. On R2, a prune that previewed 685 snapshots spent about 105 seconds on those repeated reads.
+
 ---
 
 ## [0.18.6] - 2026-11-26

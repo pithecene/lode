@@ -203,7 +203,7 @@ func (r sweepRun) settleOne(ctx context.Context, t tombstone, report *SweepRepor
 		return nil
 	}
 	paths := r.ds.allManifestPaths(id, r.inv.manifests[id], append(slices.Clone(t.Objects), refsTo(r.inv.dataOf[id])...))
-	copies, err := r.ds.loadCopies(ctx, id, paths)
+	copies, err := r.ds.loadCopies(ctx, id, paths, nil)
 	if err != nil {
 		return err
 	}

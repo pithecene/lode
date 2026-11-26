@@ -7,9 +7,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -564,6 +566,29 @@ func TestExpire_DryRun(t *testing.T) {
 		}
 		if after := storeKeys(t, store); !slices.Equal(before, after) {
 			t.Errorf("dry run changed the store:\nbefore %v\nafter  %v", before, after)
+		}
+	})
+
+	// Planning loads one manifest copy of each candidate, and the check of
+	// every copy reuses it, so a dry run reads no manifest path twice.
+	t.Run("reads each manifest copy once", func(t *testing.T) {
+		store := &getCountingStore{Store: NewMemory(), gets: map[string]int{}}
+		ds := newHiveRetention(t, store)
+		var expired []SnapshotID
+		for range 3 {
+			expired = append(expired, writeRun(t, ds, "a", "x", "y").ID)
+		}
+		writeRun(t, ds, "b", "x") // the head
+		clear(store.gets)
+
+		report, err := ds.Expire(t.Context(), ExpireRequest{Partition: "run_id=a", DryRun: true})
+		if err != nil || !slices.Equal(report.Expired, expired) {
+			t.Fatalf("Expire = %+v, %v; want %v expired", report, err, expired)
+		}
+		for path, n := range store.gets {
+			if strings.HasSuffix(path, "/manifest.json") && n > 1 {
+				t.Errorf("read %s %d times, want once", path, n)
+			}
 		}
 	})
 
@@ -1596,4 +1621,18 @@ func assertExpireRefusesTombstone(t *testing.T, ds *Records[D], snap *Snapshot) 
 		}
 	}
 	assertPresent(t, ds, snap)
+}
+
+// getCountingStore counts the Get requests for each path.
+type getCountingStore struct {
+	Store
+	mu   sync.Mutex
+	gets map[string]int
+}
+
+func (s *getCountingStore) Get(ctx context.Context, p string) (io.ReadCloser, error) {
+	s.mu.Lock()
+	s.gets[p]++
+	s.mu.Unlock()
+	return s.Store.Get(ctx, p)
 }
