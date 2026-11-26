@@ -116,8 +116,9 @@ In these criteria, @pithecene observed every recorded evidence entry.
 ### 1. API Surface Freeze
 
 - [ ] No public type, function, or method signature in the v1.0-promised surface has changed for 4+ weeks after first downstream integration (experimental Volume excluded, D9)
-  - **Status:** Time-gated. v0.18.3 released the option `WithRecordedComponents()` (lode#419, requested by Quarry) on 2026-11-21 and restarted the window, which passes on 2026-12-19.
+  - **Status:** Time-gated. v0.18.3 released the option `WithRecordedComponents()` (lode#419, requested by Quarry) on 2026-11-21 and restarted the window, which passes on 2026-12-19. lode#436 adds the field `ManifestListOptions.Prefetch`, which a downstream consumer needs to list a whole dataset in reasonable time (private), so the release that ships it restarts the window again.
   - **Evidence:** v0.18.3 adds the dataset option `WithRecordedComponents()`, which Quarry's zstd and SHA-256 writers (quarry#424) needed. No existing signature changes. (2026-11-21, lode)
+  - **Evidence:** lode#436 adds `ManifestListOptions.Prefetch`, a bounded prefetch of manifest loads. No existing signature changes, and the manifest format stays the same. (2026-11-26, lode)
   - **Issue:** lode#175
 
 - [ ] No new sentinel errors added to the v1.0-promised surface for 4+ weeks after first downstream integration (experimental Volume excluded, D9. Freeze window reset: v0.11.0 added `ErrSnapshotExpired` and `ErrHeadUncommitted`)
@@ -136,7 +137,7 @@ In these criteria, @pithecene observed every recorded evidence entry.
   - **Issue:** none
 
 - [ ] Option surface of the v1.0-promised API has not expanded since v0.9.1 (experimental Volume options excluded, D9. Freeze window reset: v0.9.1 added WithRetryObserver, and v0.9.0 added WithRetryCount/BaseDelay/MaxDelay/Jitter and ErrOptionNotValidForVolume and removed VolumeOption and WithVolumeChecksum)
-  - **Status:** Not met as worded. D12 (v0.18.0) and v0.18.3, which released `WithRecordedComponents()` (lode#419, requested by Quarry) on 2026-11-21, expanded the option surface after v0.9.1. Read as four weeks without another option change, the window passes on 2026-12-19, and that reading needs the renegotiation that the Gate Rule requires. The manifest format is unchanged by it.
+  - **Status:** Not met as worded. D12 (v0.18.0) and v0.18.3, which released `WithRecordedComponents()` (lode#419, requested by Quarry) on 2026-11-21, expanded the option surface after v0.9.1. Read as four weeks without another option change, the window passes on 2026-12-19, and that reading needs the renegotiation that the Gate Rule requires. lode#436 adds the listing option `ManifestListOptions.Prefetch`, so the release that ships it restarts that window too. The manifest format is unchanged by it.
   - **Evidence:** v0.18.3 adds one public option, the dataset option `WithRecordedComponents()`. `WithChecksum` keeps its signature, and a writer or view that opens with a checksum without a name now fails. (2026-11-21, lode)
   - **Issue:** none
 

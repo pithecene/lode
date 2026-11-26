@@ -151,14 +151,17 @@ A successful CAS adds no ancestry reads.
 | `ListDatasets` (without `PrefixLister`) | Cold | 1 `List` + `D` pointer `Get` calls | O(N) |
 | `ListPartitions` (Hive, fully indexed) | Cold | 1 `List` + 1 pointer `Get` (+1 `expired/` `List` when `Prefix` set) | O(N) |
 | `ListPartitions` (Hive, `C` canonical-only) | Cold | 1 `List` + `1 + C` `Get` calls (+1 `expired/` `List` when `Prefix` set) | O(N + manifest) |
-| `Manifests` (`M` yielded) | Cold | 1 `List` + `1 + M` `Get` calls (+1 `expired/` `List` when `partition` set) | O(N + manifest) |
+| `Manifests` (`M` yielded, `S` skipped, `E` = 1 when a failed load ends it, `P` = `Prefetch`) | Cold | 1 `List` + `1 + M + S + E` `Get` calls (+1 `expired/` `List` when `partition` set), plus up to `P` loads past the last manifest a caller takes | O(N + manifest), or O(N + P × manifest) with `P` set |
 | `Root.RemoveDataset` | Cold | 1 `Get` + 1 `CompareAndSwap` + at most 2 `Exists` + 1 `List` + `N` `Delete` calls | O(N) |
 
 - `ListPartitions` derives partition paths directly from listed
   partition-manifest keys, reading manifests only for unindexed canonical-only
   snapshots (`C = 0` in steady state).
 - `Manifests` loads and validates only the `M` manifests yielded within the
-  `(StartAfter, Limit)` window.
+  `(StartAfter, Limit)` window, plus each skipped manifest, the one failed
+  load that ends the listing when a load fails, and at most `Prefetch` loads
+  past the last manifest a caller takes when it stops early or a load fails. With `Prefetch` set, up to that many `Get` calls run at
+  once, and up to that many loaded manifests wait for the caller.
 - When tombstones exist, `Snapshots`, `ListPartitions`, and `Manifests` check
   tombstone validity and canonical manifest presence only for tombstoned
   snapshot IDs lacking a loaded canonical manifest.

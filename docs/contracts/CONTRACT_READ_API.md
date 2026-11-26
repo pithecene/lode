@@ -231,9 +231,19 @@ ReaderAt(ctx context.Context, obj ObjectRef) (io.ReaderAt, error)
   `Manifests` deduplicates by `SnapshotID`, assigning the snapshot to its
   lexicographically smallest listed partition path; canonical-only Hive
   snapshots appear under the empty `PartitionPath{}`.
-- `Manifests` MUST load and validate each manifest lazily as the caller
-  advances the iterator, and MUST NOT issue `Get` calls for manifests
-  preceding `opts.StartAfter` or beyond `opts.Limit`.
+- With `opts.Prefetch` zero or less, `Manifests` MUST load and validate each
+  manifest lazily as the caller advances the iterator. It MUST NOT issue
+  `Get` calls for manifests preceding `opts.StartAfter` or beyond
+  `opts.Limit`, whatever `opts.Prefetch` holds.
+- With `opts.Prefetch` above zero, `Manifests` MAY load up to that many
+  manifests ahead of the caller, concurrently. For the same load outcomes it
+  MUST yield the manifests and the load and validation errors of a lazy
+  listing, in the same order; only the cancellation rule below differs. A load observes
+  storage when it runs, so a manifest removed after its load but before the
+  caller reaches it is still yielded. `Manifests` MUST start a load only
+  while the manifests yielded and in flight stay within `opts.Limit`, MUST
+  yield the caller's context error at the next advance after the caller
+  cancels, and MUST have finished every load when the iterator returns.
 - If a listed manifest disappears before `Get` (`ErrNotFound` due to
   concurrent expiry), `Manifests` skips it without counting it toward
   `Limit`. Any other load or validation error (`ErrManifestInvalid`) is
@@ -284,7 +294,7 @@ committed snapshots).
 | `ListDatasets` (fallback without `PrefixLister`) | 1 `List` + O(D) pointer checks | O(N) |
 | `ListPartitions` (Hive, fully indexed) | 1 `List` + 1 pointer `Get` | O(N) |
 | `ListPartitions` (Hive, `C` canonical-only) | 1 `List` + `1 + C` `Get` calls | O(N + manifest) |
-| `Manifests` (`M` yielded) | 1 `List` + `1 + M` `Get` calls | O(N + manifest) |
+| `Manifests` (`M` yielded, `S` skipped, `E` = 1 when a failed load ends it, `P` = `Prefetch`) | 1 `List` + `1 + M + S + E` `Get` calls, plus up to `P` loads past the last manifest a caller takes | O(N + manifest), or O(N + P × manifest) with `P` set |
 | `Latest` (warm) | 2 `Get` calls (pointer + manifest) | O(manifest) |
 | `Snapshot(id)` | 2 `Get` calls (1 pointer `Get` and 1 `Exists` for a live canonical anchor) | O(manifest) |
 | `Read(id)` | snapshot lookup + `F` object reads | O(R_total) |

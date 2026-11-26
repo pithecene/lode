@@ -9,6 +9,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/pithecene/lode/internal/errs"
 
@@ -342,33 +343,122 @@ func (d *dataset) Manifests(ctx context.Context, partition PartitionPath, opts M
 }
 
 func (d *dataset) yieldLoaded(ctx context.Context, listed []listedManifest, tombstoned map[SnapshotID]struct{}, opts ManifestListOptions, yield func(LoadedManifest, error) bool) {
+	// listed is in ref order, so the manifests after the cursor are a suffix.
+	window := listed[sort.Search(len(listed), func(i int) bool {
+		return manifestRefLess(opts.StartAfter, ManifestRef{ID: listed[i].id, Partition: PartitionPath{path: listed[i].partition}})
+	}):]
+	if opts.Prefetch > 0 {
+		d.yieldPrefetched(ctx, window, tombstoned, opts, yield)
+		return
+	}
 	yielded := 0
-	for _, m := range listed {
+	for _, m := range window {
 		if opts.Limit > 0 && yielded == opts.Limit {
 			return
 		}
-		if !manifestRefLess(opts.StartAfter, ManifestRef{ID: m.id, Partition: PartitionPath{path: m.partition}}) {
+		r := d.loadWindowed(ctx, m, tombstoned)
+		if r.skip {
 			continue
 		}
-		if _, isTombstoned := tombstoned[m.id]; m.partition != "" && isTombstoned {
-			live, err := newDatasetKind(d.id, d.layout, d.store).NotExpired(ctx, m.id)
-			if err != nil {
-				yield(LoadedManifest{}, err)
-				return
-			}
-			if !live {
-				continue
-			}
-		}
-		loaded, err := d.loadRef(ctx, m)
-		if errors.Is(err, ErrNotFound) {
-			continue
-		}
-		if !yield(loaded, err) || err != nil {
+		if !yield(r.loaded, r.err) || r.err != nil {
 			return
 		}
 		yielded++
 	}
+}
+
+// windowLoad is the outcome of loading one listed manifest: a manifest, an
+// error that stops the listing, or a skip for a snapshot that went away.
+type windowLoad struct {
+	loaded LoadedManifest
+	err    error
+	skip   bool
+}
+
+// loadWindowed loads one listed manifest, skipping a snapshot that an expiry
+// or a removal took after the listing.
+func (d *dataset) loadWindowed(ctx context.Context, m listedManifest, tombstoned map[SnapshotID]struct{}) windowLoad {
+	if _, isTombstoned := tombstoned[m.id]; m.partition != "" && isTombstoned {
+		live, err := newDatasetKind(d.id, d.layout, d.store).NotExpired(ctx, m.id)
+		if err != nil {
+			return windowLoad{err: err}
+		}
+		if !live {
+			return windowLoad{skip: true}
+		}
+	}
+	loaded, err := d.loadRef(ctx, m)
+	if errors.Is(err, ErrNotFound) {
+		return windowLoad{skip: true}
+	}
+	return windowLoad{loaded: loaded, err: err}
+}
+
+// yieldPrefetched yields the window in order while up to opts.Prefetch loads
+// run ahead of the caller. A load starts only while the manifests yielded and
+// in flight stay within opts.Limit, so no manifest beyond the limit is read.
+// A caller that cancels its context receives the context's error at its next
+// advance, in place of a manifest already loaded. Every load has finished when
+// it returns.
+func (d *dataset) yieldPrefetched(ctx context.Context, window []listedManifest, tombstoned map[SnapshotID]struct{}, opts ManifestListOptions, yield func(LoadedManifest, error) bool) {
+	caller := ctx
+	ctx, cancel := context.WithCancel(ctx)
+	p := &prefetch{d: d, ctx: ctx, tombstoned: tombstoned}
+	defer p.loads.Wait()
+	defer cancel()
+	var pending []chan windowLoad
+	next, yielded := 0, 0
+	for {
+		for next < len(window) && len(pending) < opts.Prefetch && (opts.Limit <= 0 || yielded+len(pending) < opts.Limit) {
+			pending = append(pending, p.startLoad(window[next]))
+			next++
+		}
+		if len(pending) == 0 {
+			// Nothing remains to load, as when the cursor follows the last
+			// manifest: a caller that cancelled still receives its error.
+			if err := caller.Err(); err != nil {
+				yield(LoadedManifest{}, err)
+			}
+			return
+		}
+		r := <-pending[0]
+		pending = pending[1:]
+		if err := caller.Err(); err != nil {
+			yield(LoadedManifest{}, err)
+			return
+		}
+		if r.skip {
+			continue
+		}
+		if !yield(r.loaded, r.err) || r.err != nil {
+			return
+		}
+		yielded++
+		// The caller has advanced: a cancellation it made since the last
+		// manifest ends the listing here, also after the window's last one.
+		if err := caller.Err(); err != nil {
+			yield(LoadedManifest{}, err)
+			return
+		}
+	}
+}
+
+// prefetch runs the loads of one prefetched listing, which waits for every
+// load before it returns.
+type prefetch struct {
+	d          *dataset
+	ctx        context.Context
+	tombstoned map[SnapshotID]struct{}
+	loads      sync.WaitGroup
+}
+
+// startLoad starts loading m. The outcome channel holds one value, so the
+// load can send its outcome after the listing stops receiving, and the
+// listing's wait for its loads never blocks on an unread send.
+func (p *prefetch) startLoad(m listedManifest) chan windowLoad {
+	done := make(chan windowLoad, 1)
+	p.loads.Go(func() { done <- p.d.loadWindowed(p.ctx, m, p.tombstoned) })
+	return done
 }
 
 func (d *dataset) loadRef(ctx context.Context, m listedManifest) (LoadedManifest, error) {

@@ -129,6 +129,20 @@ func run(ctx context.Context, tmpDir string) error {
 	}
 	fmt.Printf("Total manifests in 'committed-ds': %d\n", count)
 
+	// On an object store, where each manifest is one request, Prefetch lets
+	// Manifests load several ahead of the loop, concurrently, in the same order.
+	prefetched := 0
+	for _, err := range view.Manifests(ctx, lode.PartitionPath{}, lode.ManifestListOptions{Prefetch: 8}) {
+		if err != nil {
+			return fmt.Errorf("iterate manifests with prefetch: %w", err)
+		}
+		prefetched++
+	}
+	if prefetched != count {
+		return fmt.Errorf("prefetched listing yielded %d manifests, want %d", prefetched, count)
+	}
+	fmt.Printf("Prefetched listing: %d manifests\n", prefetched)
+
 	fmt.Println("\nManifest provides all metadata:")
 	fmt.Printf("  Schema: %s v%s\n", loadedManifest.SchemaName, loadedManifest.FormatVersion)
 	fmt.Printf("  Dataset: %s\n", loadedManifest.DatasetID)
