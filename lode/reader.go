@@ -432,6 +432,12 @@ func (d *dataset) yieldPrefetched(ctx context.Context, window []listedManifest, 
 			return
 		}
 		yielded++
+		// The caller has advanced: a cancellation it made since the last
+		// manifest ends the listing here, also after the window's last one.
+		if err := caller.Err(); err != nil {
+			yield(LoadedManifest{}, err)
+			return
+		}
 	}
 }
 

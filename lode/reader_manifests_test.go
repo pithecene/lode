@@ -13,6 +13,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/pithecene/lode/internal/testutil"
@@ -456,31 +457,42 @@ func (h *holdStore) Get(ctx context.Context, path string) (io.ReadCloser, error)
 func TestManifests_PrefetchEndsEveryLoadBeforeReturning(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
-		name string
-		stop func(store Store, ids []SnapshotID)
+		name  string
+		fail  bool
+		steps []string
 	}{
-		{"the caller stops", func(Store, []SnapshotID) {}},
-		{"an earlier load fails", func(store Store, ids []SnapshotID) {
-			if err := store.Delete(t.Context(), manifestKey(ids[0])); err != nil {
-				t.Fatal(err)
-			}
-			if err := store.Put(t.Context(), manifestKey(ids[0]), strings.NewReader("{")); err != nil {
-				t.Fatal(err)
-			}
-		}},
+		{"the caller stops", false, []string{"manifest"}},
+		{"an earlier load fails", true, []string{"error"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			mem := NewMemory()
 			ids := prefetchFixture(t, mem, 3)
-			tc.stop(mem, ids)
+			if tc.fail {
+				if err := mem.Delete(t.Context(), manifestKey(ids[0])); err != nil {
+					t.Fatal(err)
+				}
+				if err := mem.Put(t.Context(), manifestKey(ids[0]), strings.NewReader("{")); err != nil {
+					t.Fatal(err)
+				}
+			}
 			held := &holdStore{Store: mem, held: manifestKey(ids[2]), returned: make(chan struct{})}
 			view, err := Open(Use(held)).Records(t.Context(), "test-ds", JSONL[D](), hive("day"))
 			if err != nil {
 				t.Fatal(err)
 			}
+			var steps []string
 			for _, err := range view.Manifests(t.Context(), partitionPath(t, "day=a"), ManifestListOptions{Prefetch: 3}) {
-				t.Log("first step:", err)
-				break
+				if err != nil {
+					steps = append(steps, "error")
+					continue
+				}
+				steps = append(steps, "manifest")
+				if !tc.fail {
+					break
+				}
+			}
+			if !slices.Equal(steps, tc.steps) {
+				t.Fatalf("steps %v, want %v", steps, tc.steps)
 			}
 			select {
 			case <-held.returned:
@@ -491,63 +503,55 @@ func TestManifests_PrefetchEndsEveryLoadBeforeReturning(t *testing.T) {
 	}
 }
 
-// gatedStore holds manifest Gets until width of them are in flight at once,
-// and records the most that ran at once.
-type gatedStore struct {
+// gateStore counts the manifest Gets that have started and holds each until
+// release closes.
+type gateStore struct {
 	Store
-	width int
-	armed atomic.Bool
-	mu    sync.Mutex
-	inFly int
-	most  int
-	once  sync.Once
-	open  chan struct{}
+	entered atomic.Int32
+	release chan struct{}
 }
 
-func (g *gatedStore) Get(ctx context.Context, path string) (io.ReadCloser, error) {
-	if !g.armed.Load() || !strings.HasSuffix(path, "/manifest.json") {
-		return g.Store.Get(ctx, path)
+func (g *gateStore) Get(ctx context.Context, path string) (io.ReadCloser, error) {
+	if g.release != nil && strings.Contains(path, "/partitions/") && strings.HasSuffix(path, "/manifest.json") {
+		g.entered.Add(1)
+		<-g.release
 	}
-	g.mu.Lock()
-	g.inFly++
-	g.most = max(g.most, g.inFly)
-	if g.inFly == g.width {
-		g.once.Do(func() { close(g.open) })
-	}
-	g.mu.Unlock()
-	select {
-	case <-g.open:
-	case <-ctx.Done():
-	}
-	g.mu.Lock()
-	g.inFly--
-	g.mu.Unlock()
 	return g.Store.Get(ctx, path)
 }
 
-// Prefetch loads that many manifests at once, and never more.
+// Prefetch loads that many manifests at once, and never more: with every load
+// held, exactly that many have started once all other work has settled.
 func TestManifests_PrefetchLoadsConcurrently(t *testing.T) {
 	t.Parallel()
-	mem := NewMemory()
-	prefetchFixture(t, mem, 6)
-	gated := &gatedStore{Store: mem, width: 3, open: make(chan struct{})}
-	view, err := Open(Use(gated)).Records(t.Context(), "test-ds", JSONL[D](), hive("day"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	gated.armed.Store(true)
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-	defer cancel()
-	n := 0
-	for _, err := range view.Manifests(ctx, partitionPath(t, "day=a"), ManifestListOptions{Prefetch: 3}) {
+	synctest.Test(t, func(t *testing.T) {
+		mem := NewMemory()
+		prefetchFixture(t, mem, 6)
+		gate := &gateStore{Store: mem}
+		view, err := Open(Use(gate)).Records(t.Context(), "test-ds", JSONL[D](), hive("day"))
 		if err != nil {
-			t.Fatalf("Manifests: %v (at most %d loads ran at once)", err, gated.most)
+			t.Fatal(err)
 		}
-		n++
-	}
-	if n != 6 || gated.most != 3 {
-		t.Errorf("yielded %d manifests with at most %d loads at once, want 6 with 3", n, gated.most)
-	}
+		gate.release = make(chan struct{})
+		yielded := make(chan int)
+		go func() {
+			n := 0
+			for _, err := range view.Manifests(t.Context(), partitionPath(t, "day=a"), ManifestListOptions{Prefetch: 3}) {
+				if err != nil {
+					t.Error(err)
+				}
+				n++
+			}
+			yielded <- n
+		}()
+		synctest.Wait()
+		if got := gate.entered.Load(); got != 3 {
+			t.Errorf("%d manifest loads started at once, want 3", got)
+		}
+		close(gate.release)
+		if n := <-yielded; n != 6 {
+			t.Errorf("yielded %d manifests, want 6", n)
+		}
+	})
 }
 
 // With loads running ahead, an invalid manifest is yielded once, in its place,
@@ -610,32 +614,45 @@ func TestManifests_PrefetchSkipsARemovedManifest(t *testing.T) {
 }
 
 // A caller that cancels its context receives the context's error at its next
-// advance, though the next manifest has already loaded.
+// advance: in place of a manifest already loaded, and after the window's last
+// manifest.
 func TestManifests_PrefetchHonoursCancellation(t *testing.T) {
 	t.Parallel()
-	ids := []SnapshotID{}
-	store := NewMemory()
-	ids = append(ids, prefetchFixture(t, store, 2)...)
-	ds := openHive(t, store)
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	var steps []string
-	for loaded, err := range ds.Manifests(ctx, partitionPath(t, "day=a"), ManifestListOptions{Limit: 2, Prefetch: 2}) {
-		if err != nil {
-			if errors.Is(err, context.Canceled) {
-				steps = append(steps, "canceled")
-			} else {
-				steps = append(steps, "other: "+err.Error())
-			}
-			continue
-		}
-		steps = append(steps, string(loaded.Ref.ID))
-		// The second load has had time to finish before the caller cancels.
-		time.Sleep(10 * time.Millisecond)
-		cancel()
-	}
-	if want := []string{string(ids[0]), "canceled"}; !slices.Equal(steps, want) {
-		t.Fatalf("yielded %v, want %v", steps, want)
+	for _, tc := range []struct {
+		name  string
+		limit int
+	}{
+		{"a manifest already loaded", 2},
+		{"after the window's last manifest", 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				store := NewMemory()
+				ids := prefetchFixture(t, store, 2)
+				ds := openHive(t, store)
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				var steps []string
+				for loaded, err := range ds.Manifests(ctx, partitionPath(t, "day=a"), ManifestListOptions{Limit: tc.limit, Prefetch: 2}) {
+					if err != nil {
+						if errors.Is(err, context.Canceled) {
+							steps = append(steps, "canceled")
+						} else {
+							steps = append(steps, "other: "+err.Error())
+						}
+						continue
+					}
+					steps = append(steps, string(loaded.Ref.ID))
+					// Every load the window allows has finished before the
+					// caller cancels.
+					synctest.Wait()
+					cancel()
+				}
+				if want := []string{string(ids[0]), "canceled"}; !slices.Equal(steps, want) {
+					t.Fatalf("yielded %v, want %v", steps, want)
+				}
+			})
+		})
 	}
 }
 

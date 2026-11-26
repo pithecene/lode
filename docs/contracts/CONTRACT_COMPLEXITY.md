@@ -151,7 +151,7 @@ A successful CAS adds no ancestry reads.
 | `ListDatasets` (without `PrefixLister`) | Cold | 1 `List` + `D` pointer `Get` calls | O(N) |
 | `ListPartitions` (Hive, fully indexed) | Cold | 1 `List` + 1 pointer `Get` (+1 `expired/` `List` when `Prefix` set) | O(N) |
 | `ListPartitions` (Hive, `C` canonical-only) | Cold | 1 `List` + `1 + C` `Get` calls (+1 `expired/` `List` when `Prefix` set) | O(N + manifest) |
-| `Manifests` (`M` yielded, `P` = `Prefetch`, `S` skipped) | Cold | 1 `List` + `1 + M + S` `Get` calls (+1 `expired/` `List` when `partition` set), plus up to `P` loads past the last manifest a caller takes | O(N + manifest), or O(N + P × manifest) with `P` set |
+| `Manifests` (`M` yielded, `S` skipped, `E` = 1 when a failed load ends it, `P` = `Prefetch`) | Cold | 1 `List` + `1 + M + S + E` `Get` calls (+1 `expired/` `List` when `partition` set), plus up to `P` loads past the last manifest a caller takes | O(N + manifest), or O(N + P × manifest) with `P` set |
 | `Root.RemoveDataset` | Cold | 1 `Get` + 1 `CompareAndSwap` + at most 2 `Exists` + 1 `List` + `N` `Delete` calls | O(N) |
 
 - `ListPartitions` derives partition paths directly from listed

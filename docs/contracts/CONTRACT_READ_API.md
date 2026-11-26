@@ -293,7 +293,7 @@ committed snapshots).
 | `ListDatasets` (fallback without `PrefixLister`) | 1 `List` + O(D) pointer checks | O(N) |
 | `ListPartitions` (Hive, fully indexed) | 1 `List` + 1 pointer `Get` | O(N) |
 | `ListPartitions` (Hive, `C` canonical-only) | 1 `List` + `1 + C` `Get` calls | O(N + manifest) |
-| `Manifests` (`M` yielded, `P` = `Prefetch`, `S` skipped) | 1 `List` + `1 + M + S` `Get` calls, plus up to `P` loads past the last manifest a caller takes | O(N + manifest), or O(N + P × manifest) with `P` set |
+| `Manifests` (`M` yielded, `S` skipped, `E` = 1 when a failed load ends it, `P` = `Prefetch`) | 1 `List` + `1 + M + S + E` `Get` calls, plus up to `P` loads past the last manifest a caller takes | O(N + manifest), or O(N + P × manifest) with `P` set |
 | `Latest` (warm) | 2 `Get` calls (pointer + manifest) | O(manifest) |
 | `Snapshot(id)` | 2 `Get` calls (1 pointer `Get` and 1 `Exists` for a live canonical anchor) | O(manifest) |
 | `Read(id)` | snapshot lookup + `F` object reads | O(R_total) |
