@@ -59,7 +59,8 @@ this guide before writing.
   and `Manifests` yields `LoadedManifest` values in `(Partition, ID)` order.
 - `StartAfter` resumes strictly after a previous result in listing order
   (which is snapshot-start order rather than commit order). `Limit` bounds
-  returned items; `Manifests` loads only the manifests it yields.
+  returned items; `Manifests` loads only the manifests it yields, unless
+  `Prefetch` lets it load up to that many ahead of the caller.
 - On a Hive dataset, `ListPartitions` extracts partition paths directly from
   listed manifest keys without reading manifest files when the partition
   index is complete. A snapshot whose writer terminated before persisting its

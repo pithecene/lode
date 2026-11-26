@@ -343,12 +343,10 @@ func (d *dataset) Manifests(ctx context.Context, partition PartitionPath, opts M
 }
 
 func (d *dataset) yieldLoaded(ctx context.Context, listed []listedManifest, tombstoned map[SnapshotID]struct{}, opts ManifestListOptions, yield func(LoadedManifest, error) bool) {
-	window := make([]listedManifest, 0, len(listed))
-	for _, m := range listed {
-		if manifestRefLess(opts.StartAfter, ManifestRef{ID: m.id, Partition: PartitionPath{path: m.partition}}) {
-			window = append(window, m)
-		}
-	}
+	// listed is in ref order, so the manifests after the cursor are a suffix.
+	window := listed[sort.Search(len(listed), func(i int) bool {
+		return manifestRefLess(opts.StartAfter, ManifestRef{ID: listed[i].id, Partition: PartitionPath{path: listed[i].partition}})
+	}):]
 	if opts.Prefetch > 0 {
 		d.yieldPrefetched(ctx, window, tombstoned, opts, yield)
 		return
@@ -399,8 +397,11 @@ func (d *dataset) loadWindowed(ctx context.Context, m listedManifest, tombstoned
 // yieldPrefetched yields the window in order while up to opts.Prefetch loads
 // run ahead of the caller. A load starts only while the manifests yielded and
 // in flight stay within opts.Limit, so no manifest beyond the limit is read.
-// Every load has finished when it returns.
+// A caller that cancels its context receives the context's error at its next
+// advance, in place of a manifest already loaded. Every load has finished when
+// it returns.
 func (d *dataset) yieldPrefetched(ctx context.Context, window []listedManifest, tombstoned map[SnapshotID]struct{}, opts ManifestListOptions, yield func(LoadedManifest, error) bool) {
+	caller := ctx
 	ctx, cancel := context.WithCancel(ctx)
 	var wg sync.WaitGroup
 	defer wg.Wait()
@@ -420,6 +421,10 @@ func (d *dataset) yieldPrefetched(ctx context.Context, window []listedManifest, 
 		}
 		r := <-pending[0]
 		pending = pending[1:]
+		if err := caller.Err(); err != nil {
+			yield(LoadedManifest{}, err)
+			return
+		}
 		if r.skip {
 			continue
 		}

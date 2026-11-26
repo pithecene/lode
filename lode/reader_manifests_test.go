@@ -1,7 +1,9 @@
 package lode
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"iter"
@@ -9,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -365,67 +368,156 @@ func TestManifests_ValidatesOnlyTheWindow(t *testing.T) {
 	}
 }
 
-// Loads that run ahead never read a manifest beyond Limit, and a caller that
-// stops early finds every load finished when the iterator returns.
-func TestManifests_PrefetchStaysWithinTheWindow(t *testing.T) {
+// prefetchFixture writes n snapshots into day=a and returns their IDs in
+// listing order.
+func prefetchFixture(t *testing.T, store Store, n int) []SnapshotID {
+	t.Helper()
+	ds := openHive(t, store)
+	ids := make([]SnapshotID, 0, n)
+	for range n {
+		ids = append(ids, writeEach(t, ds, D{"day": "a"})...)
+	}
+	slices.Sort(ids)
+	return ids
+}
+
+func manifestKey(id SnapshotID) string {
+	return "datasets/test-ds/partitions/day=a/segments/" + string(id) + "/manifest.json"
+}
+
+// fetchedIDs is the snapshots whose manifests a store's Get calls named, in
+// sorted order.
+func fetchedIDs(fs *testutil.FaultStore) []SnapshotID {
+	var out []SnapshotID
+	for _, p := range fs.GetCalls() {
+		if _, rest, ok := strings.Cut(p, "/segments/"); ok && strings.HasSuffix(p, "/manifest.json") {
+			out = append(out, SnapshotID(strings.TrimSuffix(rest, "/manifest.json")))
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
+// Loads that run ahead never read a manifest beyond Limit.
+func TestManifests_PrefetchStaysWithinTheLimit(t *testing.T) {
 	t.Parallel()
 	fs := testutil.NewFaultStore(NewMemory())
+	ids := prefetchFixture(t, fs, 6)
+	fs.Reset()
 	ds := openHive(t, fs)
-	for range 6 {
-		writeEach(t, ds, D{"day": "a"})
-	}
-	day := partitionPath(t, "day=a")
-
 	fs.Reset()
-	if got := len(collect(t, ds, day, ManifestListOptions{Limit: 2, Prefetch: 4})); got != 2 {
-		t.Fatalf("yielded %d manifests, want 2", got)
+	if got := refsOf(collect(t, ds, partitionPath(t, "day=a"), ManifestListOptions{Limit: 2, Prefetch: 4})); len(got) != 2 {
+		t.Fatalf("yielded %v, want 2 manifests", got)
 	}
-	if got := manifestGets(fs); got != 2 {
-		t.Errorf("Limit 2 with Prefetch 4 read %d manifests, want 2", got)
-	}
-
-	fs.Reset()
-	for _, err := range ds.Manifests(t.Context(), day, ManifestListOptions{Prefetch: 3}) {
-		if err != nil {
-			t.Fatal(err)
-		}
-		break
-	}
-	stopped := manifestGets(fs)
-	if stopped > 3 {
-		t.Errorf("a caller that took one manifest with Prefetch 3 caused %d manifest reads, want at most 3", stopped)
-	}
-	time.Sleep(10 * time.Millisecond)
-	if got := manifestGets(fs); got != stopped {
-		t.Errorf("manifest reads went on after the iterator returned: %d, then %d", stopped, got)
+	if got := fetchedIDs(fs); !slices.Equal(got, ids[:2]) {
+		t.Errorf("Limit 2 with Prefetch 4 read the manifests of %v, want %v", got, ids[:2])
 	}
 }
 
-// gatedStore holds each manifest Get until width of them are in flight at
-// once, or until the wait runs out.
+// A skipped manifest inside a cursor's page frees its slot for the next one,
+// and no load reaches at or before the cursor or past the page's last
+// manifest.
+func TestManifests_PrefetchRefillsASkipWithinTheWindow(t *testing.T) {
+	t.Parallel()
+	fs := testutil.NewFaultStore(NewMemory())
+	ids := prefetchFixture(t, fs, 6)
+	ds := openHive(t, fs)
+	fs.Reset()
+	fs.SetGetError(ErrNotFound, "segments/"+string(ids[2])+"/manifest.json")
+	day := partitionPath(t, "day=a")
+	got := refsOf(collect(t, ds, day, ManifestListOptions{StartAfter: ManifestRef{ID: ids[0], Partition: day}, Limit: 2, Prefetch: 2}))
+	if len(got) != 2 || got[0].ID != ids[1] || got[1].ID != ids[3] {
+		t.Fatalf("yielded %v, want %s and %s", got, ids[1], ids[3])
+	}
+	if fetched := fetchedIDs(fs); !slices.Equal(fetched, ids[1:4]) {
+		t.Errorf("read the manifests of %v, want %v", fetched, ids[1:4])
+	}
+}
+
+// holdStore holds the Get of one manifest until its context ends, and reports
+// when that Get has returned.
+type holdStore struct {
+	Store
+	held     string
+	returned chan struct{}
+}
+
+func (h *holdStore) Get(ctx context.Context, path string) (io.ReadCloser, error) {
+	if path != h.held {
+		return h.Store.Get(ctx, path)
+	}
+	defer close(h.returned)
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+// A caller that stops, or a load that fails, ends the loads still under way
+// before the iterator returns.
+func TestManifests_PrefetchEndsEveryLoadBeforeReturning(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		stop func(store Store, ids []SnapshotID)
+	}{
+		{"the caller stops", func(Store, []SnapshotID) {}},
+		{"an earlier load fails", func(store Store, ids []SnapshotID) {
+			if err := store.Delete(t.Context(), manifestKey(ids[0])); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.Put(t.Context(), manifestKey(ids[0]), strings.NewReader("{")); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mem := NewMemory()
+			ids := prefetchFixture(t, mem, 3)
+			tc.stop(mem, ids)
+			held := &holdStore{Store: mem, held: manifestKey(ids[2]), returned: make(chan struct{})}
+			view, err := Open(Use(held)).Records(t.Context(), "test-ds", JSONL[D](), hive("day"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, err := range view.Manifests(t.Context(), partitionPath(t, "day=a"), ManifestListOptions{Prefetch: 3}) {
+				t.Log("first step:", err)
+				break
+			}
+			select {
+			case <-held.returned:
+			default:
+				t.Fatal("a load was still under way when the iterator returned")
+			}
+		})
+	}
+}
+
+// gatedStore holds manifest Gets until width of them are in flight at once,
+// and records the most that ran at once.
 type gatedStore struct {
 	Store
 	width int
+	armed atomic.Bool
 	mu    sync.Mutex
 	inFly int
 	most  int
+	once  sync.Once
 	open  chan struct{}
 }
 
 func (g *gatedStore) Get(ctx context.Context, path string) (io.ReadCloser, error) {
-	if !strings.HasSuffix(path, "/manifest.json") || strings.Contains(path, "/latest") {
+	if !g.armed.Load() || !strings.HasSuffix(path, "/manifest.json") {
 		return g.Store.Get(ctx, path)
 	}
 	g.mu.Lock()
 	g.inFly++
 	g.most = max(g.most, g.inFly)
 	if g.inFly == g.width {
-		close(g.open)
+		g.once.Do(func() { close(g.open) })
 	}
 	g.mu.Unlock()
 	select {
 	case <-g.open:
-	case <-time.After(2 * time.Second):
+	case <-ctx.Done():
 	}
 	g.mu.Lock()
 	g.inFly--
@@ -433,54 +525,73 @@ func (g *gatedStore) Get(ctx context.Context, path string) (io.ReadCloser, error
 	return g.Store.Get(ctx, path)
 }
 
-// Prefetch loads that many manifests at once.
+// Prefetch loads that many manifests at once, and never more.
 func TestManifests_PrefetchLoadsConcurrently(t *testing.T) {
 	t.Parallel()
 	mem := NewMemory()
-	ds := openHive(t, mem)
-	for range 6 {
-		writeEach(t, ds, D{"day": "a"})
-	}
+	prefetchFixture(t, mem, 6)
 	gated := &gatedStore{Store: mem, width: 3, open: make(chan struct{})}
 	view, err := Open(Use(gated)).Records(t.Context(), "test-ds", JSONL[D](), hive("day"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	start := time.Now()
-	if got := len(collect(t, view, partitionPath(t, "day=a"), ManifestListOptions{Prefetch: 3})); got != 6 {
-		t.Fatalf("yielded %d manifests, want 6", got)
+	gated.armed.Store(true)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	n := 0
+	for _, err := range view.Manifests(ctx, partitionPath(t, "day=a"), ManifestListOptions{Prefetch: 3}) {
+		if err != nil {
+			t.Fatalf("Manifests: %v (at most %d loads ran at once)", err, gated.most)
+		}
+		n++
 	}
-	if gated.most < 3 || time.Since(start) > time.Second {
-		t.Errorf("at most %d manifest loads ran at once in %v, want 3 at once", gated.most, time.Since(start))
+	if n != 6 || gated.most != 3 {
+		t.Errorf("yielded %d manifests with at most %d loads at once, want 6 with 3", n, gated.most)
 	}
 }
 
-// With loads running ahead, an invalid manifest is still yielded once as an
-// error, and nothing follows it.
+// With loads running ahead, an invalid manifest is yielded once, in its place,
+// as ErrManifestInvalid, and nothing follows it.
 func TestManifests_PrefetchStopsAtAnInvalidManifest(t *testing.T) {
 	t.Parallel()
 	store := NewMemory()
+	ids := prefetchFixture(t, store, 3)
+	rc, err := store.Get(t.Context(), manifestKey(ids[1]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.NewDecoder(rc).Decode(&m); err != nil {
+		t.Fatal(err)
+	}
+	if err := rc.Close(); err != nil {
+		t.Fatal(err)
+	}
+	delete(m, "schema_name")
+	invalid, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Delete(t.Context(), manifestKey(ids[1])); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Put(t.Context(), manifestKey(ids[1]), bytes.NewReader(invalid)); err != nil {
+		t.Fatal(err)
+	}
 	ds := openHive(t, store)
-	ids := writeEach(t, ds, D{"day": "a"}, D{"day": "a"}, D{"day": "a"})
-	slices.Sort(ids)
-	bad := "datasets/test-ds/partitions/day=a/segments/" + string(ids[1]) + "/manifest.json"
-	if err := store.Delete(t.Context(), bad); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Put(t.Context(), bad, strings.NewReader("{")); err != nil {
-		t.Fatal(err)
-	}
-	var seen []SnapshotID
-	var errs int
+	var steps []string
 	for loaded, err := range ds.Manifests(t.Context(), partitionPath(t, "day=a"), ManifestListOptions{Prefetch: 3}) {
-		if err != nil {
-			errs++
-			continue
+		switch {
+		case err == nil:
+			steps = append(steps, string(loaded.Ref.ID))
+		case errors.Is(err, ErrManifestInvalid) && loaded == (LoadedManifest{}):
+			steps = append(steps, "invalid")
+		default:
+			steps = append(steps, "other: "+err.Error())
 		}
-		seen = append(seen, loaded.Ref.ID)
 	}
-	if errs != 1 || !slices.Equal(seen, ids[:1]) {
-		t.Fatalf("yielded %v and %d errors, want %v and 1", seen, errs, ids[:1])
+	if want := []string{string(ids[0]), "invalid"}; !slices.Equal(steps, want) {
+		t.Fatalf("yielded %v, want %v", steps, want)
 	}
 }
 
@@ -489,12 +600,134 @@ func TestManifests_PrefetchStopsAtAnInvalidManifest(t *testing.T) {
 func TestManifests_PrefetchSkipsARemovedManifest(t *testing.T) {
 	t.Parallel()
 	fs := testutil.NewFaultStore(NewMemory())
+	ids := prefetchFixture(t, fs, 3)
 	ds := openHive(t, fs)
-	ids := writeEach(t, ds, D{"day": "a"}, D{"day": "a"}, D{"day": "a"})
-	slices.Sort(ids)
 	fs.SetGetError(ErrNotFound, "segments/"+string(ids[1])+"/manifest.json")
 	got := refsOf(collect(t, ds, partitionPath(t, "day=a"), ManifestListOptions{Prefetch: 3}))
 	if len(got) != 2 || got[0].ID != ids[0] || got[1].ID != ids[2] {
 		t.Fatalf("yielded %v, want %s and %s", got, ids[0], ids[2])
+	}
+}
+
+// A caller that cancels its context receives the context's error at its next
+// advance, though the next manifest has already loaded.
+func TestManifests_PrefetchHonoursCancellation(t *testing.T) {
+	t.Parallel()
+	ids := []SnapshotID{}
+	store := NewMemory()
+	ids = append(ids, prefetchFixture(t, store, 2)...)
+	ds := openHive(t, store)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	var steps []string
+	for loaded, err := range ds.Manifests(ctx, partitionPath(t, "day=a"), ManifestListOptions{Limit: 2, Prefetch: 2}) {
+		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				steps = append(steps, "canceled")
+			} else {
+				steps = append(steps, "other: "+err.Error())
+			}
+			continue
+		}
+		steps = append(steps, string(loaded.Ref.ID))
+		// The second load has had time to finish before the caller cancels.
+		time.Sleep(10 * time.Millisecond)
+		cancel()
+	}
+	if want := []string{string(ids[0]), "canceled"}; !slices.Equal(steps, want) {
+		t.Fatalf("yielded %v, want %v", steps, want)
+	}
+}
+
+// recheckStore changes the answer to the second Exists of path, the worker's
+// recheck after the listing's own check: it removes path first, or fails.
+type recheckStore struct {
+	Store
+	path   string
+	fail   bool
+	mu     sync.Mutex
+	checks int
+}
+
+func (s *recheckStore) Exists(ctx context.Context, path string) (bool, error) {
+	if path == s.path {
+		s.mu.Lock()
+		s.checks++
+		second := s.checks == 2
+		s.mu.Unlock()
+		if second && s.fail {
+			return false, errProbe
+		}
+		if second {
+			if err := s.Delete(ctx, path); err != nil {
+				return false, err
+			}
+		}
+	}
+	return s.Store.Exists(ctx, path)
+}
+
+var errProbe = errors.New("probe failure")
+
+// A snapshot whose expiry completes after the listing leaves a stale partition
+// copy, which a prefetched load skips without using a slot of Limit, while a
+// storage error from the same check is yielded in its place.
+func TestManifests_PrefetchRechecksATombstonedSnapshot(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		fail bool
+		want func(ids []SnapshotID) []string
+	}{
+		{"expiry completed", false, func(ids []SnapshotID) []string { return []string{string(ids[0]), string(ids[2])} }},
+		{"the check fails", true, func(ids []SnapshotID) []string { return []string{string(ids[0]), "probe failure"} }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mem := NewMemory()
+			ds := openHive(t, mem)
+			var snaps []*Snapshot
+			for range 3 {
+				snap, err := ds.Write(t.Context(), R(D{"day": "a"}), nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				snaps = append(snaps, snap)
+			}
+			slices.SortFunc(snaps, func(a, b *Snapshot) int { return strings.Compare(string(a.ID), string(b.ID)) })
+			ids := []SnapshotID{snaps[0].ID, snaps[1].ID, snaps[2].ID}
+			expiring := snaps[1]
+			tomb, err := json.Marshal(map[string]any{
+				"snapshot_id":         expiring.ID,
+				"requested_at":        time.Now().UTC(),
+				"manifest_created_at": expiring.CreatedAt,
+				"objects":             expiring.Objects,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := mem.Put(t.Context(), "datasets/test-ds/expired/"+string(expiring.ID), bytes.NewReader(tomb)); err != nil {
+				t.Fatal(err)
+			}
+			canonical := "datasets/test-ds/segments/" + string(expiring.ID) + "/manifest.json"
+			view, err := Open(Use(&recheckStore{Store: mem, path: canonical, fail: tc.fail})).Records(t.Context(), "test-ds", JSONL[D](), hive("day"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var steps []string
+			for loaded, err := range view.Manifests(t.Context(), partitionPath(t, "day=a"), ManifestListOptions{Limit: 2, Prefetch: 3}) {
+				if err != nil {
+					if errors.Is(err, errProbe) {
+						steps = append(steps, "probe failure")
+					} else {
+						steps = append(steps, "other: "+err.Error())
+					}
+					continue
+				}
+				steps = append(steps, string(loaded.Ref.ID))
+			}
+			if want := tc.want(ids); !slices.Equal(steps, want) {
+				t.Fatalf("yielded %v, want %v", steps, want)
+			}
+		})
 	}
 }
