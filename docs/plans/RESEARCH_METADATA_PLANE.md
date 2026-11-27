@@ -57,11 +57,12 @@ What the rehearsal ruled out, and why:
 | lakeFS | KV ref, then metarange, then ranges | KV compare-and-set on the branch | key absent in the new commit; GC | changed content-addressed ranges + metarange | lakeFS server + KV database |
 | Icechunk | derived: 1 GET of `repo`, which lists all snapshots and refs / re-GET `repo` | conditional update of `repo`, the only mutable object | expiry rewrites `repo`; ordered GC phases | whole `repo` (backed up first) + snapshot + transaction log + changed manifests | none |
 | Hudi | timeline + metadata table's files partition (counts unconfirmed) | atomic PUT per timeline state; a lock is needed for concurrent writer processes, including one ingestion writer with a separately running table service (storage-based lock available); a lone writer running table services inline needs none | active-state flags; clean and rollback | merge-on-read log appends; compaction | none or optional |
-| Zarr v3 | derived: `list_dir` of a group's prefix, then each child's `zarr.json` / the same | none: the core specification defines no transactions, atomic multi-key commits, or versions | not defined | one `zarr.json` per node; chunks keyed under the node's prefix (`c/1/0`) | none |
+| Zarr v3 | derived, on a listable store: `list_dir` of a group's prefix, then each child's `zarr.json` / the same | none: the core specification defines no transactions, atomic multi-key commits, or versions | `erase_prefix` of a node's prefix; no versioned retirement that keeps an earlier state | one `zarr.json` per node; chunks keyed under the node's prefix (`c/1/0`) | none |
 
 Zarr is the closest in principle: its hierarchy is its key layout, and a
-reader discovers a group's children by listing the group's prefix (Zarr v3
-core, §Storage operations). It defines no commit, so it gives no guarantee
+reader discovers a group's children by listing the group's prefix on a store
+that supports listing; on one that does not, the names come from elsewhere
+(Zarr v3 core, §Storage operations). It defines no commit, so it gives no guarantee
 across keys and says nothing about concurrent writers. Icechunk adds
 transactions and versions to Zarr data through a separate level of metadata,
 FlatBuffers records reached from `repo`, which ordinary storage tools cannot
@@ -114,16 +115,26 @@ so far uses. Keeps the layout as the index.
   one is invisible after expiry as before commit.
 
 Reversing the write order alone is not enough. To resolve:
-- Older readers: a pre-canonical legacy Hive snapshot is committed when any
-  of its partition manifests exists (CONTRACT_CORE §Head Pointer), so a
-  released reader would take a staged partition entry for a committed legacy
-  snapshot. Staged entries need a form that released readers ignore, which
-  makes this a distinguishable publication protocol, not a reordering.
+- Older readers before commit: a pre-canonical legacy Hive snapshot is
+  committed when any of its partition manifests exists (CONTRACT_CORE §Head
+  Pointer), so a released reader would take a staged partition entry for a
+  committed legacy snapshot. Staged entries need a form that released readers
+  ignore, which makes this a distinguishable publication protocol, not a
+  reordering.
+- Older readers after commit: a released reader then ignores the new entries
+  too, and its partition-filtered listing may omit the new snapshots
+  (CONTRACT_READ_API allows omission for an incomplete partition index). The
+  compatibility decision is open: also publish old-form partition manifests
+  after commit, or limit the new form to readers that understand it.
 - Legacy discriminator: telling a legacy partition-only snapshot from a
   staged entry needs a field that no recorded format is yet known to provide.
-- Lost CAS and interrupted publication: a writer that loses the pointer CAS,
-  or stops before its canonical manifest, leaves staged entries that retry,
-  expiry and Sweep must treat as pending, never as committed.
+- Lost CAS and interrupted publication, two cases with different recovery:
+  a writer that loses the pointer CAS leaves staged entries for an attempt
+  the pointer never named, which are orphans once the winner publishes; a
+  writer that wins the CAS and stops before its canonical manifest leaves a
+  pending head (CONTRACT_CORE §Head Pointer), whose protections apply. An
+  indeterminate CAS outcome needs the contract's ancestry check. Readers
+  see neither, but retry and Sweep must tell them apart.
 - Commit test: a partition lookup confirms commitment per entry, without
   falling back to dataset-wide enumeration.
 - Existing incomplete indexes: Sweep reindexes only snapshots older than its
