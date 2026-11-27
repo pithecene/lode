@@ -1669,14 +1669,19 @@ func (s *reuseStore) CompareAndSwap(ctx context.Context, p, expected, replacemen
 	cw := s.Store.(ConditionalWriter)
 	if s.onCAS && !s.done && p == s.tombPath {
 		s.done = true
-		if err := cw.CompareAndSwap(ctx, p, "", string(s.rival)); err != nil {
-			return err
-		}
-		if err := s.replace(ctx); err != nil {
+		if err := s.race(ctx, cw); err != nil {
 			return err
 		}
 	}
 	return cw.CompareAndSwap(ctx, p, expected, replacement)
+}
+
+// race records the rival's tombstone, then reuses the ID.
+func (s *reuseStore) race(ctx context.Context, cw ConditionalWriter) error {
+	if err := cw.CompareAndSwap(ctx, s.tombPath, "", string(s.rival)); err != nil {
+		return err
+	}
+	return s.replace(ctx)
 }
 
 func (s *reuseStore) replace(ctx context.Context) error {
@@ -1684,10 +1689,10 @@ func (s *reuseStore) replace(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := s.Store.Delete(ctx, s.canonical); err != nil {
+	if err := s.Delete(ctx, s.canonical); err != nil {
 		return err
 	}
-	return s.Store.Put(ctx, s.canonical, bytes.NewReader(data))
+	return s.Put(ctx, s.canonical, bytes.NewReader(data))
 }
 
 // A copy that the plan loaded is never trusted once another run's tombstone
@@ -1734,8 +1739,8 @@ func TestExpire_RereadsCopiesUnderAnotherTombstone(t *testing.T) {
 				t.Fatal("the reuse never happened")
 			}
 			got, err := ds.Snapshot(t.Context(), first.ID)
-			if err == nil && !got.Manifest.CreatedAt.Equal(other.CreatedAt) {
-				t.Errorf("manifest at the path = %v, want the reusing snapshot's", got.Manifest.CreatedAt)
+			if err == nil && !got.CreatedAt.Equal(other.CreatedAt) {
+				t.Errorf("manifest at the path = %v, want the reusing snapshot's", got.CreatedAt)
 			}
 			if kept, _ := mem.Exists(t.Context(), store.canonical); !kept {
 				t.Error("expiry deleted the manifest of the snapshot that reused the ID")
