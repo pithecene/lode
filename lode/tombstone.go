@@ -91,23 +91,25 @@ func (ts tombstones) path(id SnapshotID) (p string, ok bool) {
 
 // record creates the tombstone, or accepts the one an earlier or concurrent
 // run recorded for the same snapshot with the same inventory.
-func (ts tombstones) record(ctx context.Context, t tombstone) error {
+// It reports whether this call wrote the tombstone, false when another run's
+// matching tombstone won the create.
+func (ts tombstones) record(ctx context.Context, t tombstone) (bool, error) {
 	p, ok := ts.path(t.SnapshotID)
 	if !ok {
-		return errUntombstonable(t.SnapshotID)
+		return false, errUntombstonable(t.SnapshotID)
 	}
 	data, err := json.Marshal(t)
 	if err != nil {
-		return fmt.Errorf("lode: failed to marshal tombstone: %w", err)
+		return false, fmt.Errorf("lode: failed to marshal tombstone: %w", err)
 	}
 	err = ts.create(ctx, p, data)
 	if errors.Is(err, ErrSnapshotConflict) || errors.Is(err, ErrPathExists) {
-		return ts.matchRecorded(ctx, p, t)
+		return false, ts.matchRecorded(ctx, p, t)
 	}
 	if err != nil {
-		return fmt.Errorf("failed to write tombstone %s: %w", p, err)
+		return false, fmt.Errorf("failed to write tombstone %s: %w", p, err)
 	}
-	return nil
+	return true, nil
 }
 
 // matchRecorded accepts the tombstone that won the create at p only if it

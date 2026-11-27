@@ -9,6 +9,10 @@ and Lode adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **Expiry reuses the copy behind a new tombstone**: `Expire` loaded a candidate's manifest to plan it, then read the same copy again to check its tombstone. When it builds a new tombstone from that copy, it now checks the copy it holds. It still checks every manifest path afresh under another run's tombstone, and its head checks are unchanged. On R2, a prune that previewed 685 snapshots spent about 105 seconds on the repeated reads.
+
 ---
 
 ## [0.18.6] - 2026-11-26

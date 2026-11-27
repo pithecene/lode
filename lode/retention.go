@@ -337,6 +337,10 @@ type expiryRun struct {
 type expiryPlan struct {
 	tomb     tombstone
 	recorded bool // an earlier or concurrent run recorded it
+	// loaded is the manifest copy that a new tombstone was built from, keyed by
+	// its path, so the check of every copy does not read that path again. A
+	// recorded tombstone leaves it nil.
+	loaded map[string]*Manifest
 }
 
 // expire decides one candidate and, unless this is a dry run, carries the
@@ -408,7 +412,7 @@ func (r expiryRun) plan(ctx context.Context, c expiryCandidate) (expiryPlan, err
 	// A copy the tombstone does not describe (malformed, or of an earlier
 	// snapshot with the same ID) must never be deleted under it; every path
 	// this expiry would delete is checked, listed or not.
-	matches, err := r.ds.describesEveryCopy(ctx, plan.tomb, r.ds.allManifestPaths(c.id, c.paths, plan.tomb.Objects))
+	matches, err := r.ds.describesEveryCopy(ctx, plan.tomb, r.ds.allManifestPaths(c.id, c.paths, plan.tomb.Objects), plan.loaded)
 	if err != nil {
 		return expiryPlan{}, err
 	}
@@ -423,8 +427,12 @@ func (r expiryRun) plan(ctx context.Context, c expiryCandidate) (expiryPlan, err
 func (r expiryRun) tombstonePlan(ctx context.Context, c expiryCandidate) (expiryPlan, error) {
 	// A candidate selected by its tombstone is checked for a manifest too:
 	// one may have appeared since the listing.
-	m, err := r.ds.loadCandidate(ctx, c)
+	m, path, err := r.ds.loadCandidate(ctx, c)
 	hasManifest := err == nil
+	var loaded map[string]*Manifest
+	if hasManifest {
+		loaded = map[string]*Manifest{path: m}
+	}
 	if err != nil && !errors.Is(err, ErrNotFound) {
 		return expiryPlan{}, err
 	}
@@ -434,10 +442,13 @@ func (r expiryRun) tombstonePlan(ctx context.Context, c expiryCandidate) (expiry
 		return expiryPlan{}, errSnapshotGone
 	case (errors.Is(err, ErrNotFound) || errors.Is(err, errEmptyTombstone)) && hasManifest:
 		// None recorded yet; an empty placeholder is replaced by the write.
-		return expiryPlan{tomb: newTombstone(c.id, m)}, nil
+		return expiryPlan{tomb: newTombstone(c.id, m), loaded: loaded}, nil
 	case err != nil:
 		return expiryPlan{}, err
 	}
+	// A recorded tombstone was not built from the loaded copy, and its
+	// existence lets another run delete that copy and a writer reuse the ID,
+	// so the check of every copy reads each path again.
 	return expiryPlan{tomb: t, recorded: true}, nil
 }
 
@@ -465,12 +476,25 @@ func (r expiryRun) present(objects []ObjectRef) []ObjectRef {
 // a later step fails.
 func (r expiryRun) remove(ctx context.Context, c expiryCandidate, plan expiryPlan, split inventorySplit, out expiryOutcome) (expiryOutcome, error) {
 	d := r.ds
+	manifests := d.allManifestPaths(c.id, c.paths, plan.tomb.Objects)
 	if !plan.recorded {
-		if err := d.tombstones().record(ctx, plan.tomb); err != nil {
+		won, err := d.tombstones().record(ctx, plan.tomb)
+		if err != nil {
 			return out, err
 		}
+		// Another run recorded the tombstone, and may have finished its expiry
+		// since this plan checked a copy it had loaded, so every copy is read
+		// again before any is deleted.
+		if !won && plan.loaded != nil {
+			matches, err := d.describesEveryCopy(ctx, plan.tomb, manifests, nil)
+			if err != nil {
+				return out, err
+			}
+			if !matches {
+				return out, fmt.Errorf("lode: tombstone for %s records another snapshot than its manifest", c.id)
+			}
+		}
 	}
-	manifests := d.allManifestPaths(c.id, c.paths, plan.tomb.Objects)
 	if err := deleteObject(ctx, d.store, manifests[0]); err != nil {
 		return out, err
 	}
@@ -492,15 +516,15 @@ func (r expiryRun) remove(ctx context.Context, c expiryCandidate, plan expiryPla
 // loadCandidate loads the snapshot's manifest: the canonical copy, else any
 // partition copy the listing found (pre-canonical data, or an expiry that
 // stopped after its canonical delete). ErrNotFound means every copy is gone.
-func (d *dataset) loadCandidate(ctx context.Context, c expiryCandidate) (*Manifest, error) {
+func (d *dataset) loadCandidate(ctx context.Context, c expiryCandidate) (*Manifest, string, error) {
 	for _, p := range d.manifestCopies(c.id, c.paths) {
 		m, err := d.loadManifestAt(ctx, c.id, p)
 		if errors.Is(err, ErrNotFound) {
 			continue
 		}
-		return m, err
+		return m, p, err
 	}
-	return nil, fmt.Errorf("lode: snapshot %s has no manifest: %w", c.id, ErrNotFound)
+	return nil, "", fmt.Errorf("lode: snapshot %s has no manifest: %w", c.id, ErrNotFound)
 }
 
 // describesEveryCopy reports whether t describes every manifest copy of its
@@ -508,8 +532,8 @@ func (d *dataset) loadCandidate(ctx context.Context, c expiryCandidate) (*Manife
 // every path their expiry would delete. Commit writes one serialization to
 // every path, so a copy t does not describe belongs to another snapshot
 // with the same ID.
-func (d *dataset) describesEveryCopy(ctx context.Context, t tombstone, paths []string) (bool, error) {
-	copies, err := d.loadCopies(ctx, t.SnapshotID, paths)
+func (d *dataset) describesEveryCopy(ctx context.Context, t tombstone, paths []string, loaded map[string]*Manifest) (bool, error) {
+	copies, err := d.loadCopies(ctx, t.SnapshotID, paths, loaded)
 	if err != nil {
 		return false, err
 	}
@@ -517,10 +541,16 @@ func (d *dataset) describesEveryCopy(ctx context.Context, t tombstone, paths []s
 }
 
 // loadCopies loads every manifest copy of snapshot id that is present at
-// paths or the canonical path, whether or not a listing showed it.
-func (d *dataset) loadCopies(ctx context.Context, id SnapshotID, paths []string) ([]*Manifest, error) {
+// paths or the canonical path, whether or not a listing showed it. A copy in
+// loaded, which the caller already loaded and validated, is used as it is
+// rather than read again.
+func (d *dataset) loadCopies(ctx context.Context, id SnapshotID, paths []string, loaded map[string]*Manifest) ([]*Manifest, error) {
 	var copies []*Manifest
 	for _, p := range d.manifestCopies(id, paths) {
+		if m, ok := loaded[p]; ok {
+			copies = append(copies, m)
+			continue
+		}
 		m, err := d.loadManifestAt(ctx, id, p)
 		if errors.Is(err, ErrNotFound) {
 			continue
