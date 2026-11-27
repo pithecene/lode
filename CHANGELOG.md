@@ -11,7 +11,7 @@ and Lode adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-- **A new tombstone's manifest copy is read once**: `Expire` loaded a candidate's manifest to plan it, then read that same copy again to check that its tombstone describes every copy. It now checks the copy it already loaded when it builds a new tombstone from that copy, which saves one read per such snapshot. Expiry still reads every copy of a head, of a snapshot with a recorded tombstone, and of one whose tombstone another run wins. On R2, a prune that previewed 685 snapshots spent about 105 seconds on those repeated reads.
+- **Expiry reuses the copy behind a new tombstone**: `Expire` loaded a candidate's manifest to plan it, then read the same copy again to check its tombstone. When it builds a new tombstone from that copy, it now checks the copy it holds. It still rereads every copy of a head, of a snapshot with a recorded tombstone, and of one whose tombstone another run wins. On R2, a prune that previewed 685 snapshots spent about 105 seconds on the repeated reads.
 
 ---
 
