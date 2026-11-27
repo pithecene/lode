@@ -134,22 +134,14 @@ applies instead.
 
 ### Head Protection
 
-- `Expire` MUST NEVER expire a head snapshot that one of its reads of
-  `latest` names. Selecting a head is not an error: the head is retained,
-  unless its own recheck of `latest` fails, as with `ErrHeadUncommitted`.
-  `ExpireReport.RetainedHead` names the last candidate that the call
-  retained as a head.
-- `Expire` validates `latest` before it decides any candidate. On a live
-  run, a candidate that proceeds to a tombstone or a deletion has `latest`
-  read again after its manifest copies are validated and before that write,
-  and the snapshot that read names is never deleted. A candidate that the
-  head guard already protects has `latest` read again as it is retained,
-  also when it is mixed. Another mixed snapshot is reported without another
-  read. The read and the
-  deletion are not atomic: a commit between them, as of a snapshot ID that
-  collides with the candidate's (`CONTRACT_CORE.md` §Snapshot ID), is not
-  protected. A dry run deletes nothing and may keep its first observation of
-  `latest` for the call (§Dry Run and Accounting).
+- `Expire` MUST NEVER expire a snapshot that its check of `latest` for that
+  candidate names. On a live run, that check reads `latest` after the
+  candidate's manifest copies are validated and before its first write. The
+  check and the write are not atomic (`CONTRACT_CORE.md` §Snapshot ID). A dry
+  run writes nothing and may check every candidate against its first read.
+- Selecting a head is not an error, though a head's own check can fail with
+  `ErrHeadUncommitted`. `ExpireReport.RetainedHead` names the last head that
+  the call retained, and a retained head is not reported as mixed.
 - If `latest` holds `lode:removed`, `Expire` returns `ErrRemoved`.
 - If `latest` names a snapshot without a committed manifest (a pending or
   abandoned commit), or is absent while manifests or tombstones exist,
@@ -221,18 +213,13 @@ absent alongside manifests or tombstones), and executes three passes:
 ## Dry Run and Accounting
 
 - With `DryRun: true`, `Expire` and `Sweep` write and delete no object. A dry
-  run is a validated preview of what the call observes: it validates every
-  manifest and tombstone that it uses, as a live run does, and returns the
-  selection and accounting that a live run would produce if storage did not
-  change during the call. It may reuse an observation made earlier in the
-  call, such as the head that it validated first. A concurrent commit or
-  expiry can change what a later live run meets.
-- A live `Expire` keeps every check before its destructive steps: it
-  protects the head that its last read of `latest` for each candidate
-  names,
-  establishes a matching tombstone before it deletes anything, and
-  validates an existing or competing tombstone against every manifest copy
-  that it would delete.
+  run is a validated preview: it validates every manifest and tombstone that
+  it uses, and reports what a live run would report if storage did not
+  change during the call. A concurrent commit or expiry can change what a
+  later live run meets.
+- Before a live `Expire` deletes anything of a candidate, it establishes a
+  matching tombstone and validates it against every manifest copy that it
+  would delete.
 - Both methods ALWAYS return a non-nil report, including when returning an
   error, reflecting all work completed prior to the error.
 
