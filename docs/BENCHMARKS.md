@@ -107,8 +107,9 @@ only the snapshot ID changes in those bytes from write to write; the object
 path changes only in its middle, and `created_at` decodes as a time without
 the cache. When the ID shares a slot with a string that every Read decodes,
 the two evict each other, and each costs one more allocation per Read. The
-gate measures 61, one more than before lode#430, whose read of the row count
-of older empty snapshots added one allocation. Its ceiling of 63 holds that
+gate measures 61, one more than before lode#430. To read the older empty
+snapshots, that change decodes every manifest's `row_count` through a pointer,
+which costs the current snapshot one allocation. The ceiling of 63 holds the
 one collision. The
 ceilings below were measured
 with Go 1.27.3; the benchmark
