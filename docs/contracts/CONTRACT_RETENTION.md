@@ -136,8 +136,10 @@ When `Partition` is set and a selected snapshot owns data objects outside
 - `Expire` MUST NEVER expire the head snapshot named by `latest`. When
   selected, the head is retained without error and reported in
   `ExpireReport.RetainedHead`.
-- `Expire` re-reads and validates `latest` initially and immediately before
-  step 1 of every candidate snapshot.
+- `Expire` re-reads and validates `latest` initially and, on a live run,
+  immediately before step 1 of every candidate snapshot. A dry run validates
+  it initially and keeps that observation for the call (§Dry Run and
+  Accounting).
 - If `latest` holds `lode:removed`, `Expire` returns `ErrRemoved`.
 - If `latest` names a snapshot without a committed manifest (a pending or
   abandoned commit), or is absent while manifests or tombstones exist,
@@ -208,9 +210,18 @@ absent alongside manifests or tombstones), and executes three passes:
 
 ## Dry Run and Accounting
 
-- With `DryRun: true`, `Expire` and `Sweep` perform all validation, head
-  checks, and manifest/existence checks without writing or deleting any
-  object, returning the report a live run would produce.
+- With `DryRun: true`, `Expire` and `Sweep` write and delete no object. A dry
+  run is a validated preview of what the call observes: it validates every
+  manifest and tombstone that it uses, as a live run does, and returns the
+  selection and accounting that a live run would produce if storage did not
+  change during the call. It may reuse an observation made earlier in the
+  call: `Expire` reads `latest` once, and one listing of tombstone keys
+  under the candidates' common ID prefix shows which candidates have none.
+  A concurrent commit or expiry can change what a later live run meets.
+- A live run keeps every check before its destructive steps: it refreshes
+  head protection before each candidate's step 1, establishes a matching
+  tombstone before it deletes anything, and validates an existing or
+  competing tombstone against every manifest copy that it would delete.
 - Both methods ALWAYS return a non-nil report, including when returning an
   error, reflecting all work completed prior to the error.
 
