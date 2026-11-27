@@ -65,9 +65,12 @@ every manifest lists its snapshot's objects directly (CONTRACT_CORE §Manifest);
 lakeFS's metarange and Iceberg's manifest list make that inventory reachable
 through one further level of records (ranges, manifests). The common thread,
 as an inference: the systems that discover snapshots cheaply also keep the
-second, reachable from the object a commit updates (Iceberg's metadata file,
-Delta's retained log files, Icechunk's `repo`; lakeFS keeps a branch's
-history as the walk from its tip through each commit's first parent). Lode
+second, in one of three forms: a record reachable from the object a commit
+updates (Iceberg's metadata file, Icechunk's `repo`); a walk from a branch
+tip through each commit's first parent (lakeFS); or a directory of densely
+numbered log files, listed or probed from a known version, whose retained
+entries are the history, since cleanup removes old entries without touching
+newer ones (Delta `_delta_log`, PROTOCOL.md §Delta Log Entries). Lode
 has no inventory of snapshots: its commit point is the canonical manifest
 (CONTRACT_CORE §Head Pointer), and no record lists the committed snapshots,
 so only enumeration finds them.
