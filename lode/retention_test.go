@@ -1646,6 +1646,8 @@ func assertExpireRefusesTombstone(t *testing.T, ds *Records[D], snap *Snapshot) 
 type reuseStore struct {
 	Store
 	tombPath, canonical string
+	// replaced is the path that the reuse rewrites, the canonical one when empty.
+	replaced string
 	other               *Manifest
 	rival               []byte
 	onLookup, onCAS     bool
@@ -1689,10 +1691,11 @@ func (s *reuseStore) replace(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := s.Delete(ctx, s.canonical); err != nil {
+	p := cmp.Or(s.replaced, s.canonical)
+	if err := s.Delete(ctx, p); err != nil {
 		return err
 	}
-	return s.Put(ctx, s.canonical, bytes.NewReader(data))
+	return s.Put(ctx, p, bytes.NewReader(data))
 }
 
 // A copy that the plan loaded is never trusted once another run's tombstone
@@ -1739,12 +1742,53 @@ func TestExpire_RereadsCopiesUnderAnotherTombstone(t *testing.T) {
 				t.Fatal("the reuse never happened")
 			}
 			got, err := ds.Snapshot(t.Context(), first.ID)
-			if err == nil && !got.CreatedAt.Equal(other.CreatedAt) {
+			if err != nil {
+				t.Fatalf("Snapshot of the reusing manifest: %v", err)
+			}
+			if !got.CreatedAt.Equal(other.CreatedAt) {
 				t.Errorf("manifest at the path = %v, want the reusing snapshot's", got.CreatedAt)
 			}
 			if kept, _ := mem.Exists(t.Context(), store.canonical); !kept {
 				t.Error("expiry deleted the manifest of the snapshot that reused the ID")
 			}
 		})
+	}
+}
+
+// A rival tombstone that wins the create while a partition copy is
+// replaced also stops the expiry before it deletes any copy, the canonical
+// one included.
+func TestExpire_RereadsPartitionCopiesUnderARivalTombstone(t *testing.T) {
+	t.Parallel()
+	mem := NewMemory()
+	setup := newHiveRetention(t, mem)
+	run := writeRun(t, setup, "a", "x", "y")
+	writeRun(t, setup, "b", "x") // the head
+	rival, err := json.Marshal(newTombstone(run.ID, run.Manifest))
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := *run.Manifest
+	other.CreatedAt = other.CreatedAt.Add(-time.Hour)
+	copyPath := "datasets/events/partitions/run_id=a/event_type=y/segments/" + string(run.ID) + "/manifest.json"
+	store := &reuseStore{
+		Store:     mem,
+		tombPath:  "datasets/events/expired/" + string(run.ID),
+		canonical: "datasets/events/segments/" + string(run.ID) + "/manifest.json",
+		replaced:  copyPath,
+		other:     &other, rival: rival, onCAS: true,
+	}
+	ds := newHiveRetention(t, store)
+
+	if _, err := ds.Expire(t.Context(), ExpireRequest{IDs: []SnapshotID{run.ID}}); err == nil {
+		t.Fatal("Expire deleted under a tombstone that a partition copy contradicts")
+	}
+	if !store.done {
+		t.Fatal("the reuse never happened")
+	}
+	for _, p := range []string{store.canonical, copyPath} {
+		if kept, _ := mem.Exists(t.Context(), p); !kept {
+			t.Errorf("expiry deleted %s", p)
+		}
 	}
 }
