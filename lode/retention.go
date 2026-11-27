@@ -38,11 +38,6 @@ func (d *writer) Expire(ctx context.Context, req ExpireRequest) (*ExpireReport, 
 		return report, err
 	}
 	run := expiryRun{ds: d.dataset, sel: sel, head: head, listed: listing.listed, dryRun: req.DryRun}
-	if req.DryRun && len(listing.candidates) > 0 {
-		if run.tombstoneKeys, err = d.tombstones().keysUnder(ctx, commonIDPrefix(listing.candidates)); err != nil {
-			return report, err
-		}
-	}
 	for _, c := range listing.candidates {
 		outcome, err := run.expire(ctx, c)
 		report.record(outcome)
@@ -335,10 +330,6 @@ type expiryRun struct {
 	head   *headGuard
 	listed map[string]struct{}
 	dryRun bool
-	// tombstoneKeys is, on a dry run, the tombstone keys that one listing
-	// during the call showed under the candidates' common ID prefix; a
-	// candidate whose key it lacks had no tombstone then. Nil on a live run.
-	tombstoneKeys map[string]struct{}
 }
 
 // expiryPlan is what expiring one snapshot works from: its tombstone, the
@@ -472,13 +463,6 @@ func (r expiryRun) tombstonePlan(ctx context.Context, c expiryCandidate) (expiry
 func (r expiryRun) tombstoneFor(ctx context.Context, c expiryCandidate) (tombstone, error) {
 	if c.recorded != nil {
 		return *c.recorded, nil
-	}
-	// A dry run's listing already showed that this candidate had no
-	// tombstone during the call.
-	if p, ok := r.ds.tombstones().path(c.id); ok && r.tombstoneKeys != nil {
-		if _, listed := r.tombstoneKeys[p]; !listed {
-			return tombstone{}, fmt.Errorf("lode: no tombstone for %s: %w", c.id, ErrNotFound)
-		}
 	}
 	return r.ds.tombstones().lookup(ctx, c.id)
 }
@@ -686,19 +670,4 @@ func totalBytes(objects []ObjectRef) int64 {
 		n += obj.SizeBytes
 	}
 	return n
-}
-
-// commonIDPrefix is the longest prefix that every candidate's snapshot ID
-// shares, so one listing of tombstones under it covers them all.
-func commonIDPrefix(candidates []expiryCandidate) string {
-	if len(candidates) == 0 {
-		return ""
-	}
-	prefix := string(candidates[0].id)
-	for _, c := range candidates[1:] {
-		for !strings.HasPrefix(string(c.id), prefix) {
-			prefix = prefix[:len(prefix)-1]
-		}
-	}
-	return prefix
 }

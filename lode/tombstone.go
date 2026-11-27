@@ -140,19 +140,6 @@ func (ts tombstones) list(ctx context.Context) ([]string, error) {
 	return slices.DeleteFunc(keys, func(k string) bool { return !isTombstoneName(k, prefix) }), nil
 }
 
-// keysUnder lists the tombstone keys whose snapshot ID begins with idPrefix.
-func (ts tombstones) keysUnder(ctx context.Context, idPrefix string) (map[string]struct{}, error) {
-	keys, err := ts.store.List(ctx, ts.paths.tombstonesPrefix(ts.dataset)+idPrefix)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list tombstones: %w", err)
-	}
-	out := make(map[string]struct{}, len(keys))
-	for _, k := range keys {
-		out[k] = struct{}{}
-	}
-	return out, nil
-}
-
 // errUntombstonable is the error for a snapshot whose ID is not in the
 // generated form: no tombstone path can be formed for it, so it is never
 // expired, on a dry run or a real one.

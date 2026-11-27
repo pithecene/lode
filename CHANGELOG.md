@@ -11,7 +11,7 @@ and Lode adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-- **A dry run reuses what the call observed**: a dry `Expire` read `latest` and looked up a tombstone for every candidate. It now reads `latest` once and lists the tombstone keys under the candidates' common ID prefix once, then still validates every manifest and tombstone that it uses. A live run keeps every check before it deletes. `CONTRACT_RETENTION.md` § Dry Run and Accounting states the preview's terms.
+- **A dry run reads the head once**: a dry `Expire` read `latest` before every candidate. It now reads it once for the call, and still validates every manifest and tombstone that it uses. A live run keeps every check before it deletes. `CONTRACT_RETENTION.md` § Dry Run and Accounting defines the preview, and `CONTRACT_COMPLEXITY.md` gives its cost.
 - **Expiry reuses the copy behind a new tombstone**: `Expire` loaded a candidate's manifest to plan it, then read the same copy again to check its tombstone. When it builds a new tombstone from that copy, it now checks the copy it holds. It still checks every manifest path afresh under another run's tombstone, and its head checks are unchanged. On R2, a prune that previewed 685 snapshots spent about 105 seconds on the repeated reads.
 
 ---

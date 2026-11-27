@@ -1803,8 +1803,8 @@ func TestExpire_RereadsPartitionCopiesUnderARivalTombstone(t *testing.T) {
 }
 
 // expiryReads expires n snapshots of one run, dry or live, and counts the
-// reads of latest and of tombstone paths, and the tombstone listings.
-func expiryReads(t *testing.T, n int, dryRun bool) (latest, tombGets, tombLists int) {
+// reads of latest.
+func expiryReads(t *testing.T, n int, dryRun bool) (latest int) {
 	t.Helper()
 	store := testutil.NewFaultStore(NewMemory())
 	ds := newHiveRetention(t, store)
@@ -1818,37 +1818,26 @@ func expiryReads(t *testing.T, n int, dryRun bool) (latest, tombGets, tombLists 
 		t.Fatalf("Expire(dry run %t) = %+v, %v; want %d expired", dryRun, report, err, n)
 	}
 	for _, p := range store.GetCalls() {
-		switch {
-		case strings.HasSuffix(p, "/latest"):
+		if strings.HasSuffix(p, "/latest") {
 			latest++
-		case strings.Contains(p, "/expired/"):
-			tombGets++
 		}
 	}
-	for _, p := range store.ListCalls() {
-		if strings.Contains(p, "/expired/") {
-			tombLists++
-		}
-	}
-	return latest, tombGets, tombLists
+	return latest
 }
 
-// A dry run keeps the head and the tombstone absence that the call observed,
-// so its reads do not grow with its candidates, while a live run rechecks the
-// head before each candidate's step 1 (CONTRACT_RETENTION.md §Dry Run and
+// A dry run keeps the head that the call observed, so its reads of latest do
+// not grow with its candidates, while a live run rechecks the head before
+// each candidate's step 1 (CONTRACT_RETENTION.md §Dry Run and
 // Accounting).
 func TestExpire_DryRunReusesObservations(t *testing.T) {
 	t.Parallel()
-	oneLatest, oneGets, _ := expiryReads(t, 1, true)
-	manyLatest, manyGets, manyLists := expiryReads(t, 4, true)
+	oneLatest := expiryReads(t, 1, true)
+	manyLatest := expiryReads(t, 4, true)
 	if manyLatest != oneLatest {
 		t.Errorf("dry run read latest %d times for 4 candidates, %d for 1; want no growth", manyLatest, oneLatest)
 	}
-	if oneGets != 0 || manyGets != 0 || manyLists != 1 {
-		t.Errorf("dry run tombstone reads %d and %d, listings %d; want no read and one listing", oneGets, manyGets, manyLists)
-	}
-	liveOne, _, _ := expiryReads(t, 1, false)
-	liveMany, _, _ := expiryReads(t, 4, false)
+	liveOne := expiryReads(t, 1, false)
+	liveMany := expiryReads(t, 4, false)
 	if liveMany <= liveOne {
 		t.Errorf("live run read latest %d times for 4 candidates, %d for 1; want a recheck per candidate", liveMany, liveOne)
 	}

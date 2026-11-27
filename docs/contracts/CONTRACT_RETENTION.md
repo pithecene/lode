@@ -136,10 +136,11 @@ When `Partition` is set and a selected snapshot owns data objects outside
 - `Expire` MUST NEVER expire the head snapshot named by `latest`. When
   selected, the head is retained without error and reported in
   `ExpireReport.RetainedHead`.
-- `Expire` re-reads and validates `latest` initially and, on a live run,
-  immediately before step 1 of every candidate snapshot. A dry run validates
-  it initially and keeps that observation for the call (§Dry Run and
-  Accounting).
+- `Expire` validates `latest` before it decides any candidate. A live run
+  never deletes a snapshot that `latest` names when that candidate's step 1
+  begins, so a commit during the call cannot expose a new head to deletion.
+  A dry run deletes nothing and may keep its first observation of `latest`
+  for the call (§Dry Run and Accounting).
 - If `latest` holds `lode:removed`, `Expire` returns `ErrRemoved`.
 - If `latest` names a snapshot without a committed manifest (a pending or
   abandoned commit), or is absent while manifests or tombstones exist,
@@ -215,13 +216,13 @@ absent alongside manifests or tombstones), and executes three passes:
   manifest and tombstone that it uses, as a live run does, and returns the
   selection and accounting that a live run would produce if storage did not
   change during the call. It may reuse an observation made earlier in the
-  call: `Expire` reads `latest` once, and one listing of tombstone keys
-  under the candidates' common ID prefix shows which candidates have none.
-  A concurrent commit or expiry can change what a later live run meets.
-- A live run keeps every check before its destructive steps: it refreshes
-  head protection before each candidate's step 1, establishes a matching
-  tombstone before it deletes anything, and validates an existing or
-  competing tombstone against every manifest copy that it would delete.
+  call, such as the head that it validated first. A concurrent commit or
+  expiry can change what a later live run meets.
+- A live `Expire` keeps every check before its destructive steps: it
+  protects the head that `latest` names at each candidate's step 1,
+  establishes a matching tombstone before it deletes anything, and
+  validates an existing or competing tombstone against every manifest copy
+  that it would delete.
 - Both methods ALWAYS return a non-nil report, including when returning an
   error, reflecting all work completed prior to the error.
 
