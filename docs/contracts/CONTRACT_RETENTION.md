@@ -136,8 +136,9 @@ When `Partition` is set and a selected snapshot owns data objects outside
 - `Expire` MUST NEVER expire the head snapshot named by `latest`. When
   selected, the head is retained without error and reported in
   `ExpireReport.RetainedHead`.
-- `Expire` re-reads and validates `latest` initially and immediately before
-  step 1 of every candidate snapshot.
+- `Expire` re-reads and validates `latest` initially and, on a live run,
+  immediately before step 1 of every candidate snapshot. A dry run writes
+  nothing and may keep its initial read for the call.
 - If `latest` holds `lode:removed`, `Expire` returns `ErrRemoved`.
 - If `latest` names a snapshot without a committed manifest (a pending or
   abandoned commit), or is absent while manifests or tombstones exist,
@@ -210,7 +211,10 @@ absent alongside manifests or tombstones), and executes three passes:
 
 - With `DryRun: true`, `Expire` and `Sweep` perform all validation, head
   checks, and manifest/existence checks without writing or deleting any
-  object, returning the report a live run would produce.
+  object, returning the report a live run would produce on the same
+  observations. A dry `Expire` checks the head against its initial read of
+  `latest` (§Head Protection), so a commit during the call can change what a
+  later live run meets.
 - Both methods ALWAYS return a non-nil report, including when returning an
   error, reflecting all work completed prior to the error.
 

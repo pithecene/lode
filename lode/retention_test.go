@@ -1801,3 +1801,84 @@ func TestExpire_RereadsPartitionCopiesUnderARivalTombstone(t *testing.T) {
 		}
 	}
 }
+
+// expiryReads expires n snapshots of one run, dry or live, and counts the
+// reads of latest.
+func expiryReads(t *testing.T, n int, dryRun bool) (latest int) {
+	t.Helper()
+	store := testutil.NewFaultStore(NewMemory())
+	ds := newHiveRetention(t, store)
+	for range n {
+		writeRun(t, ds, "a", "x")
+	}
+	writeRun(t, ds, "b", "x") // the head
+	store.Reset()
+	report, err := ds.Expire(t.Context(), ExpireRequest{Partition: "run_id=a", DryRun: dryRun})
+	if err != nil || len(report.Expired) != n {
+		t.Fatalf("Expire(dry run %t) = %+v, %v; want %d expired", dryRun, report, err, n)
+	}
+	for _, p := range store.GetCalls() {
+		if strings.HasSuffix(p, "/latest") {
+			latest++
+		}
+	}
+	return latest
+}
+
+// A dry run keeps the head that the call observed, so its reads of latest do
+// not grow with its candidates, while a live run rechecks the head before
+// each candidate's step 1 (CONTRACT_RETENTION.md §Dry Run and
+// Accounting).
+func TestExpire_DryRunReusesObservations(t *testing.T) {
+	t.Parallel()
+	oneLatest := expiryReads(t, 1, true)
+	manyLatest := expiryReads(t, 4, true)
+	if oneLatest != 1 || manyLatest != 1 {
+		t.Errorf("dry run read latest %d times for 1 candidate and %d for 4; want once each", oneLatest, manyLatest)
+	}
+	liveOne := expiryReads(t, 1, false)
+	liveMany := expiryReads(t, 4, false)
+	if liveOne != 2 || liveMany != 5 {
+		t.Errorf("live run read latest %d times for 1 candidate and %d for 4; want 2 and 5, one initial read and one per candidate", liveOne, liveMany)
+	}
+
+	// A preview that selects the head retains it on the same single read.
+	store := testutil.NewFaultStore(NewMemory())
+	ds := newHiveRetention(t, store)
+	writeRun(t, ds, "a", "x")
+	head := writeRun(t, ds, "b", "x")
+	store.Reset()
+	report, err := ds.Expire(t.Context(), ExpireRequest{Partition: "run_id=b", DryRun: true})
+	if err != nil || report.RetainedHead != head.ID {
+		t.Fatalf("Expire = %+v, %v; want %s retained", report, err, head.ID)
+	}
+	reads := 0
+	for _, p := range store.GetCalls() {
+		if strings.HasSuffix(p, "/latest") {
+			reads++
+		}
+	}
+	if reads != 1 {
+		t.Errorf("preview of the head read latest %d times, want once", reads)
+	}
+}
+
+// A tombstone that cannot be read fails a dry run where it fails a live
+// run, and neither reports the snapshot expired: a read error is not an
+// absent tombstone, whatever a listing of the tombstones shows.
+func TestExpire_UnreadableTombstonePathFailsAPreview(t *testing.T) {
+	t.Parallel()
+	for _, dryRun := range []bool{true, false} {
+		t.Run(fmt.Sprintf("dry run %t", dryRun), func(t *testing.T) {
+			store := testutil.NewFaultStore(NewMemory())
+			ds := newDefaultRetention(t, store)
+			first := writeRecord(t, ds, 1)
+			writeRecord(t, ds, 2) // the head
+			store.SetGetError(errProbe, "/expired/"+string(first.ID))
+			report, err := ds.Expire(t.Context(), ExpireRequest{IDs: []SnapshotID{first.ID}, DryRun: dryRun})
+			if !errors.Is(err, errProbe) || len(report.Expired) != 0 {
+				t.Fatalf("Expire = %+v, %v; want the tombstone read's error and nothing expired", report, err)
+			}
+		})
+	}
+}

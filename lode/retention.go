@@ -364,10 +364,13 @@ func (r expiryRun) expire(ctx context.Context, c expiryCandidate) (expiryOutcome
 		out.verdict = verdictMixed
 		return out, nil
 	}
-	// Recheck the head immediately before the irreversible steps; a dry run
-	// rechecks too, so its report is the one a real run would produce.
-	if err := r.head.refresh(ctx); err != nil {
-		return out, err
+	// Recheck the head immediately before the irreversible steps. A dry run
+	// deletes nothing, so it keeps the head that the call observed
+	// (CONTRACT_RETENTION.md §Dry Run and Accounting).
+	if !r.dryRun {
+		if err := r.head.refresh(ctx); err != nil {
+			return out, err
+		}
 	}
 	if r.head.is(c.id) {
 		out.verdict = verdictRetained
@@ -381,12 +384,15 @@ func (r expiryRun) expire(ctx context.Context, c expiryCandidate) (expiryOutcome
 	return r.remove(ctx, c, plan, split, out)
 }
 
-// retain keeps a snapshot the head guard protects. The pointer is still
-// rechecked, as before any snapshot's step 1: a pending commit stops the
-// run with ErrHeadUncommitted here too.
+// retain keeps a snapshot the head guard protects. A live run still
+// rechecks the pointer, as before any snapshot's step 1: a pending commit
+// stops the run with ErrHeadUncommitted here too. A dry run keeps the head
+// that the call observed.
 func (r expiryRun) retain(ctx context.Context, out expiryOutcome) (expiryOutcome, error) {
-	if err := r.head.refresh(ctx); err != nil {
-		return out, err
+	if !r.dryRun {
+		if err := r.head.refresh(ctx); err != nil {
+			return out, err
+		}
 	}
 	out.verdict = verdictRetained
 	return out, nil

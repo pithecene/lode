@@ -173,6 +173,7 @@ A successful CAS adds no ancestry reads.
 | Operation | Path | Store Calls | Memory |
 |-----------|------|-------------|--------|
 | `Expire` (`K` selected) | Cold | 1 `List` + `(K + 1)` pointer checks + `O(K)` manifest/tombstone reads and writes + object/manifest `Delete` calls | O(N + K × manifest) |
+| `Expire` with `DryRun` (`K` selected) | Cold | 1 `List` + 1 pointer check + `O(K)` manifest/tombstone reads | O(N + K × manifest) |
 | `Sweep` (`T` tombstones, `D_del` deleted) | Cold | 2 `List` + 1 pointer `Get` + `T` tombstone `Get` + settling/orphan/reindex checks + `D_del` `Delete` calls | O(N + Σ tombstone inventories + 1 snapshot's manifests) |
 | `Snapshot(id)` / `Read(id)` on expired ID | Hot miss | +1 `Get` (tombstone) | O(1) |
 
