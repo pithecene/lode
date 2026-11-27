@@ -3,7 +3,7 @@
 # every entry. CI runs them in the changelog job of .github/workflows/check.yaml. Pithecene's layer, which this
 # file extends, routes each change into its track's stack of pull requests.
 version: 1
-extends: ghcr.io/pithecene/bosun-config:v2
+extends: ghcr.io/pithecene/bosun-config:v3
 prose:
   documents:
     - CHANGELOG.md
@@ -15,3 +15,9 @@ go:
   modules:
     - dir: .
       config: .golangci.bosun.yaml
+# Heavy commands wait while host load exceeds 1.5 per core or available memory drops below 4 GiB.
+resources:
+  processor:
+    load: 1.5
+  memory:
+    min_available: 4294967296
