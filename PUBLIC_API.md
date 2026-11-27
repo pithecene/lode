@@ -757,8 +757,8 @@ sweepReport, err := ds.Sweep(ctx, lode.SweepRequest{Grace: 24 * time.Hour})
 - `ExpireRequest` intersects its non-zero selectors (`IDs`, whole-segment
   `Partition`, and snapshot-ID timestamp `Before`); at least one selector is
   required.
-- `Expire` never deletes the head snapshot (reporting it in
-  `ExpireReport.RetainedHead`) and retains Hive snapshots that span outside
+- `Expire` never deletes the head snapshot that its reads of `latest` name
+  (reporting it in `ExpireReport.RetainedHead`) and retains Hive snapshots that span outside
   `Partition` (reporting them in `ExpireReport.Mixed`).
 - Reading or looking up an expired snapshot returns `ErrSnapshotExpired`,
   which also matches `ErrNotFound`.

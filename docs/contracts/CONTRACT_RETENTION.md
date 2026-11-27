@@ -133,14 +133,16 @@ When `Partition` is set and a selected snapshot owns data objects outside
 
 ### Head Protection
 
-- `Expire` MUST NEVER expire the head snapshot named by `latest`. When
-  selected, the head is retained without error and reported in
+- `Expire` MUST NEVER expire the head snapshot that its reads of `latest`
+  name. When selected, that head is retained without error and reported in
   `ExpireReport.RetainedHead`.
 - `Expire` validates `latest` before it decides any candidate. A live run
-  reads `latest` again before each candidate's step 1 and never deletes the
-  snapshot that read names. The read and the deletion are not atomic: a
-  commit between them, as of a snapshot ID that collides with the
-  candidate's (`CONTRACT_CORE.md` §Snapshot ID), is not protected. A dry run
+  reads `latest` again for each candidate after it validates the
+  candidate's manifest copies and before it records a tombstone or deletes
+  anything, and never deletes the snapshot that read names. The read and the
+  deletion are not atomic: a commit between them, as of a snapshot ID that
+  collides with the candidate's (`CONTRACT_CORE.md` §Snapshot ID), is not
+  protected. A dry run
   deletes nothing and may keep its first observation of `latest` for the call
   (§Dry Run and Accounting).
 - If `latest` holds `lode:removed`, `Expire` returns `ErrRemoved`.
@@ -221,7 +223,8 @@ absent alongside manifests or tombstones), and executes three passes:
   call, such as the head that it validated first. A concurrent commit or
   expiry can change what a later live run meets.
 - A live `Expire` keeps every check before its destructive steps: it
-  protects the head that `latest` names at each candidate's step 1,
+  protects the head that its last read of `latest` for each candidate
+  names,
   establishes a matching tombstone before it deletes anything, and
   validates an existing or competing tombstone against every manifest copy
   that it would delete.
@@ -234,7 +237,8 @@ absent alongside manifests or tombstones), and executes three passes:
 
 1. **Empty directories**: filesystem directories emptied by object deletion
    remain on disk.
-2. **Whole-dataset removal**: `Expire` always preserves the head snapshot. To
+2. **Whole-dataset removal**: `Expire` always preserves the head snapshot that
+   it observes (§Head Protection). To
    remove an entire dataset—including its head snapshot—call
    `Root.RemoveDataset(ctx, id, opts...)`
    ([`CONTRACT_WRITE_API.md`](CONTRACT_WRITE_API.md) §Dataset Removal).

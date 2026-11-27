@@ -74,9 +74,9 @@ sequenceDiagram
     participant E as Expire
     participant P as latest pointer
     participant S as Store
-    E->>P: recheck the head
-    Note over E,P: the head is never expired
     E->>S: validate every surviving manifest copy against the tombstone
+    E->>P: recheck the head
+    Note over E,P: the head that this read names is never expired
     E->>S: create tombstone expired/ID (CompareAndSwap from empty)
     E->>S: delete the canonical manifest
     Note over E,S: the snapshot is now expired
@@ -102,8 +102,10 @@ Set fields combine by intersection; leaving all three unset returns
 
 ### Head Retention
 
-`Expire` never deletes the head snapshot named by `latest`. When the
-selection includes the head, `Expire` retains it and records its ID in
+`Expire` never deletes the head snapshot that its reads of `latest` name. A
+live run reads `latest` again for each candidate before it deletes anything,
+but the read and the deletion are not atomic. When the selection includes the
+head, `Expire` retains it and records its ID in
 `ExpireReport.RetainedHead`. If `latest` names a pending commit without a
 persisted manifest, or is absent alongside existing snapshots or tombstones,
 `Expire` returns `ErrHeadUncommitted`.
