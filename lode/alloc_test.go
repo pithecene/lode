@@ -16,10 +16,10 @@ import (
 // warm: the head is known, so no operation scans. Each byte ceiling is the
 // measured figure rounded up to the next 64 bytes, because map growth in the
 // in-memory store varies it by a few bytes. The Read ceiling allows 2 more than
-// the measured 60 for decoder cache collisions (docs/BENCHMARKS.md).
+// the measured 61 for a decoder cache collision (docs/BENCHMARKS.md).
 var allocGates = []testutil.AllocGate{
 	{Name: "Write of three records", Allocs: 53, Bytes: 6656, Setup: gateWrite},
-	{Name: "Read of three records", Allocs: 62, Bytes: 10368, Setup: gateRead},
+	{Name: "Read of three records", Allocs: 63, Bytes: 10368, Setup: gateRead},
 	{Name: "Blob StreamWrite of one kibibyte", Allocs: 31, Bytes: 7232, Setup: gateStreamWrite},
 	{Name: "Record StreamWrite of three records", Allocs: 63, Bytes: 7296, Setup: gateStreamWriteRecords},
 	{Name: "JSONL Decode of three records", Allocs: 33, Bytes: 5568, Setup: gateDecode},

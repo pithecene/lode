@@ -107,7 +107,9 @@ only the snapshot ID changes in those bytes from write to write; the object
 path changes only in its middle, and `created_at` decodes as a time without
 the cache. When the ID shares a slot with a string that every Read decodes,
 the two evict each other, and each costs one more allocation per Read. The
-gate measures 60, and its ceiling of 62 holds that one collision. The
+gate measures 61, one more than before lode#430, whose read of the row count
+of older empty snapshots added one allocation. Its ceiling of 63 holds that
+one collision. The
 ceilings below were measured
 with Go 1.27.3; the benchmark
 figures in the other sections were measured with Go 1.25.
@@ -115,7 +117,7 @@ figures in the other sections were measured with Go 1.25.
 | Gate | Allocations | Bytes |
 |------|------------:|------:|
 | Write of three records | 53 | 6,656 |
-| Read of three records | 62 | 10,368 |
+| Read of three records | 63 | 10,368 |
 | Blob StreamWrite of one kibibyte | 31 | 7,232 |
 | Record StreamWrite of three records | 63 | 7,296 |
 | JSONL Decode of three records | 33 | 5,504 |
