@@ -9,6 +9,10 @@ and Lode adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+---
+
+## [0.18.7] - 2026-11-27
+
 ### Changed
 
 - **A dry run reads the head once**: a dry `Expire` read `latest` before every candidate. It now reads it once for the call, and still validates every manifest and tombstone that it uses. A live run keeps every check before it deletes. `CONTRACT_RETENTION.md` § Dry Run and Accounting defines the preview, and `CONTRACT_COMPLEXITY.md` gives its cost.
@@ -644,7 +648,8 @@ and Lode adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 <!-- jscpd:ignore-start -->
 
-[Unreleased]: https://github.com/pithecene/lode/compare/v0.18.6...HEAD
+[Unreleased]: https://github.com/pithecene/lode/compare/v0.18.7...HEAD
+[0.18.7]: https://github.com/pithecene/lode/compare/v0.18.6...v0.18.7
 [0.18.6]: https://github.com/pithecene/lode/compare/v0.18.5...v0.18.6
 [0.18.5]: https://github.com/pithecene/lode/compare/v0.18.4...v0.18.5
 [0.18.4]: https://github.com/pithecene/lode/compare/v0.18.3...v0.18.4
