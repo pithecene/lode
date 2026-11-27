@@ -20,10 +20,10 @@ store. A scan that reads every object runs only when a caller asks for it.
 
 ## 2. What the public API answers today
 
-This table names the call that answers each question. It states no cost:
-the contract row named in each line holds the store calls, with their
-conditions. Unless a line names another contract, the row is in
-`CONTRACT_COMPLEXITY.md`.
+This table names the call that answers each question. For a call that
+reaches the store it states no cost: the contract row named in its line
+holds the store calls, with their conditions. Unless a line names another
+contract, the row is in `CONTRACT_COMPLEXITY.md`.
 
 | Question | Call | Where its cost is stated |
 |---|---|---|
