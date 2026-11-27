@@ -56,16 +56,20 @@ What the rehearsal ruled out, and why:
 | Delta Lake (filesystem-managed tables) | derived: `_last_checkpoint` + checkpoint + LIST/GET the log tail / LIST from version v | create-only `<v>.json` (put-if-absent); catalog-managed tables ratify through a catalog | `remove` actions retire logical files from a version's state | one small JSON; periodic checkpoints, log compaction | none with put-if-absent |
 | lakeFS | KV ref, then metarange, then ranges | KV compare-and-set on the branch | key absent in the new commit; GC | changed content-addressed ranges + metarange | lakeFS server + KV database |
 | Icechunk | derived: 1 GET of `repo`, which lists all snapshots and refs / re-GET `repo` | conditional update of `repo`, the only mutable object | expiry rewrites `repo`; ordered GC phases | whole `repo` (backed up first) + snapshot + transaction log + changed manifests | none |
-| Hudi | timeline + metadata table's files partition (counts unconfirmed) | atomic PUT per timeline state; concurrent writer processes need a lock (storage-based lock available), a single writer does not | active-state flags; clean and rollback | merge-on-read log appends; compaction | none or optional |
+| Hudi | timeline + metadata table's files partition (counts unconfirmed) | atomic PUT per timeline state; a lock is needed for concurrent writer processes, including one ingestion writer with a separately running table service (storage-based lock available); a lone writer running table services inline needs none | active-state flags; clean and rollback | merge-on-read log appends; compaction | none or optional |
 
 Request counts in this table are derived for a cold cache from each
-specification's structures, not measured. The common thread, as an inference:
-in every system that discovers cheaply, a successful commit makes one
-consistent view of the committed set reachable from the object it updates
-(the record may live elsewhere, as in Iceberg's metadata file or lakeFS's
-metarange). Lode has no such view: its commit point is the canonical manifest
-(CONTRACT_CORE §Head Pointer), and no single record lists the committed
-snapshots, so only enumeration finds them.
+specification's structures, not measured. Two inventories differ here: the
+objects in one commit, and the set of commits. Lode already has the first, as
+every manifest lists its snapshot's objects (CONTRACT_CORE §Manifest), as do
+lakeFS's metarange and Iceberg's manifest list. The common thread, as an
+inference: the systems that discover snapshots cheaply also keep the second,
+reachable from the object a commit updates (Iceberg's metadata file,
+Delta's log and checkpoints, Icechunk's `repo`; lakeFS keeps a branch's
+history as the walk from its tip through each commit's first parent). Lode
+has no inventory of snapshots: its commit point is the canonical manifest
+(CONTRACT_CORE §Head Pointer), and no record lists the committed snapshots,
+so only enumeration finds them.
 
 ## 4. Directions for Lode, layered by access pattern
 
@@ -103,10 +107,11 @@ definition of an uncommitted orphan. Not solved: dataset-wide discovery.
 
 Scope: cold inventory and "what changed anywhere". Closest reference: Delta
 Lake's filesystem-managed tables, which need no service when the store has
-put-if-absent. Every Lode store offers `CompareAndSwap` with `expected == ""`,
-which is create-only on S3 (`If-None-Match: "*"`); on the filesystem and memory
-stores it also replaces an existing empty object, so it is create-only for log
-entries only if every entry is non-empty.
+put-if-absent. Every Lode store offers that primitive as `Put`, which never
+overwrites an existing object and is atomic below the multipart threshold
+(CONTRACT_STORAGE §Put: `If-None-Match: "*"`, `os.Link`, a mutex). A log claim
+uses `Put`, not `CompareAndSwap` with `expected == ""`: on every store,
+including S3, that CAS also replaces an existing empty object.
 
 - A commit claims log entry N+1 with a create-only write after its manifest
   exists; the entry is the commit point and the membership record at once.
