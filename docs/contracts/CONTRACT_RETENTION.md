@@ -129,19 +129,16 @@ MUST fail with `ErrInvalidArgument` before any store call:
 
 When `Partition` is set and a selected snapshot owns data objects outside
 `Partition`, `Expire` MUST NOT expire the snapshot and MUST report its ID in
-`ExpireReport.Mixed`, unless the head guard protects it, when §Head Protection
-applies instead.
+`ExpireReport.Mixed`.
 
 ### Head Protection
 
-- `Expire` MUST NEVER expire a snapshot that its check of `latest` for that
-  candidate names. On a live run, that check reads `latest` after the
-  candidate's manifest copies are validated and before its first write. The
-  check and the write are not atomic (`CONTRACT_CORE.md` §Snapshot ID). A dry
-  run writes nothing and may check every candidate against its first read.
-- Selecting a head is not an error, though a head's own check can fail with
-  `ErrHeadUncommitted`. `ExpireReport.RetainedHead` names the last head that
-  the call retained, and a retained head is not reported as mixed.
+- `Expire` MUST NEVER expire the head snapshot named by `latest`. When
+  selected, the head is retained without error and reported in
+  `ExpireReport.RetainedHead`.
+- `Expire` re-reads and validates `latest` initially and, on a live run,
+  immediately before step 1 of every candidate snapshot. A dry run writes
+  nothing and may keep its initial read for the call.
 - If `latest` holds `lode:removed`, `Expire` returns `ErrRemoved`.
 - If `latest` names a snapshot without a committed manifest (a pending or
   abandoned commit), or is absent while manifests or tombstones exist,
@@ -212,14 +209,12 @@ absent alongside manifests or tombstones), and executes three passes:
 
 ## Dry Run and Accounting
 
-- With `DryRun: true`, `Expire` and `Sweep` write and delete no object. A dry
-  run is a validated preview: it validates every manifest and tombstone that
-  it uses, and reports what a live run would report if storage did not
-  change during the call. A concurrent commit or expiry can change what a
+- With `DryRun: true`, `Expire` and `Sweep` perform all validation, head
+  checks, and manifest/existence checks without writing or deleting any
+  object, returning the report a live run would produce on the same
+  observations. A dry `Expire` checks the head against its initial read of
+  `latest` (§Head Protection), so a commit during the call can change what a
   later live run meets.
-- Before a live `Expire` deletes anything of a candidate, it establishes a
-  matching tombstone and validates it against every manifest copy that it
-  would delete.
 - Both methods ALWAYS return a non-nil report, including when returning an
   error, reflecting all work completed prior to the error.
 
@@ -229,8 +224,7 @@ absent alongside manifests or tombstones), and executes three passes:
 
 1. **Empty directories**: filesystem directories emptied by object deletion
    remain on disk.
-2. **Whole-dataset removal**: `Expire` always preserves the head snapshot that
-   it observes (§Head Protection). To
+2. **Whole-dataset removal**: `Expire` always preserves the head snapshot. To
    remove an entire dataset—including its head snapshot—call
    `Root.RemoveDataset(ctx, id, opts...)`
    ([`CONTRACT_WRITE_API.md`](CONTRACT_WRITE_API.md) §Dataset Removal).

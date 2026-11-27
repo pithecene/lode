@@ -12,7 +12,7 @@ normative rules.
 
 | | `Expire` | `Sweep` | `Root.RemoveDataset` |
 |---|---|---|---|
-| Scope | Selected historical snapshots (the head that it observes is kept; see Head Retention) | Interrupted expiries, missing Hive partition manifests, and uncommitted orphans older than `Grace` | Whole dataset, including its head snapshot |
+| Scope | Selected historical snapshots (head is always kept) | Interrupted expiries, missing Hive partition manifests, and uncommitted orphans older than `Grace` | Whole dataset, including its head snapshot |
 | Caller specifies | `IDs`, `Partition`, and/or `Before` (plus optional `DryRun`) | Positive `Grace` duration (plus optional `DryRun`) | `DatasetID` (plus optional `WithRetry*`) |
 | Typical frequency | When retention policy marks runs or time windows obsolete | Periodically (for example, daily) | When retiring a dataset permanently |
 
@@ -74,9 +74,9 @@ sequenceDiagram
     participant E as Expire
     participant P as latest pointer
     participant S as Store
-    E->>S: validate every surviving manifest copy against the tombstone
     E->>P: recheck the head
-    Note over E,P: the head that this read names is never expired
+    Note over E,P: the head is never expired
+    E->>S: validate every surviving manifest copy against the tombstone
     E->>S: create tombstone expired/ID (CompareAndSwap from empty)
     E->>S: delete the canonical manifest
     Note over E,S: the snapshot is now expired
@@ -102,11 +102,9 @@ Set fields combine by intersection; leaving all three unset returns
 
 ### Head Retention
 
-`Expire` never deletes a head snapshot that one of its reads of `latest`
-names. A live run reads `latest` again for each candidate that it is about to
-write for, but the read and the deletion are not atomic. When the selection includes a
-head, `Expire` retains it, and `ExpireReport.RetainedHead` names the last head
-that the call retained. If `latest` names a pending commit without a
+`Expire` never deletes the head snapshot named by `latest`. When the
+selection includes the head, `Expire` retains it and records its ID in
+`ExpireReport.RetainedHead`. If `latest` names a pending commit without a
 persisted manifest, or is absent alongside existing snapshots or tombstones,
 `Expire` returns `ErrHeadUncommitted`.
 
