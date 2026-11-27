@@ -34,7 +34,7 @@ decisions.
 | Cold inventory | 45 LIST pages + 14,834 GET | ~60 s | the committed set is only discoverable as every manifest key, loaded |
 | Per-run refresh | 31 LIST of 14,833 keys | 265 s | an unchanged `latest` proves nothing: a pending commit can publish under it, and expiry does not move it |
 | Tombstone reads | 685 | 103 s | expiry state sits beside, not inside, the committed history |
-| Head reads | 321 | 49 s | per-candidate head protection (contract) |
+| Head reads | 321 | 49 s | observed call pattern of this dry run (a live run must reread `latest` per candidate; a dry run may keep its first read) |
 | Run-subtree LISTs | 63 | 11 s | legacy commits; note the cost, 0.18 s each against 8.5 s for a dataset-wide refresh |
 
 What the rehearsal ruled out, and why:
@@ -52,15 +52,20 @@ What the rehearsal ruled out, and why:
 
 | System | Discovery, cold / incremental | Commit point | Removal | Per-commit metadata | External service |
 |---|---|---|---|---|---|
-| Iceberg | pointer + 1 metadata GET lists all snapshots / re-read pointer | CAS of the metadata pointer (catalog); filesystem rename scheme deprecated as unsafe | `DELETED` entries; expiry is a commit | whole metadata file + manifest list; manifests reused | catalog for a safe swap |
-| Delta Lake | `_last_checkpoint` + checkpoint + LIST/GET the log tail / LIST from version v | create-only `<v>.json` (put-if-absent) | `remove` tombstones until expiry | one small JSON; periodic checkpoints, log compaction | none with put-if-absent |
+| Iceberg | derived cold path: pointer + table metadata, which lists the valid snapshots / re-read pointer | CAS of the metadata pointer (catalog); filesystem rename scheme deprecated as unsafe | `DELETED` entries; expiry is a commit | whole metadata file + manifest list; manifests reused | catalog for a safe swap |
+| Delta Lake (filesystem-managed tables) | derived: `_last_checkpoint` + checkpoint + LIST/GET the log tail / LIST from version v | create-only `<v>.json` (put-if-absent); catalog-managed tables ratify through a catalog | `remove` actions retire logical files from a version's state | one small JSON; periodic checkpoints, log compaction | none with put-if-absent |
 | lakeFS | KV ref, then metarange, then ranges | KV compare-and-set on the branch | key absent in the new commit; GC | changed content-addressed ranges + metarange | lakeFS server + KV database |
-| Icechunk | 1 GET of `repo` lists all snapshots and refs / re-GET `repo` | conditional update of `repo`, the only mutable object | expiry rewrites `repo`; ordered GC phases | whole `repo` (backed up first) + snapshot + transaction log + changed manifests | none |
-| Hudi | timeline + metadata table's files partition (counts unconfirmed) | atomic PUT per timeline state, plus a lock (storage-based lock available) | active-state flags; clean and rollback | merge-on-read log appends; compaction | none or optional |
+| Icechunk | derived: 1 GET of `repo`, which lists all snapshots and refs / re-GET `repo` | conditional update of `repo`, the only mutable object | expiry rewrites `repo`; ordered GC phases | whole `repo` (backed up first) + snapshot + transaction log + changed manifests | none |
+| Hudi | timeline + metadata table's files partition (counts unconfirmed) | atomic PUT per timeline state; concurrent writer processes need a lock (storage-based lock available), a single writer does not | active-state flags; clean and rollback | merge-on-read log appends; compaction | none or optional |
 
-The common thread: in every system that discovers cheaply, the commit point
-and the membership record are the same object or sequence. Lode separates
-them: the commit point is `latest`, membership is the set of manifest keys.
+Request counts in this table are derived for a cold cache from each
+specification's structures, not measured. The common thread, as an inference:
+in every system that discovers cheaply, a successful commit makes one
+consistent view of the committed set reachable from the object it updates
+(the record may live elsewhere, as in Iceberg's metadata file or lakeFS's
+metarange). Lode has no such view: its commit point is the canonical manifest
+(CONTRACT_CORE §Head Pointer), and no single record lists the committed
+snapshots, so only enumeration finds them.
 
 ## 4. Directions for Lode, layered by access pattern
 
@@ -76,34 +81,55 @@ so far uses. Keeps the layout as the index.
   exists. Pending and abandoned commits stay invisible; every committed
   snapshot has a complete index by construction.
 - Subtree read: LIST the subtree, then confirm the canonical manifest of each
-  ID new since the last read. Hypothesis: per-run refresh about 0.2 s instead
-  of 8.5 s on the measured workload.
+  ID the reader has not confirmed as committed. A listed ID can gain its
+  canonical manifest without the listing changing, and an interrupted expiry
+  can leave an entry whose canonical manifest is gone, so a cached
+  confirmation needs invalidating in both directions; how is unresolved.
+  Hypothesis, to be measured with those rechecks included: a per-run refresh
+  well under the 8.5 s of a dataset-wide one.
 - Expiry already deletes the canonical manifest first, so an entry without
   one is invisible after expiry as before commit.
 
-To resolve: legacy (pre-1.2.0) snapshots committed by partition manifests
-alone (exempt by recorded format); existing incomplete indexes (one Sweep
-reindex, then a dataset marker that the index is complete from that point);
+To resolve: pre-canonical legacy snapshots, committed by partition manifests
+alone (CONTRACT_CORE §Head Pointer), which need a discriminator that no
+recorded field is yet known to provide; existing
+incomplete indexes (Sweep reindexes only snapshots older than its positive
+`Grace`, so a completeness marker needs that age condition or a separate
+verification pass);
 fencing older writers that publish in the old order; Sweep's changed
 definition of an uncommitted orphan. Not solved: dataset-wide discovery.
 
 ### 4.2 Membership log: make dataset-wide discovery cheap
 
 Scope: cold inventory and "what changed anywhere". Closest reference: Delta
-Lake, which needs no service when the store has put-if-absent, as every Lode
-store does (`CompareAndSwap` with `expected == ""`).
+Lake's filesystem-managed tables, which need no service when the store has
+put-if-absent. Every Lode store offers `CompareAndSwap` with `expected == ""`,
+which is create-only on S3 (`If-None-Match: "*"`); on the filesystem and memory
+stores it also replaces an existing empty object, so it is create-only for log
+entries only if every entry is non-empty.
 
 - A commit claims log entry N+1 with a create-only write after its manifest
   exists; the entry is the commit point and the membership record at once.
-- Expiry appends a retire entry before it deletes anything (Delta `remove`).
+- Expiry appends a retire entry before it deletes anything. Retiring a
+  snapshot is the proposed Lode adaptation; Delta's `remove` retires a logical
+  file from a version's state, not a version.
 - Refresh: read entries N+1, N+2, ... until absent (a dense sequence needs no
   LIST), or LIST from N if the store gains a start-after listing.
 - Checkpoints fold membership at generation G with a hint file (Delta
-  `_last_checkpoint`); cold discovery becomes a few GETs instead of 14,834.
+  `_last_checkpoint`). Hypothesis: cold discovery reads the checkpoint plus the
+  K entries after it, instead of 14,834 manifests; a membership-only
+  checkpoint gives no manifest contents, so a consumer that needs them, as the
+  prune does, still loads those. To be compared on the same inventory result,
+  with the checkpoint lag and contents stated.
 - Layout fit: the log is a readable directory of small JSON records beside
   the data, which keeps the principle better than a single rewritten root
   (Iceberg, Icechunk), at the cost of a sequence that serializes writers as
   `latest` does today.
+- Relation to 4.1: if both exist, a writer can persist its canonical manifest
+  and stop before claiming its log entry, so the subtree reader and the log
+  disagree on what is committed. Either they are alternatives, or enabling the
+  log moves the commit point to the log entry and changes the subtree
+  reader's commit test, and with it the cost to benchmark. Unresolved.
 
 ### 4.3 Scale-out structures, only if 4.1 and 4.2 measure short
 
