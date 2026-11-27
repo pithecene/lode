@@ -1838,8 +1838,28 @@ func TestExpire_DryRunReusesObservations(t *testing.T) {
 	}
 	liveOne := expiryReads(t, 1, false)
 	liveMany := expiryReads(t, 4, false)
-	if liveMany <= liveOne {
-		t.Errorf("live run read latest %d times for 4 candidates, %d for 1; want a recheck per candidate", liveMany, liveOne)
+	if liveOne != 2 || liveMany != 5 {
+		t.Errorf("live run read latest %d times for 1 candidate and %d for 4; want 2 and 5, one initial read and one per candidate", liveOne, liveMany)
+	}
+
+	// A preview that selects the head retains it on the same single read.
+	store := testutil.NewFaultStore(NewMemory())
+	ds := newHiveRetention(t, store)
+	writeRun(t, ds, "a", "x")
+	head := writeRun(t, ds, "b", "x")
+	store.Reset()
+	report, err := ds.Expire(t.Context(), ExpireRequest{Partition: "run_id=b", DryRun: true})
+	if err != nil || report.RetainedHead != head.ID {
+		t.Fatalf("Expire = %+v, %v; want %s retained", report, err, head.ID)
+	}
+	reads := 0
+	for _, p := range store.GetCalls() {
+		if strings.HasSuffix(p, "/latest") {
+			reads++
+		}
+	}
+	if reads != 1 {
+		t.Errorf("preview of the head read latest %d times, want once", reads)
 	}
 }
 
