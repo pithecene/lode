@@ -57,6 +57,15 @@ What the rehearsal ruled out, and why:
 | lakeFS | KV ref, then metarange, then ranges | KV compare-and-set on the branch | key absent in the new commit; GC | changed content-addressed ranges + metarange | lakeFS server + KV database |
 | Icechunk | derived: 1 GET of `repo`, which lists all snapshots and refs / re-GET `repo` | conditional update of `repo`, the only mutable object | expiry rewrites `repo`; ordered GC phases | whole `repo` (backed up first) + snapshot + transaction log + changed manifests | none |
 | Hudi | timeline + metadata table's files partition (counts unconfirmed) | atomic PUT per timeline state; a lock is needed for concurrent writer processes, including one ingestion writer with a separately running table service (storage-based lock available); a lone writer running table services inline needs none | active-state flags; clean and rollback | merge-on-read log appends; compaction | none or optional |
+| Zarr v3 | derived: `list_dir` of a group's prefix, then each child's `zarr.json` / the same | none: the core specification defines no transactions, atomic multi-key commits, or versions | not defined | one `zarr.json` per node; chunks keyed under the node's prefix (`c/1/0`) | none |
+
+Zarr is the closest in principle: its hierarchy is its key layout, and a
+reader discovers a group's children by listing the group's prefix (Zarr v3
+core, §Storage operations). It defines no commit, so it gives no guarantee
+across keys and says nothing about concurrent writers. Icechunk adds
+transactions and versions to Zarr data through a separate level of metadata,
+FlatBuffers records reached from `repo`, which ordinary storage tools cannot
+read the way they read a Lode manifest.
 
 Request counts in this table are derived for a cold cache from each
 specification's structures, not measured. Two inventories differ here: the
@@ -76,6 +85,12 @@ has no inventory of snapshots: its commit point is the canonical manifest
 so only enumeration finds them.
 
 ## 4. Directions for Lode, layered by access pattern
+
+The three directions are separate decisions, not a sequence. Physical
+topology serves localized access; transactional metadata is added only for a
+guarantee that topology cannot give. If 4.1 makes subtree discovery cheap
+and correct, the measured workloads may no longer need frequent
+dataset-wide discovery, and 4.2 is justified only by a consumer that does.
 
 ### 4.1 Index-first publication: make the natural path authoritative
 
@@ -98,14 +113,26 @@ so far uses. Keeps the layout as the index.
 - Expiry already deletes the canonical manifest first, so an entry without
   one is invisible after expiry as before commit.
 
-To resolve: pre-canonical legacy snapshots, committed by partition manifests
-alone (CONTRACT_CORE §Head Pointer), which need a discriminator that no
-recorded field is yet known to provide; existing
-incomplete indexes (Sweep reindexes only snapshots older than its positive
-`Grace`, so a completeness marker needs that age condition or a separate
-verification pass);
-fencing older writers that publish in the old order; Sweep's changed
-definition of an uncommitted orphan. Not solved: dataset-wide discovery.
+Reversing the write order alone is not enough. To resolve:
+- Older readers: a pre-canonical legacy Hive snapshot is committed when any
+  of its partition manifests exists (CONTRACT_CORE §Head Pointer), so a
+  released reader would take a staged partition entry for a committed legacy
+  snapshot. Staged entries need a form that released readers ignore, which
+  makes this a distinguishable publication protocol, not a reordering.
+- Legacy discriminator: telling a legacy partition-only snapshot from a
+  staged entry needs a field that no recorded format is yet known to provide.
+- Lost CAS and interrupted publication: a writer that loses the pointer CAS,
+  or stops before its canonical manifest, leaves staged entries that retry,
+  expiry and Sweep must treat as pending, never as committed.
+- Commit test: a partition lookup confirms commitment per entry, without
+  falling back to dataset-wide enumeration.
+- Existing incomplete indexes: Sweep reindexes only snapshots older than its
+  positive `Grace`, so a completeness marker needs that age condition or a
+  separate verification pass.
+- Fencing older writers that publish in the old order, and Sweep's changed
+  definition of an uncommitted orphan.
+
+Not solved: dataset-wide discovery.
 
 ### 4.2 Membership log: make dataset-wide discovery cheap
 
@@ -138,13 +165,16 @@ including S3, that CAS also replaces an existing empty object.
   the data, which keeps the principle better than a single rewritten root
   (Iceberg, Icechunk), at the cost of a sequence that serializes writers as
   `latest` does today.
+- An authoritative log takes part in the commit protocol itself; a log
+  appended after publication would recreate the gap between commit and
+  membership that this note describes.
 - Relation to 4.1: if both exist, a writer can persist its canonical manifest
   and stop before claiming its log entry, so the subtree reader and the log
   disagree on what is committed. Either they are alternatives, or enabling the
   log moves the commit point to the log entry and changes the subtree
   reader's commit test, and with it the cost to benchmark. Unresolved.
 
-### 4.3 Scale-out structures, only if 4.1 and 4.2 measure short
+### 4.3 Scale-out structures, only where a measured workload needs them
 
 Per-partition summary rows (Iceberg manifest-list partition summaries) in
 place of per-partition manifest copies; content-addressed, reusable index
@@ -195,6 +225,8 @@ contention, not elapsed time alone. Baseline: the 815 s run in section 2.
 - lakeFS internals: <https://docs.lakefs.io/concepts/internals/>
 - Icechunk specification v2:
   <https://icechunk.io/en/stable/reference/spec-v2/>
+- Zarr v3 core specification, §Stored representation and §Storage
+  operations: <https://zarr-specs.readthedocs.io/en/latest/v3/core/index.html>
 - Apache Hudi metadata table, timeline, and concurrency control:
   <https://hudi.apache.org/docs/metadata>,
   <https://hudi.apache.org/docs/timeline>,
