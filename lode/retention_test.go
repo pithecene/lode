@@ -1748,7 +1748,11 @@ func TestExpire_RereadsCopiesUnderAnotherTombstone(t *testing.T) {
 			if !got.CreatedAt.Equal(other.CreatedAt) {
 				t.Errorf("manifest at the path = %v, want the reusing snapshot's", got.CreatedAt)
 			}
-			if kept, _ := mem.Exists(t.Context(), store.canonical); !kept {
+			kept, err := mem.Exists(t.Context(), store.canonical)
+			if err != nil {
+				t.Fatalf("Exists %s: %v", store.canonical, err)
+			}
+			if !kept {
 				t.Error("expiry deleted the manifest of the snapshot that reused the ID")
 			}
 		})
@@ -1786,8 +1790,13 @@ func TestExpire_RereadsPartitionCopiesUnderARivalTombstone(t *testing.T) {
 	if !store.done {
 		t.Fatal("the reuse never happened")
 	}
-	for _, p := range []string{store.canonical, copyPath} {
-		if kept, _ := mem.Exists(t.Context(), p); !kept {
+	unchanged := "datasets/events/partitions/run_id=a/event_type=x/segments/" + string(run.ID) + "/manifest.json"
+	for _, p := range []string{store.canonical, unchanged, copyPath} {
+		kept, err := mem.Exists(t.Context(), p)
+		if err != nil {
+			t.Fatalf("Exists %s: %v", p, err)
+		}
+		if !kept {
 			t.Errorf("expiry deleted %s", p)
 		}
 	}
