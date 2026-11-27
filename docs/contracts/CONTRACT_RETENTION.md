@@ -133,18 +133,20 @@ When `Partition` is set and a selected snapshot owns data objects outside
 
 ### Head Protection
 
-- `Expire` MUST NEVER expire the head snapshot that its reads of `latest`
-  name. When selected, that head is retained without error and reported in
-  `ExpireReport.RetainedHead`.
-- `Expire` validates `latest` before it decides any candidate. A live run
-  reads `latest` again for each candidate after it validates the
-  candidate's manifest copies and before it records a tombstone or deletes
-  anything, and never deletes the snapshot that read names. The read and the
+- `Expire` MUST NEVER expire a head snapshot that one of its reads of
+  `latest` names. A selected head is retained without error.
+  `ExpireReport.RetainedHead` names the last candidate that the call
+  retained as a head.
+- `Expire` validates `latest` before it decides any candidate. On a live
+  run, a candidate that proceeds to a tombstone or a deletion has `latest`
+  read again after its manifest copies are validated and before that write,
+  and the snapshot that read names is never deleted. A candidate that the
+  head guard already protects has `latest` read again as it is retained. A
+  mixed snapshot is reported without another read. The read and the
   deletion are not atomic: a commit between them, as of a snapshot ID that
   collides with the candidate's (`CONTRACT_CORE.md` §Snapshot ID), is not
-  protected. A dry run
-  deletes nothing and may keep its first observation of `latest` for the call
-  (§Dry Run and Accounting).
+  protected. A dry run deletes nothing and may keep its first observation of
+  `latest` for the call (§Dry Run and Accounting).
 - If `latest` holds `lode:removed`, `Expire` returns `ErrRemoved`.
 - If `latest` names a snapshot without a committed manifest (a pending or
   abandoned commit), or is absent while manifests or tombstones exist,

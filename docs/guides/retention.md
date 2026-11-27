@@ -12,7 +12,7 @@ normative rules.
 
 | | `Expire` | `Sweep` | `Root.RemoveDataset` |
 |---|---|---|---|
-| Scope | Selected historical snapshots (head is always kept) | Interrupted expiries, missing Hive partition manifests, and uncommitted orphans older than `Grace` | Whole dataset, including its head snapshot |
+| Scope | Selected historical snapshots (the head that it observes is kept; see Head Retention) | Interrupted expiries, missing Hive partition manifests, and uncommitted orphans older than `Grace` | Whole dataset, including its head snapshot |
 | Caller specifies | `IDs`, `Partition`, and/or `Before` (plus optional `DryRun`) | Positive `Grace` duration (plus optional `DryRun`) | `DatasetID` (plus optional `WithRetry*`) |
 | Typical frequency | When retention policy marks runs or time windows obsolete | Periodically (for example, daily) | When retiring a dataset permanently |
 
@@ -102,9 +102,9 @@ Set fields combine by intersection; leaving all three unset returns
 
 ### Head Retention
 
-`Expire` never deletes the head snapshot that its reads of `latest` name. A
-live run reads `latest` again for each candidate before it deletes anything,
-but the read and the deletion are not atomic. When the selection includes the
+`Expire` never deletes a head snapshot that one of its reads of `latest`
+names. A live run reads `latest` again for each candidate that it is about to
+write for, but the read and the deletion are not atomic. When the selection includes the
 head, `Expire` retains it and records its ID in
 `ExpireReport.RetainedHead`. If `latest` names a pending commit without a
 persisted manifest, or is absent alongside existing snapshots or tombstones,
