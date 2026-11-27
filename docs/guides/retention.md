@@ -104,9 +104,9 @@ Set fields combine by intersection; leaving all three unset returns
 
 `Expire` never deletes a head snapshot that one of its reads of `latest`
 names. A live run reads `latest` again for each candidate that it is about to
-write for, but the read and the deletion are not atomic. When the selection includes the
-head, `Expire` retains it and records its ID in
-`ExpireReport.RetainedHead`. If `latest` names a pending commit without a
+write for, but the read and the deletion are not atomic. When the selection includes a
+head, `Expire` retains it, and `ExpireReport.RetainedHead` names the last head
+that the call retained. If `latest` names a pending commit without a
 persisted manifest, or is absent alongside existing snapshots or tombstones,
 `Expire` returns `ErrHeadUncommitted`.
 

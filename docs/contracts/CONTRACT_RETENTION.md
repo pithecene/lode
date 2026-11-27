@@ -129,20 +129,23 @@ MUST fail with `ErrInvalidArgument` before any store call:
 
 When `Partition` is set and a selected snapshot owns data objects outside
 `Partition`, `Expire` MUST NOT expire the snapshot and MUST report its ID in
-`ExpireReport.Mixed`.
+`ExpireReport.Mixed`, unless the head guard protects it, when §Head Protection
+applies instead.
 
 ### Head Protection
 
 - `Expire` MUST NEVER expire a head snapshot that one of its reads of
-  `latest` names. A selected head is retained without error.
+  `latest` names. Selecting a head is not an error: the head is retained,
+  unless its own recheck of `latest` fails, as with `ErrHeadUncommitted`.
   `ExpireReport.RetainedHead` names the last candidate that the call
   retained as a head.
 - `Expire` validates `latest` before it decides any candidate. On a live
   run, a candidate that proceeds to a tombstone or a deletion has `latest`
   read again after its manifest copies are validated and before that write,
   and the snapshot that read names is never deleted. A candidate that the
-  head guard already protects has `latest` read again as it is retained. A
-  mixed snapshot is reported without another read. The read and the
+  head guard already protects has `latest` read again as it is retained,
+  also when it is mixed. Another mixed snapshot is reported without another
+  read. The read and the
   deletion are not atomic: a commit between them, as of a snapshot ID that
   collides with the candidate's (`CONTRACT_CORE.md` §Snapshot ID), is not
   protected. A dry run deletes nothing and may keep its first observation of
