@@ -61,11 +61,12 @@ What the rehearsal ruled out, and why:
 Request counts in this table are derived for a cold cache from each
 specification's structures, not measured. Two inventories differ here: the
 objects in one commit, and the set of commits. Lode already has the first, as
-every manifest lists its snapshot's objects (CONTRACT_CORE §Manifest), as do
-lakeFS's metarange and Iceberg's manifest list. The common thread, as an
-inference: the systems that discover snapshots cheaply also keep the second,
-reachable from the object a commit updates (Iceberg's metadata file,
-Delta's log and checkpoints, Icechunk's `repo`; lakeFS keeps a branch's
+every manifest lists its snapshot's objects directly (CONTRACT_CORE §Manifest);
+lakeFS's metarange and Iceberg's manifest list make that inventory reachable
+through one further level of records (ranges, manifests). The common thread,
+as an inference: the systems that discover snapshots cheaply also keep the
+second, reachable from the object a commit updates (Iceberg's metadata file,
+Delta's retained log files, Icechunk's `repo`; lakeFS keeps a branch's
 history as the walk from its tip through each commit's first parent). Lode
 has no inventory of snapshots: its commit point is the canonical manifest
 (CONTRACT_CORE §Head Pointer), and no record lists the committed snapshots,
@@ -107,9 +108,11 @@ definition of an uncommitted orphan. Not solved: dataset-wide discovery.
 
 Scope: cold inventory and "what changed anywhere". Closest reference: Delta
 Lake's filesystem-managed tables, which need no service when the store has
-put-if-absent. Every Lode store offers that primitive as `Put`, which never
-overwrites an existing object and is atomic below the multipart threshold
-(CONTRACT_STORAGE §Put: `If-None-Match: "*"`, `os.Link`, a mutex). A log claim
+put-if-absent. Every Lode store offers that primitive as `Put`. Below the
+multipart threshold it never overwrites an existing object (CONTRACT_STORAGE
+§Put Upload Paths: `If-None-Match: "*"`, `os.Link`, a mutex); above it, on a
+backend that ignores the completion precondition, the protection is
+best-effort, so log entries stay single-part. A log claim
 uses `Put`, not `CompareAndSwap` with `expected == ""`: on every store,
 including S3, that CAS also replaces an existing empty object.
 
@@ -121,7 +124,9 @@ including S3, that CAS also replaces an existing empty object.
 - Refresh: read entries N+1, N+2, ... until absent (a dense sequence needs no
   LIST), or LIST from N if the store gains a start-after listing.
 - Checkpoints fold membership at generation G with a hint file (Delta
-  `_last_checkpoint`). Hypothesis: cold discovery reads the checkpoint plus the
+  `_last_checkpoint`). A Delta checkpoint records table state at one version,
+  not which earlier versions remain; a membership checkpoint is a proposed
+  Lode adaptation. Hypothesis: cold discovery reads the checkpoint plus the
   K entries after it, instead of 14,834 manifests; a membership-only
   checkpoint gives no manifest contents, so a consumer that needs them, as the
   prune does, still loads those. To be compared on the same inventory result,
