@@ -137,10 +137,12 @@ When `Partition` is set and a selected snapshot owns data objects outside
   selected, the head is retained without error and reported in
   `ExpireReport.RetainedHead`.
 - `Expire` validates `latest` before it decides any candidate. A live run
-  never deletes a snapshot that `latest` names when that candidate's step 1
-  begins, so a commit during the call cannot expose a new head to deletion.
-  A dry run deletes nothing and may keep its first observation of `latest`
-  for the call (§Dry Run and Accounting).
+  reads `latest` again before each candidate's step 1 and never deletes the
+  snapshot that read names. The read and the deletion are not atomic: a
+  commit between them, as of a snapshot ID that collides with the
+  candidate's (`CONTRACT_CORE.md` §Snapshot ID), is not protected. A dry run
+  deletes nothing and may keep its first observation of `latest` for the call
+  (§Dry Run and Accounting).
 - If `latest` holds `lode:removed`, `Expire` returns `ErrRemoved`.
 - If `latest` names a snapshot without a committed manifest (a pending or
   abandoned commit), or is absent while manifests or tombstones exist,

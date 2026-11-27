@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -1833,12 +1835,39 @@ func TestExpire_DryRunReusesObservations(t *testing.T) {
 	t.Parallel()
 	oneLatest := expiryReads(t, 1, true)
 	manyLatest := expiryReads(t, 4, true)
-	if manyLatest != oneLatest {
-		t.Errorf("dry run read latest %d times for 4 candidates, %d for 1; want no growth", manyLatest, oneLatest)
+	if oneLatest != 1 || manyLatest != 1 {
+		t.Errorf("dry run read latest %d times for 1 candidate and %d for 4; want once each", oneLatest, manyLatest)
 	}
 	liveOne := expiryReads(t, 1, false)
 	liveMany := expiryReads(t, 4, false)
 	if liveMany <= liveOne {
 		t.Errorf("live run read latest %d times for 4 candidates, %d for 1; want a recheck per candidate", liveMany, liveOne)
+	}
+}
+
+// A tombstone path that cannot be read fails a dry run where it fails a
+// live run, and neither reports the snapshot expired: on the filesystem
+// store, a regular file where the tombstone directory belongs reads as an
+// error, not as an absent tombstone.
+func TestExpire_UnreadableTombstonePathFailsAPreview(t *testing.T) {
+	t.Parallel()
+	for _, dryRun := range []bool{true, false} {
+		t.Run(fmt.Sprintf("dry run %t", dryRun), func(t *testing.T) {
+			dir := t.TempDir()
+			store, err := NewFS(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ds := newDefaultRetention(t, store)
+			first := writeRecord(t, ds, 1)
+			writeRecord(t, ds, 2) // the head
+			if err := os.WriteFile(filepath.Join(dir, "datasets", "events", "expired"), []byte("x"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			report, err := ds.Expire(t.Context(), ExpireRequest{IDs: []SnapshotID{first.ID}, DryRun: dryRun})
+			if err == nil || len(report.Expired) != 0 {
+				t.Fatalf("Expire = %+v, %v; want the tombstone read's error and nothing expired", report, err)
+			}
+		})
 	}
 }
