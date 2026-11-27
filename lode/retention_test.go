@@ -1647,7 +1647,7 @@ type reuseStore struct {
 	Store
 	tombPath, canonical string
 	// replaced is the path that the reuse rewrites, the canonical one when empty.
-	replaced string
+	replaced            string
 	other               *Manifest
 	rival               []byte
 	onLookup, onCAS     bool
