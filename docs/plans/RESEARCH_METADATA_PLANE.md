@@ -57,11 +57,12 @@ What the rehearsal ruled out, and why:
 | lakeFS | KV ref, then metarange, then ranges | KV compare-and-set on the branch | key absent in the new commit; GC | changed content-addressed ranges + metarange | lakeFS server + KV database |
 | Icechunk | derived: 1 GET of `repo`, which lists all snapshots and refs / re-GET `repo` | conditional update of `repo`, the only mutable object | expiry rewrites `repo`; ordered GC phases | whole `repo` (backed up first) + snapshot + transaction log + changed manifests | none |
 | Hudi | timeline + metadata table's files partition (counts unconfirmed) | atomic PUT per timeline state; a lock is needed for concurrent writer processes, including one ingestion writer with a separately running table service (storage-based lock available); a lone writer running table services inline needs none | active-state flags; clean and rollback | merge-on-read log appends; compaction | none or optional |
-| Zarr v3 | derived, on a listable store: `list_dir` of a group's prefix, then each child's `zarr.json` / the same | none: the core specification defines no transactions, atomic multi-key commits, or versions | `erase_prefix` of a node's prefix; no versioned retirement that keeps an earlier state | one `zarr.json` per node; chunks keyed under the node's prefix (`c/1/0`) | none |
+| Zarr v3 | derived: on a store with `list_dir`, a listing of a group's prefix, then each child's `zarr.json` (a store with only `list` enumerates every key) / the same | none: the core specification defines no transactions, atomic multi-key commits, or versions | `erase_prefix` of a node's prefix; no versioned retirement that keeps an earlier state | one `zarr.json` per node; chunks keyed under the node's prefix (`c/1/0`) | none |
 
 Zarr is the closest in principle: its hierarchy is its key layout, and a
 reader discovers a group's children by listing the group's prefix on a store
-that supports listing; on one that does not, the names come from elsewhere
+with `list_dir`; a store with only `list` enumerates every key and filters,
+and on one without listing the names come from elsewhere
 (Zarr v3 core, §Storage operations). It defines no commit, so it gives no guarantee
 across keys and says nothing about concurrent writers. Icechunk adds
 transactions and versions to Zarr data through a separate level of metadata,
@@ -130,7 +131,9 @@ Reversing the write order alone is not enough. To resolve:
   staged entry needs a field that no recorded format is yet known to provide.
 - Lost CAS and interrupted publication, two cases with different recovery:
   a writer that loses the pointer CAS leaves staged entries for an attempt
-  the pointer never named, which are orphans once the winner publishes; a
+  the pointer never named, which the contract lets it retry under the same
+  ID with a new parent, so they become orphans only once that writer will not
+  retry, not when the winner publishes; a
   writer that wins the CAS and stops before its canonical manifest leaves a
   pending head (CONTRACT_CORE §Head Pointer), whose protections apply. An
   indeterminate CAS outcome needs the contract's ancestry check. Readers
